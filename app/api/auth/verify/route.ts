@@ -32,6 +32,7 @@ export async function GET(request: NextRequest) {
       user: {
         id: userId,
         email,
+        tier: profile.subscription_tier ?? 'free',
         createdAt: profile.created_at,
         lastLoginAt: profile.last_login_at
       }

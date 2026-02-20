@@ -45,6 +45,29 @@ export async function POST(request: NextRequest) {
   }
 
   const supabase = createServerSupabaseClient();
+
+  // Enforce free-tier meal limit
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('subscription_tier')
+    .eq('id', decoded.userId)
+    .single();
+
+  const tier = profile?.subscription_tier ?? 'free';
+
+  if (tier === 'free') {
+    const { count } = await supabase
+      .from('meals')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', decoded.userId);
+
+    if ((count ?? 0) >= 3) {
+      return NextResponse.json(
+        { error: 'Free plan is limited to 3 meals. Upgrade to Pro to add more.', tierLimitReached: true },
+        { status: 403 }
+      );
+    }
+  }
   const { data: meal, error } = await supabase
     .from('meals')
     .insert({

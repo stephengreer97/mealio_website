@@ -43,7 +43,15 @@ export async function POST(request: NextRequest) {
       ip_address: request.headers.get('x-forwarded-for') || 'unknown'
     });
 
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('subscription_tier')
+      .eq('id', userId)
+      .single();
+
     await supabase.from('user_profiles').update({ last_login_at: new Date().toISOString() }).eq('id', userId);
+
+    const tier = profile?.subscription_tier ?? 'free';
 
     // Create session token for cookie (90 days)
     const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || '');
@@ -60,7 +68,7 @@ export async function POST(request: NextRequest) {
     // Create response with session cookie
     const response = NextResponse.json({
       success: true,
-      user: { id: userId, email },
+      user: { id: userId, email, tier },
       accessToken,
       refreshToken,
       expiresIn: 3600
