@@ -1,11 +1,15 @@
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-const LOG_DIR  = join(process.cwd(), 'logs');
+// Vercel serverless is read-only except /tmp; local dev uses process.cwd()/logs
+const LOG_DIR  = process.env.VERCEL ? '/tmp/logs' : join(process.cwd(), 'logs');
 const LOG_FILE = join(LOG_DIR, 'mealio.log');
 
-// Ensure logs/ directory exists at startup
-mkdirSync(LOG_DIR, { recursive: true });
+try {
+  mkdirSync(LOG_DIR, { recursive: true });
+} catch {
+  // ignore — console logging still works
+}
 
 type EventType =
   | 'AUTH:LOGIN'
@@ -68,5 +72,9 @@ export function log(data: LogData): void {
     console.log(consoleLine);
   }
 
-  appendFileSync(LOG_FILE, fileLine);
+  try {
+    appendFileSync(LOG_FILE, fileLine);
+  } catch {
+    // ignore — read-only filesystem (e.g. Vercel), console output is sufficient
+  }
 }
