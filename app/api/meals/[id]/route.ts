@@ -19,7 +19,7 @@ export async function PUT(
   }
 
   const { id } = await params;
-  const { name, ingredients, website, recipe } = await request.json();
+  const { name, ingredients, website, recipe, photoUrl, author, difficulty } = await request.json();
 
   const supabase = createServerSupabaseClient();
   const { data: meal, error } = await supabase
@@ -27,8 +27,11 @@ export async function PUT(
     .update({
       ...(name        !== undefined && { name }),
       ...(ingredients !== undefined && { ingredients }),
-      ...(website     !== undefined && { website: website || null }),
-      ...(recipe      !== undefined && { recipe:  recipe  || null }),
+      ...(website     !== undefined && { website:    website    || null }),
+      ...(recipe      !== undefined && { recipe:     recipe     || null }),
+      ...(photoUrl    !== undefined && { photo_url:  photoUrl   || null }),
+      ...(author      !== undefined && { author:     author     || null }),
+      ...(difficulty  !== undefined && { difficulty: difficulty || null }),
       updated_at: new Date().toISOString(),
       edited: true,
     })
