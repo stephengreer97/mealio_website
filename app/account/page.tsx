@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 interface User {
   id: string;
   email: string;
+  tier?: string;
   createdAt: string;
 }
 
@@ -13,7 +14,8 @@ export default function AccountPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  
+  const [portalLoading, setPortalLoading] = useState(false);
+
   // Change password state
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -99,6 +101,23 @@ export default function AccountPage() {
   const handleLogout = () => {
     localStorage.clear();
     router.push('/');
+  };
+
+  const openManageSubscription = async () => {
+    setPortalLoading(true);
+    try {
+      const token = localStorage.getItem('accessToken');
+      const res = await fetch('/api/payments/portal', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data.portalUrl) window.open(data.portalUrl, '_blank');
+      else alert('Could not load billing portal. Please try again.');
+    } catch {
+      alert('Could not load billing portal. Please try again.');
+    } finally {
+      setPortalLoading(false);
+    }
   };
 
   if (loading) {
@@ -220,28 +239,40 @@ export default function AccountPage() {
             </form>
           </div>
 
-          {/* Subscription Management (Shell) */}
+          {/* Subscription Management */}
           <div className="bg-white rounded-xl shadow p-6">
             <h2 className="text-xl font-bold mb-4">Subscription</h2>
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <p className="text-blue-900 font-medium mb-2">🎉 Free During Beta</p>
-              <p className="text-blue-700 text-sm">
-                Mealio is currently free while we're in beta. Enjoy unlimited access to all features!
-              </p>
-            </div>
-            
-            {/* Future subscription UI will go here */}
-            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-              <p className="text-sm text-gray-600">
-                When paid plans launch, you'll be able to:
-              </p>
-              <ul className="mt-2 space-y-1 text-sm text-gray-600">
-                <li>• View your current plan</li>
-                <li>• Update payment method</li>
-                <li>• View billing history</li>
-                <li>• Manage subscription</li>
-              </ul>
-            </div>
+            {user?.tier === 'paid' ? (
+              <div>
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                  <p className="text-green-900 font-medium mb-1">Full Access</p>
+                  <p className="text-green-700 text-sm">Unlimited saved meals across all stores.</p>
+                </div>
+                <button
+                  onClick={openManageSubscription}
+                  disabled={portalLoading}
+                  className="bg-red-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50 text-sm"
+                >
+                  {portalLoading ? 'Loading...' : 'Manage Subscription'}
+                </button>
+                <p className="text-xs text-gray-500 mt-2">
+                  Update payment method, view billing history, or cancel anytime.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
+                  <p className="text-gray-900 font-medium mb-1">Free Trial</p>
+                  <p className="text-gray-600 text-sm">Up to 3 saved meals. Upgrade to remove the limit.</p>
+                </div>
+                <button
+                  onClick={() => router.push('/pricing')}
+                  className="bg-red-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-red-700 text-sm"
+                >
+                  Upgrade to Full Access
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Danger Zone */}

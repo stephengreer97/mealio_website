@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 interface User {
   id: string;
   email: string;
+  tier?: string;
   createdAt?: string;
 }
 
@@ -13,6 +14,7 @@ export default function Dashboard() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [portalLoading, setPortalLoading] = useState(false);
 
   useEffect(() => {
     verifyAuth();
@@ -47,6 +49,23 @@ export default function Dashboard() {
 
   const handleLogout = () => {
     router.push('/signout');
+  };
+
+  const openManageSubscription = async () => {
+    setPortalLoading(true);
+    try {
+      const token = localStorage.getItem('accessToken');
+      const res = await fetch('/api/payments/portal', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data.portalUrl) window.open(data.portalUrl, '_blank');
+      else alert('Could not load billing portal. Please try again.');
+    } catch {
+      alert('Could not load billing portal. Please try again.');
+    } finally {
+      setPortalLoading(false);
+    }
   };
 
   if (loading) {
@@ -132,13 +151,36 @@ export default function Dashboard() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </div>
-              <h3 className="font-semibold text-gray-900">Status</h3>
+              <h3 className="font-semibold text-gray-900">Subscription</h3>
             </div>
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-3">
-              <p className="text-sm font-medium text-green-900">🎉 Free During Beta</p>
-              <p className="text-xs text-green-700 mt-1">Unlimited access to all features</p>
-            </div>
-            <p className="text-xs text-gray-500">Enjoy full access while we're in beta!</p>
+            {user?.tier === 'paid' ? (
+              <>
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-3">
+                  <p className="text-sm font-medium text-green-900">Full Access</p>
+                  <p className="text-xs text-green-700 mt-1">Unlimited saved meals</p>
+                </div>
+                <button
+                  onClick={openManageSubscription}
+                  disabled={portalLoading}
+                  className="text-sm text-red-600 hover:text-red-700 font-medium disabled:opacity-50"
+                >
+                  {portalLoading ? 'Loading...' : 'Manage Subscription →'}
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3">
+                  <p className="text-sm font-medium text-gray-900">Free Trial</p>
+                  <p className="text-xs text-gray-600 mt-1">Up to 3 saved meals</p>
+                </div>
+                <button
+                  onClick={() => router.push('/pricing')}
+                  className="text-sm text-red-600 hover:text-red-700 font-medium"
+                >
+                  Upgrade to Full Access →
+                </button>
+              </>
+            )}
           </div>
 
           {/* Extension Status */}
@@ -237,9 +279,9 @@ export default function Dashboard() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
               </svg>
             </div>
-            <h3 className="font-semibold text-gray-900 mb-2">Save Unlimited Meals</h3>
+            <h3 className="font-semibold text-gray-900 mb-2">Save Your Meals</h3>
             <p className="text-sm text-gray-600">
-              Create as many meal plans as you want. From breakfast to dinner, Mealio remembers them all.
+              Create meal plans and Mealio remembers every ingredient. Upgrade for unlimited meals.
             </p>
           </div>
 
