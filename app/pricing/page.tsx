@@ -3,11 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-const MONTHLY_VARIANT_ID = process.env.NEXT_PUBLIC_LS_MONTHLY_VARIANT_ID ?? '';
-const ANNUAL_VARIANT_ID  = process.env.NEXT_PUBLIC_LS_ANNUAL_VARIANT_ID  ?? '';
-const STORE_SLUG         = process.env.NEXT_PUBLIC_LS_STORE_SLUG         ?? '';
+// Paste the full checkout URLs directly from the Lemon Squeezy dashboard
+// (open a variant → click "Share" → copy the URL).
+// e.g. https://mealio.lemonsqueezy.com/checkout/buy/abc123
+const MONTHLY_CHECKOUT_URL = process.env.NEXT_PUBLIC_LS_MONTHLY_CHECKOUT_URL ?? '';
+const ANNUAL_CHECKOUT_URL  = process.env.NEXT_PUBLIC_LS_ANNUAL_CHECKOUT_URL  ?? '';
 
-// Update these to match what you set in Lemon Squeezy
 const MONTHLY_PRICE = process.env.NEXT_PUBLIC_LS_MONTHLY_PRICE ?? '4.99';
 const ANNUAL_PRICE  = process.env.NEXT_PUBLIC_LS_ANNUAL_PRICE  ?? '39.99';
 
@@ -17,14 +18,16 @@ interface AuthUser {
   tier: string;
 }
 
-function buildCheckoutUrl(variantId: string, user: AuthUser | null): string {
-  const base = `https://${STORE_SLUG}.lemonsqueezy.com/checkout/buy/${variantId}`;
-  if (!user) return base;
-  const params = new URLSearchParams({
-    'checkout[email]': user.email,
-    'checkout[custom][user_id]': user.id,
-  });
-  return `${base}?${params.toString()}`;
+// Append email + user_id to a LS hosted checkout URL so the webhook can
+// identify the user. Returns '' if the base URL isn't configured yet.
+function buildCheckoutUrl(baseUrl: string, user: AuthUser | null): string {
+  if (!baseUrl) return '';
+  const params = new URLSearchParams();
+  if (user) {
+    params.set('checkout[email]', user.email);
+    params.set('checkout[custom][user_id]', user.id);
+  }
+  return `${baseUrl}?${params.toString()}`;
 }
 
 export default function PricingPage() {
@@ -65,9 +68,10 @@ export default function PricingPage() {
     }
   };
 
-  const variantId = billing === 'monthly' ? MONTHLY_VARIANT_ID : ANNUAL_VARIANT_ID;
-  const checkoutUrl = buildCheckoutUrl(variantId, user);
+  const baseCheckoutUrl = billing === 'monthly' ? MONTHLY_CHECKOUT_URL : ANNUAL_CHECKOUT_URL;
+  const checkoutUrl = buildCheckoutUrl(baseCheckoutUrl, user);
   const isFullAccess = user?.tier === 'paid';
+  const checkoutReady = baseCheckoutUrl !== '';
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -210,14 +214,17 @@ export default function PricingPage() {
             </ul>
 
             {isFullAccess ? (
-              <button
-                onClick={openManageSubscription}
-                disabled={portalLoading}
-                className="w-full py-3 bg-white text-red-600 rounded-xl font-bold hover:bg-red-50 transition disabled:opacity-60"
-              >
-                {portalLoading ? 'Loading...' : 'Manage Subscription'}
-              </button>
-            ) : (
+              <>
+                <button
+                  onClick={openManageSubscription}
+                  disabled={portalLoading}
+                  className="w-full py-3 bg-white text-red-600 rounded-xl font-bold hover:bg-red-50 transition disabled:opacity-60"
+                >
+                  {portalLoading ? 'Loading...' : 'Manage Subscription'}
+                </button>
+                <p className="text-center text-red-200 text-xs mt-3">You&apos;re on Full Access ✓</p>
+              </>
+            ) : checkoutReady ? (
               <a
                 href={checkoutUrl}
                 target="_blank"
@@ -226,10 +233,13 @@ export default function PricingPage() {
               >
                 {user ? 'Upgrade Now' : 'Get Started'}
               </a>
-            )}
-
-            {isFullAccess && (
-              <p className="text-center text-red-200 text-xs mt-3">You&apos;re on Full Access ✓</p>
+            ) : (
+              <button
+                disabled
+                className="w-full py-3 bg-white/50 text-red-400 rounded-xl font-bold cursor-not-allowed"
+              >
+                Coming Soon
+              </button>
             )}
           </div>
 

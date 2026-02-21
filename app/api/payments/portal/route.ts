@@ -19,7 +19,9 @@ export async function GET(request: NextRequest) {
     .single();
 
   if (!profile?.lemonsqueezy_customer_id) {
-    return NextResponse.json({ error: 'No active subscription found' }, { status: 404 });
+    // Account was manually granted paid tier (no LS subscription yet).
+    // Send them to the general LS orders page where they can manage billing.
+    return NextResponse.json({ portalUrl: 'https://app.lemonsqueezy.com/my-orders' });
   }
 
   const lsRes = await fetch(
