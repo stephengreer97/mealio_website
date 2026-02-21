@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Pacifico } from 'next/font/google'
+import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
 const pacifico = Pacifico({
@@ -21,7 +22,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={pacifico.variable}>{children}</body>
+      <body className={pacifico.variable}>
+        {children}
+        <Analytics />
+      </body>
     </html>
   )
 }
