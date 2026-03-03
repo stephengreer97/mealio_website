@@ -6,7 +6,10 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co';
+// APP_URL_SERVER is a server-only env var (no NEXT_PUBLIC_ prefix) so it is
+// available at runtime in Vercel functions. NEXT_PUBLIC_APP_URL is inlined at
+// build time and may be undefined on the server if not explicitly set.
+const APP_URL = (process.env.APP_URL_SERVER ?? process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co').replace(/\/$/, '');
 
 export async function POST(request: NextRequest) {
   if (!process.env.STRIPE_SECRET_KEY) {
