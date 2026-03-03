@@ -38,14 +38,23 @@ export async function POST(request: NextRequest) {
         break;
       }
 
-      await supabase.from('user_profiles').update({
+      const { error: updateErr } = await supabase.from('user_profiles').update({
         subscription_tier: 'paid',
         stripe_customer_id: stripeCustomerId ?? null,
         stripe_subscription_id: stripeSubId ?? null,
         subscription_ends_at: null,
       }).eq('id', userId);
 
-      await supabase.from('subscription_events').insert({ user_id: userId, event: 'started' });
+      if (updateErr) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'error', userId, reason: updateErr.message, detail: 'update failed' });
+        break;
+      }
+
+      const { error: insertErr } = await supabase.from('subscription_events').insert({ user_id: userId, event: 'started' });
+      if (insertErr) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'error', userId, reason: insertErr.message, detail: 'subscription_events insert failed' });
+      }
+
       log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId, detail: 'checkout.session.completed→paid' });
       break;
     }
