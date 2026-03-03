@@ -111,7 +111,14 @@ export default function AccountPage() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-      if (data.portalUrl) window.open(data.portalUrl, '_blank');
+      if (data.portalUrl) {
+        // External Stripe portal → new tab; internal /pricing → same tab
+        if (data.portalUrl.startsWith('http') && !data.portalUrl.includes('mealio.co')) {
+          window.open(data.portalUrl, '_blank');
+        } else {
+          router.push(data.portalUrl);
+        }
+      }
       else alert('Could not load billing portal. Please try again.');
     } catch {
       alert('Could not load billing portal. Please try again.');

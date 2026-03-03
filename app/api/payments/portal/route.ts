@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import Stripe from 'stripe';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co';
 
 export async function GET(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -14,37 +19,24 @@ export async function GET(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data: profile } = await supabase
     .from('user_profiles')
-    .select('lemonsqueezy_customer_id')
+    .select('stripe_customer_id')
     .eq('id', decoded.userId)
     .single();
 
-  if (!profile?.lemonsqueezy_customer_id) {
-    // Account was manually granted paid tier (no LS subscription yet).
-    // Send them to the general LS orders page where they can manage billing.
-    return NextResponse.json({ portalUrl: 'https://app.lemonsqueezy.com/my-orders' });
+  if (!profile?.stripe_customer_id) {
+    // User has no Stripe subscription yet (e.g. manually granted tier or legacy LS subscriber).
+    // Send them to pricing to set up a Stripe subscription.
+    return NextResponse.json({ portalUrl: `${APP_URL}/pricing` });
   }
 
-  const lsRes = await fetch(
-    `https://api.lemonsqueezy.com/v1/customers/${profile.lemonsqueezy_customer_id}`,
-    {
-      headers: {
-        Accept: 'application/vnd.api+json',
-        Authorization: `Bearer ${process.env.LEMONSQUEEZY_API_KEY}`,
-      },
-    }
-  );
-
-  if (!lsRes.ok) {
-    console.error('LS customer fetch failed:', lsRes.status, await lsRes.text());
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: profile.stripe_customer_id,
+      return_url: `${APP_URL}/dashboard`,
+    });
+    return NextResponse.json({ portalUrl: session.url });
+  } catch (err) {
+    log({ event: 'PAYMENT:PORTAL', status: 'error', userId: decoded.userId, reason: String(err) });
     return NextResponse.json({ error: 'Failed to reach billing portal' }, { status: 502 });
   }
-
-  const lsData = await lsRes.json();
-  const portalUrl = lsData.data?.attributes?.urls?.customer_portal as string | undefined;
-
-  if (!portalUrl) {
-    return NextResponse.json({ error: 'Portal URL not available' }, { status: 502 });
-  }
-
-  return NextResponse.json({ portalUrl });
 }
