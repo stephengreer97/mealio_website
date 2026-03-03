@@ -6,10 +6,14 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co';
 
 export async function GET(request: NextRequest) {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return NextResponse.json({ error: 'Stripe is not configured' }, { status: 503 });
+  }
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 

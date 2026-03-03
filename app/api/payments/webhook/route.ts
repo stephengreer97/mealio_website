@@ -1,102 +1,114 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createHmac } from 'crypto';
+import Stripe from 'stripe';
 import { createServerSupabaseClient } from '@/lib/supabase';
+import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
-function verifySignature(rawBody: string, signature: string, secret: string): boolean {
-  const hmac = createHmac('sha256', secret);
-  hmac.update(rawBody);
-  return hmac.digest('hex') === signature;
-}
-
-// Lemon Squeezy subscription statuses that mean the user is active
-const ACTIVE_STATUSES = new Set(['active', 'on_trial']);
-
+// Stripe requires the raw body for signature verification
 export async function POST(request: NextRequest) {
-  const signature  = request.headers.get('X-Signature') ?? '';
-  const eventName  = request.headers.get('X-Event-Name') ?? '';
-  const secret     = process.env.LEMONSQUEEZY_WEBHOOK_SECRET ?? '';
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return NextResponse.json({ error: 'Stripe is not configured' }, { status: 503 });
+  }
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-  // Must read as text before JSON.parse to preserve exact bytes for HMAC
+  const sig = request.headers.get('stripe-signature') ?? '';
+  const secret = process.env.STRIPE_WEBHOOK_SECRET ?? '';
   const rawBody = await request.text();
 
-  if (!secret || !verifySignature(rawBody, signature, secret)) {
-    console.error('Webhook: invalid signature for event', eventName);
+  let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent(rawBody, sig, secret);
+  } catch (err) {
+    log({ event: 'PAYMENT:WEBHOOK', status: 'failed', reason: 'invalid signature', detail: String(err) });
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
   }
 
-  let payload: any;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
-  }
-
-  // LS echoes checkout[custom][user_id] back in meta.custom_data
-  const userId       = payload.meta?.custom_data?.user_id as string | undefined;
-  const userEmail    = payload.data?.attributes?.user_email as string | undefined;
-  const lsCustomerId = String(payload.data?.attributes?.customer_id ?? '');
-  const lsSubId      = String(payload.data?.id ?? '');
-  const status       = payload.data?.attributes?.status as string | undefined;
-  const endsAt       = payload.data?.attributes?.ends_at as string | null | undefined;
-
   const supabase = createServerSupabaseClient();
 
-  // Find the user — prefer the UUID from custom_data, fall back to email
-  let query = supabase.from('user_profiles').select('id').limit(1);
-  if (userId) {
-    query = query.eq('id', userId);
-  } else if (userEmail) {
-    query = query.eq('email', userEmail);
-  } else {
-    console.error('Webhook: payload has no user_id or email', { eventName });
-    return NextResponse.json({ received: true }); // Return 200 so LS doesn't retry
-  }
+  switch (event.type) {
+    case 'checkout.session.completed': {
+      const session = event.data.object as Stripe.Checkout.Session;
+      const userId = session.metadata?.user_id;
+      const stripeCustomerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+      const stripeSubId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
 
-  const { data: rows } = await query;
-  const dbUserId = rows?.[0]?.id;
+      if (!userId) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'failed', reason: 'no user_id in metadata', detail: event.type });
+        break;
+      }
 
-  if (!dbUserId) {
-    console.error('Webhook: user not found', { userId, userEmail, eventName });
-    return NextResponse.json({ received: true });
-  }
-
-  switch (eventName) {
-    case 'subscription_created':
-    case 'subscription_resumed':
       await supabase.from('user_profiles').update({
-        subscription_tier:            'paid',
-        lemonsqueezy_customer_id:     lsCustomerId,
-        lemonsqueezy_subscription_id: lsSubId,
-        subscription_ends_at:         null,
-      }).eq('id', dbUserId);
-      console.log(`[LS] ${eventName}: user ${dbUserId} → paid`);
-      break;
+        subscription_tier: 'paid',
+        stripe_customer_id: stripeCustomerId ?? null,
+        stripe_subscription_id: stripeSubId ?? null,
+        subscription_ends_at: null,
+      }).eq('id', userId);
 
-    case 'subscription_updated': {
-      const newTier = ACTIVE_STATUSES.has(status ?? '') ? 'paid' : 'free';
-      await supabase.from('user_profiles').update({
-        subscription_tier:            newTier,
-        lemonsqueezy_customer_id:     lsCustomerId,
-        lemonsqueezy_subscription_id: lsSubId,
-      }).eq('id', dbUserId);
-      console.log(`[LS] subscription_updated: user ${dbUserId} status=${status} → ${newTier}`);
+      await supabase.from('subscription_events').insert({ user_id: userId, event: 'started' });
+      log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId, detail: 'checkout.session.completed→paid' });
       break;
     }
 
-    case 'subscription_cancelled':
-    case 'subscription_expired':
-    case 'subscription_payment_failed':
-      await supabase.from('user_profiles').update({
-        subscription_tier:    'free',
-        subscription_ends_at: endsAt ?? null,
-      }).eq('id', dbUserId);
-      console.log(`[LS] ${eventName}: user ${dbUserId} → free`);
+    case 'customer.subscription.updated': {
+      const sub = event.data.object as Stripe.Subscription;
+      const stripeCustomerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
+      const newTier = (sub.status === 'active' || sub.status === 'trialing') ? 'paid' : 'free';
+
+      const { data: rows } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('stripe_customer_id', stripeCustomerId)
+        .limit(1);
+
+      const dbUserId = rows?.[0]?.id;
+      if (!dbUserId) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'failed', reason: 'user not found', detail: event.type });
+        break;
+      }
+
+      await supabase.from('user_profiles').update({ subscription_tier: newTier }).eq('id', dbUserId);
+      log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: `subscription.updated→${newTier}` });
       break;
+    }
+
+    case 'customer.subscription.deleted': {
+      const sub = event.data.object as Stripe.Subscription;
+      const stripeCustomerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
+      const endsAt = sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null;
+
+      const { data: rows } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('stripe_customer_id', stripeCustomerId)
+        .limit(1);
+
+      const dbUserId = rows?.[0]?.id;
+      if (!dbUserId) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'failed', reason: 'user not found', detail: event.type });
+        break;
+      }
+
+      await supabase.from('user_profiles').update({
+        subscription_tier: 'free',
+        subscription_ends_at: endsAt,
+      }).eq('id', dbUserId);
+
+      await supabase.from('subscription_events').insert({ user_id: dbUserId, event: 'cancelled' });
+      log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: 'subscription.deleted→free' });
+      break;
+    }
+
+    case 'invoice.payment_failed': {
+      // Stripe retries automatically — log only, don't downgrade
+      const invoice = event.data.object as Stripe.Invoice;
+      const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+      log({ event: 'PAYMENT:WEBHOOK', status: 'pending', detail: 'invoice.payment_failed', reason: stripeCustomerId ?? 'unknown customer' });
+      break;
+    }
 
     default:
-      console.log(`[LS] unhandled event: ${eventName}`);
+      log({ event: 'PAYMENT:WEBHOOK', status: 'pending', detail: event.type, reason: 'unhandled event' });
   }
 
   return NextResponse.json({ received: true });
