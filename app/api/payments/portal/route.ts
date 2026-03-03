@@ -6,9 +6,12 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
-const APP_URL = (process.env.APP_URL_SERVER ?? process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co').replace(/\/$/, '');
 
 export async function GET(request: NextRequest) {
+  const host = request.headers.get('host') ?? 'mealio.co';
+  const proto = host.startsWith('localhost') ? 'http' : 'https';
+  const APP_URL = `${proto}://${host}`;
+
   if (!process.env.STRIPE_SECRET_KEY) {
     return NextResponse.json({ error: 'Stripe is not configured' }, { status: 503 });
   }
