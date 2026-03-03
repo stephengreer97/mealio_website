@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { priceId } = body;
-  if (!priceId) return NextResponse.json({ error: 'priceId is required' }, { status: 400 });
+  if (!priceId) return NextResponse.json({ error: 'priceId is required — check NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID / NEXT_PUBLIC_STRIPE_ANNUAL_PRICE_ID env vars' }, { status: 400 });
 
   const supabase = createServerSupabaseClient();
   const { data: profile } = await supabase
@@ -56,8 +56,9 @@ export async function POST(request: NextRequest) {
     const session = await stripe.checkout.sessions.create(sessionParams);
     log({ event: 'PAYMENT:CHECKOUT', status: 'success', userId: decoded.userId });
     return NextResponse.json({ url: session.url });
-  } catch (err) {
-    log({ event: 'PAYMENT:CHECKOUT', status: 'error', userId: decoded.userId, reason: String(err) });
-    return NextResponse.json({ error: 'Failed to create checkout session' }, { status: 500 });
+  } catch (err: any) {
+    const detail = err?.message ?? String(err);
+    log({ event: 'PAYMENT:CHECKOUT', status: 'error', userId: decoded.userId, reason: detail });
+    return NextResponse.json({ error: 'Failed to create checkout session', detail }, { status: 500 });
   }
 }
