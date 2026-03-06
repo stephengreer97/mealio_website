@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { log } from '@/lib/logger';
+import { resolvePhotoUrl } from '@/lib/photos';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -19,19 +21,24 @@ export async function PUT(
   }
 
   const { id } = await params;
-  const { name, ingredients, website, recipe, photoUrl, author, difficulty } = await request.json();
+  const { name, ingredients, website, recipe, photoUrl, author, difficulty, tags } = await request.json();
+
+  const resolvedPhotoUrl = photoUrl !== undefined
+    ? await resolvePhotoUrl(photoUrl, decoded.userId)
+    : undefined;
 
   const supabase = createServerSupabaseClient();
   const { data: meal, error } = await supabase
     .from('meals')
     .update({
-      ...(name        !== undefined && { name }),
-      ...(ingredients !== undefined && { ingredients }),
-      ...(website     !== undefined && { website:    website    || null }),
-      ...(recipe      !== undefined && { recipe:     recipe     || null }),
-      ...(photoUrl    !== undefined && { photo_url:  photoUrl   || null }),
+      ...(name               !== undefined && { name }),
+      ...(ingredients        !== undefined && { ingredients }),
+      ...(website            !== undefined && { website:    website    || null }),
+      ...(recipe             !== undefined && { recipe:     recipe     || null }),
+      ...(resolvedPhotoUrl   !== undefined && { photo_url:  resolvedPhotoUrl || null }),
       ...(author      !== undefined && { author:     author     || null }),
       ...(difficulty  !== undefined && { difficulty: difficulty || null }),
+      ...(tags        !== undefined && { tags: Array.isArray(tags) ? tags : [] }),
       updated_at: new Date().toISOString(),
       edited: true,
     })
@@ -41,7 +48,7 @@ export async function PUT(
     .single();
 
   if (error) {
-    console.error('PUT /api/meals/[id] error:', error);
+    log({ event: 'MEAL:UPDATE', status: 'error', userId: decoded.userId, detail: id, error });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
@@ -53,6 +60,8 @@ export async function PUT(
 }
 
 // DELETE /api/meals/[id]
+// Without ?permanent=true: soft-delete (set is_active=false)
+// With ?permanent=true: hard-delete (remove from DB)
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -63,16 +72,35 @@ export async function DELETE(
   }
 
   const { id } = await params;
+  const permanent = request.nextUrl.searchParams.get('permanent') === 'true';
   const supabase = createServerSupabaseClient();
-  const { error } = await supabase
-    .from('meals')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', decoded.userId); // user can only delete their own meals
 
-  if (error) {
-    console.error('DELETE /api/meals/[id] error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  if (permanent) {
+    const { error } = await supabase
+      .from('meals')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', decoded.userId);
+
+    if (error) {
+      log({ event: 'MEAL:DELETE_PERMANENT', status: 'error', userId: decoded.userId, detail: id, error });
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    log({ event: 'MEAL:DELETE_PERMANENT', status: 'success', userId: decoded.userId, detail: id });
+  } else {
+    const { error } = await supabase
+      .from('meals')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('user_id', decoded.userId);
+
+    if (error) {
+      log({ event: 'MEAL:DELETE', status: 'error', userId: decoded.userId, detail: id, error });
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    log({ event: 'MEAL:DELETE', status: 'success', userId: decoded.userId, detail: id });
   }
 
   return NextResponse.json({ success: true });

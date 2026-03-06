@@ -13,6 +13,17 @@ export default function SignOutPage() {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     );
 
+    const refreshToken = localStorage.getItem('refreshToken');
+
+    // Revoke the refresh token server-side and clear the session cookie so
+    // the browser extension detects the logout on its next session check.
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    }).catch(() => {});
+
     supabase.auth.signOut().finally(() => {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');

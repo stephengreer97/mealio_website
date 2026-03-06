@@ -3,12 +3,11 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-const STORE_SLUG         = process.env.NEXT_PUBLIC_LS_STORE_SLUG         ?? '';
-const MONTHLY_VARIANT_ID = process.env.NEXT_PUBLIC_LS_MONTHLY_VARIANT_ID ?? '';
-const ANNUAL_VARIANT_ID  = process.env.NEXT_PUBLIC_LS_ANNUAL_VARIANT_ID  ?? '';
+const MONTHLY_PRICE_ID = process.env.NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID ?? '';
+const ANNUAL_PRICE_ID  = process.env.NEXT_PUBLIC_STRIPE_ANNUAL_PRICE_ID  ?? '';
 
-const MONTHLY_PRICE = process.env.NEXT_PUBLIC_LS_MONTHLY_PRICE ?? '4.99';
-const ANNUAL_PRICE  = process.env.NEXT_PUBLIC_LS_ANNUAL_PRICE  ?? '39.99';
+const MONTHLY_PRICE = process.env.NEXT_PUBLIC_LS_MONTHLY_PRICE ?? '3.49';
+const ANNUAL_PRICE  = process.env.NEXT_PUBLIC_LS_ANNUAL_PRICE  ?? '29.99';
 
 interface AuthUser {
   id: string;
@@ -16,22 +15,12 @@ interface AuthUser {
   tier: string;
 }
 
-function buildCheckoutUrl(variantId: string, user: AuthUser | null): string {
-  if (!STORE_SLUG || !variantId) return '';
-  const base = `https://${STORE_SLUG}.lemonsqueezy.com/checkout/buy/${variantId}`;
-  const params = new URLSearchParams();
-  if (user) {
-    params.set('checkout[email]', user.email);
-    params.set('checkout[custom][user_id]', user.id);
-  }
-  return `${base}?${params.toString()}`;
-}
-
 export default function PricingPage() {
   const router = useRouter();
   const [billing, setBilling] = useState<'monthly' | 'annual'>('monthly');
   const [user, setUser] = useState<AuthUser | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
@@ -65,10 +54,26 @@ export default function PricingPage() {
     }
   };
 
-  const variantId = billing === 'monthly' ? MONTHLY_VARIANT_ID : ANNUAL_VARIANT_ID;
-  const checkoutUrl = buildCheckoutUrl(variantId, user);
+  const handleCheckout = async () => {
+    const token = localStorage.getItem('accessToken');
+    if (!token) { router.push('/'); return; }
+    setCheckoutLoading(true);
+    try {
+      const priceId = billing === 'monthly' ? MONTHLY_PRICE_ID : ANNUAL_PRICE_ID;
+      const res = await fetch('/api/payments/checkout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priceId }),
+      });
+      const data = await res.json();
+      if (data.url) window.location.href = data.url;
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
+
   const isFullAccess = user?.tier === 'paid';
-  const checkoutReady = checkoutUrl !== '';
+  const checkoutReady = !!(billing === 'monthly' ? MONTHLY_PRICE_ID : ANNUAL_PRICE_ID);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -86,7 +91,7 @@ export default function PricingPage() {
             <span style={{ fontSize: '28px', textShadow: '1px 2px 0px rgba(0,0,0,0.1)', color: '#dd0031' }}>ealio</span>
           </div>
           {user ? (
-            <button onClick={() => router.push('/dashboard')} className="text-sm text-gray-600 hover:text-gray-900">
+            <button onClick={() => router.push('/discover')} className="text-sm text-gray-600 hover:text-gray-900">
               Dashboard →
             </button>
           ) : (
@@ -222,14 +227,13 @@ export default function PricingPage() {
                 <p className="text-center text-red-200 text-xs mt-3">You&apos;re on Full Access ✓</p>
               </>
             ) : checkoutReady ? (
-              <a
-                href={checkoutUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full py-3 bg-white text-red-600 rounded-xl font-bold hover:bg-red-50 transition text-center block"
+              <button
+                onClick={handleCheckout}
+                disabled={checkoutLoading}
+                className="w-full py-3 bg-white text-red-600 rounded-xl font-bold hover:bg-red-50 transition disabled:opacity-60"
               >
-                {user ? 'Upgrade Now' : 'Get Started'}
-              </a>
+                {checkoutLoading ? 'Loading...' : (user ? 'Upgrade Now' : 'Get Started')}
+              </button>
             ) : (
               <button
                 disabled
@@ -246,8 +250,8 @@ export default function PricingPage() {
         <div className="mt-16 text-center">
           <p className="text-sm text-gray-500">
             Payments processed securely by{' '}
-            <a href="https://lemonsqueezy.com" target="_blank" rel="noopener noreferrer" className="underline">
-              Lemon Squeezy
+            <a href="https://stripe.com" target="_blank" rel="noopener noreferrer" className="underline">
+              Stripe
             </a>
             . Cancel anytime from your billing portal. Questions?{' '}
             <a href="mailto:support@mealio.co" className="underline">support@mealio.co</a>

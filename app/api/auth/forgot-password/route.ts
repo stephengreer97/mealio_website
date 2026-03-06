@@ -3,6 +3,7 @@ import { createAnonSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
+  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
   try {
     const { email } = await request.json();
 
@@ -10,7 +11,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Email required' }, { status: 400 });
     }
 
-    const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const supabase = createAnonSupabaseClient();
 
     await supabase.auth.resetPasswordForEmail(email, {
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
     log({ event: 'AUTH:FORGOT_PASSWORD', status: 'success', email, ip });
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Forgot password error:', error);
+    log({ event: 'AUTH:FORGOT_PASSWORD', status: 'error', ip, error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

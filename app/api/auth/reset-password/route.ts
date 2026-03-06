@@ -42,8 +42,7 @@ export async function POST(request: NextRequest) {
     log({ event: 'AUTH:RESET_PASSWORD', status: 'success', ip, userId });
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Reset password error:', error);
-    log({ event: 'AUTH:RESET_PASSWORD', status: 'failed', ip: 'unknown', reason: String(error) });
+    log({ event: 'AUTH:RESET_PASSWORD', status: 'error', ip: 'unknown', error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

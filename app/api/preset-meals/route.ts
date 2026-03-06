@@ -1,29 +1,105 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { log } from '@/lib/logger';
 
-// GET /api/preset-meals
+// GET /api/preset-meals                        → trending (default), paginated
+// GET /api/preset-meals?sort=new               → newest first, paginated
+// GET /api/preset-meals?limit=20&offset=0      → explicit pagination
+const PRESET_PAGE_SIZE = 20;
+
 export async function GET(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const decoded = verifyAccessToken(token);
+  const decoded = await verifyAccessToken(token);
   if (!decoded) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const supabase = createServerSupabaseClient();
-  const { data: presetMeals, error } = await supabase
-    .from('preset_meals')
-    .select('id, name, description, source, recipe, ingredients, photo_url, author, difficulty')
-    .order('created_at', { ascending: true });
+  const searchParams = request.nextUrl.searchParams;
+
+  const limit  = Math.min(parseInt(searchParams.get('limit')  || String(PRESET_PAGE_SIZE), 10), 100);
+  const offset = Math.max(parseInt(searchParams.get('offset') || '0', 10), 0);
+
+  // ── Following feed ────────────────────────────────────────────────────────
+  if (searchParams.get('followed') === 'true') {
+    const { data: follows } = await supabase
+      .from('creator_follows')
+      .select('creator_id')
+      .eq('user_id', decoded.userId);
+
+    const ids = (follows ?? []).map((f: any) => f.creator_id);
+    if (ids.length === 0) {
+      return NextResponse.json({ presetMeals: [], hasMore: false });
+    }
+
+    const { data, error, count } = await supabase
+      .from('preset_meals')
+      .select(`
+        id, name, source, recipe, ingredients, photo_url, author, difficulty, creator_id, created_at, tags,
+        creators!creator_id ( display_name, social_handle )
+      `, { count: 'exact' })
+      .in('creator_id', ids)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      log({ event: 'MEAL:GET', status: 'error', error });
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const meals = (data ?? []).map((m: any) => ({
+      ...m,
+      creator_name:   m.creators?.display_name  ?? null,
+      creator_social: m.creators?.social_handle ?? null,
+      creators:       undefined,
+    }));
+
+    const hasMore = (count ?? 0) > offset + meals.length;
+    return NextResponse.json({ presetMeals: meals, hasMore });
+  }
+
+  if (searchParams.get('sort') === 'new') {
+    const { data, error, count } = await supabase
+      .from('preset_meals')
+      .select(`
+        id, name, source, recipe, ingredients, photo_url, author, difficulty, creator_id, created_at, tags,
+        creators!creator_id ( display_name, social_handle )
+      `, { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      log({ event: 'MEAL:GET', status: 'error', error });
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const meals = (data ?? []).map((m: any) => ({
+      ...m,
+      creator_name:   m.creators?.display_name  ?? null,
+      creator_social: m.creators?.social_handle ?? null,
+      creators:       undefined,
+    }));
+
+    const hasMore = (count ?? 0) > offset + meals.length;
+    return NextResponse.json({ presetMeals: meals, hasMore });
+  }
+
+  // Default: trending sort via RPC
+  const { data, error } = await supabase
+    .rpc('get_preset_meals_with_trending', { partner_only: false })
+    .range(offset, offset + limit - 1);
 
   if (error) {
-    console.error('GET /api/preset-meals error:', error);
+    log({ event: 'MEAL:GET', status: 'error', error });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ presetMeals: presetMeals ?? [] });
+  const fetched = data ?? [];
+  const hasMore = fetched.length === limit;
+  return NextResponse.json({ presetMeals: fetched, hasMore });
 }

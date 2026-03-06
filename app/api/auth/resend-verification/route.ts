@@ -3,6 +3,7 @@ import { createAnonSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
+  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
   try {
     const { email } = await request.json();
 
@@ -10,7 +11,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 });
     }
 
-    const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const supabase = createAnonSupabaseClient();
 
     const { error } = await supabase.auth.resend({
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
     log({ event: 'AUTH:RESEND', status: 'success', email, ip });
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Resend verification error:', error);
+    log({ event: 'AUTH:RESEND', status: 'error', ip, error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

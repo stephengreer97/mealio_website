@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { log } from '@/lib/logger';
+import { resolvePhotoUrl } from '@/lib/photos';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -18,12 +20,13 @@ export async function GET(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data: meals, error } = await supabase
     .from('meals')
-    .select('*')
+    .select('*, creator_id')
     .eq('user_id', decoded.userId)
+    .eq('is_active', true)
     .order('created_at', { ascending: true });
 
   if (error) {
-    console.error('GET /api/meals error:', error);
+    log({ event: 'MEAL:GET', status: 'error', userId: decoded.userId, error });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
@@ -38,7 +41,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { name, storeId, ingredients, createdAt, presetMealId, website, recipe, photoUrl, author, difficulty } = body;
+  const { name, storeId, ingredients, createdAt, presetMealId, website, recipe, photoUrl, author, difficulty, tags, creatorId } = body;
 
   if (!name || !storeId || !Array.isArray(ingredients)) {
     return NextResponse.json({ error: 'name, storeId, and ingredients are required' }, { status: 400 });
@@ -59,15 +62,19 @@ export async function POST(request: NextRequest) {
     const { count } = await supabase
       .from('meals')
       .select('*', { count: 'exact', head: true })
-      .eq('user_id', decoded.userId);
+      .eq('user_id', decoded.userId)
+      .eq('is_active', true);
 
     if ((count ?? 0) >= 3) {
+      log({ event: 'MEAL:CREATE', status: 'failed', userId: decoded.userId, reason: 'tier limit reached' });
       return NextResponse.json(
-        { error: 'Free plan is limited to 3 meals. Upgrade to Pro to add more.', tierLimitReached: true },
+        { error: 'Free plan is limited to 3 meals. Upgrade to Full Access to add more.', tierLimitReached: true },
         { status: 403 }
       );
     }
   }
+  const resolvedPhotoUrl = await resolvePhotoUrl(photoUrl, decoded.userId);
+
   const { data: meal, error } = await supabase
     .from('meals')
     .insert({
@@ -79,17 +86,20 @@ export async function POST(request: NextRequest) {
       ...(presetMealId ? { preset_meal_id: presetMealId } : {}),
       ...(website   ? { website }   : {}),
       ...(recipe    ? { recipe }    : {}),
-      ...(photoUrl  ? { photo_url: photoUrl } : {}),
+      ...(resolvedPhotoUrl  ? { photo_url: resolvedPhotoUrl } : {}),
       ...(author     ? { author }     : {}),
       ...(difficulty ? { difficulty } : {}),
+      ...(Array.isArray(tags) && tags.length ? { tags } : {}),
+      ...(creatorId ? { creator_id: creatorId } : {}),
     })
     .select()
     .single();
 
   if (error) {
-    console.error('POST /api/meals error:', error);
+    log({ event: 'MEAL:CREATE', status: 'error', userId: decoded.userId, error });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  log({ event: 'MEAL:CREATE', status: 'success', userId: decoded.userId, detail: meal.id });
   return NextResponse.json({ meal }, { status: 201 });
 }

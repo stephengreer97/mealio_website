@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
   try {
     const session = await stripe.billingPortal.sessions.create({
       customer: profile.stripe_customer_id,
-      return_url: `${APP_URL}/dashboard`,
+      return_url: `${APP_URL}/discover`,
     });
     return NextResponse.json({ portalUrl: session.url });
   } catch (err) {

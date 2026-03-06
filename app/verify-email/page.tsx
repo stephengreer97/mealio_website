@@ -76,7 +76,7 @@ export default function VerifyEmailPage() {
         }));
 
         setStatus('success');
-        setTimeout(() => router.push('/dashboard'), 1500);
+        setTimeout(() => router.push('/discover'), 1500);
       } catch (err) {
         console.error('Verification error:', err);
         setErrorMessage('Something went wrong. Please try again.');

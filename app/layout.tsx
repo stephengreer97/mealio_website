@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Pacifico } from 'next/font/google'
+import { Pacifico, DM_Sans } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
@@ -10,9 +10,40 @@ const pacifico = Pacifico({
   display: 'swap',
 })
 
+const dmSans = DM_Sans({
+  subsets: ['latin'],
+  axes: ['opsz'],
+  variable: '--font-dm-sans',
+  display: 'swap',
+})
+
+const APP_URL = (process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co').trim();
+
 export const metadata: Metadata = {
-  title: 'Mealio - Grocery Shop Effortlessly',
-  description: 'Automatically add meal ingredients to your cart',
+  metadataBase: new URL(APP_URL),
+  title: {
+    default:  'Mealio',
+    template: '%s | Mealio',
+  },
+  description: 'Save meal recipes and add all ingredients to your grocery cart in one click. Works with HEB, Walmart, Kroger, and more.',
+  openGraph: {
+    type:        'website',
+    siteName:    'Mealio',
+    title:       'Mealio',
+    description: 'Save meal recipes and add all ingredients to your grocery cart in one click.',
+    url:         '/',
+  },
+  twitter: {
+    card:        'summary_large_image',
+    title:       'Mealio',
+    description: 'Save meal recipes and add all ingredients to your grocery cart in one click.',
+  },
+  appleWebApp: {
+    capable:         true,
+    statusBarStyle:  'default',
+    title:           'Mealio',
+  },
+  formatDetection: { telephone: false },
 }
 
 export default function RootLayout({
@@ -22,7 +53,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={pacifico.variable}>
+      <body className={`${pacifico.variable} ${dmSans.variable}`}>
         {children}
         <Analytics />
       </body>

@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
     mode: 'subscription',
     line_items: [{ price: priceId, quantity: 1 }],
     metadata: { user_id: decoded.userId },
-    success_url: `${APP_URL}/dashboard?subscribed=1`,
+    success_url: `${APP_URL}/discover?subscribed=1`,
     cancel_url: `${APP_URL}/pricing`,
     allow_promotion_codes: true,
   };

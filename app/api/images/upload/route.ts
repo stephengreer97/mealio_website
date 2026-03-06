@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
     .upload(path, buffer, { contentType: mimeType, upsert: false });
 
   if (uploadError) {
-    console.error('Image upload error:', uploadError);
+    log({ event: 'IMAGE:UPLOAD', status: 'error', userId: decoded.userId, error: uploadError });
     return NextResponse.json({ error: uploadError.message }, { status: 500 });
   }
 

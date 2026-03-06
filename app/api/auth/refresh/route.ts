@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
     log({ event: 'AUTH:REFRESH', status: 'success', email: profile.email, userId, ip });
     return NextResponse.json({ success: true, accessToken, refreshToken: newRefreshToken, expiresIn: 3600 });
   } catch (error) {
-    console.error('Refresh error:', error);
+    log({ event: 'AUTH:REFRESH', status: 'error', ip: 'unknown', error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

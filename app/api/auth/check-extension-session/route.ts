@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
-import { createAccessToken, createRefreshToken } from '@/lib/tokens';
+import { createAccessToken } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
 /**
@@ -11,11 +11,10 @@ import { log } from '@/lib/logger';
  * If not logged in yet, returns success: false.
  */
 export async function GET(request: NextRequest) {
+  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
   try {
     // Get session cookie
     const sessionCookie = request.cookies.get('mealio_session');
-    
-    const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
 
     if (!sessionCookie) {
       // Not logged in yet - extension should keep polling
@@ -41,21 +40,11 @@ export async function GET(request: NextRequest) {
 
     const { userId, email } = sessionData;
 
-    // Create tokens for extension
+    // Create access token for extension
     const accessToken = await createAccessToken(userId, email);
-    const { token: refreshToken, tokenHash, expiresAt } = await createRefreshToken(userId);
-
-    // Store refresh token in database
-    const supabase = createServerSupabaseClient();
-    await supabase.from('refresh_tokens').insert({
-      user_id: userId,
-      token_hash: tokenHash,
-      expires_at: expiresAt.toISOString(),
-      user_agent: request.headers.get('user-agent') || 'extension',
-      ip_address: request.headers.get('x-forwarded-for') || 'unknown'
-    });
 
     // Get user profile
+    const supabase = createServerSupabaseClient();
     const { data: profile } = await supabase
       .from('user_profiles')
       .select('*')
@@ -68,8 +57,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       accessToken,
-      refreshToken,
-      expiresIn: 3600,
       user: {
         id: userId,
         email,
@@ -80,8 +67,8 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Session check error:', error);
-    return NextResponse.json({ 
+    log({ event: 'AUTH:POLL', status: 'error', ip, error });
+    return NextResponse.json({
       success: false,
       message: 'Internal error'
     }, { status: 500 });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
-import { createAccessToken, createRefreshToken } from '@/lib/tokens';
+import { createAccessToken } from '@/lib/tokens';
 import { SignJWT, decodeJwt } from 'jose';
 import { log } from '@/lib/logger';
 
@@ -52,17 +52,8 @@ export async function POST(request: NextRequest) {
     const userId = supabaseUser.id;
     const email = supabaseUser.email!;
 
-    // Create our custom JWT tokens
+    // Create our custom JWT access token
     const accessToken = await createAccessToken(userId, email);
-    const { token: refreshToken, tokenHash, expiresAt } = await createRefreshToken(userId);
-
-    await supabase.from('refresh_tokens').insert({
-      user_id: userId,
-      token_hash: tokenHash,
-      expires_at: expiresAt.toISOString(),
-      user_agent: request.headers.get('user-agent') || 'unknown',
-      ip_address: ip,
-    });
 
     // Upsert user_profiles — the Supabase trigger may or may not have created
     // the row when signUp() ran, so we handle both cases with upsert.
@@ -84,8 +75,6 @@ export async function POST(request: NextRequest) {
       success: true,
       user: { id: userId, email },
       accessToken,
-      refreshToken,
-      expiresIn: 3600,
     });
 
     response.cookies.set('mealio_session', sessionToken, {
@@ -98,8 +87,7 @@ export async function POST(request: NextRequest) {
 
     return response;
   } catch (error) {
-    console.error('Complete verification error:', error);
-    log({ event: 'AUTH:VERIFY_EMAIL', status: 'failed', ip: 'unknown', reason: String(error) });
+    log({ event: 'AUTH:VERIFY_EMAIL', status: 'error', ip: 'unknown', error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

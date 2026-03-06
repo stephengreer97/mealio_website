@@ -3,6 +3,7 @@ import { createAnonSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
+  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
   try {
     const { email, password, firstName, lastName } = await request.json();
 
@@ -17,8 +18,6 @@ export async function POST(request: NextRequest) {
     if (password.length < 8) {
       return NextResponse.json({ error: 'Password must be 8+ characters' }, { status: 400 });
     }
-
-    const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
 
     // Use the anon client so Supabase respects its email confirmation settings
     // and sends a verification email. The service role client would bypass this.
@@ -44,6 +43,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: authError?.message || 'Failed to create user' }, { status: 400 });
     }
 
+    // Supabase returns a user with an empty identities array when the email
+    // is already registered (instead of returning an error, to avoid leaking info).
+    if (authData.user.identities?.length === 0) {
+      log({ event: 'AUTH:REGISTER', status: 'failed', email, ip, reason: 'email already registered' });
+      return NextResponse.json({ error: 'An account with this email already exists' }, { status: 400 });
+    }
+
     // Do NOT issue tokens or set a session cookie yet — the user must verify
     // their email first. complete-verification/route.ts handles that step.
     log({ event: 'AUTH:REGISTER', status: 'pending', email, ip });
@@ -54,7 +60,7 @@ export async function POST(request: NextRequest) {
       message: 'Check your email to complete signup',
     });
   } catch (error) {
-    console.error('Registration error:', error);
+    log({ event: 'AUTH:REGISTER', status: 'error', ip, error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

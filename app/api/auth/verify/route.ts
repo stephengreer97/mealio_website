@@ -4,8 +4,8 @@ import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
 export async function GET(request: NextRequest) {
+  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
   try {
-    const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const token = extractTokenFromHeader(request.headers.get('authorization'));
     if (!token) {
       log({ event: 'AUTH:VERIFY', status: 'failed', ip, reason: 'no token' });
@@ -33,12 +33,13 @@ export async function GET(request: NextRequest) {
         id: userId,
         email,
         tier: profile.subscription_tier ?? 'free',
+        isAdmin: profile.is_admin ?? false,
         createdAt: profile.created_at,
         lastLoginAt: profile.last_login_at
       }
     });
   } catch (error) {
-    console.error('Verify error:', error);
+    log({ event: 'AUTH:VERIFY', status: 'error', ip, error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
