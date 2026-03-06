@@ -35,7 +35,6 @@ export default function Home() {
   }, [otpResendCooldown]);
 
   useEffect(() => {
-    // Check if already logged in
     const accessToken = localStorage.getItem('accessToken');
     if (accessToken) {
       const params = new URLSearchParams(window.location.search);
@@ -61,25 +60,17 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
-      if (response.ok) {
-        setResendStatus('sent');
-        setResendCooldown(60);
-      } else {
-        setResendStatus('error');
-      }
-    } catch {
-      setResendStatus('error');
-    }
+      if (response.ok) { setResendStatus('sent'); setResendCooldown(60); }
+      else setResendStatus('error');
+    } catch { setResendStatus('error'); }
   };
 
   const getPostLoginRedirect = () => {
-    // If user came from a share link via "Create Account" button
     const pendingToken = localStorage.getItem('pendingShareToken');
     if (pendingToken) {
       localStorage.removeItem('pendingShareToken');
       return `/meal/${pendingToken}?autoSave=1`;
     }
-    // If a redirect URL was passed as a query param (e.g. from the share page)
     const params = new URLSearchParams(window.location.search);
     const redirect = params.get('redirect');
     if (redirect && redirect.startsWith('/')) return redirect;
@@ -87,40 +78,18 @@ export default function Home() {
   };
 
   const notifyExtension = (authData: any) => {
-    // Try to notify the extension about successful login
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chromeExt = (globalThis as any).chrome;
     if (chromeExt && chromeExt.runtime && chromeExt.runtime.sendMessage) {
       try {
-        // Get extension ID from localStorage or environment variable
-        // User can set this in their browser console: localStorage.setItem('mealioExtensionId', 'YOUR_EXTENSION_ID')
         const extensionId = localStorage.getItem('mealioExtensionId') ||
                            process.env.NEXT_PUBLIC_EXTENSION_ID ||
                            'YOUR_EXTENSION_ID_HERE';
-
-        if (extensionId === 'YOUR_EXTENSION_ID_HERE') {
-          console.log('ℹ️  Extension ID not configured. Set it with: localStorage.setItem("mealioExtensionId", "YOUR_ID")');
-          return;
-        }
-
-        // When calling from a webpage, must provide extension ID as first argument
-        chromeExt.runtime.sendMessage(
-          extensionId,
-          {
-            action: 'loginSuccess',
-            data: authData
-          },
-          (response: any) => {
-            if (chromeExt.runtime.lastError) {
-              console.log('Extension not installed or not responding:', chromeExt.runtime.lastError.message);
-            } else {
-              console.log('✅ Extension notified of login');
-            }
-          }
-        );
-      } catch (error) {
-        console.log('Could not notify extension:', error);
-      }
+        if (extensionId === 'YOUR_EXTENSION_ID_HERE') return;
+        chromeExt.runtime.sendMessage(extensionId, { action: 'loginSuccess', data: authData }, (response: any) => {
+          if (chromeExt.runtime.lastError) console.log('Extension not responding:', chromeExt.runtime.lastError.message);
+        });
+      } catch {}
     }
   };
 
@@ -146,14 +115,12 @@ export default function Home() {
 
       const data = await response.json();
 
-      // Signup: redirect to check-email page
       if (activeTab === 'signup' && data.requiresVerification) {
         navigating = true;
         router.push(`/check-email?email=${encodeURIComponent(email)}`);
         return;
       }
 
-      // Login blocked because email isn't verified yet
       if (!response.ok && data.requiresVerification) {
         setNeedsVerification(true);
         setResendCooldown(60);
@@ -161,7 +128,6 @@ export default function Home() {
         return;
       }
 
-      // 2FA required
       if (response.ok && data.requiresTwoFactor) {
         setTwoFactorToken(data.twoFactorToken);
         setNeedsTwoFactor(true);
@@ -183,8 +149,6 @@ export default function Home() {
     } catch (err: any) {
       setError(err.message);
     } finally {
-      // Only re-enable the button on error — on success the page navigates away,
-      // so leaving loading=true prevents a second click during the transition.
       if (!navigating) setLoading(false);
     }
   };
@@ -227,26 +191,20 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ twoFactorToken }),
       });
-      if (res.ok) {
-        setOtpResendStatus('sent');
-        setOtpResendCooldown(60);
-        setOtpCode('');
-      } else {
-        setOtpResendStatus('error');
-      }
-    } catch {
-      setOtpResendStatus('error');
-    }
+      if (res.ok) { setOtpResendStatus('sent'); setOtpResendCooldown(60); setOtpCode(''); }
+      else setOtpResendStatus('error');
+    } catch { setOtpResendStatus('error'); }
   };
 
+  // ── 2FA screen ─────────────────────────────────────────────────────────────
   if (needsTwoFactor) {
     return (
-      <div className="min-h-screen bg-wk-bg flex items-center justify-center px-4">
-        <div className="bg-wk-card rounded-2xl p-8 w-full max-w-sm" style={{ boxShadow: 'var(--wk-shadow-md)', border: '1px solid var(--wk-border)' }}>
-          <div style={{ fontFamily: 'var(--font-pacifico), cursive', color: 'var(--wk-red)', fontSize: '28px', marginBottom: '24px' }}>Mealio</div>
-          <h2 className="text-xl font-bold text-wk-text mb-2">Check your email</h2>
-          <p className="text-sm text-wk-text2 mb-6">
-            We sent a 6-digit code to <strong>{email}</strong>. It expires in 10 minutes.
+      <div className="min-h-screen flex items-center justify-center px-4" style={{ background: 'var(--bg)' }}>
+        <div className="w-full max-w-sm rounded-2xl p-8" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border)' }}>
+          <div style={{ fontFamily: 'var(--font-pacifico), cursive', color: 'var(--brand)', fontSize: '26px', marginBottom: '24px', lineHeight: 1 }}>Mealio</div>
+          <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--text-1)' }}>Check your email</h2>
+          <p className="text-sm mb-6 leading-relaxed" style={{ color: 'var(--text-2)' }}>
+            We sent a 6-digit code to <strong style={{ color: 'var(--text-1)' }}>{email}</strong>. It expires in 10 minutes.
           </p>
           <form onSubmit={handleOtpSubmit} className="space-y-4">
             <input
@@ -259,44 +217,58 @@ export default function Home() {
               placeholder="000000"
               required
               autoFocus
-              className="w-full px-4 py-3 text-center text-2xl font-bold tracking-widest rounded-lg focus:outline-none"
-              style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }}
+              className="w-full px-4 py-3 text-center text-2xl font-bold tracking-widest rounded-xl focus:outline-none transition-colors"
+              style={{
+                border: '1.5px solid var(--border)',
+                background: 'var(--surface)',
+                color: 'var(--text-1)',
+                fontFamily: 'var(--font-mono, monospace)',
+                letterSpacing: '0.25em',
+              }}
+              onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+              onBlur={e => (e.target.style.borderColor = 'var(--border)')}
             />
-            <label className="flex items-center gap-2 cursor-pointer select-none">
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={rememberDevice}
                 onChange={e => setRememberDevice(e.target.checked)}
-                className="w-4 h-4 rounded accent-wk-red"
+                className="w-4 h-4 rounded"
+                style={{ accentColor: 'var(--brand)' }}
               />
-              <span className="text-sm text-wk-text2">Remember this device for 30 days</span>
+              <span className="text-sm" style={{ color: 'var(--text-2)' }}>Remember this device for 30 days</span>
             </label>
             {error && (
-              <div className="px-4 py-3 rounded-lg text-sm" style={{ background: 'var(--wk-red-bg)', border: '1px solid #fecdd3', color: '#9f1239' }}>
+              <div className="px-4 py-3 rounded-xl text-sm" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)', color: '#9f1239' }}>
                 {error}
               </div>
             )}
             <button
               type="submit"
               disabled={loading || otpCode.length < 6}
-              className="w-full text-white py-3 rounded-lg font-semibold disabled:opacity-50 transition-opacity"
-              style={{ background: 'var(--wk-red)' }}
+              className="w-full text-white py-3 rounded-xl font-semibold disabled:opacity-50 transition-colors"
+              style={{ background: 'var(--brand)' }}
+              onMouseEnter={e => { if (!loading && otpCode.length >= 6) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'; }}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
               {loading ? 'Verifying…' : 'Verify'}
             </button>
           </form>
           <div className="mt-4 text-center">
             {otpResendStatus === 'sent' && (
-              <p className="text-sm text-green-700 mb-1">New code sent!</p>
+              <p className="text-sm mb-1" style={{ color: 'var(--success)' }}>New code sent!</p>
             )}
             {otpResendStatus === 'error' && (
-              <p className="text-sm mb-1" style={{ color: 'var(--wk-red)' }}>Failed to resend. Try again.</p>
+              <p className="text-sm mb-1" style={{ color: 'var(--brand)' }}>Failed to resend. Try again.</p>
             )}
             <button
               type="button"
               onClick={handleOtpResend}
               disabled={otpResendStatus === 'sending' || otpResendCooldown > 0}
-              className="text-sm text-wk-text3 hover:text-wk-text2 disabled:opacity-50 transition-colors"
+              className="text-sm disabled:opacity-50 transition-colors"
+              style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
             >
               {otpResendStatus === 'sending'
                 ? 'Sending…'
@@ -310,144 +282,159 @@ export default function Home() {
     );
   }
 
+  // ── Main landing ───────────────────────────────────────────────────────────
+  const inputStyle = {
+    border: '1.5px solid var(--border)',
+    background: 'var(--surface)',
+    color: 'var(--text-1)',
+    width: '100%',
+    padding: '10px 14px',
+    borderRadius: '10px',
+    fontSize: '14px',
+    outline: 'none',
+    transition: 'border-color 0.15s',
+  };
+
+  const FEATURES = [
+    { text: 'Works with 36 major grocery retailers' },
+    { text: 'One-click add entire meals to your cart' },
+    { text: 'Save and reuse your favorite recipes' },
+    { text: 'Discover meals from your favorite creators' },
+  ];
+
   return (
-    <div className="min-h-screen bg-wk-bg">
-      <header style={{ background: 'var(--wk-card)', borderBottom: '1px solid var(--wk-border)' }}>
+    <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
+      {/* Header */}
+      <header style={{ background: 'var(--surface-raised)', borderBottom: '1px solid var(--border)' }}>
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-3">
-          <div style={{ fontFamily: 'var(--font-pacifico), cursive', lineHeight: 1, letterSpacing: '0.5px' }}>
-            <span style={{ fontSize: '42px', lineHeight: '0.85', display: 'inline-block', verticalAlign: 'middle', textShadow: '2px 3px 0px rgba(0,0,0,0.10)', color: 'var(--wk-red)' }}>M</span>
-            <span style={{ fontSize: '32px', textShadow: '1px 2px 0px rgba(0,0,0,0.08)', color: 'var(--wk-red)' }}>ealio</span>
+          <div style={{ fontFamily: 'var(--font-pacifico), cursive', lineHeight: 1 }}>
+            <span style={{ fontSize: '38px', lineHeight: '0.9', display: 'inline-block', verticalAlign: 'middle', color: 'var(--brand)' }}>M</span>
+            <span style={{ fontSize: '28px', color: 'var(--brand)' }}>ealio</span>
           </div>
         </div>
       </header>
 
-      <div className="max-w-6xl mx-auto px-6 py-16">
-        <div className="grid md:grid-cols-2 gap-16 items-center">
+      <div className="max-w-6xl mx-auto px-6 py-12 md:py-20">
+        <div className="grid md:grid-cols-2 gap-12 lg:gap-20 items-center">
+          {/* Hero left */}
           <div>
-            <h2 className="text-5xl font-bold text-wk-text mb-6 leading-tight">
-              Shop meals,<br />we'll fill the cart
-            </h2>
-            <p className="text-lg text-wk-text2 mb-8 leading-relaxed">
+            <h1 className="text-5xl font-bold mb-5 leading-tight" style={{ color: 'var(--text-1)', letterSpacing: '-0.02em' }}>
+              Shop meals,<br />
+              <span style={{ color: 'var(--brand)' }}>we'll fill</span> the cart
+            </h1>
+            <p className="text-lg mb-8 leading-relaxed" style={{ color: 'var(--text-2)' }}>
               Automatically add meal ingredients to your cart at all major grocery retailers.
             </p>
             <div className="flex flex-col gap-3">
-              {[
-                'Works with 36 major grocery retailers',
-                'One-click add entire meals to your cart',
-                'Save and reuse your favorite recipes',
-                'Discover meals from your favorite creators',
-              ].map(feat => (
-                <div key={feat} className="flex items-center gap-3">
-                  <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--wk-red-bg)', border: '1px solid #fecdd3' }}>
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4" stroke="#dd0031" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              {FEATURES.map(feat => (
+                <div key={feat.text} className="flex items-center gap-3">
+                  <div
+                    className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)' }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                      <path d="M2 5l2 2 4-4" stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
                   </div>
-                  <span className="text-sm text-wk-text2">{feat}</span>
+                  <span className="text-sm" style={{ color: 'var(--text-2)' }}>{feat.text}</span>
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="rounded-2xl p-8" style={{ background: 'var(--wk-card)', boxShadow: 'var(--wk-shadow-md)', border: '1px solid var(--wk-border)' }}>
-            <div className="flex gap-2 mb-6 p-1 rounded-xl" style={{ background: 'var(--wk-surface)' }}>
-              <button
-                onClick={() => handleTabChange('login')}
-                className="flex-1 py-2 text-sm font-semibold rounded-lg transition-all"
-                style={activeTab === 'login'
-                  ? { background: 'var(--wk-card)', color: 'var(--wk-text)', boxShadow: 'var(--wk-shadow)' }
-                  : { background: 'transparent', color: 'var(--wk-text2)' }}
-              >
-                Log In
-              </button>
-              <button
-                onClick={() => handleTabChange('signup')}
-                className="flex-1 py-2 text-sm font-semibold rounded-lg transition-all"
-                style={activeTab === 'signup'
-                  ? { background: 'var(--wk-card)', color: 'var(--wk-text)', boxShadow: 'var(--wk-shadow)' }
-                  : { background: 'transparent', color: 'var(--wk-text2)' }}
-              >
-                Sign Up
-              </button>
+          {/* Auth card right */}
+          <div className="rounded-2xl p-7" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border)' }}>
+            {/* Tab switcher */}
+            <div className="flex gap-1 mb-6 p-1 rounded-xl" style={{ background: 'var(--surface)' }}>
+              {(['login', 'signup'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => handleTabChange(tab)}
+                  className="flex-1 py-2 text-sm font-semibold rounded-lg transition-all"
+                  style={activeTab === tab
+                    ? { background: 'var(--surface-raised)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)' }
+                    : { background: 'transparent', color: 'var(--text-3)', border: 'none' }}
+                >
+                  {tab === 'login' ? 'Log In' : 'Sign Up'}
+                </button>
+              ))}
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
               {activeTab === 'signup' && (
                 <div className="flex gap-3">
-                  <div className="flex-1">
-                    <label className="block text-xs font-semibold text-wk-text2 mb-1.5">First Name</label>
-                    <input
-                      type="text"
-                      value={firstName}
-                      onChange={(e) => setFirstName(e.target.value)}
-                      required
-                      className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none transition-colors"
-                      style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }}
-                      placeholder="Jane"
-                    />
-                  </div>
-                  <div className="flex-1">
-                    <label className="block text-xs font-semibold text-wk-text2 mb-1.5">Last Name</label>
-                    <input
-                      type="text"
-                      value={lastName}
-                      onChange={(e) => setLastName(e.target.value)}
-                      required
-                      className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none transition-colors"
-                      style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }}
-                      placeholder="Doe"
-                    />
-                  </div>
+                  {[
+                    { label: 'First Name', value: firstName, onChange: setFirstName, placeholder: 'Jane' },
+                    { label: 'Last Name',  value: lastName,  onChange: setLastName,  placeholder: 'Doe' },
+                  ].map(f => (
+                    <div key={f.label} className="flex-1">
+                      <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>{f.label}</label>
+                      <input
+                        type="text"
+                        value={f.value}
+                        onChange={e => f.onChange(e.target.value)}
+                        required
+                        style={inputStyle}
+                        placeholder={f.placeholder}
+                        onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                        onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                      />
+                    </div>
+                  ))}
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-semibold text-wk-text2 mb-1.5">Email</label>
+                <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>Email</label>
                 <input
                   type="email"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={e => setEmail(e.target.value)}
                   required
-                  className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none transition-colors"
-                  style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }}
+                  style={inputStyle}
                   placeholder="you@example.com"
+                  onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                  onBlur={e => (e.target.style.borderColor = 'var(--border)')}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-wk-text2 mb-1.5">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  minLength={8}
-                  className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none transition-colors"
-                  style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }}
-                  placeholder="••••••••"
-                />
-                {activeTab === 'signup' && (
-                  <p className="text-xs text-wk-text3 mt-1">At least 8 characters</p>
-                )}
-                {activeTab === 'login' && (
-                  <div className="text-right mt-1">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold" style={{ color: 'var(--text-2)' }}>Password</label>
+                  {activeTab === 'login' && (
                     <button
                       type="button"
                       onClick={() => router.push('/forgot-password')}
                       className="text-xs font-medium transition-colors"
-                      style={{ color: 'var(--wk-red)' }}
+                      style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer' }}
                     >
                       Forgot password?
                     </button>
-                  </div>
+                  )}
+                </div>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  minLength={8}
+                  style={inputStyle}
+                  placeholder="••••••••"
+                  onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                  onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                />
+                {activeTab === 'signup' && (
+                  <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>At least 8 characters</p>
                 )}
               </div>
 
               {error && (
-                <div className="px-4 py-3 rounded-lg text-sm" style={{ background: 'var(--wk-red-bg)', border: '1px solid #fecdd3', color: '#9f1239' }}>
+                <div className="px-4 py-3 rounded-xl text-sm" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)', color: '#9f1239' }}>
                   <p>{error}</p>
                   {needsVerification && (
                     <div className="mt-2">
                       {resendStatus === 'sent' && (
-                        <p className="text-green-700 font-medium">Verification email sent! Check your inbox.</p>
+                        <p style={{ color: 'var(--success)' }} className="font-medium">Verification email sent! Check your inbox.</p>
                       )}
                       <button
                         type="button"
@@ -461,9 +448,7 @@ export default function Home() {
                             ? `Resend in ${resendCooldown}s`
                             : 'Resend verification email'}
                       </button>
-                      {resendStatus === 'error' && (
-                        <p className="mt-1">Failed to resend. Please try again.</p>
-                      )}
+                      {resendStatus === 'error' && <p className="mt-1">Failed to resend. Please try again.</p>}
                     </div>
                   )}
                 </div>
@@ -472,18 +457,20 @@ export default function Home() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full text-white py-3 rounded-lg text-sm font-semibold disabled:opacity-50 transition-opacity"
-                style={{ background: 'var(--wk-red)' }}
+                className="w-full text-white py-3 rounded-xl text-sm font-semibold disabled:opacity-50 transition-colors"
+                style={{ background: 'var(--brand)' }}
+                onMouseEnter={e => { if (!loading) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'; }}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
               >
-                {loading ? 'Loading...' : activeTab === 'login' ? 'Log In' : 'Create Account'}
+                {loading ? 'Loading…' : activeTab === 'login' ? 'Log In' : 'Create Account'}
               </button>
 
               {activeTab === 'signup' && (
-                <p className="text-xs text-center text-wk-text3 mt-3">
+                <p className="text-xs text-center mt-3" style={{ color: 'var(--text-3)' }}>
                   By creating an account, you agree to our{' '}
-                  <a href="/terms" className="underline hover:text-wk-text2">Terms and Conditions</a>
+                  <a href="/terms" className="underline" style={{ color: 'var(--text-2)' }}>Terms</a>
                   {' '}and{' '}
-                  <a href="/privacy" className="underline hover:text-wk-text2">Privacy Policy</a>.
+                  <a href="/privacy" className="underline" style={{ color: 'var(--text-2)' }}>Privacy Policy</a>.
                 </p>
               )}
             </form>
@@ -491,16 +478,20 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="text-center py-8 text-xs text-wk-text3 space-x-3">
-        <a href="/about" className="hover:text-wk-text2 transition-colors">About</a>
-        <span style={{ color: 'var(--wk-border)' }}>·</span>
-        <a href="/help" className="hover:text-wk-text2 transition-colors">Help</a>
-        <span style={{ color: 'var(--wk-border)' }}>·</span>
-        <a href="/terms" className="hover:text-wk-text2 transition-colors">Terms</a>
-        <span style={{ color: 'var(--wk-border)' }}>·</span>
-        <a href="/privacy" className="hover:text-wk-text2 transition-colors">Privacy Policy</a>
-        <span style={{ color: 'var(--wk-border)' }}>·</span>
-        <a href="mailto:contact@mealio.co" className="hover:text-wk-text2 transition-colors">Contact</a>
+      {/* Footer links */}
+      <div className="text-center py-8 flex items-center justify-center gap-4 flex-wrap">
+        {['About', 'Help', 'Terms', 'Privacy Policy', 'Contact'].map((link, i) => (
+          <a
+            key={link}
+            href={link === 'Contact' ? 'mailto:contact@mealio.co' : `/${link.toLowerCase().replace(' ', '-')}`}
+            className="text-xs transition-colors"
+            style={{ color: 'var(--text-3)', textDecoration: 'none' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
+          >
+            {link}
+          </a>
+        ))}
       </div>
     </div>
   );

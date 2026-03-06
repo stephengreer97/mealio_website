@@ -3,22 +3,26 @@
 @tailwind utilities;
 
 :root {
-  --wk-bg:       #f6f1eb;
-  --wk-card:     #ffffff;
-  --wk-surface:  #ede7df;
-  --wk-border:   #e2d8ce;
-  --wk-text:     #1d1a16;
-  --wk-text2:    #6a5f54;
-  --wk-text3:    #a8998b;
-  --wk-red:      #dd0031;
-  --wk-red-dk:   #b5002a;
-  --wk-red-bg:   #fff0f2;
-  --wk-shadow:   0 1px 3px rgba(28,24,18,.07), 0 1px 2px rgba(28,24,18,.05);
-  --wk-shadow-md:0 6px 20px rgba(28,24,18,.10), 0 1px 4px rgba(28,24,18,.06);
+  --brand:           #E8390E;
+  --brand-dark:      #C4300C;
+  --brand-light:     #FFF2EE;
+  --brand-border:    #FCCAB8;
+  --bg:              #FAFAF9;
+  --surface:         #F4F3F1;
+  --surface-raised:  #FFFFFF;
+  --border:          #E8E6E2;
+  --border-strong:   #D1CEC8;
+  --text-1:          #18181B;
+  --text-2:          #52525B;
+  --text-3:          #A1A1AA;
+  --success:         #16A34A;
+  --error:           #DC2626;
+  --shadow-sm:       0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md:       0 6px 24px rgba(0,0,0,0.09), 0 1px 4px rgba(0,0,0,0.05);
 }
 
 html, body {
-  font-family: var(--font-dm-sans, 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif);
-  background-color: var(--wk-bg);
-  color: var(--wk-text);
+  font-family: var(--font-inter, 'Inter', -apple-system, BlinkMacSystemFont, sans-serif);
+  background-color: var(--bg);
+  color: var(--text-1);
 }

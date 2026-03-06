@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Pacifico, DM_Sans } from 'next/font/google'
+import { Pacifico, Inter, JetBrains_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
@@ -10,10 +10,15 @@ const pacifico = Pacifico({
   display: 'swap',
 })
 
-const dmSans = DM_Sans({
+const inter = Inter({
   subsets: ['latin'],
-  axes: ['opsz'],
-  variable: '--font-dm-sans',
+  variable: '--font-inter',
+  display: 'swap',
+})
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
   display: 'swap',
 })
 
@@ -53,7 +58,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${pacifico.variable} ${dmSans.variable}`}>
+      <body className={`${pacifico.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
         {children}
         <Analytics />
       </body>

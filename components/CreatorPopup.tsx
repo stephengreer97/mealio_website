@@ -41,11 +41,24 @@ interface Props {
   onMealAdd?: (meal: FullPresetMeal) => void;
 }
 
+function getInitials(name: string) {
+  return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
+}
+
 function DifficultyDots({ level }: { level: number }) {
   return (
-    <span className="flex gap-0.5">
+    <span className="flex gap-1 items-center">
       {[1, 2, 3, 4, 5].map(i => (
-        <span key={i} className="text-xs" style={{ color: i <= level ? 'var(--wk-red)' : 'var(--wk-border)' }}>●</span>
+        <span
+          key={i}
+          style={{
+            display: 'inline-block',
+            width: '6px',
+            height: '6px',
+            borderRadius: '50%',
+            background: i <= level ? 'var(--brand)' : 'var(--border)',
+          }}
+        />
       ))}
     </span>
   );
@@ -66,21 +79,31 @@ function MealDetailOverlay({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center sm:p-4"
-      style={{ background: 'rgba(0,0,0,0.5)' }}
+      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={onClose}
     >
       <div
         className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"
-        style={{ background: 'var(--wk-card)', border: '1px solid var(--wk-border)', maxHeight: '90vh' }}
+        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh', boxShadow: 'var(--shadow-md)' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between p-5 pb-4" style={{ borderBottom: '1px solid var(--wk-border)' }}>
+        <div className="flex items-start justify-between p-5 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div className="min-w-0 pr-3">
-            <h2 className="text-base font-bold text-wk-text leading-tight">{meal.name}</h2>
-            {authorName && <p className="text-xs mt-0.5" style={{ color: 'var(--wk-red)' }}>by {authorName}</p>}
+            <h2 className="text-base font-bold leading-tight" style={{ color: 'var(--text-1)' }}>{meal.name}</h2>
+            {authorName && <p className="text-xs mt-0.5 font-medium" style={{ color: 'var(--brand)' }}>by {authorName}</p>}
           </div>
-          <button onClick={onClose} className="flex-shrink-0 text-wk-text3 hover:text-wk-text text-xl leading-none">✕</button>
+          <button
+            onClick={onClose}
+            className="flex-shrink-0 transition-colors"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '2px' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
 
         {/* Body */}
@@ -91,14 +114,15 @@ function MealDetailOverlay({
 
           <div className="flex items-center gap-4 flex-wrap">
             {meal.difficulty != null && (
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-wk-text3">Difficulty:</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>Difficulty</span>
                 <DifficultyDots level={meal.difficulty} />
               </div>
             )}
             {sourceHost && (
               <a href={meal.source!} target="_blank" rel="noopener noreferrer"
-                className="text-xs flex items-center gap-1 hover:underline" style={{ color: 'var(--wk-text3)' }}>
+                className="text-xs flex items-center gap-1 hover:underline"
+                style={{ color: 'var(--text-3)' }}>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
                 </svg>
@@ -110,7 +134,8 @@ function MealDetailOverlay({
           {meal.tags && meal.tags.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               {meal.tags.map(tag => (
-                <span key={tag} className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--wk-surface)', border: '1px solid var(--wk-border)', color: 'var(--wk-text2)' }}>
+                <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                   {tag}
                 </span>
               ))}
@@ -118,12 +143,12 @@ function MealDetailOverlay({
           )}
 
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide mb-2.5" style={{ color: 'var(--wk-text3)' }}>Ingredients</p>
-            <ul className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Ingredients</p>
+            <ul className="space-y-1.5">
               {meal.ingredients.map((ing, i) => (
-                <li key={i} className="flex items-center justify-between gap-4" style={{ borderBottom: '1px solid var(--wk-border)', paddingBottom: '6px' }}>
-                  <span className="text-sm text-wk-text">{ing.productName}</span>
-                  <span className="text-xs font-medium text-wk-text3 flex-shrink-0">×{ing.quantity ?? 1}</span>
+                <li key={i} className="flex items-center justify-between gap-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span className="text-sm" style={{ color: 'var(--text-1)' }}>{ing.productName}</span>
+                  <span className="text-xs font-medium flex-shrink-0" style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono, monospace)' }}>×{ing.quantity ?? 1}</span>
                 </li>
               ))}
             </ul>
@@ -131,23 +156,23 @@ function MealDetailOverlay({
 
           {meal.recipe && (
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide mb-2.5" style={{ color: 'var(--wk-text3)' }}>Recipe</p>
-              <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--wk-text2)' }}>{meal.recipe}</p>
+              <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Recipe</p>
+              <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.recipe}</p>
             </div>
           )}
         </div>
 
         {/* Footer */}
         {onAdd && (
-          <div className="p-4" style={{ borderTop: '1px solid var(--wk-border)' }}>
+          <div className="p-4" style={{ borderTop: '1px solid var(--border)' }}>
             <button
               onClick={onAdd}
-              className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
-              style={{ background: 'var(--wk-red)', border: 'none', color: '#fff' }}
-              onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+              className="w-full px-4 py-2.5 text-sm font-semibold rounded-xl transition-colors"
+              style={{ background: 'var(--brand)', border: 'none', color: '#fff' }}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
-              + Add to My Meals
+              Add to My Meals
             </button>
           </div>
         )}
@@ -189,12 +214,8 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
         }
         setFollowing(followData.following ?? false);
       })
-      .catch(() => {
-        if (!cancelled) setError('Failed to load creator.');
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingData(false);
-      });
+      .catch(() => { if (!cancelled) setError('Failed to load creator.'); })
+      .finally(() => { if (!cancelled) setLoadingData(false); });
 
     return () => { cancelled = true; };
   }, [creatorId, token]);
@@ -226,9 +247,7 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
       const res = await fetch(`/api/preset-meals/${mealId}`);
       const data = await res.json();
       if (data.meal) setSelectedMeal(data.meal);
-    } catch {
-      // silently ignore
-    } finally {
+    } catch {} finally {
       setLoadingMeal(false);
     }
   };
@@ -237,50 +256,65 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
     <>
       <div
         className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4"
-        style={{ background: 'rgba(0,0,0,0.5)' }}
+        style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
         onClick={onClose}
       >
         <div
           className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"
-          style={{ background: 'var(--wk-card)', border: '1px solid var(--wk-border)', maxHeight: '85vh' }}
+          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '85vh', boxShadow: 'var(--shadow-md)' }}
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--wk-border)' }}>
-            <h2 className="text-sm font-bold text-wk-text">Creator</h2>
-            <button onClick={onClose} className="text-wk-text3 hover:text-wk-text text-xl leading-none transition-colors">✕</button>
+          <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>Creator Profile</h2>
+            <button
+              onClick={onClose}
+              className="transition-colors"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '2px' }}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
           </div>
 
           {/* Body */}
           <div className="overflow-y-auto flex-1 p-5">
             {loadingData ? (
               <div className="flex justify-center py-12">
-                <div className="w-7 h-7 rounded-full animate-spin" style={{ border: '2px solid var(--wk-border)', borderTopColor: 'var(--wk-red)' }} />
+                <div className="w-7 h-7 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
               </div>
             ) : error ? (
-              <p className="text-sm text-center py-12" style={{ color: 'var(--wk-text3)' }}>{error}</p>
+              <p className="text-sm text-center py-12" style={{ color: 'var(--text-3)' }}>{error}</p>
             ) : creator ? (
               <div className="space-y-5">
                 {/* Creator profile */}
                 <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3 min-w-0">
+                  <div className="flex items-start gap-3.5 min-w-0">
                     {/* Avatar */}
-                    <div className="flex-shrink-0 rounded-full overflow-hidden" style={{ width: '52px', height: '52px', border: '1px solid var(--wk-border)', background: 'var(--wk-surface)' }}>
+                    <div
+                      className="flex-shrink-0 rounded-full overflow-hidden flex items-center justify-center"
+                      style={{ width: '52px', height: '52px', border: '1.5px solid var(--border)', background: 'var(--surface)' }}
+                    >
                       {creator.photo_url ? (
                         <img src={creator.photo_url} alt={creator.display_name} className="w-full h-full object-cover" />
                       ) : (
-                        <div className="w-full h-full flex items-center justify-center text-xl">👤</div>
+                        <span className="text-sm font-bold" style={{ color: 'var(--text-2)' }}>
+                          {getInitials(creator.display_name)}
+                        </span>
                       )}
                     </div>
                     <div className="min-w-0">
-                      <p className="text-base font-bold text-wk-text">{creator.display_name}</p>
+                      <p className="text-base font-bold" style={{ color: 'var(--text-1)' }}>{creator.display_name}</p>
                       {creator.social_handle && (
-                        <p className="text-xs mt-0.5" style={{ color: 'var(--wk-text3)' }}>@{creator.social_handle}</p>
+                        <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>@{creator.social_handle}</p>
                       )}
                       {creator.bio && (
-                        <p className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--wk-text2)' }}>{creator.bio}</p>
+                        <p className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--text-2)' }}>{creator.bio}</p>
                       )}
-                      <p className="text-xs mt-2" style={{ color: 'var(--wk-text3)' }}>
+                      <p className="text-xs mt-2" style={{ color: 'var(--text-3)' }}>
                         {followerCount} {followerCount === 1 ? 'follower' : 'followers'}
                       </p>
                     </div>
@@ -291,8 +325,14 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
                     disabled={followLoading}
                     className="flex-shrink-0 px-4 py-1.5 text-sm font-semibold rounded-xl transition-all disabled:opacity-60"
                     style={following
-                      ? { background: 'var(--wk-surface)', color: 'var(--wk-text2)', border: '1px solid var(--wk-border)' }
-                      : { background: 'var(--wk-red)', color: '#fff', border: 'none' }}
+                      ? { background: 'var(--surface)', color: 'var(--text-2)', border: '1.5px solid var(--border)' }
+                      : { background: 'var(--brand)', color: '#fff', border: 'none' }}
+                    onMouseEnter={e => {
+                      if (!following) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)';
+                    }}
+                    onMouseLeave={e => {
+                      if (!following) (e.currentTarget as HTMLElement).style.background = 'var(--brand)';
+                    }}
                   >
                     {following ? 'Following' : 'Follow'}
                   </button>
@@ -301,41 +341,43 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
                 {/* Meals grid */}
                 {meals.length > 0 && (
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--wk-text3)' }}>
+                    <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                       Meals ({meals.length})
                     </p>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {meals.map(meal => (
                         <button
                           key={meal.id}
-                          className="rounded-xl overflow-hidden text-left transition-opacity"
-                          style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', cursor: 'pointer' }}
+                          className="rounded-xl overflow-hidden text-left transition-all"
+                          style={{ border: '1px solid var(--border)', background: 'var(--surface)', cursor: 'pointer' }}
                           onClick={() => openMeal(meal.id)}
                           disabled={loadingMeal}
-                          onMouseEnter={e => (e.currentTarget.style.opacity = '0.8')}
-                          onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)'; (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-sm)'; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'none'; (e.currentTarget as HTMLElement).style.boxShadow = 'none'; }}
                         >
                           {meal.photo_url ? (
                             <img src={meal.photo_url} alt={meal.name} className="w-full object-cover" style={{ height: '90px' }} />
                           ) : (
-                            <div className="flex items-center justify-center" style={{ height: '90px', background: 'var(--wk-surface)' }}>
-                              <span className="text-2xl">🍽️</span>
+                            <div className="flex items-center justify-center" style={{ height: '90px', background: 'var(--surface)' }}>
+                              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--border-strong)' }}>
+                                <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
+                              </svg>
                             </div>
                           )}
-                          <p className="text-xs font-medium px-2 py-1.5 leading-tight" style={{ color: 'var(--wk-text)' }}>{meal.name}</p>
+                          <p className="text-xs font-medium px-2.5 py-2 leading-tight" style={{ color: 'var(--text-1)' }}>{meal.name}</p>
                         </button>
                       ))}
                     </div>
                     {loadingMeal && (
                       <div className="flex justify-center pt-4">
-                        <div className="w-5 h-5 rounded-full animate-spin" style={{ border: '2px solid var(--wk-border)', borderTopColor: 'var(--wk-red)' }} />
+                        <div className="w-5 h-5 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
                       </div>
                     )}
                   </div>
                 )}
 
                 {meals.length === 0 && (
-                  <p className="text-sm text-center py-6" style={{ color: 'var(--wk-text3)' }}>No meals yet.</p>
+                  <p className="text-sm text-center py-6" style={{ color: 'var(--text-3)' }}>No meals yet.</p>
                 )}
               </div>
             ) : null}

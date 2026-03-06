@@ -111,37 +111,60 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
     if (val && !filters.excludeIngredients.includes(val)) onChange({ ...filters, excludeIngredients: [...filters.excludeIngredients, val] });
     setExcludeInput('');
   };
-  const chipStyle = { display: 'inline-flex' as const, alignItems: 'center' as const, gap: 4, padding: '2px 8px', borderRadius: 20, fontSize: 11, background: 'var(--wk-surface)', border: '1px solid var(--wk-border)', color: 'var(--wk-text2)' };
-  const xStyle = { background: 'none', border: 'none', color: 'var(--wk-text3)', cursor: 'pointer', padding: 0, fontSize: 13, lineHeight: '1' as const };
+  const chipStyle = {
+    display: 'inline-flex' as const, alignItems: 'center' as const, gap: 4,
+    padding: '2px 8px', borderRadius: 20, fontSize: 11,
+    background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)',
+  };
+  const xStyle = { background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0, fontSize: 13, lineHeight: '1' as const };
+  const panelInputStyle = {
+    flex: 1, padding: '6px 8px', fontSize: 12, borderRadius: 8,
+    border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)',
+    outline: 'none',
+  };
+  const addBtnStyle = (enabled: boolean) => ({
+    padding: '6px 10px', fontSize: 11, fontWeight: 600, borderRadius: 8,
+    background: enabled ? 'var(--brand)' : 'var(--border)',
+    color: enabled ? '#fff' : 'var(--text-3)',
+    border: 'none', cursor: enabled ? 'pointer' : 'default',
+  });
 
   return (
-    <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 200, width: 310, background: 'var(--wk-card)', border: '1px solid var(--wk-border)', borderRadius: 14, boxShadow: '0 8px 32px rgba(0,0,0,0.18)', padding: 16, maxHeight: '80vh', overflowY: 'auto' }}>
+    <div style={{
+      position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 200, width: 310,
+      background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 14,
+      boxShadow: 'var(--shadow-md)', padding: 16, maxHeight: '80vh', overflowY: 'auto',
+    }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--wk-text)' }}>Filters</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>Filters</span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button type="button" onClick={() => onChange(EMPTY_FILTERS)} style={{ fontSize: 11, color: 'var(--wk-red)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Clear all</button>
-          <button type="button" onClick={onClose} style={{ fontSize: 18, lineHeight: '1', color: 'var(--wk-text2)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>×</button>
+          <button type="button" onClick={() => onChange(EMPTY_FILTERS)} style={{ fontSize: 11, color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Clear all</button>
+          <button type="button" onClick={onClose} style={{ color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px', lineHeight: 1 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
       </div>
+
+      {/* Author */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--wk-text2)', marginBottom: 4 }}>Author</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Author</div>
         <div style={{ position: 'relative' }}>
           <div style={{ display: 'flex', gap: 4, marginBottom: filters.authors.length > 0 ? 6 : 0 }}>
             <input type="text" value={authorInput}
               onChange={e => { setAuthorInput(e.target.value); setShowAuthorSug(true); }}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addAuthor(); } if (e.key === 'Escape') setShowAuthorSug(false); }}
               onFocus={() => setShowAuthorSug(true)} onBlur={() => setTimeout(() => setShowAuthorSug(false), 150)}
-              placeholder="Type author name…" className="focus:outline-none"
-              style={{ flex: 1, padding: '6px 8px', fontSize: 12, borderRadius: 8, border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }} />
-            <button type="button" onClick={addAuthor} disabled={!authorInput.trim()}
-              style={{ padding: '6px 10px', fontSize: 11, fontWeight: 600, borderRadius: 8, background: authorInput.trim() ? 'var(--wk-red)' : 'var(--wk-border)', color: authorInput.trim() ? '#fff' : 'var(--wk-text3)', border: 'none', cursor: authorInput.trim() ? 'pointer' : 'default' }}>+ Add</button>
+              placeholder="Type author name…" style={panelInputStyle} />
+            <button type="button" onClick={addAuthor} disabled={!authorInput.trim()} style={addBtnStyle(!!authorInput.trim())}>+ Add</button>
           </div>
           {showAuthorSug && sugFiltered.length > 0 && (
-            <div style={{ position: 'absolute', left: 0, right: 44, zIndex: 10, background: 'var(--wk-card)', border: '1px solid var(--wk-border)', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', overflow: 'hidden', top: '100%', marginTop: 2 }}>
+            <div style={{ position: 'absolute', left: 0, right: 44, zIndex: 10, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: 'var(--shadow-sm)', overflow: 'hidden', top: '100%', marginTop: 2 }}>
               {sugFiltered.slice(0, 5).map(a => (
                 <button key={a} type="button" onMouseDown={e => { e.preventDefault(); onChange({ ...filters, authors: [...filters.authors, a] }); setAuthorInput(''); setShowAuthorSug(false); }}
-                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12, color: 'var(--wk-text)', background: 'none', border: 'none', cursor: 'pointer' }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--wk-surface)'; }}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12, color: 'var(--text-1)', background: 'none', border: 'none', cursor: 'pointer' }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none'; }}>
                   {a}
                 </button>
@@ -159,32 +182,35 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
           </div>
         )}
       </div>
+
+      {/* Tags */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--wk-text2)', marginBottom: 4 }}>Tags</div>
-        <input type="text" value={tagSearch} onChange={e => setTagSearch(e.target.value)} placeholder="Search tags…" className="focus:outline-none"
-          style={{ width: '100%', padding: '5px 8px', fontSize: 11, borderRadius: 8, border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)', marginBottom: 6 }} />
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Tags</div>
+        <input type="text" value={tagSearch} onChange={e => setTagSearch(e.target.value)} placeholder="Search tags…"
+          style={{ ...panelInputStyle, width: '100%', marginBottom: 6 }} />
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 80, overflowY: 'auto' }}>
           {visibleTags.map(tag => {
             const sel = filters.tags.includes(tag);
             return (
               <button key={tag} type="button" onClick={() => onChange({ ...filters, tags: sel ? filters.tags.filter(t => t !== tag) : [...filters.tags, tag] })}
-                style={sel ? { padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: 'var(--wk-red)', border: '1px solid var(--wk-red)', color: '#fff', cursor: 'pointer' }
-                           : { padding: '2px 8px', borderRadius: 20, fontSize: 11, background: 'transparent', border: '1px solid var(--wk-border)', color: 'var(--wk-text2)', cursor: 'pointer' }}>
+                style={sel
+                  ? { padding: '2px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: 'var(--brand)', border: '1px solid var(--brand)', color: '#fff', cursor: 'pointer' }
+                  : { padding: '2px 8px', borderRadius: 20, fontSize: 11, background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-2)', cursor: 'pointer' }}>
                 {tag}
               </button>
             );
           })}
         </div>
       </div>
+
+      {/* Contains Ingredient */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--wk-text2)', marginBottom: 4 }}>Contains Ingredient</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Contains Ingredient</div>
         <div style={{ display: 'flex', gap: 4, marginBottom: filters.ingredients.length > 0 ? 6 : 0 }}>
           <input type="text" value={ingredientInput} onChange={e => setIngredientInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addIngredient(); } }}
-            placeholder="e.g. chicken, tomato…" className="focus:outline-none"
-            style={{ flex: 1, padding: '6px 8px', fontSize: 12, borderRadius: 8, border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }} />
-          <button type="button" onClick={addIngredient} disabled={!ingredientInput.trim()}
-            style={{ padding: '6px 10px', fontSize: 11, fontWeight: 600, borderRadius: 8, background: ingredientInput.trim() ? 'var(--wk-red)' : 'var(--wk-border)', color: ingredientInput.trim() ? '#fff' : 'var(--wk-text3)', border: 'none', cursor: ingredientInput.trim() ? 'pointer' : 'default' }}>+ Add</button>
+            placeholder="e.g. chicken, tomato…" style={panelInputStyle} />
+          <button type="button" onClick={addIngredient} disabled={!ingredientInput.trim()} style={addBtnStyle(!!ingredientInput.trim())}>+ Add</button>
         </div>
         {filters.ingredients.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -196,30 +222,32 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
           </div>
         )}
       </div>
+
+      {/* Difficulty */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--wk-text2)', marginBottom: 6 }}>Difficulty</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>Difficulty</div>
         <div style={{ display: 'flex', gap: 6 }}>
           {[1, 2, 3, 4, 5].map(d => {
             const sel = filters.difficulty.includes(d);
             return (
               <button key={d} type="button" title={`Difficulty ${d}`}
                 onClick={() => onChange({ ...filters, difficulty: sel ? filters.difficulty.filter(x => x !== d) : [...filters.difficulty, d] })}
-                style={{ width: 30, height: 30, borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer', background: sel ? 'var(--wk-red)' : 'transparent', border: `1.5px solid ${sel ? 'var(--wk-red)' : 'var(--wk-border)'}`, color: sel ? '#fff' : 'var(--wk-text2)' }}>
+                style={{ width: 30, height: 30, borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer', background: sel ? 'var(--brand)' : 'transparent', border: `1.5px solid ${sel ? 'var(--brand)' : 'var(--border)'}`, color: sel ? '#fff' : 'var(--text-2)' }}>
                 {d}
               </button>
             );
           })}
         </div>
       </div>
+
+      {/* Exclude Ingredients */}
       <div>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--wk-text2)', marginBottom: 4 }}>Exclude Ingredients</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Exclude Ingredients</div>
         <div style={{ display: 'flex', gap: 4, marginBottom: filters.excludeIngredients.length > 0 ? 6 : 0 }}>
           <input type="text" value={excludeInput} onChange={e => setExcludeInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addExclude(); } }}
-            placeholder="e.g. peanuts, milk…" className="focus:outline-none"
-            style={{ flex: 1, padding: '6px 8px', fontSize: 12, borderRadius: 8, border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }} />
-          <button type="button" onClick={addExclude} disabled={!excludeInput.trim()}
-            style={{ padding: '6px 10px', fontSize: 11, fontWeight: 600, borderRadius: 8, background: excludeInput.trim() ? 'var(--wk-red)' : 'var(--wk-border)', color: excludeInput.trim() ? '#fff' : 'var(--wk-text3)', border: 'none', cursor: excludeInput.trim() ? 'pointer' : 'default' }}>+ Add</button>
+            placeholder="e.g. peanuts, milk…" style={panelInputStyle} />
+          <button type="button" onClick={addExclude} disabled={!excludeInput.trim()} style={addBtnStyle(!!excludeInput.trim())}>+ Add</button>
         </div>
         {filters.excludeIngredients.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -258,9 +286,9 @@ interface PresetMeal {
 
 function DifficultyDots({ level }: { level: number }) {
   return (
-    <span className="flex gap-0.5">
+    <span className="flex gap-1 items-center">
       {[1, 2, 3, 4, 5].map(i => (
-        <span key={i} className="text-xs" style={{ color: i <= level ? 'var(--wk-red)' : 'var(--wk-border)' }}>●</span>
+        <span key={i} style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: i <= level ? 'var(--brand)' : 'var(--border)' }} />
       ))}
     </span>
   );
@@ -281,25 +309,35 @@ function StoreModal({ meal, onSave, onClose, saving, error }: StoreModalProps) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 flex items-center justify-center z-50 p-4"
+      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="rounded-2xl w-full max-w-sm" style={{ background: 'var(--wk-card)', boxShadow: 'var(--wk-shadow-md)', border: '1px solid var(--wk-border)' }}>
-        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--wk-border)' }}>
-          <h2 className="text-sm font-bold text-wk-text">Add to My Meals</h2>
-          <button onClick={onClose} className="text-wk-text3 hover:text-wk-text2 text-xl leading-none transition-colors">&times;</button>
+      <div className="rounded-2xl w-full max-w-sm" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border)' }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <h2 className="text-sm font-bold" style={{ color: 'var(--text-1)' }}>Add to My Meals</h2>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '2px' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
         <div className="px-5 py-4 space-y-4">
-          <p className="text-sm text-wk-text2">
-            Adding <strong className="text-wk-text">{meal.name}</strong>. Which store are you shopping at?
+          <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+            Adding <strong style={{ color: 'var(--text-1)' }}>{meal.name}</strong>. Which store are you shopping at?
           </p>
           <div>
-            <label className="block text-xs font-semibold text-wk-text2 mb-1.5">Store</label>
+            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>Store</label>
             <select
               value={selectedStore}
               onChange={e => setSelectedStore(e.target.value)}
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-surface)', color: 'var(--wk-text)' }}
+              className="w-full rounded-xl px-3 py-2 text-sm focus:outline-none"
+              style={{ border: '1.5px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             >
               <option value="">Select a store…</option>
               {STORES.map(s => (
@@ -307,12 +345,14 @@ function StoreModal({ meal, onSave, onClose, saving, error }: StoreModalProps) {
               ))}
             </select>
           </div>
-          {error && <p className="text-xs" style={{ color: 'var(--wk-red)' }}>{error}</p>}
+          {error && <p className="text-xs" style={{ color: 'var(--brand)' }}>{error}</p>}
           <button
             onClick={() => onSave(selectedStore)}
             disabled={!selectedStore || saving}
-            className="w-full text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-50 transition-opacity"
-            style={{ background: 'var(--wk-red)' }}
+            className="w-full text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-50 transition-colors"
+            style={{ background: 'var(--brand)', border: 'none', cursor: 'pointer' }}
+            onMouseEnter={e => { if (!saving && selectedStore) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'; }}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
           >
             {saving ? 'Saving…' : 'Add to My Meals'}
           </button>
@@ -339,33 +379,42 @@ function MealDetailModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4"
-      style={{ background: 'rgba(0,0,0,0.5)' }}
+      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={onClose}
     >
       <div
         className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"
-        style={{ background: 'var(--wk-card)', border: '1px solid var(--wk-border)', maxHeight: '90vh' }}
+        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh', boxShadow: 'var(--shadow-md)' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between p-5 pb-4" style={{ borderBottom: '1px solid var(--wk-border)' }}>
+        <div className="flex items-start justify-between p-5 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div className="min-w-0 pr-3">
-            <h2 className="text-base font-bold text-wk-text leading-tight">{meal.name}</h2>
+            <h2 className="text-base font-bold leading-tight" style={{ color: 'var(--text-1)' }}>{meal.name}</h2>
             {authorName && (
               meal.creator_id && onCreatorClick ? (
                 <button
-                  className="text-xs mt-0.5 text-left hover:underline"
-                  style={{ color: 'var(--wk-red)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+                  className="text-xs mt-0.5 text-left hover:underline font-medium"
+                  style={{ color: 'var(--brand)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
                   onClick={e => { e.stopPropagation(); onClose(); onCreatorClick(meal.creator_id!); }}
                 >
                   by {authorName}
                 </button>
               ) : (
-                <p className="text-xs mt-0.5" style={{ color: 'var(--wk-red)' }}>by {authorName}</p>
+                <p className="text-xs mt-0.5 font-medium" style={{ color: 'var(--brand)' }}>by {authorName}</p>
               )
             )}
           </div>
-          <button onClick={onClose} className="flex-shrink-0 text-wk-text3 hover:text-wk-text text-xl leading-none">✕</button>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '2px', flexShrink: 0 }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
 
         {/* Body */}
@@ -376,14 +425,14 @@ function MealDetailModal({
 
           <div className="flex items-center gap-4 flex-wrap">
             {meal.difficulty != null && (
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-wk-text3">Difficulty:</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
                 <DifficultyDots level={meal.difficulty} />
               </div>
             )}
             {sourceHost && (
               <a href={meal.source!} target="_blank" rel="noopener noreferrer"
-                className="text-xs flex items-center gap-1 hover:underline" style={{ color: 'var(--wk-text3)' }}>
+                className="text-xs flex items-center gap-1 hover:underline" style={{ color: 'var(--text-3)' }}>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
                 </svg>
@@ -395,7 +444,8 @@ function MealDetailModal({
           {meal.tags && meal.tags.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               {meal.tags.slice(0, 3).map(tag => (
-                <span key={tag} className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--wk-surface)', border: '1px solid var(--wk-border)', color: 'var(--wk-text2)' }}>
+                <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                   {tag}
                 </span>
               ))}
@@ -403,12 +453,12 @@ function MealDetailModal({
           )}
 
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide mb-2.5" style={{ color: 'var(--wk-text3)' }}>Ingredients</p>
-            <ul className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Ingredients</p>
+            <ul className="space-y-1.5">
               {meal.ingredients.map((ing, i) => (
-                <li key={i} className="flex items-center justify-between gap-4" style={{ borderBottom: '1px solid var(--wk-border)', paddingBottom: '6px' }}>
-                  <span className="text-sm text-wk-text">{ing.productName}</span>
-                  <span className="text-xs font-medium text-wk-text3 flex-shrink-0">×{ing.quantity ?? 1}</span>
+                <li key={i} className="flex items-center justify-between gap-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span className="text-sm" style={{ color: 'var(--text-1)' }}>{ing.productName}</span>
+                  <span className="text-xs font-medium flex-shrink-0" style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono, monospace)' }}>×{ing.quantity ?? 1}</span>
                 </li>
               ))}
             </ul>
@@ -416,26 +466,26 @@ function MealDetailModal({
 
           {meal.recipe && (
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide mb-2.5" style={{ color: 'var(--wk-text3)' }}>Recipe</p>
-              <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--wk-text2)' }}>{meal.recipe}</p>
+              <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Recipe</p>
+              <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.recipe}</p>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="p-4" style={{ borderTop: '1px solid var(--wk-border)' }}>
+        <div className="p-4" style={{ borderTop: '1px solid var(--border)' }}>
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => { onAdd(); onClose(); }}
-              className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
-              style={{ background: 'var(--wk-red)', border: 'none', color: '#fff' }}
-              onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+              className="px-4 py-2 text-sm font-semibold rounded-xl transition-colors"
+              style={{ background: 'var(--brand)', border: 'none', color: '#fff', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
-              + Add to My Meals
+              Add to My Meals
             </button>
             {savedStores && savedStores.length > 0 && (
-              <span className="text-xs" style={{ color: 'var(--wk-text3)' }}>Saved at {savedStores.join(', ')}</span>
+              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Saved at {savedStores.join(', ')}</span>
             )}
           </div>
         </div>
@@ -447,10 +497,7 @@ function MealDetailModal({
 // ── Meal Card ─────────────────────────────────────────────────────────────────
 
 function MealCard({
-  meal,
-  savedStores,
-  onAdd,
-  onCreatorClick,
+  meal, savedStores, onAdd, onCreatorClick,
 }: {
   meal: PresetMeal;
   savedStores?: string[];
@@ -458,11 +505,9 @@ function MealCard({
   onCreatorClick?: (id: string) => void;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
-
   const sourceHost = meal.source ? (() => {
     try { return new URL(meal.source!).hostname.replace('www.', ''); } catch { return meal.source; }
   })() : null;
-
   const authorName = meal.creator_name
     ? (meal.creator_social || meal.creator_name)
     : meal.author ?? null;
@@ -480,53 +525,55 @@ function MealCard({
       )}
 
       <div
-        className="flex items-start gap-4 p-4 rounded-xl cursor-pointer"
-        style={{ background: 'var(--wk-card)', border: '1px solid var(--wk-border)', boxShadow: 'var(--wk-shadow)' }}
+        className="flex items-start gap-4 p-4 rounded-2xl cursor-pointer transition-all"
+        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}
         onClick={() => setDetailOpen(true)}
-        onMouseEnter={e => (e.currentTarget.style.boxShadow = 'var(--wk-shadow-md)')}
-        onMouseLeave={e => (e.currentTarget.style.boxShadow = 'var(--wk-shadow)')}
+        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-md)'; (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)'; }}
+        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-sm)'; (e.currentTarget as HTMLElement).style.transform = 'none'; }}
       >
-        <div className="hidden sm:block">
+        <div className="hidden sm:block flex-shrink-0">
           {meal.photo_url ? (
             <img
               src={meal.photo_url}
               alt={meal.name}
-              className="object-cover rounded-lg flex-shrink-0"
-              style={{ width: '120px', height: '120px', border: '1px solid var(--wk-border)' }}
+              className="object-cover rounded-xl"
+              style={{ width: '110px', height: '110px', border: '1px solid var(--border)' }}
             />
           ) : (
-            <div className="rounded-lg flex-shrink-0 flex items-center justify-center text-xl" style={{ width: '120px', height: '120px', background: 'var(--wk-surface)', border: '1px solid var(--wk-border)' }}>
-              🍽️
+            <div className="rounded-xl flex items-center justify-center" style={{ width: '110px', height: '110px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--border-strong)' }}>
+                <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
+              </svg>
             </div>
           )}
         </div>
 
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-wk-text">{meal.name}</p>
+          <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{meal.name}</p>
 
           {(authorName || sourceHost) && (
             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
               {authorName && (
                 meal.creator_id && onCreatorClick ? (
                   <button
-                    className="text-xs text-left hover:underline"
-                    style={{ color: 'var(--wk-red)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+                    className="text-xs text-left hover:underline font-medium"
+                    style={{ color: 'var(--brand)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
                     onClick={e => { e.stopPropagation(); onCreatorClick(meal.creator_id!); }}
                   >
                     by {authorName}
                   </button>
                 ) : (
-                  <span className="text-xs" style={{ color: 'var(--wk-red)' }}>by {authorName}</span>
+                  <span className="text-xs font-medium" style={{ color: 'var(--brand)' }}>by {authorName}</span>
                 )
               )}
-              {authorName && sourceHost && <span className="text-xs text-wk-text3">·</span>}
+              {authorName && sourceHost && <span className="text-xs" style={{ color: 'var(--text-3)' }}>·</span>}
               {sourceHost && (
                 <a
                   href={meal.source!}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs flex items-center gap-1 transition-colors hover:underline"
-                  style={{ color: 'var(--wk-text3)' }}
+                  className="text-xs flex items-center gap-1 hover:underline"
+                  style={{ color: 'var(--text-3)' }}
                   onClick={e => e.stopPropagation()}
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -539,16 +586,17 @@ function MealCard({
           )}
 
           {meal.difficulty != null && (
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-xs text-wk-text3">Difficulty:</span>
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
               <DifficultyDots level={meal.difficulty} />
             </div>
           )}
 
           {meal.tags && meal.tags.length > 0 && (
-            <div className="flex items-center gap-1 flex-wrap mt-1">
+            <div className="flex items-center gap-1 flex-wrap mt-1.5">
               {meal.tags.slice(0, 3).map(tag => (
-                <span key={tag} className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--wk-surface)', border: '1px solid var(--wk-border)', color: 'var(--wk-text2)' }}>
+                <span key={tag} className="text-xs px-2 py-0.5 rounded-full font-medium"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                   {tag}
                 </span>
               ))}
@@ -556,10 +604,10 @@ function MealCard({
           )}
 
           {meal.recipe && (
-            <div className="mt-2 select-none rounded-md" style={{ background: '#f2f2f2', padding: '7px 9px' }}>
+            <div className="mt-2 select-none rounded-xl" style={{ background: 'var(--surface)', padding: '7px 9px' }}>
               <div className="relative" style={{ maxHeight: '3.6em', overflow: 'hidden' }}>
-                <p className="text-xs whitespace-pre-wrap leading-relaxed" style={{ color: '#555' }}>{meal.recipe}</p>
-                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '1.8em', background: 'linear-gradient(to bottom, rgba(242,242,242,0), rgba(242,242,242,1))' }} />
+                <p className="text-xs whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-3)' }}>{meal.recipe}</p>
+                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '1.8em', background: 'linear-gradient(to bottom, rgba(244,243,241,0), rgba(244,243,241,1))' }} />
               </div>
             </div>
           )}
@@ -567,15 +615,15 @@ function MealCard({
           <div className="mt-3 flex items-center gap-2 flex-wrap">
             <button
               onClick={e => { e.stopPropagation(); onAdd(); }}
-              className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
-              style={{ background: 'var(--wk-red)', border: 'none', color: '#fff' }}
-              onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors"
+              style={{ background: 'var(--brand)', border: 'none', color: '#fff', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
               + Add to My Meals
             </button>
             {savedStores && savedStores.length > 0 && (
-              <span className="text-xs" style={{ color: 'var(--wk-text3)' }}>
+              <span className="text-xs" style={{ color: 'var(--text-3)' }}>
                 Saved at {savedStores.join(', ')}
               </span>
             )}
@@ -590,6 +638,10 @@ function MealCard({
 
 const CHROME_EXT_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
 const FIREFOX_EXT_URL = 'https://addons.mozilla.org/en-US/firefox/addon/mealio/';
+
+function getInitials(name: string) {
+  return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
+}
 
 export default function DiscoverPage() {
   const router = useRouter();
@@ -622,13 +674,10 @@ export default function DiscoverPage() {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
-  // Following tab — creator carousel
   const [followedCreators, setFollowedCreators] = useState<{ id: string; display_name: string; photo_url?: string | null }[]>([]);
   const [selectedCreatorIds, setSelectedCreatorIds] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    verifyAuth();
-  }, []);
+  useEffect(() => { verifyAuth(); }, []);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -676,8 +725,6 @@ export default function DiscoverPage() {
     }
   };
 
-  // ── Fetch pre-built meals ──────────────────────────────────────────────────
-
   const fetchMeals = useCallback(async (reset: boolean, currentSection: 'trending' | 'new' | 'following', currentToken: string) => {
     if (fetching) return;
     setFetching(true);
@@ -720,8 +767,6 @@ export default function DiscoverPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, token]);
 
-  // ── Infinite scroll ───────────────────────────────────────────────────────
-
   useEffect(() => {
     if (observerRef.current) observerRef.current.disconnect();
     if (!sentinelRef.current || !hasMore || fetching) return;
@@ -731,8 +776,6 @@ export default function DiscoverPage() {
     observerRef.current.observe(sentinelRef.current);
     return () => observerRef.current?.disconnect();
   }, [hasMore, fetching, fetchMeals, token]);
-
-  // ── Search filter ─────────────────────────────────────────────────────────
 
   const q = search.trim().toLowerCase();
   const activeFilterCount = [filters.authors.length > 0, filters.tags.length > 0, filters.ingredients.length > 0, filters.difficulty.length > 0, filters.excludeIngredients.length > 0].filter(Boolean).length;
@@ -752,8 +795,6 @@ export default function DiscoverPage() {
   const unsaved = meals.filter(m => !savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
   const saved   = meals.filter(m =>  savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
   const visible = [...unsaved, ...saved];
-
-  // ── Save pre-built meal ───────────────────────────────────────────────────
 
   const handleSave = async (storeId: string) => {
     if (!addingMeal || !storeId) return;
@@ -802,20 +843,20 @@ export default function DiscoverPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-wk-bg flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: 'var(--wk-border)', borderTopColor: 'var(--wk-red)' }} />
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg)' }}>
+        <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-wk-bg flex flex-col">
+    <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
 
       <AppHeader />
 
       {/* Upgrade nudge */}
       {user && user.tier !== 'paid' && (
-        <div className="w-full py-2.5 px-4 text-center text-sm" style={{ background: 'var(--wk-red-bg)', borderBottom: '1px solid #fecdd3', color: 'var(--wk-red)' }}>
+        <div className="w-full py-2.5 px-4 text-center text-sm" style={{ background: 'var(--brand-light)', borderBottom: '1px solid var(--brand-border)', color: 'var(--brand)' }}>
           <span className="font-medium">Free plan: </span>limited to 3 saved meals.{' '}
           <a href="/pricing" className="underline font-semibold hover:opacity-80 transition-opacity">Upgrade to Full Access →</a>
         </div>
@@ -823,48 +864,35 @@ export default function DiscoverPage() {
 
       <div className="max-w-5xl mx-auto px-6 py-10 w-full flex-1">
 
-        {/* Getting Started — only shown if user has no saved meals yet */}
+        {/* Getting Started */}
         {!hasSavedMeals && (
-          <div className="rounded-xl p-8 mb-8" style={{ background: 'var(--wk-card)', border: '1px solid var(--wk-border)', boxShadow: 'var(--wk-shadow)' }}>
-            <h2 className="text-lg font-bold text-wk-text mb-6">Getting started</h2>
+          <div className="rounded-2xl p-8 mb-8" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+            <h2 className="text-base font-bold mb-6" style={{ color: 'var(--text-1)' }}>Getting started</h2>
             <div className="space-y-5">
-              {/* Step 1 — special: has extension link */}
               <div className="flex items-start gap-4">
-                <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--wk-red)' }}>1</div>
+                <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>1</div>
                 <div>
-                  <p className="text-sm font-semibold text-wk-text">Install the Web Extension</p>
-                  <p className="text-sm text-wk-text2 mt-0.5">
+                  <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>Install the Web Extension</p>
+                  <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>
                     Add Mealio to your browser to start saving meals and adding ingredients to your cart.{' '}
-                    <a href={isFirefox ? FIREFOX_EXT_URL : CHROME_EXT_URL} target="_blank" rel="noopener noreferrer" className="font-medium underline underline-offset-2 transition-colors" style={{ color: 'var(--wk-red)' }}>
+                    <a href={isFirefox ? FIREFOX_EXT_URL : CHROME_EXT_URL} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2" style={{ color: 'var(--brand)' }}>
                       Get the {isFirefox ? 'Firefox' : 'Chrome'} extension →
                     </a>
                   </p>
                 </div>
               </div>
               {[
-                {
-                  n: 2,
-                  title: 'Open the extension and sign in',
-                  desc: 'Click the Mealio icon in your browser toolbar. You will be logged in automatically.',
-                },
-                {
-                  n: 3,
-                  title: 'Go to a supported grocery store',
-                  desc: 'Visit any major grocery retailer online. Mealio detects the store automatically.',
-                },
-                {
-                  n: 4,
-                  title: 'Save your first meal',
-                  desc: 'Click "Add Meal," name it, then add items to your cart. Mealio records every ingredient so you can reorder with one click. You can also browse Discover to instantly add pre-built meals without recording anything.',
-                },
+                { n: 2, title: 'Open the extension and sign in', desc: 'Click the Mealio icon in your browser toolbar. You will be logged in automatically.' },
+                { n: 3, title: 'Go to a supported grocery store', desc: 'Visit any major grocery retailer online. Mealio detects the store automatically.' },
+                { n: 4, title: 'Save your first meal', desc: 'Click "Add Meal," name it, then add items to your cart. Mealio records every ingredient so you can reorder with one click. You can also browse Discover to instantly add pre-built meals without recording anything.' },
               ].map(step => (
                 <div key={step.n} className="flex items-start gap-4">
-                  <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--wk-red)' }}>
+                  <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>
                     {step.n}
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-wk-text">{step.title}</p>
-                    <p className="text-sm text-wk-text2 mt-0.5">{step.desc}</p>
+                    <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{step.title}</p>
+                    <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>{step.desc}</p>
                   </div>
                 </div>
               ))}
@@ -872,21 +900,19 @@ export default function DiscoverPage() {
           </div>
         )}
 
-        {/* ── Discover Section ──────────────────────────────────────────────── */}
+        {/* Discover Section */}
         <div className="mb-10">
           <div className="mb-8 flex items-end justify-between gap-4">
-            <div>
-              <h1 className="text-5xl font-bold text-wk-text leading-tight">
-                What's for<br />
-                <span style={{ borderBottom: '4px solid var(--wk-red)', paddingBottom: '3px' }}>dinner?</span>
-              </h1>
-            </div>
+            <h1 className="text-5xl font-bold leading-tight" style={{ color: 'var(--text-1)', letterSpacing: '-0.02em' }}>
+              What&apos;s for<br />
+              <span style={{ borderBottom: '4px solid var(--brand)', paddingBottom: '2px' }}>dinner?</span>
+            </h1>
             <a
               href="/my-meals"
               className="flex-shrink-0 flex items-center gap-1.5 text-sm font-semibold rounded-xl px-4 py-2 transition-colors"
-              style={{ background: 'var(--wk-red)', color: '#fff', border: 'none', textDecoration: 'none' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#c40029'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'var(--wk-red)'; }}
+              style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none' }}
+              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
               My Meals
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -897,23 +923,25 @@ export default function DiscoverPage() {
 
           {/* Controls */}
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
-            <div className="flex gap-1 p-1 rounded-xl self-start" style={{ background: 'var(--wk-surface)' }}>
+            {/* Section tabs */}
+            <div className="flex gap-1 p-1 rounded-xl self-start" style={{ background: 'var(--surface)' }}>
               {(['trending', 'new', 'following'] as const).map(s => (
                 <button
                   key={s}
                   onClick={() => { if (s !== section) { setSection(s); setSearch(''); } }}
                   className="px-4 py-1.5 text-sm font-semibold rounded-lg transition-all"
                   style={section === s
-                    ? { background: 'var(--wk-card)', color: 'var(--wk-text)', boxShadow: 'var(--wk-shadow)' }
-                    : { background: 'transparent', color: 'var(--wk-text2)' }}
+                    ? { background: 'var(--surface-raised)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)', border: 'none', cursor: 'pointer' }
+                    : { background: 'transparent', color: 'var(--text-2)', border: 'none', cursor: 'pointer' }}
                 >
-                  {s === 'trending' ? '🔥 Trending' : s === 'new' ? 'New' : 'Following'}
+                  {s === 'trending' ? 'Trending' : s === 'new' ? 'New' : 'Following'}
                 </button>
               ))}
             </div>
 
+            {/* Search */}
             <div className="flex-1 relative">
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-wk-text3" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-3)' }}>
                 <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
               </svg>
               <input
@@ -922,12 +950,26 @@ export default function DiscoverPage() {
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search recipes, ingredients, tags…"
                 className="w-full pl-9 pr-4 py-2 text-sm rounded-xl focus:outline-none"
-                style={{ border: '1px solid var(--wk-border)', background: 'var(--wk-card)', color: 'var(--wk-text)' }}
+                style={{ border: '1.5px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-1)' }}
+                onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                onBlur={e => (e.target.style.borderColor = 'var(--border)')}
               />
             </div>
+
+            {/* Filter button */}
             <div ref={filterBtnRef} style={{ position: 'relative', flexShrink: 0 }}>
-              <button type="button" onClick={() => setFilterOpen(v => !v)}
-                style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '7px 11px', borderRadius: 10, fontSize: 13, fontWeight: 600, border: '1px solid var(--wk-border)', background: (filterOpen || activeFilterCount > 0) ? 'var(--wk-red)' : 'var(--wk-card)', color: (filterOpen || activeFilterCount > 0) ? '#fff' : 'var(--wk-text2)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <button
+                type="button"
+                onClick={() => setFilterOpen(v => !v)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 10,
+                  fontSize: 13, fontWeight: 600,
+                  border: `1.5px solid ${(filterOpen || activeFilterCount > 0) ? 'var(--brand)' : 'var(--border)'}`,
+                  background: (filterOpen || activeFilterCount > 0) ? 'var(--brand)' : 'var(--surface-raised)',
+                  color: (filterOpen || activeFilterCount > 0) ? '#fff' : 'var(--text-2)',
+                  cursor: 'pointer', whiteSpace: 'nowrap',
+                }}
+              >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
                 </svg>
@@ -939,7 +981,7 @@ export default function DiscoverPage() {
 
           {/* Creator carousel — Following tab only */}
           {section === 'following' && followedCreators.length > 0 && (
-            <div className="flex gap-3 overflow-x-auto pb-2 mb-5 scrollbar-hide" style={{ scrollbarWidth: 'none' }}>
+            <div className="flex gap-3 overflow-x-auto pb-2 mb-5" style={{ scrollbarWidth: 'none' }}>
               {followedCreators.map(creator => {
                 const allSelected = selectedCreatorIds.size === 0;
                 const isSelected = allSelected || selectedCreatorIds.has(creator.id);
@@ -949,13 +991,9 @@ export default function DiscoverPage() {
                     onClick={() => {
                       setSelectedCreatorIds(prev => {
                         const next = new Set(prev);
-                        if (allSelected) {
-                          // First click: select only this one
-                          return new Set([creator.id]);
-                        }
+                        if (allSelected) return new Set([creator.id]);
                         if (next.has(creator.id)) {
                           next.delete(creator.id);
-                          // Deselecting the last one → back to "all"
                           return next.size === 0 ? new Set() : next;
                         } else {
                           next.add(creator.id);
@@ -967,18 +1005,18 @@ export default function DiscoverPage() {
                     style={{ background: 'none', border: 'none', cursor: 'pointer', opacity: isSelected ? 1 : 0.4 }}
                   >
                     <div
-                      className="w-14 h-14 rounded-full overflow-hidden flex-shrink-0"
+                      className="w-14 h-14 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center"
                       style={{
-                        border: isSelected ? '2.5px solid var(--wk-red)' : '2.5px solid var(--wk-border)',
-                        background: 'var(--wk-surface)',
+                        border: `2.5px solid ${isSelected ? 'var(--brand)' : 'var(--border)'}`,
+                        background: 'var(--surface)',
                         transition: 'border-color 0.15s',
                       }}
                     >
                       {creator.photo_url
                         ? <img src={creator.photo_url} alt={creator.display_name} className="w-full h-full object-cover" />
-                        : <div className="w-full h-full flex items-center justify-center text-xl">👤</div>}
+                        : <span className="text-sm font-bold" style={{ color: 'var(--text-3)' }}>{getInitials(creator.display_name)}</span>}
                     </div>
-                    <span className="text-xs font-medium text-center max-w-[64px] truncate" style={{ color: isSelected ? 'var(--wk-text)' : 'var(--wk-text3)' }}>
+                    <span className="text-xs font-medium text-center max-w-[64px] truncate" style={{ color: isSelected ? 'var(--text-1)' : 'var(--text-3)' }}>
                       {creator.display_name}
                     </span>
                   </button>
@@ -990,14 +1028,14 @@ export default function DiscoverPage() {
           {/* Meal list */}
           {fetchError ? (
             <div className="text-center py-16">
-              <p className="text-sm text-wk-text3 mb-3">{fetchError}</p>
-              <button onClick={() => fetchMeals(true, section, token)} className="text-sm font-medium" style={{ color: 'var(--wk-red)' }}>
+              <p className="text-sm mb-3" style={{ color: 'var(--text-3)' }}>{fetchError}</p>
+              <button onClick={() => fetchMeals(true, section, token)} className="text-sm font-medium" style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer' }}>
                 Try again
               </button>
             </div>
           ) : visible.length === 0 && !fetching ? (
             <div className="text-center py-16">
-              <p className="text-sm text-wk-text3">
+              <p className="text-sm" style={{ color: 'var(--text-3)' }}>
                 {section === 'following' && meals.length === 0
                   ? 'Follow creators to see their meals here.'
                   : (q || activeFilterCount > 0 || selectedCreatorIds.size > 0)
@@ -1021,10 +1059,10 @@ export default function DiscoverPage() {
 
               <div ref={sentinelRef} className="py-4 text-center">
                 {fetching && (
-                  <div className="inline-block w-6 h-6 rounded-full animate-spin" style={{ border: '2px solid var(--wk-border)', borderTopColor: 'var(--wk-red)' }} />
+                  <div className="inline-block w-6 h-6 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
                 )}
                 {!fetching && !hasMore && meals.length > 0 && (
-                  <p className="text-xs text-wk-text3">You&apos;ve seen all recipes.</p>
+                  <p className="text-xs" style={{ color: 'var(--text-3)' }}>You&apos;ve seen all recipes.</p>
                 )}
               </div>
             </>
@@ -1032,7 +1070,7 @@ export default function DiscoverPage() {
 
           {fetching && meals.length === 0 && (
             <div className="flex justify-center py-16">
-              <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--wk-border)', borderTopColor: 'var(--wk-red)' }} />
+              <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: 'var(--brand)' }} />
             </div>
           )}
         </div>

@@ -25,7 +25,6 @@ export default function AppHeader() {
     } catch {}
   }, []);
 
-  // Close mobile menu on outside click
   useEffect(() => {
     if (!mobileOpen) return;
     const handler = (e: MouseEvent) => {
@@ -41,7 +40,6 @@ export default function AppHeader() {
     return () => document.removeEventListener('mousedown', handler);
   }, [mobileOpen]);
 
-  // Close mobile menu on route change
   useEffect(() => { setMobileOpen(false); }, [pathname]);
 
   const handleLogout = () => {
@@ -49,77 +47,51 @@ export default function AppHeader() {
     router.push('/');
   };
 
-  const navBtn = (active: boolean) => ({
-    color: active ? '#fff' : 'rgba(255,255,255,0.78)',
-    background: active ? 'rgba(0,0,0,0.18)' : 'transparent',
-    border: 'none',
-    cursor: 'pointer',
-  });
+  const isNavActive = (path: string) => pathname === path;
 
   const mobileNavItems = [
-    { label: 'Discover',        onClick: () => router.push('/discover'),  active: pathname === '/discover' },
-    { label: 'My Meals',        onClick: () => router.push('/my-meals'),  active: pathname === '/my-meals' },
-    { label: 'Help',            onClick: () => router.push('/help'),      active: pathname === '/help' },
-    { label: 'Privacy Policy',  onClick: () => router.push('/privacy'),   active: pathname === '/privacy' },
-    { label: 'Terms of Service',onClick: () => router.push('/terms'),     active: pathname === '/terms' },
-    { label: 'Contact',         onClick: () => { window.location.href = 'mailto:contact@mealio.co'; }, active: false },
+    { label: 'Discover',         onClick: () => router.push('/discover'),  active: pathname === '/discover' },
+    { label: 'My Meals',         onClick: () => router.push('/my-meals'),  active: pathname === '/my-meals' },
+    { label: 'Help',             onClick: () => router.push('/help'),      active: pathname === '/help' },
+    { label: 'Privacy Policy',   onClick: () => router.push('/privacy'),   active: pathname === '/privacy' },
+    { label: 'Terms of Service', onClick: () => router.push('/terms'),     active: pathname === '/terms' },
+    { label: 'Contact',          onClick: () => { window.location.href = 'mailto:contact@mealio.co'; }, active: false },
     ...(isAdmin   ? [{ label: 'Admin',          onClick: () => router.push('/admin'),   active: pathname === '/admin' }] : []),
     ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator'), active: pathname.startsWith('/creator') }] : []),
-    { label: 'Manage Account',  onClick: () => router.push('/account'),   active: pathname === '/account' },
-    { label: 'Log Out',         onClick: handleLogout, active: false, danger: true },
+    { label: 'Manage Account',   onClick: () => router.push('/account'),   active: pathname === '/account' },
+    { label: 'Log Out',          onClick: handleLogout, active: false, danger: true },
   ] as { label: string; onClick: () => void; active: boolean; danger?: boolean }[];
 
   return (
-    <header style={{ background: 'var(--wk-red)', position: 'relative' }}>
-      <div className="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
+    <header style={{ background: 'var(--brand)', position: 'relative' }}>
+      <div className="max-w-5xl mx-auto px-6 py-3.5 flex justify-between items-center">
         {/* Logo */}
         <button
           onClick={() => router.push('/discover')}
-          style={{ fontFamily: 'var(--font-pacifico), cursive', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+          style={{ fontFamily: 'var(--font-pacifico), cursive', background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1 }}
+          aria-label="Mealio home"
         >
-          <span style={{ fontSize: '38px', lineHeight: '1', display: 'inline-block', verticalAlign: 'middle', textShadow: '2px 3px 0px rgba(0,0,0,0.18)', color: '#fff' }}>M</span>
-          <span style={{ fontSize: '28px', textShadow: '1px 2px 0px rgba(0,0,0,0.14)', color: '#fff' }}>ealio</span>
+          <span style={{ fontSize: '36px', lineHeight: '1', display: 'inline-block', verticalAlign: 'middle', color: '#fff' }}>M</span>
+          <span style={{ fontSize: '26px', color: 'rgba(255,255,255,0.92)' }}>ealio</span>
         </button>
 
         {/* Desktop Nav */}
-        <div className="hidden sm:flex items-center gap-1">
+        <nav className="hidden sm:flex items-center gap-0.5">
+          <NavButton label="Discover" active={isNavActive('/discover')} onClick={() => router.push('/discover')} />
+          <NavButton label="My Meals" active={isNavActive('/my-meals')} onClick={() => router.push('/my-meals')} />
 
-          {/* Discover */}
-          <button
-            onClick={() => router.push('/discover')}
-            className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
-            style={navBtn(pathname === '/discover')}
-            onMouseEnter={e => { if (pathname !== '/discover') e.currentTarget.style.background = 'rgba(0,0,0,0.12)'; }}
-            onMouseLeave={e => { if (pathname !== '/discover') e.currentTarget.style.background = 'transparent'; }}
-          >
-            Discover
-          </button>
-
-          {/* My Meals */}
-          <button
-            onClick={() => router.push('/my-meals')}
-            className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
-            style={navBtn(pathname === '/my-meals')}
-            onMouseEnter={e => { if (pathname !== '/my-meals') e.currentTarget.style.background = 'rgba(0,0,0,0.12)'; }}
-            onMouseLeave={e => { if (pathname !== '/my-meals') e.currentTarget.style.background = 'transparent'; }}
-          >
-            My Meals
-          </button>
-
-          {/* Help & FAQ dropdown */}
           <DropdownMenu
             label="Help & FAQ"
             active={pathname === '/help' || pathname === '/privacy' || pathname === '/terms'}
             onLabelClick={() => router.push('/help')}
             items={[
-              { label: 'Help', onClick: () => router.push('/help') },
+              { label: 'Help & FAQ',     onClick: () => router.push('/help') },
               { label: 'Privacy Policy', onClick: () => router.push('/privacy') },
               { label: 'Terms of Service', onClick: () => router.push('/terms') },
-              { label: 'Contact', onClick: () => { window.location.href = 'mailto:contact@mealio.co'; } },
+              { label: 'Contact',        onClick: () => { window.location.href = 'mailto:contact@mealio.co'; } },
             ]}
           />
 
-          {/* Account dropdown */}
           <DropdownMenu
             label="Account"
             active={pathname === '/account'}
@@ -128,41 +100,40 @@ export default function AppHeader() {
               ...(isAdmin   ? [{ label: 'Admin',          onClick: () => router.push('/admin')   }] : []),
               ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator') }] : []),
               { label: 'Manage Account', onClick: () => router.push('/account') },
-              { label: 'Log Out', onClick: handleLogout },
+              { label: 'Log Out',        onClick: handleLogout },
             ]}
           />
-
-        </div>
+        </nav>
 
         {/* Mobile Hamburger */}
         <button
           ref={hamburgerRef}
-          className="sm:hidden flex flex-col justify-center items-center gap-1.5 p-2"
+          className="sm:hidden flex flex-col justify-center items-center gap-[5px] p-2"
           onClick={() => setMobileOpen(prev => !prev)}
           style={{ background: 'none', border: 'none', cursor: 'pointer' }}
           aria-label="Menu"
         >
-          <span style={{ display: 'block', width: '22px', height: '2px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(6px) rotate(45deg)' : 'none' }} />
-          <span style={{ display: 'block', width: '22px', height: '2px', background: '#fff', borderRadius: '2px', opacity: mobileOpen ? 0 : 1, transition: 'opacity 0.15s' }} />
-          <span style={{ display: 'block', width: '22px', height: '2px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(-8px) rotate(-45deg)' : 'none' }} />
+          <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(6.5px) rotate(45deg)' : 'none' }} />
+          <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', opacity: mobileOpen ? 0 : 1, transition: 'opacity 0.15s' }} />
+          <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(-6.5px) rotate(-45deg)' : 'none' }} />
         </button>
       </div>
 
-      {/* Mobile Menu Dropdown */}
+      {/* Mobile Menu */}
       {mobileOpen && (
         <div
           ref={mobileMenuRef}
-          className="sm:hidden absolute left-0 right-0 z-50 py-2 shadow-lg"
-          style={{ background: 'var(--wk-card)', borderTop: '1px solid var(--wk-border)', borderBottom: '1px solid var(--wk-border)' }}
+          className="sm:hidden absolute left-0 right-0 z-50 py-1.5 shadow-xl"
+          style={{ background: 'var(--surface-raised)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
         >
           {mobileNavItems.map(item => (
             <button
               key={item.label}
               onClick={item.onClick}
-              className="block w-full text-left px-6 py-3 text-sm font-medium transition-colors"
+              className="block w-full text-left px-5 py-3 text-sm font-medium transition-colors"
               style={{
-                background: item.active ? 'var(--wk-surface)' : 'transparent',
-                color: item.danger ? 'var(--wk-red)' : item.active ? 'var(--wk-text)' : 'var(--wk-text2)',
+                background: item.active ? 'var(--surface)' : 'transparent',
+                color: item.danger ? 'var(--brand)' : item.active ? 'var(--text-1)' : 'var(--text-2)',
                 border: 'none',
                 cursor: 'pointer',
               }}
@@ -176,13 +147,27 @@ export default function AppHeader() {
   );
 }
 
-// ── Dropdown Menu ─────────────────────────────────────────────────────────────
+function NavButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
+      style={{
+        color: active ? '#fff' : 'rgba(255,255,255,0.75)',
+        background: active ? 'rgba(0,0,0,0.16)' : 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+      }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
+      onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; } }}
+    >
+      {label}
+    </button>
+  );
+}
 
 function DropdownMenu({
-  label,
-  active,
-  onLabelClick,
-  items,
+  label, active, onLabelClick, items,
 }: {
   label: string;
   active: boolean;
@@ -192,14 +177,8 @@ function DropdownMenu({
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const show = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    setOpen(true);
-  };
-
-  const hide = () => {
-    closeTimer.current = setTimeout(() => setOpen(false), 120);
-  };
+  const show = () => { if (closeTimer.current) clearTimeout(closeTimer.current); setOpen(true); };
+  const hide = () => { closeTimer.current = setTimeout(() => setOpen(false), 120); };
 
   useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
@@ -207,31 +186,30 @@ function DropdownMenu({
     <div className="relative" onMouseEnter={show} onMouseLeave={hide}>
       <button
         onClick={onLabelClick}
-        className="px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-1"
+        className="px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-1 transition-colors"
         style={{
-          color: active ? '#fff' : 'rgba(255,255,255,0.78)',
-          background: active || open ? 'rgba(0,0,0,0.18)' : 'transparent',
+          color: active || open ? '#fff' : 'rgba(255,255,255,0.75)',
+          background: active || open ? 'rgba(0,0,0,0.16)' : 'transparent',
           border: 'none',
           cursor: 'pointer',
-          transition: 'background 0.12s',
         }}
-        onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(0,0,0,0.12)'; }}
-        onMouseLeave={e => { if (!active && !open) e.currentTarget.style.background = 'transparent'; }}
+        onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
+        onMouseLeave={e => { if (!active && !open) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; } }}
       >
         {label}
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.7, marginTop: '1px' }}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.65, marginTop: '1px', transition: 'transform 0.15s', transform: open ? 'rotate(180deg)' : 'none' }}>
           <polyline points="6 9 12 15 18 9"/>
         </svg>
       </button>
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-1 py-1 rounded-xl z-50"
+          className="absolute right-0 top-full mt-1.5 py-1 rounded-xl z-50"
           style={{
-            background: 'var(--wk-card)',
-            border: '1px solid var(--wk-border)',
-            boxShadow: 'var(--wk-shadow-md)',
-            minWidth: '160px',
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-md)',
+            minWidth: '168px',
           }}
           onMouseEnter={show}
           onMouseLeave={hide}
@@ -240,9 +218,15 @@ function DropdownMenu({
             <button
               key={item.label}
               onClick={() => { setOpen(false); item.onClick(); }}
-              className="block w-full text-left px-4 py-2 text-sm rounded-lg transition-colors"
-              style={{ color: item.label === 'Log Out' ? 'var(--wk-red)' : 'var(--wk-text)', background: 'transparent', border: 'none', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--wk-surface)')}
+              className="block w-full text-left px-4 py-2.5 text-sm transition-colors"
+              style={{
+                color: item.label === 'Log Out' ? 'var(--brand)' : 'var(--text-1)',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: item.label === 'Log Out' ? 500 : 400,
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
             >
               {item.label}

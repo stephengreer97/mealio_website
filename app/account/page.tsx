@@ -35,13 +35,27 @@ const STORE_LABELS: Record<string, string> = {
   central_market: 'Central Market',
 };
 
+function getInitials(name: string) {
+  return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
+}
+
+function SectionCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl p-6" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+      <h2 className="text-base font-bold mb-0.5" style={{ color: 'var(--text-1)' }}>{title}</h2>
+      {subtitle && <p className="text-sm mb-5" style={{ color: 'var(--text-3)' }}>{subtitle}</p>}
+      {!subtitle && <div className="mb-4" />}
+      {children}
+    </div>
+  );
+}
+
 export default function AccountPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [portalLoading, setPortalLoading] = useState(false);
 
-  // Change password state
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -49,7 +63,6 @@ export default function AccountPage() {
   const [passwordSuccess, setPasswordSuccess] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
 
-  // Creator photo state
   const [creatorPhotoUrl, setCreatorPhotoUrl] = useState<string | null>(null);
   const [creatorPhotoPreview, setCreatorPhotoPreview] = useState('');
   const [isCreator, setIsCreator] = useState(false);
@@ -58,52 +71,32 @@ export default function AccountPage() {
   const [photoError, setPhotoError] = useState('');
   const [photoSuccess, setPhotoSuccess] = useState('');
 
-  // Deleted meals state
   const [deletedMeals, setDeletedMeals] = useState<DeletedMeal[]>([]);
   const [deletedMealsOpen, setDeletedMealsOpen] = useState(false);
   const [deletedMealsLoading, setDeletedMealsLoading] = useState(false);
 
-  // Following state
   const [followingCreators, setFollowingCreators] = useState<FollowedCreator[]>([]);
   const [followingLoading, setFollowingLoading] = useState(true);
   const [unfollowingId, setUnfollowingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    verifyAuth();
-  }, []);
+  useEffect(() => { verifyAuth(); }, []);
 
   const verifyAuth = async () => {
     try {
       const accessToken = localStorage.getItem('accessToken');
-      if (!accessToken) {
-        router.push('/');
-        return;
-      }
+      if (!accessToken) { router.push('/'); return; }
 
-      const response = await fetch('/api/auth/verify', {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
-
-      if (!response.ok) {
-        router.push('/');
-        return;
-      }
+      const response = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!response.ok) { router.push('/'); return; }
 
       const data = await response.json();
       setUser(data.user);
 
-      // Check if creator and load photo
       fetch('/api/creator/me', { headers: { Authorization: `Bearer ${accessToken}` } })
         .then(r => r.ok ? r.json() : null)
-        .then(d => {
-          if (d?.creator) {
-            setIsCreator(true);
-            setCreatorPhotoUrl(d.creator.photo_url ?? null);
-          }
-        })
+        .then(d => { if (d?.creator) { setIsCreator(true); setCreatorPhotoUrl(d.creator.photo_url ?? null); } })
         .catch(() => {});
 
-      // Load followed creators
       fetch('/api/creators/following', { headers: { Authorization: `Bearer ${accessToken}` } })
         .then(r => r.ok ? r.json() : { creators: [] })
         .then(d => setFollowingCreators(d.creators ?? []))
@@ -111,25 +104,17 @@ export default function AccountPage() {
         .finally(() => setFollowingLoading(false));
 
       setLoading(false);
-    } catch (error) {
-      router.push('/');
-    }
+    } catch { router.push('/'); }
   };
 
   const fetchDeletedMeals = async () => {
     setDeletedMealsLoading(true);
     try {
       const accessToken = localStorage.getItem('accessToken');
-      const res = await fetch('/api/meals/deleted', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const res = await fetch('/api/meals/deleted', { headers: { Authorization: `Bearer ${accessToken}` } });
       const data = await res.json();
       setDeletedMeals(data.meals ?? []);
-    } catch {
-      // ignore
-    } finally {
-      setDeletedMealsLoading(false);
-    }
+    } catch {} finally { setDeletedMealsLoading(false); }
   };
 
   const handleToggleDeletedMeals = () => {
@@ -143,11 +128,8 @@ export default function AccountPage() {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (res.ok) {
-      setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
-    } else {
-      alert('Failed to restore meal. Please try again.');
-    }
+    if (res.ok) setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
+    else alert('Failed to restore meal. Please try again.');
   };
 
   const handlePermanentDelete = async (meal: DeletedMeal) => {
@@ -157,11 +139,8 @@ export default function AccountPage() {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (res.ok) {
-      setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
-    } else {
-      alert('Failed to delete meal. Please try again.');
-    }
+    if (res.ok) setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
+    else alert('Failed to delete meal. Please try again.');
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -169,44 +148,26 @@ export default function AccountPage() {
     setPasswordError('');
     setPasswordSuccess('');
 
-    if (newPassword.length < 8) {
-      setPasswordError('New password must be at least 8 characters');
-      return;
-    }
-
-    if (newPassword !== confirmPassword) {
-      setPasswordError('Passwords do not match');
-      return;
-    }
+    if (newPassword.length < 8) { setPasswordError('New password must be at least 8 characters'); return; }
+    if (newPassword !== confirmPassword) { setPasswordError('Passwords do not match'); return; }
 
     setPasswordLoading(true);
-
     try {
       const accessToken = localStorage.getItem('accessToken');
       const response = await fetch('/api/account/change-password', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({ currentPassword, newPassword })
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ currentPassword, newPassword }),
       });
-
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to change password');
-      }
-
+      if (!response.ok) throw new Error(data.error || 'Failed to change password');
       setPasswordSuccess('Password changed successfully!');
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
     } catch (err: any) {
       setPasswordError(err.message);
-    } finally {
-      setPasswordLoading(false);
-    }
+    } finally { setPasswordLoading(false); }
   };
 
   const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -227,16 +188,10 @@ export default function AccountPage() {
           body: JSON.stringify({ imageData }),
         });
         const data = await res.json();
-        if (res.ok) {
-          setCreatorPhotoUrl(data.url);
-        } else {
-          setPhotoError(data.error || 'Upload failed.');
-        }
-      } catch {
-        setPhotoError('Upload failed.');
-      } finally {
-        setPhotoUploading(false);
-      }
+        if (res.ok) setCreatorPhotoUrl(data.url);
+        else setPhotoError(data.error || 'Upload failed.');
+      } catch { setPhotoError('Upload failed.'); }
+      finally { setPhotoUploading(false); }
     };
     reader.readAsDataURL(file);
   };
@@ -252,18 +207,10 @@ export default function AccountPage() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({ photoUrl: creatorPhotoUrl }),
       });
-      if (res.ok) {
-        setPhotoSuccess('Photo saved!');
-        setCreatorPhotoPreview('');
-      } else {
-        const d = await res.json();
-        setPhotoError(d.error || 'Save failed.');
-      }
-    } catch {
-      setPhotoError('Save failed.');
-    } finally {
-      setPhotoSaving(false);
-    }
+      if (res.ok) { setPhotoSuccess('Photo saved!'); setCreatorPhotoPreview(''); }
+      else { const d = await res.json(); setPhotoError(d.error || 'Save failed.'); }
+    } catch { setPhotoError('Save failed.'); }
+    finally { setPhotoSaving(false); }
   };
 
   const handleUnfollow = async (creatorId: string) => {
@@ -277,106 +224,152 @@ export default function AccountPage() {
       });
       if (!res.ok) throw new Error();
     } catch {
-      // Revert on failure — re-fetch to restore
       const accessToken = localStorage.getItem('accessToken');
       fetch('/api/creators/following', { headers: { Authorization: `Bearer ${accessToken}` } })
         .then(r => r.json())
         .then(d => setFollowingCreators(d.creators ?? []))
         .catch(() => {});
-    } finally {
-      setUnfollowingId(null);
-    }
+    } finally { setUnfollowingId(null); }
   };
 
-  const handleLogout = () => {
-    localStorage.clear();
-    router.push('/');
-  };
+  const handleLogout = () => { localStorage.clear(); router.push('/'); };
 
   const openManageSubscription = async () => {
     setPortalLoading(true);
     try {
       const token = localStorage.getItem('accessToken');
-      const res = await fetch('/api/payments/portal', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch('/api/payments/portal', { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (data.portalUrl) {
-        // External Stripe portal → new tab; internal /pricing → same tab
         if (data.portalUrl.startsWith('http') && !data.portalUrl.includes('mealio.co')) {
           window.open(data.portalUrl, '_blank');
         } else {
           router.push(data.portalUrl);
         }
-      }
-      else alert('Could not load billing portal. Please try again.');
-    } catch {
-      alert('Could not load billing portal. Please try again.');
-    } finally {
-      setPortalLoading(false);
-    }
+      } else alert('Could not load billing portal. Please try again.');
+    } catch { alert('Could not load billing portal. Please try again.'); }
+    finally { setPortalLoading(false); }
+  };
+
+  const inputStyle = {
+    border: '1.5px solid var(--border)',
+    background: 'var(--surface)',
+    color: 'var(--text-1)',
+    width: '100%',
+    padding: '10px 14px',
+    borderRadius: '10px',
+    fontSize: '14px',
+    outline: 'none',
+    transition: 'border-color 0.15s',
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="w-16 h-16 border-4 border-red-600 border-t-transparent rounded-full animate-spin"></div>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg)' }}>
+        <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-wk-bg">
+    <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
       <AppHeader />
 
-      <div className="max-w-6xl mx-auto px-4 py-12">
-        <h1 className="text-3xl font-bold mb-8">Account Settings</h1>
+      <div className="max-w-3xl mx-auto px-4 py-10">
+        <div className="flex items-center justify-between mb-8">
+          <h1 className="text-2xl font-bold" style={{ color: 'var(--text-1)', letterSpacing: '-0.01em' }}>Account Settings</h1>
+          <button
+            onClick={handleLogout}
+            className="text-sm font-medium px-4 py-2 rounded-xl transition-colors"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)', cursor: 'pointer' }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--brand)'; (e.currentTarget as HTMLElement).style.borderColor = 'var(--brand-border)'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'; (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)'; }}
+          >
+            Log Out
+          </button>
+        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-          {/* ── Left column ── */}
-          <div className="space-y-6">
-          
+        <div className="space-y-4">
+
           {/* Account Info */}
-          <div className="bg-white rounded-xl shadow p-6">
-            <h2 className="text-xl font-bold mb-4">Account Information</h2>
-            <dl className="space-y-3">
+          <SectionCard title="Account Information">
+            <dl className="space-y-4">
               <div>
-                <dt className="text-sm text-gray-600">Email</dt>
-                <dd className="font-medium">{user?.email}</dd>
+                <dt className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-3)' }}>Email</dt>
+                <dd className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>{user?.email}</dd>
               </div>
               <div>
-                <dt className="text-sm text-gray-600">Account Created</dt>
-                <dd className="font-medium">{new Date(user?.createdAt || '').toLocaleDateString()}</dd>
+                <dt className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-3)' }}>Account Created</dt>
+                <dd className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>{new Date(user?.createdAt || '').toLocaleDateString()}</dd>
               </div>
               <div>
-                <dt className="text-sm text-gray-600">User ID</dt>
-                <dd className="font-mono text-xs text-gray-600">{user?.id}</dd>
+                <dt className="text-xs font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-3)' }}>User ID</dt>
+                <dd className="text-xs" style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono, monospace)' }}>{user?.id}</dd>
               </div>
             </dl>
-          </div>
+          </SectionCard>
+
+          {/* Subscription */}
+          <SectionCard title="Subscription">
+            {user?.tier === 'paid' ? (
+              <div>
+                <div className="rounded-xl p-4 mb-4" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+                  <p className="font-semibold text-sm mb-0.5" style={{ color: '#14532d' }}>Full Access</p>
+                  <p className="text-sm" style={{ color: '#166534' }}>Unlimited saved meals across all stores.</p>
+                </div>
+                <button
+                  onClick={openManageSubscription}
+                  disabled={portalLoading}
+                  className="text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors disabled:opacity-50"
+                  style={{ background: 'var(--brand)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
+                >
+                  {portalLoading ? 'Loading...' : 'Manage Subscription'}
+                </button>
+                <p className="text-xs mt-2" style={{ color: 'var(--text-3)' }}>
+                  Update payment method, view billing history, or cancel anytime.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <div className="rounded-xl p-4 mb-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  <p className="font-semibold text-sm mb-0.5" style={{ color: 'var(--text-1)' }}>Free Trial</p>
+                  <p className="text-sm" style={{ color: 'var(--text-2)' }}>Up to 3 saved meals. Upgrade to remove the limit.</p>
+                </div>
+                <button
+                  onClick={() => router.push('/pricing')}
+                  className="text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors"
+                  style={{ background: 'var(--brand)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
+                >
+                  Upgrade to Full Access
+                </button>
+              </div>
+            )}
+          </SectionCard>
 
           {/* Creator Photo */}
           {isCreator && (
-            <div className="bg-white rounded-xl shadow p-6">
-              <h2 className="text-xl font-bold mb-1">Creator Photo</h2>
-              <p className="text-sm text-gray-500 mb-5">This photo appears next to your name in the Discover tab.</p>
+            <SectionCard title="Creator Photo" subtitle="This photo appears next to your name in the Discover tab.">
               <div className="flex items-center gap-5">
-                {/* Avatar */}
                 <div className="relative flex-shrink-0">
-                  <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-gray-200 bg-gray-50 flex items-center justify-center text-3xl">
+                  <div
+                    className="rounded-full overflow-hidden flex items-center justify-center"
+                    style={{ width: '72px', height: '72px', border: '2px solid var(--border)', background: 'var(--surface)' }}
+                  >
                     {(creatorPhotoPreview || creatorPhotoUrl) ? (
-                      <img
-                        src={creatorPhotoPreview || creatorPhotoUrl!}
-                        alt="Creator photo"
-                        className="w-full h-full object-cover"
-                      />
+                      <img src={creatorPhotoPreview || creatorPhotoUrl!} alt="Creator photo" className="w-full h-full object-cover" />
                     ) : (
-                      <span>👤</span>
+                      <span className="text-base font-bold" style={{ color: 'var(--text-3)' }}>
+                        {user?.email?.[0]?.toUpperCase()}
+                      </span>
                     )}
                   </div>
                   {photoUploading && (
-                    <div className="absolute inset-0 rounded-full bg-white/70 flex items-center justify-center">
-                      <div className="w-5 h-5 border-2 border-gray-200 border-t-red-600 rounded-full animate-spin" />
+                    <div className="absolute inset-0 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.75)' }}>
+                      <div className="w-5 h-5 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
                     </div>
                   )}
                 </div>
@@ -384,7 +377,8 @@ export default function AccountPage() {
                 <div className="space-y-2">
                   <label
                     htmlFor="creatorPhotoInput"
-                    className="inline-block cursor-pointer px-4 py-2 text-sm font-semibold rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                    className="inline-block cursor-pointer text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+                    style={{ border: '1.5px solid var(--border)', color: 'var(--text-1)', background: 'var(--surface-raised)' }}
                   >
                     {(creatorPhotoPreview || creatorPhotoUrl) ? 'Change Photo' : 'Upload Photo'}
                   </label>
@@ -395,74 +389,54 @@ export default function AccountPage() {
                       <button
                         onClick={handleSavePhoto}
                         disabled={photoSaving}
-                        className="px-4 py-2 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
+                        className="text-sm font-semibold px-4 py-2 rounded-xl transition-colors disabled:opacity-50"
+                        style={{ background: 'var(--brand)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
                       >
                         {photoSaving ? 'Saving…' : 'Save Photo'}
                       </button>
                     </div>
                   )}
 
-                  {photoError && <p className="text-xs text-red-600">{photoError}</p>}
-                  {photoSuccess && <p className="text-xs text-green-600">{photoSuccess}</p>}
+                  {photoError && <p className="text-xs" style={{ color: 'var(--error)' }}>{photoError}</p>}
+                  {photoSuccess && <p className="text-xs" style={{ color: 'var(--success)' }}>{photoSuccess}</p>}
                 </div>
               </div>
-            </div>
+            </SectionCard>
           )}
 
           {/* Change Password */}
-          <div className="bg-white rounded-xl shadow p-6">
-            <h2 className="text-xl font-bold mb-4">Change Password</h2>
-            <form onSubmit={handleChangePassword} className="space-y-4 max-w-md">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Current Password
-                </label>
-                <input
-                  type="password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  required
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  New Password
-                </label>
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                  minLength={8}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                />
-                <p className="text-xs text-gray-500 mt-1">At least 8 characters</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Confirm New Password
-                </label>
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  required
-                  minLength={8}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                />
-              </div>
+          <SectionCard title="Change Password">
+            <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
+              {[
+                { label: 'Current Password', value: currentPassword, onChange: setCurrentPassword, hint: undefined },
+                { label: 'New Password',     value: newPassword,     onChange: setNewPassword,     hint: 'At least 8 characters' },
+                { label: 'Confirm New Password', value: confirmPassword, onChange: setConfirmPassword, hint: undefined },
+              ].map(f => (
+                <div key={f.label}>
+                  <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>{f.label}</label>
+                  <input
+                    type="password"
+                    value={f.value}
+                    onChange={e => f.onChange(e.target.value)}
+                    required
+                    minLength={8}
+                    style={inputStyle}
+                    onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                    onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                  />
+                  {f.hint && <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>{f.hint}</p>}
+                </div>
+              ))}
 
               {passwordError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                <div className="px-4 py-3 rounded-xl text-sm" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)', color: '#9f1239' }}>
                   {passwordError}
                 </div>
               )}
-
               {passwordSuccess && (
-                <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg text-sm">
+                <div className="px-4 py-3 rounded-xl text-sm" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#14532d' }}>
                   {passwordSuccess}
                 </div>
               )}
@@ -470,86 +444,51 @@ export default function AccountPage() {
               <button
                 type="submit"
                 disabled={passwordLoading}
-                className="bg-red-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50"
+                className="text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors disabled:opacity-50"
+                style={{ background: 'var(--brand)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                onMouseEnter={e => { if (!passwordLoading) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'; }}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
               >
-                {passwordLoading ? 'Changing...' : 'Change Password'}
+                {passwordLoading ? 'Changing…' : 'Change Password'}
               </button>
             </form>
-          </div>
-
-          </div>{/* end left column */}
-
-          {/* ── Right column ── */}
-          <div className="space-y-6">
-
-          {/* Subscription Management */}
-          <div className="bg-white rounded-xl shadow p-6">
-            <h2 className="text-xl font-bold mb-4">Subscription</h2>
-            {user?.tier === 'paid' ? (
-              <div>
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
-                  <p className="text-green-900 font-medium mb-1">Full Access</p>
-                  <p className="text-green-700 text-sm">Unlimited saved meals across all stores.</p>
-                </div>
-                <button
-                  onClick={openManageSubscription}
-                  disabled={portalLoading}
-                  className="bg-red-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50 text-sm"
-                >
-                  {portalLoading ? 'Loading...' : 'Manage Subscription'}
-                </button>
-                <p className="text-xs text-gray-500 mt-2">
-                  Update payment method, view billing history, or cancel anytime.
-                </p>
-              </div>
-            ) : (
-              <div>
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
-                  <p className="text-gray-900 font-medium mb-1">Free Trial</p>
-                  <p className="text-gray-600 text-sm">Up to 3 saved meals. Upgrade to remove the limit.</p>
-                </div>
-                <button
-                  onClick={() => router.push('/pricing')}
-                  className="bg-red-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-red-700 text-sm"
-                >
-                  Upgrade to Full Access
-                </button>
-              </div>
-            )}
-          </div>
+          </SectionCard>
 
           {/* Following */}
-          <div className="bg-white rounded-xl shadow p-6">
-            <h2 className="text-xl font-bold mb-1">Following</h2>
-            <p className="text-sm text-gray-500 mb-5">Creators you follow appear in your Following tab on Discover.</p>
-
+          <SectionCard title="Following" subtitle="Creators you follow appear in your Following tab on Discover.">
             {followingLoading ? (
               <div className="flex justify-center py-6">
-                <div className="w-6 h-6 border-2 border-gray-200 border-t-red-600 rounded-full animate-spin" />
+                <div className="w-6 h-6 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
               </div>
             ) : followingCreators.length === 0 ? (
-              <p className="text-sm text-gray-400">You're not following any creators yet. Visit Discover to find some!</p>
+              <p className="text-sm" style={{ color: 'var(--text-3)' }}>You&apos;re not following any creators yet. Visit Discover to find some!</p>
             ) : (
-              <ul className="divide-y divide-gray-100">
+              <ul className="divide-y" style={{ borderTop: '1px solid var(--border)' }}>
                 {followingCreators.map(creator => (
                   <li key={creator.id} className="flex items-center justify-between gap-3 py-3">
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-full overflow-hidden flex-shrink-0 bg-gray-100 border border-gray-200 flex items-center justify-center text-lg">
+                      <div
+                        className="rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center"
+                        style={{ width: '36px', height: '36px', background: 'var(--surface)', border: '1px solid var(--border)' }}
+                      >
                         {creator.photo_url
                           ? <img src={creator.photo_url} alt={creator.display_name} className="w-full h-full object-cover" />
-                          : '👤'}
+                          : <span className="text-xs font-bold" style={{ color: 'var(--text-3)' }}>{getInitials(creator.display_name)}</span>}
                       </div>
                       <div className="min-w-0">
-                        <p className="font-semibold text-sm text-gray-900 truncate">{creator.display_name}</p>
+                        <p className="text-sm font-semibold truncate" style={{ color: 'var(--text-1)' }}>{creator.display_name}</p>
                         {creator.social_handle && (
-                          <p className="text-xs text-gray-400 truncate">@{creator.social_handle}</p>
+                          <p className="text-xs truncate" style={{ color: 'var(--text-3)' }}>@{creator.social_handle}</p>
                         )}
                       </div>
                     </div>
                     <button
                       onClick={() => handleUnfollow(creator.id)}
                       disabled={unfollowingId === creator.id}
-                      className="flex-shrink-0 text-xs px-3 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                      className="flex-shrink-0 text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                      style={{ border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface-raised)', cursor: 'pointer' }}
+                      onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface)'}
+                      onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-raised)'}
                     >
                       Unfollow
                     </button>
@@ -557,70 +496,82 @@ export default function AccountPage() {
                 ))}
               </ul>
             )}
-          </div>
+          </SectionCard>
 
           {/* Deleted Meals */}
-          <div className="bg-white rounded-xl shadow p-6">
+          <div className="rounded-2xl" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
             <button
               onClick={handleToggleDeletedMeals}
-              className="flex items-center justify-between w-full text-left"
+              className="flex items-center justify-between w-full text-left px-6 py-5"
+              style={{ background: 'none', border: 'none', cursor: 'pointer' }}
             >
-              <h2 className="text-xl font-bold">
-                Deleted Meals
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold" style={{ color: 'var(--text-1)' }}>Deleted Meals</h2>
                 {deletedMeals.length > 0 && (
-                  <span className="ml-2 text-sm font-normal bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: 'var(--surface)', color: 'var(--text-2)' }}>
                     {deletedMeals.length}
                   </span>
                 )}
-              </h2>
-              <span className="text-gray-400 text-lg">{deletedMealsOpen ? '▲' : '▼'}</span>
+              </div>
+              <svg
+                width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                style={{ color: 'var(--text-3)', transition: 'transform 0.2s', transform: deletedMealsOpen ? 'rotate(180deg)' : 'none' }}
+              >
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
             </button>
 
             {deletedMealsOpen && (
-              <div className="mt-4">
-                {deletedMealsLoading ? (
-                  <p className="text-gray-500 text-sm">Loading...</p>
-                ) : deletedMeals.length === 0 ? (
-                  <p className="text-gray-500 text-sm">No deleted meals.</p>
-                ) : (
-                  <ul className="divide-y divide-gray-100">
-                    {deletedMeals.map(meal => (
-                      <li key={meal.id} className="flex items-center justify-between py-3 gap-3">
-                        <div className="min-w-0">
-                          <p className="font-medium text-gray-900 truncate">{meal.name}</p>
-                          <p className="text-xs text-gray-500">
-                            {STORE_LABELS[meal.store_id] ?? meal.store_id} &middot; Deleted {new Date(meal.updated_at).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <div className="flex gap-2 shrink-0">
-                          <button
-                            onClick={() => handleRestoreMeal(meal)}
-                            className="text-sm px-3 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium"
-                          >
-                            Restore
-                          </button>
-                          <button
-                            onClick={() => handlePermanentDelete(meal)}
-                            className="text-sm px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium"
-                          >
-                            Delete Forever
-                          </button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              <div className="px-6 pb-5" style={{ borderTop: '1px solid var(--border)' }}>
+                <div className="pt-4">
+                  {deletedMealsLoading ? (
+                    <p className="text-sm" style={{ color: 'var(--text-3)' }}>Loading…</p>
+                  ) : deletedMeals.length === 0 ? (
+                    <p className="text-sm" style={{ color: 'var(--text-3)' }}>No deleted meals.</p>
+                  ) : (
+                    <ul className="divide-y" style={{ borderTop: '1px solid var(--border)' }}>
+                      {deletedMeals.map(meal => (
+                        <li key={meal.id} className="flex items-center justify-between py-3 gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate" style={{ color: 'var(--text-1)' }}>{meal.name}</p>
+                            <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
+                              {STORE_LABELS[meal.store_id] ?? meal.store_id} · Deleted {new Date(meal.updated_at).toLocaleDateString()}
+                            </p>
+                          </div>
+                          <div className="flex gap-2 shrink-0">
+                            <button
+                              onClick={() => handleRestoreMeal(meal)}
+                              className="text-xs px-3 py-1.5 rounded-lg font-semibold transition-colors"
+                              style={{ background: '#16a34a', color: '#fff', border: 'none', cursor: 'pointer' }}
+                              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#15803d'}
+                              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#16a34a'}
+                            >
+                              Restore
+                            </button>
+                            <button
+                              onClick={() => handlePermanentDelete(meal)}
+                              className="text-xs px-3 py-1.5 rounded-lg font-semibold transition-colors"
+                              style={{ background: 'var(--surface)', color: 'var(--error)', border: '1px solid var(--border)', cursor: 'pointer' }}
+                              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-light)'}
+                              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface)'}
+                            >
+                              Delete Forever
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             )}
           </div>
 
-          </div>{/* end right column */}
+        </div>
 
-        </div>{/* end grid */}
-
-        <p className="text-center text-xs text-gray-400 mt-8">
+        <p className="text-center text-xs mt-8" style={{ color: 'var(--text-3)' }}>
           Are you a food creator?{' '}
-          <a href="/creator/apply" className="underline hover:text-gray-600">Apply to become a Creator Partner</a>
+          <a href="/creator/apply" className="underline" style={{ color: 'var(--text-2)' }}>Apply to become a Creator Partner</a>
         </p>
       </div>
       <AppFooter />
