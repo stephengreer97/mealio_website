@@ -29,7 +29,7 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
         <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">You're in, ${displayName}! 🎉</h2>
-        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">Your creator application has been approved. You can now publish meals to the Mealio Discover feed and earn revenue based on how often your meals are saved.</p>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">Your creator application has been approved. You can now publish meals to the Mealio Discover feed and earn profit based on how often your meals are saved.</p>
 
         <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">How to publish your first meal</h3>
         <ol style="color: #666; font-size: 14px; line-height: 2; margin: 0 0 24px; padding-left: 20px;">
@@ -51,6 +51,23 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
         <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 24px;">Go to Creator Portal</a>
 
         <p style="color: #999; font-size: 12px; margin: 0;">Questions? Reply to this email or reach us at contact@mealio.co.</p>
+      </div>
+    `,
+  });
+}
+
+export async function sendCreatorRejectedEmail(to: string, displayName: string) {
+  await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to,
+    subject: 'An update on your Mealio creator application',
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${displayName},</h2>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">Thank you for your interest in becoming a Mealio Creator Partner. After reviewing your application, we're not able to move forward at this time.</p>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">We encourage you to keep growing your audience and feel free to re-apply in the future. In the meantime, you can continue saving and discovering meals on Mealio.</p>
+        <p style="color: #999; font-size: 12px; margin: 0;">Questions? Reach us at <a href="mailto:contact@mealio.co" style="color: #dd0031;">contact@mealio.co</a>.</p>
       </div>
     `,
   });

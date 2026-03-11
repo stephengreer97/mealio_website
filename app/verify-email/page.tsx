@@ -76,6 +76,10 @@ export default function VerifyEmailPage() {
         }));
 
         setStatus('success');
+
+        // Try to open the mobile app with the token. If the app is not installed
+        // (or the user is on desktop) this is a no-op and we fall back to /discover.
+        window.location.href = `mealio://verified?token=${encodeURIComponent(data.accessToken)}`;
         setTimeout(() => router.push('/discover'), 1500);
       } catch (err) {
         console.error('Verification error:', err);

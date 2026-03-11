@@ -49,6 +49,12 @@ export async function POST(request: NextRequest) {
   if (!displayName?.trim()) {
     return NextResponse.json({ error: 'Display name is required' }, { status: 400 });
   }
+  if (!photoUrl) {
+    return NextResponse.json({ error: 'A profile photo is required' }, { status: 400 });
+  }
+  if (!findUs?.trim()) {
+    return NextResponse.json({ error: 'Please provide a link where we can find you online' }, { status: 400 });
+  }
 
   const { error } = await supabase.from('creator_applications').insert({
     user_id:      decoded.userId,
@@ -68,9 +74,19 @@ export async function POST(request: NextRequest) {
     supabase.from('user_profiles').select('email').eq('id', decoded.userId).maybeSingle(),
     supabase.from('user_profiles').select('email').eq('is_admin', true),
   ]);
-  const adminEmails = (admins ?? []).map((a: { email: string }) => a.email).filter(Boolean);
-  sendCreatorApplicationEmail(displayName.trim(), profile?.email ?? '', adminEmails).catch(() => {});
-  if (profile?.email) sendCreatorAppliedEmail(profile.email, displayName.trim()).catch(() => {});
+  const dbAdminEmails = (admins ?? []).map((a: { email: string }) => a.email).filter(Boolean);
+  const envAdminEmail = process.env.ADMIN_EMAIL;
+  const adminEmails = dbAdminEmails.length > 0
+    ? dbAdminEmails
+    : envAdminEmail ? [envAdminEmail] : [];
+  await Promise.allSettled([
+    sendCreatorApplicationEmail(displayName.trim(), profile?.email ?? '', adminEmails)
+      .catch(err => log({ event: 'CREATOR:EMAIL_ADMIN', status: 'error', error: err?.message })),
+    profile?.email
+      ? sendCreatorAppliedEmail(profile.email, displayName.trim())
+          .catch(err => log({ event: 'CREATOR:EMAIL_APPLICANT', status: 'error', error: err?.message }))
+      : Promise.resolve(),
+  ]);
 
   log({ event: 'CREATOR:APPLY', status: 'success', userId: decoded.userId });
   return NextResponse.json({ ok: true }, { status: 201 });

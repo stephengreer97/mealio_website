@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
@@ -45,7 +46,7 @@ export async function PUT(
   }
 
   const body = await request.json();
-  const { name, ingredients, recipe, source, photoUrl, difficulty, tags } = body;
+  const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags } = body;
 
   const normalizeUrl = (url?: string) => {
     if (!url?.trim()) return '';
@@ -58,6 +59,7 @@ export async function PUT(
   if (ingredients) updates.ingredients = ingredients;
   if (recipe !== undefined) updates.recipe = recipe?.trim() || null;
   if (source !== undefined) updates.source = normalizeUrl(source);
+  if (story !== undefined) updates.story = story?.trim() || null;
   if (photoUrl !== undefined) updates.photo_url = photoUrl || null;
   if (difficulty !== undefined) updates.difficulty = difficulty || null;
   if (tags !== undefined) updates.tags = Array.isArray(tags) ? tags : [];
@@ -74,6 +76,7 @@ export async function PUT(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  revalidateTag('trending-meals', 'max');
   return NextResponse.json({ meal });
 }
 
@@ -101,5 +104,6 @@ export async function DELETE(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  revalidateTag('trending-meals', 'max');
   return NextResponse.json({ ok: true });
 }

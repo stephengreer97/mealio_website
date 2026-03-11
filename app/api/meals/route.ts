@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     .select('*, creator_id')
     .eq('user_id', decoded.userId)
     .eq('is_active', true)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: false });
 
   if (error) {
     log({ event: 'MEAL:GET', status: 'error', userId: decoded.userId, error });
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { name, storeId, ingredients, createdAt, presetMealId, website, recipe, photoUrl, author, difficulty, tags, creatorId } = body;
+  const { name, storeId, ingredients, createdAt, presetMealId, website, recipe, story, photoUrl, author, difficulty, tags, creatorId } = body;
 
   if (!name || !storeId || !Array.isArray(ingredients)) {
     return NextResponse.json({ error: 'name, storeId, and ingredients are required' }, { status: 400 });
@@ -86,6 +86,7 @@ export async function POST(request: NextRequest) {
       ...(presetMealId ? { preset_meal_id: presetMealId } : {}),
       ...(website   ? { website }   : {}),
       ...(recipe    ? { recipe }    : {}),
+      ...(story     ? { story }     : {}),
       ...(resolvedPhotoUrl  ? { photo_url: resolvedPhotoUrl } : {}),
       ...(author     ? { author }     : {}),
       ...(difficulty ? { difficulty } : {}),

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { getCachedTrendingMeals } from '@/lib/trending-cache';
 
 // PATCH /api/creator/me — update creator profile fields
 export async function PATCH(request: NextRequest) {
@@ -59,17 +60,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ creator: null, application: application ?? null });
   }
 
-  // Get their meals — direct query for full editable fields + RPC for trending score
-  const [{ data: myMealsRaw }, { data: allMealsRpc }] = await Promise.all([
+  // Get their meals — direct query for full editable fields + cached RPC for trending score
+  const [{ data: myMealsRaw }, allMealsRpc] = await Promise.all([
     supabase
       .from('preset_meals')
-      .select('id, name, photo_url, difficulty, ingredients, recipe, source, tags')
+      .select('id, name, photo_url, difficulty, ingredients, recipe, source, story, tags')
       .eq('creator_id', creator.id)
       .order('created_at', { ascending: false }),
-    supabase.rpc('get_preset_meals_with_trending', { partner_only: false }),
+    getCachedTrendingMeals().catch(() => []),
   ]);
 
-  const allScores = ((allMealsRpc ?? []) as { id: string; trending_score: number }[]);
+  const allScores = allMealsRpc;
   const rawScores = allScores.map(m => Number(m.trending_score));
   const minScore = rawScores.length > 0 ? Math.min(...rawScores) : 0;
   const maxScore = rawScores.length > 0 ? Math.max(...rawScores) : 1;

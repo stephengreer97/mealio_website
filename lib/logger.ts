@@ -42,6 +42,8 @@ export type EventType =
   | 'PHOTO:UPLOAD'
   // ── Creator ───────────────────────────────────────────────────────────────
   | 'CREATOR:APPLY'
+  | 'CREATOR:EMAIL_ADMIN'
+  | 'CREATOR:EMAIL_APPLICANT'
   | 'CREATOR:MEAL_CREATE'
   | 'CREATOR:MEAL_UPDATE'
   | 'CREATOR:MEAL_DELETE'

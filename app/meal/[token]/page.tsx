@@ -56,6 +56,7 @@ interface SharedMeal {
   author?: string | null;
   difficulty?: number | null;
   website?: string | null;
+  story?: string | null;
   recipe?: string | null;
   photo_url?: string | null;
 }
@@ -238,8 +239,15 @@ export default function SharedMealPage() {
               rel="noopener noreferrer"
               className="inline-block text-xs text-red-600 hover:text-red-700 mb-3 truncate max-w-full"
             >
-              📎 {meal.website.replace(/^https?:\/\/(www\.)?/, '')}
+              {meal.website.replace(/^https?:\/\/(www\.)?/, '')}
             </a>
+          )}
+
+          {/* Story */}
+          {meal.story && (
+            <p className="text-sm text-gray-500 italic whitespace-pre-wrap leading-relaxed mb-4">
+              {meal.story}
+            </p>
           )}
 
           {/* Ingredients */}

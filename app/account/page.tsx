@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
+import PasswordStrength from '@/components/PasswordStrength';
 
 interface User {
   id: string;
@@ -275,7 +276,7 @@ export default function AccountPage() {
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
       <AppHeader />
 
-      <div className="max-w-3xl mx-auto px-4 py-10">
+      <div className="max-w-5xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-2xl font-bold" style={{ color: 'var(--text-1)', letterSpacing: '-0.01em' }}>Account Settings</h1>
           <button
@@ -289,7 +290,10 @@ export default function AccountPage() {
           </button>
         </div>
 
-        <div className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+
+          {/* Left column */}
+          <div className="space-y-4">
 
           {/* Account Info */}
           <SectionCard title="Account Information">
@@ -406,29 +410,53 @@ export default function AccountPage() {
             </SectionCard>
           )}
 
+          </div>{/* end left column */}
+
+          {/* Right column */}
+          <div className="space-y-4">
+
           {/* Change Password */}
           <SectionCard title="Change Password">
             <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
-              {[
-                { label: 'Current Password', value: currentPassword, onChange: setCurrentPassword, hint: undefined },
-                { label: 'New Password',     value: newPassword,     onChange: setNewPassword,     hint: 'At least 8 characters' },
-                { label: 'Confirm New Password', value: confirmPassword, onChange: setConfirmPassword, hint: undefined },
-              ].map(f => (
-                <div key={f.label}>
-                  <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>{f.label}</label>
-                  <input
-                    type="password"
-                    value={f.value}
-                    onChange={e => f.onChange(e.target.value)}
-                    required
-                    minLength={8}
-                    style={inputStyle}
-                    onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
-                    onBlur={e => (e.target.style.borderColor = 'var(--border)')}
-                  />
-                  {f.hint && <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>{f.hint}</p>}
-                </div>
-              ))}
+              <div>
+                <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>Current Password</label>
+                <input
+                  type="password"
+                  value={currentPassword}
+                  onChange={e => setCurrentPassword(e.target.value)}
+                  required
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                  onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>New Password</label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  required
+                  minLength={8}
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                  onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                />
+                <PasswordStrength password={newPassword} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>Confirm New Password</label>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={e => setConfirmPassword(e.target.value)}
+                  required
+                  minLength={8}
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                  onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                />
+              </div>
 
               {passwordError && (
                 <div className="px-4 py-3 rounded-xl text-sm" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)', color: '#9f1239' }}>
@@ -567,7 +595,9 @@ export default function AccountPage() {
             )}
           </div>
 
-        </div>
+          </div>{/* end right column */}
+
+        </div>{/* end grid */}
 
         <p className="text-center text-xs mt-8" style={{ color: 'var(--text-3)' }}>
           Are you a food creator?{' '}

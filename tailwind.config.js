@@ -9,10 +9,10 @@ module.exports = {
     extend: {
       colors: {
         ml: {
-          brand:          '#E8390E',
-          'brand-dark':   '#C4300C',
-          'brand-light':  '#FFF2EE',
-          'brand-border': '#FCCAB8',
+          brand:          '#DD0031',
+          'brand-dark':   '#B5002A',
+          'brand-light':  '#FFF0F2',
+          'brand-border': '#FECDD3',
           bg:             '#FAFAF9',
           surface:        '#F4F3F1',
           raised:         '#FFFFFF',
@@ -33,9 +33,9 @@ module.exports = {
           text:    '#18181B',
           text2:   '#52525B',
           text3:   '#A1A1AA',
-          red:     '#E8390E',
-          'red-dk':'#C4300C',
-          'red-bg':'#FFF2EE',
+          red:     '#DD0031',
+          'red-dk':'#B5002A',
+          'red-bg':'#FFF0F2',
         },
       },
       fontFamily: {

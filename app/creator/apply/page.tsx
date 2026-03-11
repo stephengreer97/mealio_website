@@ -84,6 +84,8 @@ export default function CreatorApply() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!displayName.trim()) { setError('Display name is required.'); return; }
+    if (!photoUrl) { setError('A profile photo is required.'); return; }
+    if (!findUs.trim()) { setError('Please tell us where we can find you online.'); return; }
     if (!agreedToTerms) { setError('You must agree to the Terms and Conditions to apply.'); return; }
     setError('');
     setSubmitting(true);
@@ -140,7 +142,7 @@ export default function CreatorApply() {
             <div style={{ background: 'white', borderRadius: '12px', padding: '28px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '20px' }}>
               <h2 style={{ margin: '0 0 8px', fontSize: '18px', color: '#222' }}>Share your recipes with the world</h2>
               <p style={{ margin: 0, color: '#666', lineHeight: 1.6, fontSize: '14px' }}>
-                As a Mealio creator partner, your meals appear in the Discover tab for all users. Popular meals earn a share of quarterly subscription revenue — the more people add your meals, the more you earn.
+                As a Mealio creator partner, your meals appear in the Discover tab for all users. Popular meals earn a share of quarterly subscription profit — the more people add your meals, the more you earn.
               </p>
             </div>
 
@@ -149,7 +151,7 @@ export default function CreatorApply() {
                 {/* Photo upload */}
                 <div style={{ marginBottom: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#444', alignSelf: 'flex-start' }}>
-                    Profile Photo <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span>
+                    Profile Photo <span style={{ color: '#dd0031' }}>*</span>
                   </label>
                   <label htmlFor="photoInput" style={{ cursor: 'pointer', position: 'relative', display: 'inline-block' }}>
                     <div style={{
@@ -190,7 +192,7 @@ export default function CreatorApply() {
 
                 <div style={{ marginBottom: '20px' }}>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
-                    How can we find you? <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span>
+                    How can we find you? <span style={{ color: '#dd0031' }}>*</span>
                   </label>
                   <input value={findUs} onChange={e => setFindUs(e.target.value)} placeholder="e.g. instagram.com/chefsarah, chefsarah.com" style={{ width: '100%', padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box', outline: 'none' }} />
                 </div>

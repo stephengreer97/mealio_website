@@ -43,7 +43,7 @@ export default function ExtensionNudge() {
     }
   }, []);
 
-  if (!show) return null;
+  if (!show || mobile) return null;
 
   return (
     <div
@@ -59,40 +59,31 @@ export default function ExtensionNudge() {
         style={{ background: 'var(--brand)' }}
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/>
-          <line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/>
-          <line x1="10.88" y1="21.94" x2="15.46" y2="14"/>
+          <path d="M20 7H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/>
+          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
         </svg>
       </div>
 
       {/* Text */}
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>Get the Mealio extension</p>
-        {mobile ? (
-          <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
-            Open Mealio on a desktop browser to install the extension and add meals to your cart in one click.
-          </p>
-        ) : (
-          <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
-            Add meals to your cart automatically at 36 supported stores.
-          </p>
-        )}
+        <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
+          Add meals to your cart automatically at 36 supported stores.
+        </p>
       </div>
 
-      {/* CTA — desktop only */}
-      {!mobile && (
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
-          style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none' }}
-          onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
-          onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
-        >
-          {label}
-        </a>
-      )}
+      {/* CTA */}
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+        style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none' }}
+        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
+      >
+        {label}
+      </a>
 
       {/* Dismiss */}
       <button

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface CreatorInfo {
   id: string;
@@ -69,6 +69,7 @@ function MealDetailOverlay({
 }: {
   meal: FullPresetMeal; onClose: () => void; onAdd?: () => void;
 }) {
+  const dragRef = useRef(false);
   const sourceHost = meal.source ? (() => {
     try { return new URL(meal.source!).hostname.replace('www.', ''); } catch { return meal.source; }
   })() : null;
@@ -80,7 +81,8 @@ function MealDetailOverlay({
     <div
       className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center sm:p-4"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={onClose}
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
     >
       <div
         className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"
@@ -172,7 +174,7 @@ function MealDetailOverlay({
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
               onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
-              Add to My Meals
+              Save to My Meals
             </button>
           </div>
         )}
@@ -192,6 +194,7 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
 
   const [selectedMeal, setSelectedMeal] = useState<FullPresetMeal | null>(null);
   const [loadingMeal, setLoadingMeal] = useState(false);
+  const dragRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -257,7 +260,8 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
       <div
         className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4"
         style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-        onClick={onClose}
+        onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+        onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
       >
         <div
           className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"

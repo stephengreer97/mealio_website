@@ -11,7 +11,7 @@ export async function GET(
 
   const { data: meal, error } = await supabase
     .from('preset_meals')
-    .select('id, name, author, creator_id, ingredients, source, recipe, photo_url, difficulty, tags, creators!creator_id ( display_name, social_handle )')
+    .select('id, name, author, creator_id, ingredients, source, story, recipe, photo_url, difficulty, tags, creators!creator_id ( display_name, social_handle )')
     .eq('id', id)
     .single();
 

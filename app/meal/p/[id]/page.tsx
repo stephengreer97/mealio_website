@@ -55,6 +55,7 @@ interface PresetMeal {
   ingredients: Ingredient[];
   difficulty?: number | null;
   source?: string | null;
+  story?: string | null;
   recipe?: string | null;
   photo_url?: string | null;
 }
@@ -144,6 +145,7 @@ export default function SharedPresetMealPage() {
           ...(meal!.author     ? { author:    meal!.author }     : {}),
           ...(meal!.difficulty ? { difficulty: meal!.difficulty } : {}),
           ...(meal!.source     ? { website:   meal!.source }     : {}),
+          ...(meal!.story      ? { story:     meal!.story }      : {}),
           ...(meal!.recipe     ? { recipe:    meal!.recipe }     : {}),
           ...(meal!.photo_url  ? { photoUrl:  meal!.photo_url }  : {}),
         }),
@@ -238,8 +240,15 @@ export default function SharedPresetMealPage() {
               rel="noopener noreferrer"
               className="inline-block text-xs text-red-600 hover:text-red-700 mb-3 truncate max-w-full"
             >
-              📎 {meal.source.replace(/^https?:\/\/(www\.)?/, '')}
+              {meal.source.replace(/^https?:\/\/(www\.)?/, '')}
             </a>
+          )}
+
+          {/* Story */}
+          {meal.story && (
+            <p className="text-sm text-gray-500 italic whitespace-pre-wrap leading-relaxed mb-4">
+              {meal.story}
+            </p>
           )}
 
           {/* Ingredients */}

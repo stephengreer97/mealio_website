@@ -45,7 +45,7 @@ export default function PrivacyPage() {
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
           <li style={{ marginBottom: '6px' }}><strong>Authentication data:</strong> Session tokens, refresh tokens, and device identifiers used to keep you logged in securely.</li>
           <li style={{ marginBottom: '6px' }}><strong>Log data:</strong> IP addresses, user agent strings, and timestamps associated with authentication events (login, logout, token refresh). These are used for security monitoring and abuse prevention.</li>
-          <li style={{ marginBottom: '6px' }}><strong>Usage data:</strong> Information about how you interact with the Service, including which meals you save and which grocery stores you use. This data is used to calculate creator revenue share and improve the Service.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Usage data:</strong> Information about how you interact with the Service, including which meals you save and which grocery stores you use. This data is used to calculate creator profit share and improve the Service.</li>
         </ul>
 
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>1.3 Information from Third Parties</h3>
@@ -61,7 +61,7 @@ export default function PrivacyPage() {
           <li style={{ marginBottom: '6px' }}>Provide, operate, and maintain the Service;</li>
           <li style={{ marginBottom: '6px' }}>Authenticate your identity and maintain the security of your account;</li>
           <li style={{ marginBottom: '6px' }}>Process subscription payments and manage your subscription status;</li>
-          <li style={{ marginBottom: '6px' }}>Calculate and distribute Creator Partner revenue share;</li>
+          <li style={{ marginBottom: '6px' }}>Calculate and distribute Creator Partner profit share;</li>
           <li style={{ marginBottom: '6px' }}>Send you transactional emails, including login verification codes and account notifications;</li>
           <li style={{ marginBottom: '6px' }}>Respond to your support requests;</li>
           <li style={{ marginBottom: '6px' }}>Detect, investigate, and prevent fraudulent or unauthorized activity;</li>

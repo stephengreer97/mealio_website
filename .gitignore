@@ -37,3 +37,22 @@ yarn-error.log*
 next-env.d.ts
 
 /logs/
+
+# Supabase
+.supabase/
+
+# Stripe
+.stripe/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+
+# Package manager locks (keep only one — uncomment your preferred)
+# yarn.lock
+# pnpm-lock.yaml

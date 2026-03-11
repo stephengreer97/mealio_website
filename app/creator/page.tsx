@@ -24,6 +24,7 @@ interface CreatorMeal {
   ingredients: Ingredient[];
   recipe: string | null;
   source: string | null;
+  story: string | null;
   tags?: string[];
 }
 
@@ -131,6 +132,47 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
   );
 }
 
+// ── Shared image helpers ──────────────────────────────────────────────────────
+
+function compressImage(dataUrl: string, maxPx = 1200, quality = 0.82): Promise<string> {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.width  * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+  });
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target?.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadImageFile(file: File, token: string): Promise<string> {
+  const dataUrl = await fileToDataUrl(file);
+  const compressed = await compressImage(dataUrl);
+  const res = await fetch('/api/images/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ imageData: compressed }),
+  });
+  if (res.status === 413) throw new Error('Image is too large. Please choose a smaller photo.');
+  if (!res.ok) throw new Error('Photo upload failed. Please try again.');
+  const data = await res.json();
+  if (!data.url) throw new Error('Photo upload failed. Please try again.');
+  return data.url;
+}
+
 // ── Edit Modal ────────────────────────────────────────────────────────────────
 
 function EditPresetMealModal({
@@ -140,12 +182,15 @@ function EditPresetMealModal({
   onSave: (updated: CreatorMeal) => void;
   onClose: () => void;
 }) {
+  const dragRef = useRef(false);
   const [name, setName]           = useState(meal.name);
   const [difficulty, setDifficulty] = useState<number | null>(meal.difficulty ?? null);
   const [recipe, setRecipe]       = useState(meal.recipe ?? '');
   const [source, setSource]       = useState(meal.source ?? '');
+  const [story, setStory]         = useState(meal.story ?? '');
   const [photoUrl, setPhotoUrl]   = useState(meal.photo_url ?? '');
   const [photoPreview, setPhotoPreview] = useState(meal.photo_url ?? '');
+  const [pendingPhotoDataUrl, setPendingPhotoDataUrl] = useState<string | null>(null);
   const [ingredients, setIngredients] = useState<Ingredient[]>(
     meal.ingredients.map(i => ({ ...i }))
   );
@@ -169,28 +214,31 @@ function EditPresetMealModal({
     reader.onload = ev => {
       const dataUrl = ev.target?.result as string;
       setPhotoPreview(dataUrl);
-      uploadPhoto(dataUrl).then(url => { if (url) setPhotoUrl(url); });
+      setPendingPhotoDataUrl(dataUrl);
+      setPhotoUrl('');
     };
     reader.readAsDataURL(file);
   };
 
-  const uploadPhoto = async (dataUrl: string): Promise<string | null> => {
-    try {
-      const res = await fetch('/api/images/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-        body: JSON.stringify({ imageData: dataUrl }),
-      });
-      const data = await res.json();
-      return data.url ?? null;
-    } catch { return null; }
+  const uploadPhoto = async (dataUrl: string): Promise<string> => {
+    const compressed = await compressImage(dataUrl);
+    const res = await fetch('/api/images/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+      body: JSON.stringify({ imageData: compressed }),
+    });
+    if (res.status === 413) throw new Error('Image is too large. Please choose a smaller photo.');
+    if (!res.ok) throw new Error('Photo upload failed. Please try again.');
+    const data = await res.json();
+    if (!data.url) throw new Error('Photo upload failed. Please try again.');
+    return data.url;
   };
 
   const generatePhoto = async () => {
     if (generating || !name.trim()) return;
     setGenerating(true);
     setThumbs([]); setFulls([]); setSelectedIdx(null);
-    setPhotoUrl(''); setPhotoPreview('');
+    setPhotoUrl(''); setPhotoPreview(''); setPendingPhotoDataUrl(null);
     try {
       const res = await fetch('/api/meals/generate-photo', {
         method: 'POST',
@@ -212,12 +260,16 @@ function EditPresetMealModal({
   };
 
   const selectSuggestion = (i: number) => {
+    setPendingPhotoDataUrl(null);
     if (selectedIdx === i) {
       setSelectedIdx(null);
       setPhotoUrl('');
+      setPhotoPreview('');
     } else {
       setSelectedIdx(i);
-      setPhotoUrl(fulls[i] ?? thumbs[i]);
+      const url = fulls[i] ?? thumbs[i];
+      setPhotoUrl(url);
+      setPhotoPreview(url);
     }
   };
 
@@ -252,6 +304,16 @@ function EditPresetMealModal({
         if (!u) return '';
         return u.startsWith('http://') || u.startsWith('https://') ? u : `https://${u}`;
       };
+
+      // If the user picked a new photo, upload it now (avoids race condition)
+      let finalPhotoUrl = photoUrl || null;
+      if (pendingPhotoDataUrl) {
+        const uploaded = await uploadPhoto(pendingPhotoDataUrl);
+        finalPhotoUrl = uploaded;
+        setPhotoUrl(uploaded);
+        setPendingPhotoDataUrl(null);
+      }
+
       const res = await fetch(`/api/creator/meals/${meal.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
@@ -260,15 +322,16 @@ function EditPresetMealModal({
           ingredients,
           recipe:      recipe.trim() || null,
           source:      normalizeUrl(source),
-          photoUrl:    photoUrl || null,
+          story:       story.trim() || null,
+          photoUrl:    finalPhotoUrl,
           difficulty:  difficulty ?? null,
           tags:        selectedTags,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Failed to save.'); return; }
-      onSave({ ...meal, ...data.meal, ingredients, recipe: recipe.trim() || null, source: normalizeUrl(source), tags: selectedTags });
-    } catch { setError('Something went wrong. Please try again.'); }
+      onSave({ ...meal, ...data.meal, ingredients, recipe: recipe.trim() || null, source: normalizeUrl(source), story: story.trim() || null, tags: selectedTags });
+    } catch (err) { setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.'); }
     finally { setSaving(false); }
   };
 
@@ -280,7 +343,8 @@ function EditPresetMealModal({
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '16px' }}
-      onClick={e => { if (e.target === e.currentTarget) handleClose(); }}
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; handleClose(); }}
     >
       <div style={{ background: 'white', borderRadius: '16px', boxShadow: '0 20px 60px rgba(0,0,0,0.2)', width: '100%', maxWidth: '520px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
 
@@ -308,7 +372,7 @@ function EditPresetMealModal({
                   <img src={photoPreview} alt="preview" style={{ width: '52px', height: '52px', objectFit: 'cover', borderRadius: '8px', display: 'block', border: '1px solid #eee' }} />
                   <button
                     type="button"
-                    onClick={() => { setPhotoPreview(''); setPhotoUrl(''); }}
+                    onClick={() => { setPhotoPreview(''); setPhotoUrl(''); setPendingPhotoDataUrl(null); }}
                     style={{ position: 'absolute', top: '-7px', right: '-7px', width: '20px', height: '20px', borderRadius: '50%', background: '#333', color: 'white', border: 'none', cursor: 'pointer', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                     title="Remove photo"
                   >✕</button>
@@ -364,6 +428,12 @@ function EditPresetMealModal({
           <div>
             <label style={modalLabelStyle}>Recipe URL <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
             <input type="url" value={source} onChange={e => setSource(e.target.value)} placeholder="https://…" style={modalInputStyle} />
+          </div>
+
+          {/* Story */}
+          <div>
+            <label style={modalLabelStyle}>Story <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
+            <textarea value={story} onChange={e => setStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…" style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
           </div>
 
           {/* Recipe */}
@@ -448,6 +518,7 @@ export default function CreatorPortal() {
   const [mealName, setMealName]       = useState('');
   const [mealRecipe, setMealRecipe]   = useState('');
   const [mealSource, setMealSource]   = useState('');
+  const [mealStory, setMealStory]     = useState('');
   const [mealDifficulty, setMealDifficulty] = useState<number | null>(null);
   const [mealIngredients, setMealIngredients] = useState<Ingredient[]>([
     { productName: '', searchTerm: '', quantity: 1 },
@@ -552,17 +623,7 @@ export default function CreatorPortal() {
       let photoUrl: string | null = selectedIdx !== null ? (fulls[selectedIdx] ?? thumbs[selectedIdx]) : null;
 
       if (photoFile) {
-        const formData = new FormData();
-        formData.append('file', photoFile);
-        const uploadRes = await fetch('/api/images/upload', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
-        });
-        if (uploadRes.ok) {
-          const uploadData = await uploadRes.json();
-          photoUrl = uploadData.url;
-        }
+        photoUrl = await uploadImageFile(photoFile, token!);
       }
 
       const res = await fetch('/api/creator/meals', {
@@ -577,6 +638,7 @@ export default function CreatorPortal() {
           })),
           recipe:      mealRecipe.trim() || null,
           source:      mealSource.trim() || '',
+          story:       mealStory.trim() || null,
           difficulty:  mealDifficulty,
           photoUrl,
           tags:        mealTags,
@@ -590,14 +652,14 @@ export default function CreatorPortal() {
       }
 
       setPublishSuccess(`"${mealName}" is now live in Discover!`);
-      setMealName(''); setMealRecipe(''); setMealSource('');
+      setMealName(''); setMealRecipe(''); setMealSource(''); setMealStory('');
       setMealDifficulty(null); setMealTags([]); setPhotoFile(null); setPhotoPreview('');
       setThumbs([]); setFulls([]); setSelectedIdx(null);
       setMealIngredients([{ productName: '', searchTerm: '', quantity: 1 }]);
       setShowForm(false);
       loadPortal();
-    } catch {
-      setPublishError('Something went wrong. Please try again.');
+    } catch (err) {
+      setPublishError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
       setPublishing(false);
     }
@@ -672,7 +734,7 @@ export default function CreatorPortal() {
         {stats && (
           <div style={{ background: '#fff8f0', border: '1px solid #ffe0b2', borderRadius: '10px', padding: '16px', marginBottom: '24px', fontSize: '13px', color: '#555', lineHeight: 1.8 }}>
             <strong style={{ color: '#dd0031', display: 'block', marginBottom: '8px' }}>How earnings work</strong>
-            <div>Each quarter, 1/3 of subscription revenue goes to the creator pool. Your share is split evenly between two factors:</div>
+            <div>Each quarter, 1/3 of subscription profit goes to the creator pool. Your share is split evenly between two factors:</div>
             <div style={{ margin: '10px 0', fontFamily: 'monospace', fontSize: '12px', background: '#fff3e0', borderRadius: '6px', padding: '10px 12px', lineHeight: 2 }}>
               <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.05em', color: '#bbb', marginBottom: '4px', fontFamily: 'sans-serif' }}>EXAMPLE</div>
               <div>Quarterly saves:&nbsp; 485 of 16,420 → 2.95% × 50% = <strong>1.48%</strong></div>
@@ -779,6 +841,12 @@ export default function CreatorPortal() {
                 <button type="button" onClick={addIngredientRow} style={{ fontSize: '13px', color: '#dd0031', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                   + Add ingredient
                 </button>
+              </div>
+
+              {/* Story */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={labelStyle}>Story <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
+                <textarea value={mealStory} onChange={e => setMealStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…" style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
               </div>
 
               {/* Recipe */}

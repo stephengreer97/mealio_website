@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { name, ingredients, recipe, source, photoUrl, difficulty, tags } = body;
+  const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags } = body;
 
   if (!name?.trim() || !Array.isArray(ingredients) || ingredients.length === 0) {
     return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
@@ -49,6 +50,7 @@ export async function POST(request: NextRequest) {
       ingredients,
       source:      normalizeUrl(source),
       recipe:      recipe?.trim() || null,
+      story:       story?.trim() || null,
       photo_url:   photoUrl || null,
       difficulty:  difficulty || null,
       ...(Array.isArray(tags) && tags.length ? { tags } : {}),
@@ -61,5 +63,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  revalidateTag('trending-meals', 'max');
   return NextResponse.json({ meal }, { status: 201 });
 }

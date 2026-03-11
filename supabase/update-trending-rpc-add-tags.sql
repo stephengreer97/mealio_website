@@ -1,7 +1,7 @@
 DROP FUNCTION IF EXISTS public.get_preset_meals_with_trending(boolean);
 
 CREATE OR REPLACE FUNCTION public.get_preset_meals_with_trending(partner_only boolean DEFAULT false)
- RETURNS TABLE(id uuid, name text, source text, recipe text, ingredients jsonb, photo_url text, author text, difficulty integer, creator_id uuid, creator_name text, creator_social text, trending_score numeric, tags text[])
+ RETURNS TABLE(id uuid, name text, source text, recipe text, story text, ingredients jsonb, photo_url text, author text, difficulty integer, creator_id uuid, creator_name text, creator_social text, trending_score numeric, tags text[])
  LANGUAGE plpgsql
  SET search_path TO 'public'
 AS $function$
@@ -12,6 +12,7 @@ BEGIN
     pm.name,
     pm.source,
     pm.recipe,
+    pm.story,
     pm.ingredients,
     pm.photo_url,
     pm.author,

@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
     // Fetch profile for email and tier
     const { data: profile } = await supabase
       .from('user_profiles')
-      .select('email, subscription_tier')
+      .select('email, subscription_tier, is_admin')
       .eq('id', userId)
       .single();
 
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
 
     const response = NextResponse.json({
       success: true,
-      user: { id: userId, email, tier: subscription_tier ?? 'free' },
+      user: { id: userId, email, tier: subscription_tier ?? 'free', isAdmin: profile.is_admin ?? false },
       accessToken,
     });
 

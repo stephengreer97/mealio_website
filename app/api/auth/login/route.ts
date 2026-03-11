@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
           const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || '');
           const sessionToken = await new SignJWT({ sub: userId, email, type: 'session' })
             .setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('90d').sign(JWT_SECRET);
-          const response = NextResponse.json({ success: true, user: { id: userId, email, tier }, accessToken });
+          const response = NextResponse.json({ success: true, user: { id: userId, email, tier, isAdmin }, accessToken });
           response.cookies.set('mealio_session', sessionToken, {
             httpOnly: true, secure: process.env.NODE_ENV === 'production',
             sameSite: 'lax', maxAge: 60 * 60 * 24 * 90, path: '/',
@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
 
     const response = NextResponse.json({
       success: true,
-      user: { id: userId, email, tier },
+      user: { id: userId, email, tier, isAdmin },
       accessToken,
     });
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-type Tab = 'applications' | 'meals' | 'stats';
+type Tab = 'applications' | 'meals' | 'stats' | 'broadcast';
 
 interface Application {
   id: string;
@@ -73,6 +73,10 @@ export default function AdminPage() {
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
+  const [broadcastMessage, setBroadcastMessage] = useState('');
+  const [broadcastSaving, setBroadcastSaving] = useState(false);
+  const [broadcastStatus, setBroadcastStatus] = useState('');
+
   useEffect(() => {
     verifyAdmin();
   }, []);
@@ -135,6 +139,27 @@ export default function AdminPage() {
     setTab(t);
     if (t === 'meals' && meals.length === 0) loadMeals();
     if (t === 'stats' && !stats) loadStats();
+    if (t === 'broadcast') loadBroadcast();
+  };
+
+  const loadBroadcast = async () => {
+    const res = await fetch('/api/broadcast');
+    if (res.ok) {
+      const data = await res.json();
+      setBroadcastMessage(data.message ?? '');
+    }
+  };
+
+  const saveBroadcast = async () => {
+    setBroadcastSaving(true);
+    setBroadcastStatus('');
+    const res = await fetch('/api/admin/broadcast', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+      body: JSON.stringify({ message: broadcastMessage }),
+    });
+    setBroadcastSaving(false);
+    setBroadcastStatus(res.ok ? 'Saved.' : 'Failed to save.');
   };
 
   const handleApplication = async (id: string, action: 'approve' | 'reject') => {
@@ -200,6 +225,7 @@ export default function AdminPage() {
         <button style={tabStyle('applications')} onClick={() => switchTab('applications')}>Applications</button>
         <button style={tabStyle('meals')} onClick={() => switchTab('meals')}>Meals</button>
         <button style={tabStyle('stats')} onClick={() => switchTab('stats')}>Stats</button>
+        <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
       </div>
 
       <div style={{ maxWidth: '1000px', margin: '32px auto', padding: '0 20px' }}>
@@ -213,7 +239,7 @@ export default function AdminPage() {
             {applications.length === 0 ? (
               <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No applications yet.</p>
             ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+              <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
                 <thead>
                   <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
                     {['Email', 'Display Name', 'Phone', 'How to find them', 'Applied', 'Status', ''].map(h => (
@@ -261,7 +287,7 @@ export default function AdminPage() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             )}
           </div>
         )}
@@ -275,7 +301,7 @@ export default function AdminPage() {
             {meals.length === 0 ? (
               <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>Loading…</p>
             ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+              <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
                 <thead>
                   <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
                     {['Name', 'Author', 'Difficulty', 'Trending Score', ''].map(h => (
@@ -302,7 +328,7 @@ export default function AdminPage() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             )}
           </div>
         )}
@@ -440,7 +466,7 @@ export default function AdminPage() {
                     {stats.leaderboard.length === 0 ? (
                       <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves yet.</p>
                     ) : (
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
                         <thead>
                           <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
                             {['#', 'Creator', 'Qtr Saves', 'Qtr %', 'All-time Saves', 'All-time %', 'Combined Share'].map(h => (
@@ -461,7 +487,7 @@ export default function AdminPage() {
                             </tr>
                           ))}
                         </tbody>
-                      </table>
+                      </table></div>
                     )}
                   </div>
                 )}
@@ -475,7 +501,7 @@ export default function AdminPage() {
                   {stats.leaderboardQtr.length === 0 ? (
                     <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves this quarter.</p>
                   ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
                       <thead>
                         <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
                           {['#', 'Creator', `Saves (${stats.quarterLabel})`, 'Share of qtr'].map(h => (
@@ -493,7 +519,7 @@ export default function AdminPage() {
                           </tr>
                         ))}
                       </tbody>
-                    </table>
+                    </table></div>
                   )}
                 </div>
 
@@ -507,7 +533,7 @@ export default function AdminPage() {
                     {stats.leaderboardAlltime.length === 0 ? (
                       <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves yet.</p>
                     ) : (
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
                         <thead>
                           <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
                             {['#', 'Creator', 'Saves (all time)', 'All-time %'].map(h => (
@@ -525,13 +551,52 @@ export default function AdminPage() {
                             </tr>
                           ))}
                         </tbody>
-                      </table>
+                      </table></div>
                     )}
                   </div>
                 )}
               </>
             )}
           </>
+        )}
+
+        {/* Broadcast Tab */}
+        {tab === 'broadcast' && (
+          <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+            <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Extension Broadcast Message</h2>
+            <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
+              If set, this message is shown at the top of the extension for all users. Clear the field and save to remove it.
+            </p>
+            <textarea
+              value={broadcastMessage}
+              onChange={e => { setBroadcastMessage(e.target.value); setBroadcastStatus(''); }}
+              placeholder="Enter a message to broadcast… (leave empty to clear)"
+              rows={4}
+              style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px 12px', fontSize: '14px', fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '12px' }}>
+              <button
+                onClick={saveBroadcast}
+                disabled={broadcastSaving}
+                style={{ background: '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: broadcastSaving ? 'not-allowed' : 'pointer', opacity: broadcastSaving ? 0.7 : 1 }}
+              >
+                {broadcastSaving ? 'Saving…' : 'Save'}
+              </button>
+              {broadcastMessage && (
+                <button
+                  onClick={() => { setBroadcastMessage(''); setBroadcastStatus(''); }}
+                  style={{ background: 'none', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '8px 16px', fontSize: '14px', color: '#666', cursor: 'pointer' }}
+                >
+                  Clear
+                </button>
+              )}
+              {broadcastStatus && (
+                <span style={{ fontSize: '13px', color: broadcastStatus === 'Saved.' ? '#16a34a' : '#dd0031' }}>
+                  {broadcastStatus}
+                </span>
+              )}
+            </div>
+          </div>
         )}
 
       </div>

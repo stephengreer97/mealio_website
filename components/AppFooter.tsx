@@ -1,10 +1,24 @@
 'use client';
 
 import Link from 'next/link';
+import { useState, useEffect } from 'react';
 
-const CHROME_URL = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
+const CHROME_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
+const FIREFOX_URL = 'https://addons.mozilla.org/firefox/addon/mealio/';
+const EDGE_URL    = 'https://microsoftedge.microsoft.com/addons/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
+
+function getExtensionUrl(): string {
+  if (typeof navigator === 'undefined') return CHROME_URL;
+  const ua = navigator.userAgent;
+  if (ua.includes('Firefox')) return FIREFOX_URL;
+  if (ua.includes('Edg/')) return EDGE_URL;
+  return CHROME_URL;
+}
 
 export default function AppFooter() {
+  const [extUrl, setExtUrl] = useState(CHROME_URL);
+  useEffect(() => { setExtUrl(getExtensionUrl()); }, []);
+
   return (
     <footer style={{ borderTop: '1px solid var(--border)', background: 'var(--surface-raised)' }}>
       <div className="max-w-5xl mx-auto px-6 py-8">
@@ -47,7 +61,7 @@ export default function AppFooter() {
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-3)' }}>Get the Extension</p>
             <a
-              href={CHROME_URL}
+              href={extUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
@@ -55,14 +69,8 @@ export default function AppFooter() {
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
               onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/>
-                <line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/>
-                <line x1="10.88" y1="21.94" x2="15.46" y2="14"/>
-              </svg>
-              Add to Chrome — Free
+              Add Extension — Free
             </a>
-            <p className="text-xs mt-2" style={{ color: 'var(--text-3)' }}>Also available for Firefox &amp; Edge</p>
           </div>
         </div>
 

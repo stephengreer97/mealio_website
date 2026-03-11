@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 :root {
-  --brand:           #E8390E;
-  --brand-dark:      #C4300C;
-  --brand-light:     #FFF2EE;
-  --brand-border:    #FCCAB8;
+  --brand:           #DD0031;
+  --brand-dark:      #B5002A;
+  --brand-light:     #FFF0F2;
+  --brand-border:    #FECDD3;
   --bg:              #FAFAF9;
   --surface:         #F4F3F1;
   --surface-raised:  #FFFFFF;

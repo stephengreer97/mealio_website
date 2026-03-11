@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
-import { sendCreatorApprovedEmail } from '@/lib/email';
+import { sendCreatorApprovedEmail, sendCreatorRejectedEmail } from '@/lib/email';
 
 // GET /api/admin/applications — list all creator applications
 export async function GET(request: NextRequest) {
@@ -50,7 +50,7 @@ export async function PATCH(request: NextRequest) {
   // Fetch the application
   const { data: app, error: fetchError } = await supabase
     .from('creator_applications')
-    .select('user_id, display_name, user_profiles!user_id ( email )')
+    .select('user_id, display_name, photo_url, user_profiles!user_id ( email )')
     .eq('id', id)
     .single();
 
@@ -65,6 +65,10 @@ export async function PATCH(request: NextRequest) {
       .eq('id', id);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    const applicantEmail = (app.user_profiles as unknown as { email: string } | null)?.email;
+    if (applicantEmail) await sendCreatorRejectedEmail(applicantEmail, app.display_name).catch(() => {});
+
     return NextResponse.json({ ok: true });
   }
 
@@ -87,6 +91,7 @@ export async function PATCH(request: NextRequest) {
     const { error: creatorError } = await supabase.from('creators').insert({
       user_id:      app.user_id,
       display_name: app.display_name,
+      ...(app.photo_url ? { photo_url: app.photo_url } : {}),
     });
 
     if (creatorError) return NextResponse.json({ error: creatorError.message }, { status: 500 });
@@ -100,7 +105,7 @@ export async function PATCH(request: NextRequest) {
 
   // Email the applicant
   const applicantEmail = (app.user_profiles as unknown as { email: string } | null)?.email;
-  if (applicantEmail) sendCreatorApprovedEmail(applicantEmail, app.display_name).catch(() => {});
+  if (applicantEmail) await sendCreatorApprovedEmail(applicantEmail, app.display_name).catch(() => {});
 
   return NextResponse.json({ ok: true });
 }

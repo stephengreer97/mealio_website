@@ -33,6 +33,7 @@ interface Meal {
   website?: string | null;
   recipe?: string | null;
   photo_url?: string | null;
+  story?: string | null;
   created_at?: string;
 }
 
@@ -70,9 +71,9 @@ const ALL_TAGS = [
   'Quick Cleanup', 'Leftovers Good',
 ];
 
-function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extraTags = [] }: {
+function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extraTags = [], inline = false }: {
   filters: MealFilters; onChange: (f: MealFilters) => void; onClose: () => void;
-  authorSuggestions?: string[]; extraTags?: string[];
+  authorSuggestions?: string[]; extraTags?: string[]; inline?: boolean;
 }) {
   const [tagSearch, setTagSearch] = useState('');
   const [authorInput, setAuthorInput] = useState('');
@@ -102,14 +103,16 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
   const chipStyle = { display: 'inline-flex' as const, alignItems: 'center' as const, gap: 4, padding: '2px 8px', borderRadius: 20, fontSize: 11, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' };
   const xStyle = { background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0, fontSize: 13, lineHeight: '1' as const };
 
+  const popupStyle = inline ? {} : { position: 'absolute' as const, right: 0, top: 'calc(100% + 6px)', zIndex: 200, boxShadow: '0 8px 32px rgba(0,0,0,0.18)' };
+
   return (
-    <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 200, width: 310, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 14, boxShadow: '0 8px 32px rgba(0,0,0,0.18)', padding: 16, maxHeight: '80vh', overflowY: 'auto' }}>
+    <div style={{ width: inline ? '100%' : 310, background: 'var(--surface-raised)', border: inline ? 'none' : '1px solid var(--border)', borderRadius: inline ? 0 : 14, padding: inline ? 0 : 16, maxHeight: inline ? undefined : '80vh', overflowY: inline ? undefined : 'auto', ...popupStyle }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>Filters</span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button type="button" onClick={() => onChange(EMPTY_FILTERS)} style={{ fontSize: 11, color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Clear all</button>
-          <button type="button" onClick={onClose} style={{ fontSize: 18, lineHeight: '1', color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>×</button>
+          {!inline && <button type="button" onClick={onClose} style={{ fontSize: 18, lineHeight: '1', color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>×</button>}
         </div>
       </div>
 
@@ -407,20 +410,38 @@ interface EditModalProps {
   accessToken: string;
 }
 
+function compressImage(dataUrl: string, maxPx = 1200, quality = 0.82): Promise<string> {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.width  * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+  });
+}
+
 function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
   const [name, setName] = useState(meal.name);
   const [author, setAuthor] = useState(meal.author ?? '');
   const [difficulty, setDifficulty] = useState<number | null>(meal.difficulty ?? null);
   const [selectedTags, setSelectedTags] = useState<string[]>(meal.tags ?? []);
   const [website, setWebsite] = useState(meal.website ?? '');
+  const [story, setStory] = useState(meal.story ?? '');
   const [recipe, setRecipe] = useState(meal.recipe ?? '');
   const [photoUrl, setPhotoUrl] = useState(meal.photo_url ?? '');
   const [photoPreview, setPhotoPreview] = useState(meal.photo_url ?? '');
+  const [pendingPhotoDataUrl, setPendingPhotoDataUrl] = useState<string | null>(null);
   const [ingredients, setIngredients] = useState<Ingredient[]>(
     meal.ingredients.map(i => ({ ...i }))
   );
   const [newIngredient, setNewIngredient] = useState('');
   const [saving, setSaving] = useState(false);
+  const dragRef = useRef(false);
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
   const [thumbs, setThumbs] = useState<string[]>([]);
@@ -436,7 +457,8 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
     reader.onload = ev => {
       const dataUrl = ev.target?.result as string;
       setPhotoPreview(dataUrl);
-      uploadPhoto(dataUrl).then(url => { if (url) setPhotoUrl(url); });
+      setPendingPhotoDataUrl(dataUrl);
+      setPhotoUrl('');
     };
     reader.readAsDataURL(file);
   };
@@ -445,7 +467,7 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
     if (generating || !name.trim()) return;
     setGenerating(true);
     setThumbs([]); setFulls([]); setSelectedIdx(null);
-    setPhotoUrl(''); setPhotoPreview('');
+    setPhotoUrl(''); setPhotoPreview(''); setPendingPhotoDataUrl(null);
     try {
       const res = await fetch('/api/meals/generate-photo', {
         method: 'POST',
@@ -468,27 +490,29 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
   };
 
   const selectSuggestion = (i: number) => {
+    setPendingPhotoDataUrl(null);
     if (selectedIdx === i) {
       setSelectedIdx(null);
-      setPhotoUrl('');
+      setPhotoUrl(''); setPhotoPreview('');
     } else {
       setSelectedIdx(i);
-      setPhotoUrl(fulls[i] ?? thumbs[i]);
+      const url = fulls[i] ?? thumbs[i];
+      setPhotoUrl(url); setPhotoPreview(url);
     }
   };
 
-  const uploadPhoto = async (dataUrl: string): Promise<string | null> => {
-    try {
-      const res = await fetch('/api/images/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ image: dataUrl }),
-      });
-      const data = await res.json();
-      return data.url ?? null;
-    } catch {
-      return null;
-    }
+  const uploadPendingPhoto = async (): Promise<string | null> => {
+    if (!pendingPhotoDataUrl) return photoUrl || null;
+    const compressed = await compressImage(pendingPhotoDataUrl);
+    const res = await fetch('/api/images/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ imageData: compressed }),
+    });
+    if (res.status === 413) throw new Error('Image is too large. Please choose a smaller photo.');
+    if (!res.ok) throw new Error('Photo upload failed. Please try again.');
+    const data = await res.json();
+    return data.url ?? null;
   };
 
   const updateIngredientName = (i: number, value: string) => {
@@ -521,6 +545,7 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
     setSaving(true);
     setError('');
     try {
+      const finalPhotoUrl = await uploadPendingPhoto();
       const res = await fetch(`/api/meals/${meal.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
@@ -531,15 +556,16 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
           difficulty: difficulty     ?? null,
           tags:       selectedTags,
           website:    website.trim() || null,
+          story:      story.trim()   || null,
           recipe:     recipe.trim()  || null,
-          photoUrl:   photoUrl       || null,
+          photoUrl:   finalPhotoUrl,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Failed to save.'); return; }
       onSave(data.meal);
-    } catch {
-      setError('Something went wrong. Please try again.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -553,7 +579,8 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
   return (
     <div
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onClick={e => { if (e.target === e.currentTarget) handleClose(); }}
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; handleClose(); }}
     >
       <div className="rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)' }}>
 
@@ -623,6 +650,18 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
           </div>
 
           <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Story (optional)</label>
+            <textarea
+              value={story}
+              onChange={e => setStory(e.target.value)}
+              rows={3}
+              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
             <textarea
               value={recipe}
@@ -658,7 +697,7 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
                   <img src={photoPreview} alt="preview" className="w-12 h-12 object-cover rounded-lg" style={{ border: '1px solid var(--border)' }} />
                   <button
                     type="button"
-                    onClick={() => { setPhotoPreview(''); setPhotoUrl(''); }}
+                    onClick={() => { setPhotoPreview(''); setPhotoUrl(''); setPendingPhotoDataUrl(null); }}
                     className="absolute -top-1.5 -right-1.5 w-5 h-5 text-white rounded-full text-xs flex items-center justify-center"
                     style={{ background: '#333' }}
                   >✕</button>
@@ -756,9 +795,11 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   const [difficulty, setDifficulty] = useState<number | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [website, setWebsite] = useState('');
+  const [story, setStory] = useState('');
   const [recipe, setRecipe] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
   const [photoPreview, setPhotoPreview] = useState('');
+  const [pendingPhotoDataUrl, setPendingPhotoDataUrl] = useState<string | null>(null);
   const [ingredients, setIngredients] = useState<Ingredient[]>([{ productName: '', searchTerm: '', quantity: 1 }]);
   const [newIngredient, setNewIngredient] = useState('');
   const [saving, setSaving] = useState(false);
@@ -767,19 +808,8 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   const [thumbs, setThumbs] = useState<string[]>([]);
   const [fulls, setFulls] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const dragRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  const uploadPhoto = async (dataUrl: string): Promise<string | null> => {
-    try {
-      const res = await fetch('/api/images/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ image: dataUrl }),
-      });
-      const data = await res.json();
-      return data.url ?? null;
-    } catch { return null; }
-  };
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -789,7 +819,8 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     reader.onload = ev => {
       const dataUrl = ev.target?.result as string;
       setPhotoPreview(dataUrl);
-      uploadPhoto(dataUrl).then(url => { if (url) setPhotoUrl(url); });
+      setPendingPhotoDataUrl(dataUrl);
+      setPhotoUrl('');
     };
     reader.readAsDataURL(file);
   };
@@ -798,7 +829,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     if (generating || !name.trim()) return;
     setGenerating(true);
     setThumbs([]); setFulls([]); setSelectedIdx(null);
-    setPhotoUrl(''); setPhotoPreview('');
+    setPhotoUrl(''); setPhotoPreview(''); setPendingPhotoDataUrl(null);
     try {
       const res = await fetch('/api/meals/generate-photo', {
         method: 'POST',
@@ -817,8 +848,23 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   };
 
   const selectSuggestion = (i: number) => {
-    if (selectedIdx === i) { setSelectedIdx(null); setPhotoUrl(''); }
-    else { setSelectedIdx(i); setPhotoUrl(fulls[i] ?? thumbs[i]); }
+    setPendingPhotoDataUrl(null);
+    if (selectedIdx === i) { setSelectedIdx(null); setPhotoUrl(''); setPhotoPreview(''); }
+    else { const url = fulls[i] ?? thumbs[i]; setSelectedIdx(i); setPhotoUrl(url); setPhotoPreview(url); }
+  };
+
+  const uploadPendingPhoto = async (): Promise<string | null> => {
+    if (!pendingPhotoDataUrl) return photoUrl || null;
+    const compressed = await compressImage(pendingPhotoDataUrl);
+    const res = await fetch('/api/images/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ imageData: compressed }),
+    });
+    if (res.status === 413) throw new Error('Image is too large. Please choose a smaller photo.');
+    if (!res.ok) throw new Error('Photo upload failed. Please try again.');
+    const data = await res.json();
+    return data.url ?? null;
   };
 
   const updateIngredientName = (i: number, value: string) =>
@@ -844,6 +890,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     if (validIngredients.length === 0) { setError('Add at least one ingredient.'); return; }
     setSaving(true); setError('');
     try {
+      const finalPhotoUrl = await uploadPendingPhoto();
       const res = await fetch('/api/meals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
@@ -855,14 +902,15 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           difficulty: difficulty     ?? null,
           tags:       selectedTags,
           website:    website.trim() || null,
+          story:      story.trim()   || null,
           recipe:     recipe.trim()  || null,
-          photoUrl:   photoUrl       || null,
+          photoUrl:   finalPhotoUrl,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Failed to create meal.'); return; }
       onCreated(data.meal);
-    } catch { setError('Something went wrong. Please try again.'); }
+    } catch (err) { setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.'); }
     finally { setSaving(false); }
   };
 
@@ -874,7 +922,8 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   return (
     <div
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onClick={e => { if (e.target === e.currentTarget) handleClose(); }}
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; handleClose(); }}
     >
       <div className="rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)' }}>
 
@@ -961,6 +1010,18 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           </div>
 
           <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Story (optional)</label>
+            <textarea
+              value={story}
+              onChange={e => setStory(e.target.value)}
+              rows={3}
+              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
             <textarea
               value={recipe}
@@ -992,7 +1053,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
                   <img src={photoPreview} alt="preview" className="w-12 h-12 object-cover rounded-lg" style={{ border: '1px solid var(--border)' }} />
                   <button
                     type="button"
-                    onClick={() => { setPhotoPreview(''); setPhotoUrl(''); }}
+                    onClick={() => { setPhotoPreview(''); setPhotoUrl(''); setPendingPhotoDataUrl(null); }}
                     className="absolute -top-1.5 -right-1.5 w-5 h-5 text-white rounded-full text-xs flex items-center justify-center"
                     style={{ background: '#333' }}
                   >✕</button>
@@ -1093,6 +1154,7 @@ function MealDetailModal({
   onClose: () => void;
   onCreatorClick?: (id: string) => void;
 }) {
+  const dragRef = useRef(false);
   const websiteHost = meal.website ? (() => {
     try { return new URL(meal.website).hostname.replace('www.', ''); } catch { return meal.website; }
   })() : null;
@@ -1101,7 +1163,8 @@ function MealDetailModal({
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4"
       style={{ background: 'rgba(0,0,0,0.5)' }}
-      onClick={onClose}
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
     >
       <div
         className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"
@@ -1168,6 +1231,10 @@ function MealDetailModal({
             </div>
           )}
 
+          {meal.story && (
+            <p className="text-sm italic whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.story}</p>
+          )}
+
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide mb-2.5" style={{ color: 'var(--text-3)' }}>Ingredients</p>
             <ul className="space-y-2">
@@ -1192,19 +1259,19 @@ function MealDetailModal({
         <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
           <button
             onClick={() => { onEdit(); onClose(); }}
-            className="px-3 py-1.5 text-sm font-medium text-ml-t2 rounded-lg transition-colors"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-            onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors"
+            style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
           >
             Edit
           </button>
           <button
             onClick={() => { onDelete(); onClose(); }}
-            className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors"
-            style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+            className="px-3 py-1.5 text-sm font-medium text-ml-t2 rounded-lg transition-colors"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
           >
             Delete
           </button>
@@ -1347,19 +1414,19 @@ function DashboardMealCard({
           <div className="flex items-center gap-2 mt-3 flex-wrap">
             <button
               onClick={e => { e.stopPropagation(); onEdit(); }}
-              className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+              className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
+              style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
             >
               Edit
             </button>
             <button
               onClick={e => { e.stopPropagation(); onDelete(); }}
-              className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
-              style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-              onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+              className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
             >
               Delete
             </button>
@@ -1388,6 +1455,7 @@ export default function MyMealsPage() {
   const [mealsLoading, setMealsLoading] = useState(true);
   const [mealSearch, setMealSearch] = useState('');
   const [filters, setFilters] = useState<MealFilters>(EMPTY_FILTERS);
+  const [ownerFilter, setOwnerFilter] = useState<'all' | 'mine'>('all');
   const [filterOpen, setFilterOpen] = useState(false);
   const filterBtnRef = useRef<HTMLDivElement>(null);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
@@ -1495,14 +1563,20 @@ export default function MyMealsPage() {
     }
   };
 
+  const notifyExtension = () => {
+    window.dispatchEvent(new CustomEvent('mealio:mealsChanged'));
+  };
+
   const handleEditSaved = (updated: Meal) => {
     setMeals(prev => prev.map(m => (m.id === updated.id ? updated : m)));
     setEditingMeal(null);
+    notifyExtension();
   };
 
   const handleMealCreated = (meal: Meal) => {
     setMeals(prev => [...prev, meal]);
     setShowCreateModal(false);
+    notifyExtension();
   };
 
   if (loading) {
@@ -1528,9 +1602,14 @@ export default function MyMealsPage() {
         </div>
       )}
 
-      <div className="max-w-5xl mx-auto px-6 py-10 w-full flex-1">
+      <div className="max-w-7xl mx-auto px-6 py-10 w-full flex-1">
 
         <ExtensionNudge />
+
+        {/* Mobile: one-click cart info (extension nudge is desktop-only) */}
+        <p className="sm:hidden text-xs mb-6" style={{ color: 'var(--text-3)' }}>
+          One-click add to cart is available on desktop with the Mealio browser extension.
+        </p>
 
         {/* Page header */}
         <div className="mb-8 flex items-end justify-between gap-4">
@@ -1551,8 +1630,39 @@ export default function MyMealsPage() {
           </button>
         </div>
 
+        <div className="lg:flex lg:gap-8 lg:items-start">
+
+          {/* Desktop sidebar */}
+          {!mealsLoading && meals.length > 0 && (() => {
+            const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
+            const authorSuggestions = [...new Set(meals.map(m => m.author).filter((a): a is string => Boolean(a)))];
+            return (
+              <aside className="hidden lg:block w-64 flex-shrink-0 sticky top-6">
+                <div className="rounded-xl overflow-hidden" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+                  {/* Owner filter */}
+                  <div className="p-3 border-b" style={{ borderColor: 'var(--border)' }}>
+                    <div className="flex gap-1 p-1 rounded-lg" style={{ background: 'var(--surface)' }}>
+                      {(['all', 'mine'] as const).map(v => (
+                        <button key={v} type="button" onClick={() => setOwnerFilter(v)}
+                          className="flex-1 py-1.5 text-xs font-semibold rounded-md transition-all"
+                          style={ownerFilter === v
+                            ? { background: 'var(--surface-raised)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)', border: 'none', cursor: 'pointer' }
+                            : { background: 'transparent', color: 'var(--text-2)', border: 'none', cursor: 'pointer' }}>
+                          {v === 'all' ? 'All' : 'Created By Me'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="p-4">
+                    <FilterPanel filters={filters} onChange={setFilters} onClose={() => {}} authorSuggestions={authorSuggestions} extraTags={customMealTags} inline />
+                  </div>
+                </div>
+              </aside>
+            );
+          })()}
+
         {/* My Meals */}
-        <div className="rounded-xl p-8 mb-6" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+        <div className="flex-1 min-w-0 rounded-xl p-8 mb-6" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-ml-t1">My Meals</h2>
             <div className="flex items-center gap-3">
@@ -1574,7 +1684,19 @@ export default function MyMealsPage() {
             const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
             const authorSuggestions = [...new Set(meals.map(m => m.author).filter((a): a is string => Boolean(a)))];
             return (
-              <div className="flex gap-2 items-center mb-4">
+              <div className="flex flex-col gap-2 mb-4">
+              <div className="lg:hidden flex gap-1 p-1 rounded-lg self-start" style={{ background: 'var(--surface)' }}>
+                {(['all', 'mine'] as const).map(v => (
+                  <button key={v} type="button" onClick={() => setOwnerFilter(v)}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-md transition-all"
+                    style={ownerFilter === v
+                      ? { background: 'var(--surface-raised)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)', border: 'none', cursor: 'pointer' }
+                      : { background: 'transparent', color: 'var(--text-2)', border: 'none', cursor: 'pointer' }}>
+                    {v === 'all' ? 'All' : 'Created By Me'}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 items-center">
                 <div className="relative flex-1">
                   <svg className="absolute left-3 top-1/2 -translate-y-1/2" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-3)' }}>
                     <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
@@ -1583,12 +1705,12 @@ export default function MyMealsPage() {
                     type="text"
                     value={mealSearch}
                     onChange={e => setMealSearch(e.target.value)}
-                    placeholder="Search meals, tags…"
+                    placeholder="Search meals, authors…"
                     className="w-full pl-8 pr-4 py-1.5 text-sm rounded-lg focus:outline-none"
                     style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                   />
                 </div>
-                <div ref={filterBtnRef} style={{ position: 'relative', flexShrink: 0 }}>
+                <div ref={filterBtnRef} className="lg:hidden" style={{ position: 'relative', flexShrink: 0 }}>
                   <button type="button" onClick={() => setFilterOpen(v => !v)}
                     style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600, border: '1px solid var(--border)', background: (filterOpen || activeFilterCount > 0) ? 'var(--brand)' : 'var(--surface)', color: (filterOpen || activeFilterCount > 0) ? '#fff' : 'var(--text-2)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1598,6 +1720,7 @@ export default function MyMealsPage() {
                   </button>
                   {filterOpen && <FilterPanel filters={filters} onChange={setFilters} onClose={() => setFilterOpen(false)} authorSuggestions={authorSuggestions} extraTags={customMealTags} />}
                 </div>
+              </div>
               </div>
             );
           })()}
@@ -1615,21 +1738,22 @@ export default function MyMealsPage() {
             (() => {
               const q = mealSearch.trim().toLowerCase();
               const filtered = meals.filter(m => {
-                if (q && !(m.name.toLowerCase().includes(q) || m.tags?.some(t => t.toLowerCase().includes(q)) || m.author?.toLowerCase().includes(q))) return false;
+                if (ownerFilter === 'mine' && m.creator_id) return false;
+                if (q && !(m.name.toLowerCase().includes(q) || m.author?.toLowerCase().includes(q))) return false;
                 if (filters.authors.length > 0 && !filters.authors.some(a => m.author?.toLowerCase().includes(a.toLowerCase()))) return false;
                 if (filters.tags.length > 0 && !filters.tags.some(t => m.tags?.includes(t))) return false;
                 if (filters.ingredients.length > 0 && !filters.ingredients.every(ing => m.ingredients.some(i => i.productName.toLowerCase().includes(ing)))) return false;
                 if (filters.difficulty.length > 0 && !filters.difficulty.includes(m.difficulty ?? -1)) return false;
                 if (filters.excludeIngredients.length > 0 && filters.excludeIngredients.some(ex => m.ingredients.some(i => i.productName.toLowerCase().includes(ex)))) return false;
                 return true;
-              });
+              }).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
               return filtered.length === 0 ? (
                 <p className="text-sm text-ml-t3 py-4 text-center">No meals match your search or filters.</p>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="columns-1 sm:columns-2 gap-3">
                   {filtered.map(meal => (
+                    <div key={meal.id} className="break-inside-avoid mb-3">
                     <DashboardMealCard
-                      key={meal.id}
                       meal={meal}
                       isPro={isPro}
                       isCreator={isCreator}
@@ -1641,12 +1765,15 @@ export default function MyMealsPage() {
                       onRemovePhoto={() => handleRemovePhoto(meal)}
                       onCreatorClick={id => setCreatorPopupId(id)}
                     />
+                    </div>
                   ))}
                 </div>
               );
             })()
           )}
         </div>
+
+        </div>{/* end lg:flex */}
 
       </div>
 

@@ -66,7 +66,7 @@ export default function AboutPage() {
         <div style={{ background: 'white', borderRadius: '14px', padding: '32px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', marginBottom: '24px' }}>
           <h2 style={{ margin: '0 0 14px', fontSize: '20px', fontWeight: 700, color: '#222' }}>Creator Partner Program</h2>
           <p style={{ color: '#555', margin: '0 0 12px' }}>
-            Mealio partners with food creators to bring professionally curated meals to the Discover tab, available to all users. Approved Creator Partners earn a share of quarterly subscription revenue based on how often their meals are saved.
+            Mealio partners with food creators to bring professionally curated meals to the Discover tab, available to all users. Approved Creator Partners earn a share of quarterly subscription profit based on how often their meals are saved.
           </p>
           <p style={{ color: '#555', margin: 0 }}>
             If you're a food creator interested in partnering with Mealio, log in and apply from your dashboard.

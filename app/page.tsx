@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import PasswordStrength from '@/components/PasswordStrength';
 
 export default function Home() {
   const router = useRouter();
@@ -423,9 +424,7 @@ export default function Home() {
                   onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
                   onBlur={e => (e.target.style.borderColor = 'var(--border)')}
                 />
-                {activeTab === 'signup' && (
-                  <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>At least 8 characters</p>
-                )}
+                {activeTab === 'signup' && <PasswordStrength password={password} />}
               </div>
 
               {error && (

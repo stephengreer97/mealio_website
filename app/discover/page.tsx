@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
@@ -82,9 +82,9 @@ interface MealFilters {
 }
 const EMPTY_FILTERS: MealFilters = { authors: [], tags: [], ingredients: [], difficulty: [], excludeIngredients: [] };
 
-function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extraTags = [] }: {
+function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extraTags = [], inline = false }: {
   filters: MealFilters; onChange: (f: MealFilters) => void; onClose: () => void;
-  authorSuggestions?: string[]; extraTags?: string[];
+  authorSuggestions?: string[]; extraTags?: string[]; inline?: boolean;
 }) {
   const [tagSearch, setTagSearch] = useState('');
   const [authorInput, setAuthorInput] = useState('');
@@ -129,21 +129,25 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
     border: 'none', cursor: enabled ? 'pointer' : 'default',
   });
 
+  const popupStyle = inline ? {} : { position: 'absolute' as const, right: 0, top: 'calc(100% + 6px)', zIndex: 200, boxShadow: 'var(--shadow-md)' };
+
   return (
     <div style={{
-      position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 200, width: 310,
-      background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 14,
-      boxShadow: 'var(--shadow-md)', padding: 16, maxHeight: '80vh', overflowY: 'auto',
+      width: inline ? '100%' : 310,
+      background: 'var(--surface-raised)', border: inline ? 'none' : '1px solid var(--border)',
+      borderRadius: inline ? 0 : 14,
+      padding: inline ? 0 : 16, maxHeight: inline ? undefined : '80vh', overflowY: inline ? undefined : 'auto',
+      ...popupStyle,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>Filters</span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button type="button" onClick={() => onChange(EMPTY_FILTERS)} style={{ fontSize: 11, color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Clear all</button>
-          <button type="button" onClick={onClose} style={{ color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px', lineHeight: 1 }}>
+          {!inline && <button type="button" onClick={onClose} style={{ color: 'var(--text-2)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px', lineHeight: 1 }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -279,9 +283,173 @@ interface PresetMeal {
   ingredients: Ingredient[];
   source?: string | null;
   recipe?: string | null;
+  story?: string | null;
   photo_url?: string | null;
   difficulty?: number | null;
   tags?: string[] | null;
+}
+
+interface FeaturedCreator {
+  id: string;
+  display_name: string;
+  photo_url: string | null;
+}
+
+function FeaturedCreatorsCard({ creators, onCreatorClick }: { creators: FeaturedCreator[]; onCreatorClick: (id: string) => void }) {
+  if (creators.length === 0) return null;
+  return (
+    <div
+      className="rounded-2xl"
+      style={{
+        background: 'var(--surface-raised)',
+        border: '1px solid var(--border)',
+        padding: '16px 20px',
+      }}
+    >
+      <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '12px' }}>
+        Featured Creators
+      </p>
+      <div className="flex gap-3 flex-wrap">
+        {creators.map(c => {
+          const initials = c.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+          return (
+            <button
+              key={c.id}
+              onClick={() => onCreatorClick(c.id)}
+              title={c.display_name}
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              {c.photo_url ? (
+                <img
+                  src={c.photo_url}
+                  alt={c.display_name}
+                  style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--border)' }}
+                />
+              ) : (
+                <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid var(--border)' }}>
+                  <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff' }}>{initials}</span>
+                </div>
+              )}
+              <span style={{ fontSize: '11px', color: 'var(--text-2)', maxWidth: 56, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {c.display_name}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TrendingCarousel({ meals, onMealClick }: { meals: PresetMeal[]; onMealClick: (meal: PresetMeal) => void }) {
+  const withPhotos = useMemo(() => {
+    const filtered = meals.filter(m => m.photo_url);
+    // Fisher-Yates shuffle (seeded by length so it's stable between renders)
+    const arr = [...filtered];
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meals.length]);
+
+  if (withPhotos.length < 3) return null;
+
+  // Duplicate for seamless loop
+  const items = [...withPhotos, ...withPhotos];
+
+  return (
+    <div
+      className="carousel-outer"
+      style={{
+        overflow: 'hidden',
+        marginBottom: '40px',
+        position: 'relative',
+        left: '50%',
+        right: '50%',
+        marginLeft: '-50vw',
+        marginRight: '-50vw',
+        width: '100vw',
+        maskImage: 'linear-gradient(to right, transparent 0%, black 4%, black 96%, transparent 100%)',
+        WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 4%, black 96%, transparent 100%)',
+      }}
+    >
+      <style>{`
+        @keyframes scroll-carousel {
+          0%   { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+        .carousel-track {
+          display: flex;
+          gap: 12px;
+          width: max-content;
+          animation: scroll-carousel ${Math.max(withPhotos.length * 3.5, 28)}s linear infinite;
+          will-change: transform;
+        }
+        .carousel-outer:hover .carousel-track {
+          animation-play-state: paused;
+        }
+      `}</style>
+      <div className="carousel-track">
+        {items.map((meal, i) => (
+          <button
+            key={`${meal.id}-${i}`}
+            onClick={() => onMealClick(meal)}
+            style={{
+              position: 'relative',
+              width: '136px',
+              height: '136px',
+              borderRadius: '14px',
+              overflow: 'hidden',
+              flexShrink: 0,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              display: 'block',
+            }}
+          >
+            <img
+              src={meal.photo_url!}
+              alt={meal.name}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+              loading="lazy"
+            />
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'linear-gradient(to top, rgba(0,0,0,0.55) 0%, transparent 55%)',
+                pointerEvents: 'none',
+              }}
+            />
+            <p
+              style={{
+                position: 'absolute',
+                bottom: '8px',
+                left: '8px',
+                right: '8px',
+                margin: 0,
+                fontSize: '11px',
+                fontWeight: 600,
+                color: '#fff',
+                lineHeight: 1.3,
+                textShadow: '0 1px 3px rgba(0,0,0,0.4)',
+                overflow: 'hidden',
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                pointerEvents: 'none',
+              } as React.CSSProperties}
+            >
+              {meal.name}
+            </p>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function DifficultyDots({ level }: { level: number }) {
@@ -306,16 +474,18 @@ interface StoreModalProps {
 
 function StoreModal({ meal, onSave, onClose, saving, error }: StoreModalProps) {
   const [selectedStore, setSelectedStore] = useState('');
+  const dragRef = useRef(false);
 
   return (
     <div
       className="fixed inset-0 flex items-center justify-center z-50 p-4"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
     >
       <div className="rounded-2xl w-full max-w-sm" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border)' }}>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <h2 className="text-sm font-bold" style={{ color: 'var(--text-1)' }}>Add to My Meals</h2>
+          <h2 className="text-sm font-bold" style={{ color: 'var(--text-1)' }}>Save to My Meals</h2>
           <button
             onClick={onClose}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: '2px' }}
@@ -354,7 +524,7 @@ function StoreModal({ meal, onSave, onClose, saving, error }: StoreModalProps) {
             onMouseEnter={e => { if (!saving && selectedStore) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'; }}
             onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
           >
-            {saving ? 'Saving…' : 'Add to My Meals'}
+            {saving ? 'Saving…' : 'Save to My Meals'}
           </button>
         </div>
       </div>
@@ -369,6 +539,7 @@ function MealDetailModal({
 }: {
   meal: PresetMeal; savedStores?: string[]; onAdd: () => void; onClose: () => void; onCreatorClick?: (id: string) => void;
 }) {
+  const dragRef = useRef(false);
   const sourceHost = meal.source ? (() => {
     try { return new URL(meal.source!).hostname.replace('www.', ''); } catch { return meal.source; }
   })() : null;
@@ -380,7 +551,8 @@ function MealDetailModal({
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4"
       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={onClose}
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
     >
       <div
         className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"
@@ -452,12 +624,16 @@ function MealDetailModal({
             </div>
           )}
 
+          {meal.story && (
+            <p className="text-sm italic whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.story}</p>
+          )}
+
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Ingredients</p>
             <ul className="space-y-1.5">
               {meal.ingredients.map((ing, i) => (
                 <li key={i} className="flex items-center justify-between gap-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <span className="text-sm" style={{ color: 'var(--text-1)' }}>{ing.productName}</span>
+                  <span className="text-sm" style={{ color: 'var(--text-1)' }}>{(ing as any).productName ?? (ing as any).product_name ?? (ing as any).name ?? ''}</span>
                   <span className="text-xs font-medium flex-shrink-0" style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono, monospace)' }}>×{ing.quantity ?? 1}</span>
                 </li>
               ))}
@@ -482,7 +658,7 @@ function MealDetailModal({
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
               onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
-              Add to My Meals
+              Save to My Meals
             </button>
             {savedStores && savedStores.length > 0 && (
               <span className="text-xs" style={{ color: 'var(--text-3)' }}>Saved at {savedStores.join(', ')}</span>
@@ -528,8 +704,8 @@ function MealCard({
         className="flex items-start gap-4 p-4 rounded-2xl cursor-pointer transition-all"
         style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}
         onClick={() => setDetailOpen(true)}
-        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-md)'; (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)'; }}
-        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-sm)'; (e.currentTarget as HTMLElement).style.transform = 'none'; }}
+        onMouseEnter={e => (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-md)'}
+        onMouseLeave={e => (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-sm)'}
       >
         <div className="hidden sm:block flex-shrink-0">
           {meal.photo_url ? (
@@ -537,10 +713,10 @@ function MealCard({
               src={meal.photo_url}
               alt={meal.name}
               className="object-cover rounded-xl"
-              style={{ width: '110px', height: '110px', border: '1px solid var(--border)' }}
+              style={{ width: '120px', height: '120px', border: '1px solid var(--border)' }}
             />
           ) : (
-            <div className="rounded-xl flex items-center justify-center" style={{ width: '110px', height: '110px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="rounded-xl flex items-center justify-center" style={{ width: '120px', height: '120px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--border-strong)' }}>
                 <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
               </svg>
@@ -620,7 +796,7 @@ function MealCard({
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
               onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
             >
-              + Add to My Meals
+              + Save to My Meals
             </button>
             {savedStores && savedStores.length > 0 && (
               <span className="text-xs" style={{ color: 'var(--text-3)' }}>
@@ -672,10 +848,13 @@ export default function DiscoverPage() {
   const [saveError, setSaveError] = useState('');
   const [savedMealStores, setSavedMealStores] = useState<Map<string, string[]>>(new Map());
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const observerRef = useRef<IntersectionObserver | null>(null);
+  const fetchingRef = useRef(false);
+  const fetchGenRef = useRef(0);
 
   const [followedCreators, setFollowedCreators] = useState<{ id: string; display_name: string; photo_url?: string | null }[]>([]);
   const [selectedCreatorIds, setSelectedCreatorIds] = useState<Set<string>>(new Set());
+  const [carouselMeal, setCarouselMeal] = useState<PresetMeal | null>(null);
+  const [featuredCreators, setFeaturedCreators] = useState<FeaturedCreator[]>([]);
 
   useEffect(() => { verifyAuth(); }, []);
 
@@ -718,6 +897,11 @@ export default function DiscoverPage() {
         setSavedMealStores(map);
       }).catch(() => {});
 
+      fetch('/api/creators/featured')
+        .then(r => r.ok ? r.json() : { creators: [] })
+        .then(d => setFeaturedCreators(d.creators ?? []))
+        .catch(() => {});
+
       setLoading(false);
     } catch {
       localStorage.clear();
@@ -726,8 +910,10 @@ export default function DiscoverPage() {
   };
 
   const fetchMeals = useCallback(async (reset: boolean, currentSection: 'trending' | 'new' | 'following', currentToken: string) => {
-    if (fetching) return;
+    if (!reset && fetchingRef.current) return;
+    fetchingRef.current = true;
     setFetching(true);
+    const gen = fetchGenRef.current;
     if (reset) setFetchError('');
     const offset = reset ? 0 : offsetRef.current;
     try {
@@ -740,18 +926,24 @@ export default function DiscoverPage() {
       if (!res.ok) throw new Error('Failed to load');
       const data = await res.json();
       const fetched: PresetMeal[] = data.presetMeals ?? [];
+      if (fetchGenRef.current !== gen) return; // section changed while fetching — discard
       setMeals(prev => reset ? fetched : [...prev, ...fetched]);
       setHasMore(data.hasMore ?? false);
       offsetRef.current = offset + fetched.length;
     } catch {
-      setFetchError('Failed to load recipes. Please try again.');
+      if (fetchGenRef.current === gen) setFetchError('Failed to load recipes. Please try again.');
     } finally {
-      setFetching(false);
+      if (fetchGenRef.current === gen) {
+        fetchingRef.current = false;
+        setFetching(false);
+      }
     }
-  }, [fetching]);
+  }, []);
 
   useEffect(() => {
     if (!token) return;
+    fetchGenRef.current += 1;   // invalidate any in-progress fetch
+    fetchingRef.current = false; // allow the reset fetch to proceed immediately
     sectionRef.current = section;
     offsetRef.current = 0;
     setMeals([]);
@@ -768,26 +960,28 @@ export default function DiscoverPage() {
   }, [section, token]);
 
   useEffect(() => {
-    if (observerRef.current) observerRef.current.disconnect();
     if (!sentinelRef.current || !hasMore || fetching) return;
-    observerRef.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) fetchMeals(false, sectionRef.current, token);
+    const observer = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && !fetchingRef.current) {
+        fetchMeals(false, sectionRef.current, token);
+      }
     }, { threshold: 0.1 });
-    observerRef.current.observe(sentinelRef.current);
-    return () => observerRef.current?.disconnect();
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
   }, [hasMore, fetching, fetchMeals, token]);
 
   const q = search.trim().toLowerCase();
   const activeFilterCount = [filters.authors.length > 0, filters.tags.length > 0, filters.ingredients.length > 0, filters.difficulty.length > 0, filters.excludeIngredients.length > 0].filter(Boolean).length;
   const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
   const authorSuggestions = [...new Set(meals.flatMap(m => [m.author, m.creator_name]).filter((a): a is string => Boolean(a)))];
+  const ingName = (i: any) => ((i.productName ?? i.product_name ?? i.name ?? '') as string).toLowerCase();
   const matchesMeal = (m: PresetMeal) => {
-    if (q && !(m.name.toLowerCase().includes(q) || m.author?.toLowerCase().includes(q) || m.creator_name?.toLowerCase().includes(q) || m.source?.toLowerCase().includes(q) || m.tags?.some(t => t.toLowerCase().includes(q)) || m.ingredients?.some(i => i.productName.toLowerCase().includes(q)))) return false;
+    if (q && !(m.name.toLowerCase().includes(q) || m.author?.toLowerCase().includes(q) || m.creator_name?.toLowerCase().includes(q) || m.source?.toLowerCase().includes(q))) return false;
     if (filters.authors.length > 0 && !filters.authors.some(a => m.author?.toLowerCase().includes(a.toLowerCase()) || m.creator_name?.toLowerCase().includes(a.toLowerCase()))) return false;
     if (filters.tags.length > 0 && !filters.tags.some(t => m.tags?.includes(t))) return false;
-    if (filters.ingredients.length > 0 && !filters.ingredients.every(ing => m.ingredients?.some(i => i.productName.toLowerCase().includes(ing)))) return false;
+    if (filters.ingredients.length > 0 && !filters.ingredients.every(ing => m.ingredients?.some(i => ingName(i).includes(ing)))) return false;
     if (filters.difficulty.length > 0 && !filters.difficulty.includes(m.difficulty ?? -1)) return false;
-    if (filters.excludeIngredients.length > 0 && filters.excludeIngredients.some(ex => m.ingredients?.some(i => i.productName.toLowerCase().includes(ex)))) return false;
+    if (filters.excludeIngredients.length > 0 && filters.excludeIngredients.some(ex => m.ingredients?.some(i => ingName(i).includes(ex)))) return false;
     return true;
   };
   const creatorFiltered = (m: PresetMeal) =>
@@ -862,69 +1056,85 @@ export default function DiscoverPage() {
         </div>
       )}
 
-      <div className="max-w-5xl mx-auto px-6 py-10 w-full flex-1">
-
-        {/* Getting Started */}
-        {!hasSavedMeals && (
-          <div className="rounded-2xl p-8 mb-8" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
-            <h2 className="text-base font-bold mb-6" style={{ color: 'var(--text-1)' }}>Getting started</h2>
-            <div className="space-y-5">
-              <div className="flex items-start gap-4">
-                <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>1</div>
-                <div>
-                  <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>Install the Web Extension</p>
-                  <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>
-                    Add Mealio to your browser to start saving meals and adding ingredients to your cart.{' '}
-                    <a href={isFirefox ? FIREFOX_EXT_URL : CHROME_EXT_URL} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2" style={{ color: 'var(--brand)' }}>
-                      Get the {isFirefox ? 'Firefox' : 'Chrome'} extension →
-                    </a>
-                  </p>
-                </div>
-              </div>
-              {[
-                { n: 2, title: 'Open the extension and sign in', desc: 'Click the Mealio icon in your browser toolbar. You will be logged in automatically.' },
-                { n: 3, title: 'Go to a supported grocery store', desc: 'Visit any major grocery retailer online. Mealio detects the store automatically.' },
-                { n: 4, title: 'Save your first meal', desc: 'Click "Add Meal," name it, then add items to your cart. Mealio records every ingredient so you can reorder with one click. You can also browse Discover to instantly add pre-built meals without recording anything.' },
-              ].map(step => (
-                <div key={step.n} className="flex items-start gap-4">
-                  <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>
-                    {step.n}
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{step.title}</p>
-                    <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>{step.desc}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+      <div className="max-w-7xl mx-auto px-6 py-10 w-full flex-1">
 
         {/* Discover Section */}
         <div className="mb-10">
-          <div className="mb-8 flex items-end justify-between gap-4">
-            <h1 className="text-5xl font-bold leading-tight" style={{ color: 'var(--text-1)', letterSpacing: '-0.02em' }}>
-              What&apos;s for<br />
-              <span style={{ borderBottom: '4px solid var(--brand)', paddingBottom: '2px' }}>dinner?</span>
-            </h1>
-            <a
-              href="/my-meals"
-              className="flex-shrink-0 flex items-center gap-1.5 text-sm font-semibold rounded-xl px-4 py-2 transition-colors"
-              style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none' }}
-              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
-            >
-              My Meals
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h14M12 5l7 7-7 7"/>
-              </svg>
-            </a>
-          </div>
+          <TrendingCarousel meals={meals} onMealClick={setCarouselMeal} />
 
-          {/* Controls */}
+          {/* Getting Started */}
+          {!hasSavedMeals && (
+            <div className="rounded-2xl p-8 mb-8 mt-8" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+              <h2 className="text-base font-bold mb-6" style={{ color: 'var(--text-1)' }}>Getting started</h2>
+              <div className="space-y-5">
+                <div className="flex items-start gap-4">
+                  <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>1</div>
+                  <div>
+                    <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>Install the Web Extension</p>
+                    <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>
+                      Add Mealio to your browser to start saving meals and adding ingredients to your cart.{' '}
+                      <a href={isFirefox ? FIREFOX_EXT_URL : CHROME_EXT_URL} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2" style={{ color: 'var(--brand)' }}>
+                        Get the {isFirefox ? 'Firefox' : 'Chrome'} extension →
+                      </a>
+                    </p>
+                  </div>
+                </div>
+                {[
+                  { n: 2, title: 'Open the extension and sign in', desc: 'Click the Mealio icon in your browser toolbar. You will be logged in automatically.' },
+                  { n: 3, title: 'Go to a supported grocery store', desc: 'Visit any major grocery retailer online. Mealio detects the store automatically.' },
+                  { n: 4, title: 'Save your first meal', desc: 'Click "Add Meal," name it, then add items to your cart. Mealio records every ingredient so you can reorder with one click. You can also browse Discover to instantly add pre-built meals without recording anything.' },
+                ].map(step => (
+                  <div key={step.n} className="flex items-start gap-4">
+                    <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>
+                      {step.n}
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{step.title}</p>
+                      <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>{step.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="lg:flex lg:gap-8 lg:items-start">
+
+            {/* Desktop sidebar */}
+            <aside className="hidden lg:block w-64 flex-shrink-0 sticky top-6">
+              <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', boxShadow: 'var(--shadow-sm)' }}>
+                {/* Section tabs - vertical */}
+                <div className="p-3 border-b" style={{ borderColor: 'var(--border)' }}>
+                  <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--text-3)' }}>Browse</p>
+                  <div className="flex flex-col gap-0.5">
+                    {(['trending', 'new', 'following'] as const).map(s => (
+                      <button
+                        key={s}
+                        onClick={() => { if (s !== section) { setSection(s); setSearch(''); } }}
+                        className="w-full text-left px-3 py-2 text-sm font-semibold rounded-lg transition-all"
+                        style={section === s
+                          ? { background: 'var(--brand-light)', color: 'var(--brand)', border: 'none', cursor: 'pointer' }
+                          : { background: 'transparent', color: 'var(--text-2)', border: 'none', cursor: 'pointer' }}
+                      >
+                        {s === 'trending' ? 'Trending' : s === 'new' ? 'New' : 'Following'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Filters inline */}
+                <div className="p-3">
+                  <FilterPanel filters={filters} onChange={setFilters} onClose={() => {}} authorSuggestions={authorSuggestions} extraTags={customMealTags} inline />
+                </div>
+              </div>
+            </aside>
+
+            {/* Main content */}
+            <div className="flex-1 min-w-0">
+
+          {/* Controls (mobile: tabs + filter; desktop: search only) */}
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
-            {/* Section tabs */}
-            <div className="flex gap-1 p-1 rounded-xl self-start" style={{ background: 'var(--surface)' }}>
+            {/* Section tabs — hidden on desktop (moved to sidebar) */}
+            <div className="lg:hidden flex gap-1 p-1 rounded-xl self-start" style={{ background: 'var(--surface)' }}>
               {(['trending', 'new', 'following'] as const).map(s => (
                 <button
                   key={s}
@@ -948,7 +1158,7 @@ export default function DiscoverPage() {
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search recipes, ingredients, tags…"
+                placeholder="Search recipes, creators…"
                 className="w-full pl-9 pr-4 py-2 text-sm rounded-xl focus:outline-none"
                 style={{ border: '1.5px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-1)' }}
                 onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
@@ -956,32 +1166,46 @@ export default function DiscoverPage() {
               />
             </div>
 
-            {/* Filter button */}
-            <div ref={filterBtnRef} style={{ position: 'relative', flexShrink: 0 }}>
-              <button
-                type="button"
-                onClick={() => setFilterOpen(v => !v)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 10,
-                  fontSize: 13, fontWeight: 600,
-                  border: `1.5px solid ${(filterOpen || activeFilterCount > 0) ? 'var(--brand)' : 'var(--border)'}`,
-                  background: (filterOpen || activeFilterCount > 0) ? 'var(--brand)' : 'var(--surface-raised)',
-                  color: (filterOpen || activeFilterCount > 0) ? '#fff' : 'var(--text-2)',
-                  cursor: 'pointer', whiteSpace: 'nowrap',
-                }}
+            {/* Filter button + My Meals — hidden on desktop (moved to sidebar) */}
+            <div className="lg:hidden flex items-center" style={{ gap: 8 }}>
+              <div ref={filterBtnRef} style={{ position: 'relative', flexShrink: 0 }}>
+                <button
+                  type="button"
+                  onClick={() => setFilterOpen(v => !v)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 10,
+                    fontSize: 13, fontWeight: 600,
+                    border: `1.5px solid ${(filterOpen || activeFilterCount > 0) ? 'var(--brand)' : 'var(--border)'}`,
+                    background: (filterOpen || activeFilterCount > 0) ? 'var(--brand)' : 'var(--surface-raised)',
+                    color: (filterOpen || activeFilterCount > 0) ? '#fff' : 'var(--text-2)',
+                    cursor: 'pointer', whiteSpace: 'nowrap',
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                  </svg>
+                  Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+                </button>
+                {filterOpen && <FilterPanel filters={filters} onChange={setFilters} onClose={() => setFilterOpen(false)} authorSuggestions={authorSuggestions} extraTags={customMealTags} />}
+              </div>
+              <a
+                href="/my-meals"
+                className="sm:hidden flex items-center gap-1.5 text-sm font-semibold rounded-xl px-4 py-2"
+                style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none', marginLeft: 'auto' }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                My Meals
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12h14M12 5l7 7-7 7"/>
                 </svg>
-                Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
-              </button>
-              {filterOpen && <FilterPanel filters={filters} onChange={setFilters} onClose={() => setFilterOpen(false)} authorSuggestions={authorSuggestions} extraTags={customMealTags} />}
+              </a>
             </div>
           </div>
 
           {/* Creator carousel — Following tab only */}
           {section === 'following' && followedCreators.length > 0 && (
-            <div className="flex gap-3 overflow-x-auto pb-2 mb-5" style={{ scrollbarWidth: 'none' }}>
+            <div className="flex gap-3 overflow-x-auto pb-2 mb-5" style={{ scrollbarWidth: 'none', overflowY: 'clip' }}>
               {followedCreators.map(creator => {
                 const allSelected = selectedCreatorIds.size === 0;
                 const isSelected = allSelected || selectedCreatorIds.has(creator.id);
@@ -989,36 +1213,31 @@ export default function DiscoverPage() {
                   <button
                     key={creator.id}
                     onClick={() => {
+                      const clickedId = creator.id;
                       setSelectedCreatorIds(prev => {
+                        const prevAllSelected = prev.size === 0;
                         const next = new Set(prev);
-                        if (allSelected) return new Set([creator.id]);
-                        if (next.has(creator.id)) {
-                          next.delete(creator.id);
+                        if (prevAllSelected) return new Set([clickedId]);
+                        if (next.has(clickedId)) {
+                          next.delete(clickedId);
                           return next.size === 0 ? new Set() : next;
                         } else {
-                          next.add(creator.id);
+                          next.add(clickedId);
                           return next;
                         }
                       });
                     }}
-                    className="flex flex-col items-center gap-1.5 flex-shrink-0 transition-opacity"
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', opacity: isSelected ? 1 : 0.4 }}
+                    className="flex-shrink-0 transition-opacity"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', opacity: isSelected ? 1 : 0.4, padding: 0 }}
                   >
                     <div
-                      className="w-14 h-14 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center"
-                      style={{
-                        border: `2.5px solid ${isSelected ? 'var(--brand)' : 'var(--border)'}`,
-                        background: 'var(--surface)',
-                        transition: 'border-color 0.15s',
-                      }}
+                      className="w-12 h-12 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center"
+                      style={{ background: 'var(--surface)' }}
                     >
                       {creator.photo_url
                         ? <img src={creator.photo_url} alt={creator.display_name} className="w-full h-full object-cover" />
                         : <span className="text-sm font-bold" style={{ color: 'var(--text-3)' }}>{getInitials(creator.display_name)}</span>}
                     </div>
-                    <span className="text-xs font-medium text-center max-w-[64px] truncate" style={{ color: isSelected ? 'var(--text-1)' : 'var(--text-3)' }}>
-                      {creator.display_name}
-                    </span>
                   </button>
                 );
               })}
@@ -1045,16 +1264,46 @@ export default function DiscoverPage() {
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Mobile: single column */}
+              <div className="flex flex-col gap-3 sm:hidden">
                 {visible.map(meal => (
-                  <MealCard
-                    key={meal.id}
-                    meal={meal}
-                    savedStores={savedMealStores.get(meal.id)}
-                    onAdd={() => { setSaveError(''); setAddingMeal(meal); }}
-                    onCreatorClick={id => setCreatorPopupId(id)}
-                  />
+                  <div key={meal.id}>
+                    <MealCard
+                      meal={meal}
+                      savedStores={savedMealStores.get(meal.id)}
+                      onAdd={() => { setSaveError(''); setAddingMeal(meal); }}
+                      onCreatorClick={id => setCreatorPopupId(id)}
+                    />
+                  </div>
                 ))}
+              </div>
+              {/* Desktop: two explicit columns — avoids CSS columns stacking/click bugs */}
+              <div className="hidden sm:flex gap-3 items-start">
+                <div className="flex-1 flex flex-col gap-3">
+                  <FeaturedCreatorsCard creators={featuredCreators} onCreatorClick={id => setCreatorPopupId(id)} />
+                  {visible.filter((_, i) => i % 2 === 0).map(meal => (
+                    <div key={meal.id}>
+                      <MealCard
+                        meal={meal}
+                        savedStores={savedMealStores.get(meal.id)}
+                        onAdd={() => { setSaveError(''); setAddingMeal(meal); }}
+                        onCreatorClick={id => setCreatorPopupId(id)}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex-1 flex flex-col gap-3">
+                  {visible.filter((_, i) => i % 2 !== 0).map(meal => (
+                    <div key={meal.id}>
+                      <MealCard
+                        meal={meal}
+                        savedStores={savedMealStores.get(meal.id)}
+                        onAdd={() => { setSaveError(''); setAddingMeal(meal); }}
+                        onCreatorClick={id => setCreatorPopupId(id)}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div ref={sentinelRef} className="py-4 text-center">
@@ -1073,6 +1322,9 @@ export default function DiscoverPage() {
               <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: 'var(--brand)' }} />
             </div>
           )}
+
+            </div>{/* end flex-1 main content */}
+          </div>{/* end lg:flex */}
         </div>
 
       </div>
@@ -1086,6 +1338,16 @@ export default function DiscoverPage() {
           onClose={() => setAddingMeal(null)}
           saving={saving}
           error={saveError}
+        />
+      )}
+
+      {carouselMeal && (
+        <MealDetailModal
+          meal={carouselMeal}
+          savedStores={savedMealStores.get(carouselMeal.id)}
+          onAdd={() => { setSaveError(''); setAddingMeal(carouselMeal); setCarouselMeal(null); }}
+          onClose={() => setCarouselMeal(null)}
+          onCreatorClick={id => { setCarouselMeal(null); setCreatorPopupId(id); }}
         />
       )}
 
