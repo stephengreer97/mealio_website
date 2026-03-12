@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import {
   decryptKrogerToken,
+  encryptKrogerToken,
   refreshKrogerAccessToken,
   krogerSearchProduct,
   krogerAddToCart,
@@ -59,7 +60,15 @@ export async function POST(request: NextRequest) {
   let userAccessToken: string;
   try {
     const decryptedRefresh = decryptKrogerToken(profile.kroger_refresh_token);
-    userAccessToken = await refreshKrogerAccessToken(decryptedRefresh);
+    const { accessToken, newRefreshToken } = await refreshKrogerAccessToken(decryptedRefresh);
+    userAccessToken = accessToken;
+    // Kroger rotates refresh tokens — always persist the new one if returned
+    if (newRefreshToken) {
+      await supabase
+        .from('user_profiles')
+        .update({ kroger_refresh_token: encryptKrogerToken(newRefreshToken) })
+        .eq('id', decoded.userId);
+    }
   } catch (err) {
     log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'token_error', error: String(err) });
     return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });

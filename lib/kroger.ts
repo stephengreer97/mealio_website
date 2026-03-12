@@ -100,8 +100,11 @@ export async function exchangeKrogerCode(
   return { accessToken: data.access_token, refreshToken: data.refresh_token };
 }
 
-/** Use a (decrypted) refresh token to get a fresh user access token. */
-export async function refreshKrogerAccessToken(refreshToken: string): Promise<string> {
+/** Use a (decrypted) refresh token to get a fresh user access token.
+ *  Also returns the new refresh token if Kroger rotated it (always store it). */
+export async function refreshKrogerAccessToken(
+  refreshToken: string
+): Promise<{ accessToken: string; newRefreshToken: string | null }> {
   const credentials = krogerCredentials();
   const res = await fetch(`${KROGER_BASE}/connect/oauth2/token`, {
     method: 'POST',
@@ -117,7 +120,10 @@ export async function refreshKrogerAccessToken(refreshToken: string): Promise<st
   });
   if (!res.ok) throw new Error('Failed to refresh Kroger access token');
   const data = await res.json();
-  return data.access_token;
+  return {
+    accessToken: data.access_token,
+    newRefreshToken: data.refresh_token ?? null,
+  };
 }
 
 /** Search for a product at a given Kroger store. Returns the UPC or null. */
