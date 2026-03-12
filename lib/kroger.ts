@@ -44,22 +44,61 @@ const JWT_SECRET = new TextEncoder().encode(
 );
 
 /** Create a short-lived state token to survive the OAuth round-trip. */
-export async function createKrogerStateToken(userId: string): Promise<string> {
-  return new SignJWT({ sub: userId, type: 'kroger_state' })
+export async function createKrogerStateToken(userId: string, returnTo?: string): Promise<string> {
+  return new SignJWT({ sub: userId, type: 'kroger_state', ...(returnTo ? { returnTo } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('10m')
     .sign(JWT_SECRET);
 }
 
-export async function verifyKrogerStateToken(token: string): Promise<{ userId: string } | null> {
+export async function verifyKrogerStateToken(
+  token: string
+): Promise<{ userId: string; returnTo?: string } | null> {
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET);
     if (payload.type !== 'kroger_state') return null;
-    return { userId: payload.sub as string };
+    return { userId: payload.sub as string, returnTo: payload.returnTo as string | undefined };
   } catch {
     return null;
   }
+}
+
+// ── Product match scoring ────────────────────────────────────────────────────
+
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+const CRITICAL_WORDS = new Set([
+  'organic', 'grass', 'fed', 'free', 'range', 'cage', 'large', 'small', 'jumbo',
+  'medium', 'extra', 'spicy', 'mild', 'hot', 'sweet', 'whole', 'skim', 'nonfat',
+  'lowfat', 'salted', 'unsalted', 'sodium', 'boneless', 'skinless', 'lean', 'ground',
+]);
+
+/**
+ * Returns 0-100 score for how well a search term matches a product description.
+ * If the search term contains critical words (organic, boneless, etc.) that are
+ * absent from the description, returns 0 — indicating a review is needed.
+ */
+export function scoreProductMatch(searchTerm: string, description: string): number {
+  const normSearch = normalizeText(searchTerm);
+  const normDesc   = normalizeText(description);
+  if (normSearch === normDesc) return 100;
+
+  const searchWords = normSearch.split(' ').filter(Boolean);
+  const descWordSet = new Set(normDesc.split(' ').filter(Boolean));
+
+  // If the search term specifies a critical attribute, the description must have it too
+  for (const w of searchWords) {
+    if (CRITICAL_WORDS.has(w) && !descWordSet.has(w)) return 0;
+  }
+
+  const matchCount = searchWords.filter(w => descWordSet.has(w)).length;
+  const matchPct   = matchCount / searchWords.length;
+  if (matchPct < 0.7) return 0;
+
+  return Math.round(matchPct * 100);
 }
 
 // ── Kroger API helpers ───────────────────────────────────────────────────────
@@ -126,12 +165,12 @@ export async function refreshKrogerAccessToken(
   };
 }
 
-/** Search for a product at a given Kroger store. Returns the UPC or null. */
+/** Search for a product at a given Kroger store. Returns the UPC, description, and exact flag or null. */
 export async function krogerSearchProduct(
   userAccessToken: string,
   term: string,
   locationId: string
-): Promise<{ upc: string; description: string } | null> {
+): Promise<{ upc: string; description: string; exact: boolean } | null> {
   const params = new URLSearchParams({
     'filter.term': term,
     'filter.locationId': locationId,
@@ -149,9 +188,12 @@ export async function krogerSearchProduct(
   const products: any[] = data.data ?? [];
   if (products.length === 0) return null;
   const p = products[0];
+  const description = p.description ?? term;
+  const score = scoreProductMatch(term, description);
   return {
     upc: p.upc ?? p.productId,
-    description: p.description ?? term,
+    description,
+    exact: score >= 70,
   };
 }
 

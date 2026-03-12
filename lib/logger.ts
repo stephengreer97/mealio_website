@@ -54,6 +54,7 @@ export type EventType =
   // ── Kroger ────────────────────────────────────────────────────────────────
   | 'KROGER:CALLBACK'
   | 'KROGER:DISCONNECT'
+  | 'KROGER:SEARCH_PRODUCTS'
   | 'KROGER:ADD_TO_CART';
 
 export type Status = 'success' | 'failed' | 'pending' | 'error';

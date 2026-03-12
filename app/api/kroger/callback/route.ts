@@ -44,7 +44,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
   }
 
-  const { userId } = stateData;
+  const { userId, returnTo } = stateData;
+  const returnBase = returnTo && returnTo.startsWith('/') ? returnTo : '/account';
 
   try {
     const redirectUri = `${APP_URL}/api/kroger/callback`;
@@ -66,14 +67,14 @@ export async function GET(request: NextRequest) {
 
     if (dbError) {
       log({ event: 'KROGER:CALLBACK', status: 'error', userId, reason: 'db_error', error: dbError.message });
-      return NextResponse.redirect(`${APP_URL}/account?kroger=error&detail=${encodeURIComponent('db:' + dbError.message)}`);
+      return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=error&detail=${encodeURIComponent('db:' + dbError.message)}`);
     }
 
     log({ event: 'KROGER:CALLBACK', status: 'success', userId });
-    return NextResponse.redirect(`${APP_URL}/account?kroger=connected`);
+    return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=connected`);
   } catch (err) {
     const errMsg = encodeURIComponent(String(err).slice(0, 200));
     log({ event: 'KROGER:CALLBACK', status: 'error', userId, error: String(err) });
-    return NextResponse.redirect(`${APP_URL}/account?kroger=error&detail=${errMsg}`);
+    return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=error&detail=${errMsg}`);
   }
 }
