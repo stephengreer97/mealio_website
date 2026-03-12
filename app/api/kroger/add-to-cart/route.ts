@@ -69,9 +69,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });
     }
 
-    const cartAdded = await krogerAddToCart(userAccessToken, directItems);
-    if (!cartAdded) {
-      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error' });
+    try {
+      await krogerAddToCart(userAccessToken, directItems);
+    } catch (err) {
+      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error', error: err });
       return NextResponse.json({ error: 'Failed to add items to Kroger cart' }, { status: 502 });
     }
 
@@ -148,9 +149,11 @@ export async function POST(request: NextRequest) {
 
   let cartAdded = false;
   if (cartItems.length > 0) {
-    cartAdded = await krogerAddToCart(userAccessToken, cartItems);
-    if (!cartAdded) {
-      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error' });
+    try {
+      await krogerAddToCart(userAccessToken, cartItems);
+      cartAdded = true;
+    } catch (err) {
+      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error', error: err });
       return NextResponse.json({ error: 'Failed to add items to Kroger cart' }, { status: 502 });
     }
   }

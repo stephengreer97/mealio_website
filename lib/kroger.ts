@@ -220,5 +220,9 @@ export async function krogerAddToCart(
     }),
     cache: 'no-store',
   });
-  return res.ok;
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`Kroger cart API ${res.status}: ${errBody}`);
+  }
+  return true;
 }

@@ -1402,6 +1402,7 @@ function KrogerCartFlow({
   const [reviewIdx, setReviewIdx] = useState(0);
   const [pickedItems, setPickedItems] = useState<{ upc: string; quantity: number }[]>([]);
   const [totalAdded, setTotalAdded] = useState(0);
+  const [cartError, setCartError] = useState('');
 
   const [selectedSuggIdx, setSelectedSuggIdx] = useState<number | 'custom'>(0);
   const [customText, setCustomText] = useState('');
@@ -1514,7 +1515,11 @@ function KrogerCartFlow({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to add to cart');
       setTotalAdded(cartItems.length);
-    } catch { setTotalAdded(0); }
+      setCartError('');
+    } catch (err) {
+      setTotalAdded(0);
+      setCartError(err instanceof Error ? err.message : 'Failed to add to cart');
+    }
     setStep('done');
   };
 
@@ -1710,9 +1715,11 @@ function KrogerCartFlow({
         {step === 'done' && (
           <>
             <div className="flex-1 flex flex-col items-center justify-center py-10 px-6 gap-3 text-center">
-              {totalAdded > 0
-                ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your Kroger cart!</p><p className="text-sm text-ml-t3">Open kroger.com to review and checkout.</p></>
-                : <><div className="text-4xl mb-2">😔</div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
+              {cartError
+                ? <><div className="text-4xl mb-2">⚠️</div><p className="text-base font-bold text-red-500">Failed to add items to cart.</p><p className="text-sm text-ml-t3">Kroger returned an error. Please try again or add items manually.</p></>
+                : totalAdded > 0
+                  ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your Kroger cart!</p><p className="text-sm text-ml-t3">Open kroger.com to review and checkout.</p></>
+                  : <><div className="text-4xl mb-2">😔</div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
               }
             </div>
             <div className="px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
