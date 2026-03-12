@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
           quantity: ing.quantity ?? 1,
           upc: top?.upc ?? null,
           description: top?.description ?? null,
-          exact: top ? scoreProductMatch(ing.productName, top.description) >= 70 : false,
+          exact: top ? scoreProductMatch(ing.productName, top.description) === 100 : false,
           suggestions,
         };
       })

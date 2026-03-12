@@ -223,7 +223,7 @@ export async function krogerSearchProduct(
   const results = await krogerSearchProducts(userAccessToken, term, locationId, 1);
   if (results.length === 0) return null;
   const { upc, description } = results[0];
-  return { upc, description, exact: scoreProductMatch(term, description) >= 70 };
+  return { upc, description, exact: scoreProductMatch(term, description) === 100 };
 }
 
 /** Add items to the user's Kroger cart. Returns true on success. */
