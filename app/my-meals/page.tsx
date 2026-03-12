@@ -1497,7 +1497,7 @@ function KrogerCartFlow({
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4" style={{ background: 'rgba(0,0,0,0.55)' }}>
-      <div className="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl flex flex-col" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh' }} onClick={e => e.stopPropagation()}>
+      <div className="w-full sm:max-w-xl rounded-t-2xl sm:rounded-2xl flex flex-col" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh' }} onClick={e => e.stopPropagation()}>
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -1519,13 +1519,15 @@ function KrogerCartFlow({
                 {meals.length} meal{meals.length !== 1 ? 's' : ''} · {items.length} ingredient{items.length !== 1 ? 's' : ''}
               </p>
               {items.map((it, i) => (
-                <div key={i} className="flex items-center gap-2 py-1.5" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <span className="flex-1 text-sm text-ml-t1 truncate">{it.productName}</span>
-                  <span className="text-xs text-ml-t3 flex-shrink-0 mr-1">{it.mealNames.join(', ')}</span>
-                  <button onClick={() => updateQty(i, -1)} className="w-6 h-6 rounded text-xs flex items-center justify-center" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
-                  <span className="w-4 text-center text-xs text-ml-t2">{it.quantity}</span>
-                  <button onClick={() => updateQty(i, 1)} className="w-6 h-6 rounded text-xs flex items-center justify-center" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
-                  <button onClick={() => removeItem(i)} className="text-xs ml-1" style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕</button>
+                <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-ml-t1 truncate">{it.productName}</p>
+                    <p className="text-xs text-ml-t3 truncate">{it.mealNames.join(', ')}</p>
+                  </div>
+                  <button onClick={() => updateQty(i, -1)} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
+                  <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.quantity}</span>
+                  <button onClick={() => updateQty(i, 1)} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
+                  <button onClick={() => removeItem(i)} className="text-xs ml-1 flex-shrink-0" style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕</button>
                 </div>
               ))}
               {error && <p className="text-xs pt-2" style={{ color: 'var(--brand)' }}>{error}</p>}
