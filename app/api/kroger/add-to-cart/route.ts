@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
     const decryptedRefresh = decryptKrogerToken(profile.kroger_refresh_token);
     userAccessToken = await refreshKrogerAccessToken(decryptedRefresh);
   } catch (err) {
-    log({ event: 'KROGER:ADD_TO_CART', status: 'token_error', userId: decoded.userId, error: String(err) });
+    log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'token_error', error: String(err) });
     return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });
   }
 
@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
   if (cartItems.length > 0) {
     cartAdded = await krogerAddToCart(userAccessToken, cartItems);
     if (!cartAdded) {
-      log({ event: 'KROGER:ADD_TO_CART', status: 'cart_api_error', userId: decoded.userId });
+      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error' });
       return NextResponse.json({ error: 'Failed to add items to Kroger cart' }, { status: 502 });
     }
   }
@@ -105,8 +105,7 @@ export async function POST(request: NextRequest) {
     event: 'KROGER:ADD_TO_CART',
     status: 'success',
     userId: decoded.userId,
-    added: added.length,
-    notFound: notFound.length,
+    detail: `added=${added.length} notFound=${notFound.length}`,
   });
 
   return NextResponse.json({ added, notFound, cartAdded });

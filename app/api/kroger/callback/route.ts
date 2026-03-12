@@ -65,7 +65,7 @@ export async function GET(request: NextRequest) {
       .eq('id', userId);
 
     if (dbError) {
-      log({ event: 'KROGER:CALLBACK', status: 'db_error', userId, error: dbError.message });
+      log({ event: 'KROGER:CALLBACK', status: 'error', userId, reason: 'db_error', error: dbError.message });
       return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
     }
 
