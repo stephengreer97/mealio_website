@@ -5,7 +5,8 @@ import {
   decryptKrogerToken,
   encryptKrogerToken,
   refreshKrogerAccessToken,
-  krogerSearchProduct,
+  krogerSearchProducts,
+  scoreProductMatch,
 } from '@/lib/kroger';
 import { log } from '@/lib/logger';
 
@@ -72,19 +73,25 @@ export async function POST(request: NextRequest) {
   }
 
   const BATCH = 10;
-  const results: Array<{ term: string; quantity: number; upc: string | null; description: string | null; exact: boolean }> = [];
+  const results: Array<{
+    term: string; quantity: number;
+    upc: string | null; description: string | null; exact: boolean;
+    suggestions: Array<{ upc: string; description: string }>;
+  }> = [];
 
   for (let i = 0; i < ingredients.length; i += BATCH) {
     const batch = ingredients.slice(i, i + BATCH);
     const batchResults = await Promise.all(
       batch.map(async (ing) => {
-        const match = await krogerSearchProduct(userAccessToken, ing.productName, locationId);
+        const suggestions = await krogerSearchProducts(userAccessToken, ing.productName, locationId, 5);
+        const top = suggestions[0] ?? null;
         return {
           term: ing.productName,
           quantity: ing.quantity ?? 1,
-          upc: match?.upc ?? null,
-          description: match?.description ?? null,
-          exact: match?.exact ?? false,
+          upc: top?.upc ?? null,
+          description: top?.description ?? null,
+          exact: top ? scoreProductMatch(ing.productName, top.description) >= 70 : false,
+          suggestions,
         };
       })
     );

@@ -66,6 +66,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
+  suggestions: Array<{ upc: string; description: string }>;
   mealIds: string[];
   mealNames: string[];
 }
@@ -1402,8 +1403,15 @@ function KrogerCartFlow({
   const [pickedItems, setPickedItems] = useState<{ upc: string; quantity: number }[]>([]);
   const [totalAdded, setTotalAdded] = useState(0);
 
+  const [selectedSuggIdx, setSelectedSuggIdx] = useState<number | 'custom'>(0);
+  const [customText, setCustomText] = useState('');
+  const [customSearching, setCustomSearching] = useState(false);
+
   const reviewQueue = searchResults.filter(r => !r.exact);
   const currentReview = reviewQueue[reviewIdx];
+
+  // Reset selection when moving to next item
+  useEffect(() => { setSelectedSuggIdx(0); setCustomText(''); }, [reviewIdx]);
 
   const handleStartSearch = async () => {
     setStep('searching');
@@ -1422,7 +1430,7 @@ function KrogerCartFlow({
 
       const results: KrogerSearchResult[] = data.results.map((r: any) => {
         const src = items.find(c => c.productName.toLowerCase().trim() === r.term.toLowerCase().trim());
-        return { ...r, mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [] };
+        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [] };
       });
       setSearchResults(results);
 
@@ -1439,19 +1447,41 @@ function KrogerCartFlow({
     }
   };
 
+  const resolveCurrentSelection = async (): Promise<{ upc: string | null; name: string } | null> => {
+    if (selectedSuggIdx === 'custom') {
+      const term = customText.trim();
+      if (!term) return null;
+      setCustomSearching(true);
+      try {
+        const res = await fetch('/api/kroger/search-products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({ ingredients: [{ productName: term, quantity: 1 }], locationId }),
+        });
+        const data = await res.json();
+        const result = data.results?.[0];
+        return { upc: result?.upc ?? null, name: term };
+      } finally { setCustomSearching(false); }
+    }
+    const s = currentReview.suggestions[selectedSuggIdx as number];
+    return s ? { upc: s.upc, name: s.description } : null;
+  };
+
   const handleReviewDecision = async (action: 'skip' | 'add' | 'update') => {
     const newPicked = [...pickedItems];
 
-    if ((action === 'add' || action === 'update') && currentReview.upc) {
-      newPicked.push({ upc: currentReview.upc, quantity: currentReview.quantity });
-
-      if (action === 'update') {
+    if (action !== 'skip') {
+      const resolved = await resolveCurrentSelection();
+      if (resolved?.upc) {
+        newPicked.push({ upc: resolved.upc, quantity: currentReview.quantity });
+      }
+      if (action === 'update' && resolved?.name) {
         for (const mealId of currentReview.mealIds) {
           const meal = meals.find(m => m.id === mealId);
           if (!meal) continue;
           const updatedIngredients = meal.ingredients.map(ing =>
             ing.productName.toLowerCase().trim() === currentReview.term.toLowerCase().trim()
-              ? { ...ing, productName: currentReview.description!, searchTerm: currentReview.description! }
+              ? { ...ing, productName: resolved.name, searchTerm: resolved.name }
               : ing
           );
           fetch(`/api/meals/${mealId}`, {
@@ -1563,61 +1593,110 @@ function KrogerCartFlow({
         )}
 
         {/* Step 3 – Review non-exact matches */}
-        {step === 'review' && currentReview && (
-          <>
-            <div className="flex-1 px-5 py-5 space-y-4 overflow-y-auto">
-              <div className="rounded-xl p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                <p className="text-xs text-ml-t3 mb-1">You searched for</p>
-                <p className="text-sm font-semibold text-ml-t1">{currentReview.term}</p>
-                {currentReview.mealNames.length > 0 && (
-                  <p className="text-xs text-ml-t3 mt-0.5">from: {currentReview.mealNames.join(', ')}</p>
-                )}
+        {step === 'review' && currentReview && (() => {
+          const hasSuggestions = currentReview.suggestions.length > 0;
+          const canAdd = hasSuggestions
+            ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
+            : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
+          const isProcessing = customSearching;
+
+          return (
+            <>
+              <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
+                {/* What was searched */}
+                <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  <p className="text-xs text-ml-t3 mb-0.5">You searched for</p>
+                  <p className="text-sm font-semibold text-ml-t1">{currentReview.term}</p>
+                  {currentReview.mealNames.length > 0 && (
+                    <p className="text-xs text-ml-t3 mt-0.5">from: {currentReview.mealNames.join(', ')}</p>
+                  )}
+                </div>
+
+                {/* Selectable suggestions */}
+                <div>
+                  <p className="text-xs font-semibold text-ml-t3 mb-2 uppercase tracking-wide">
+                    {hasSuggestions ? 'Kroger suggests' : 'No match found'}
+                  </p>
+                  <div className="space-y-1.5">
+                    {currentReview.suggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setSelectedSuggIdx(i)}
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all"
+                        style={{
+                          border: `1.5px solid ${selectedSuggIdx === i ? storeColor : 'var(--border)'}`,
+                          background: selectedSuggIdx === i ? '#e8f4fb' : 'var(--surface)',
+                          color: 'var(--text-1)',
+                        }}
+                      >
+                        {s.description}
+                      </button>
+                    ))}
+
+                    {/* Custom / free text option */}
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSuggIdx('custom')}
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all"
+                        style={{
+                          border: `1.5px solid ${selectedSuggIdx === 'custom' ? storeColor : 'var(--border)'}`,
+                          background: selectedSuggIdx === 'custom' ? '#e8f4fb' : 'var(--surface)',
+                          color: selectedSuggIdx === 'custom' ? 'var(--text-1)' : 'var(--text-3)',
+                        }}
+                      >
+                        Other — type a product name…
+                      </button>
+                      {selectedSuggIdx === 'custom' && (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={customText}
+                          onChange={e => setCustomText(e.target.value)}
+                          placeholder="e.g. Ground Beef 80/20"
+                          className="w-full mt-1.5 px-3 py-2 text-sm rounded-lg focus:outline-none"
+                          style={{ border: `1.5px solid ${storeColor}`, background: 'var(--surface)', color: 'var(--text-1)' }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div className="rounded-xl p-4" style={{ background: currentReview.upc ? '#f0f9ff' : 'var(--surface)', border: `1px solid ${currentReview.upc ? '#bae6fd' : 'var(--border)'}` }}>
-                <p className="text-xs mb-1" style={{ color: currentReview.upc ? '#0369a1' : 'var(--text-3)' }}>
-                  {currentReview.upc ? 'Kroger suggests' : 'No match found'}
-                </p>
-                {currentReview.description
-                  ? <p className="text-sm font-medium text-ml-t1">{currentReview.description}</p>
-                  : <p className="text-sm text-ml-t3 italic">This item could not be found at your Kroger store.</p>
-                }
+              <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+                <button
+                  onClick={() => handleReviewDecision('update')}
+                  disabled={!canAdd || isProcessing}
+                  className="w-full text-sm font-semibold rounded-xl py-2.5 text-white disabled:opacity-40"
+                  style={{ background: storeColor }}
+                  onMouseEnter={e => { if (canAdd) (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = storeColor; }}
+                >
+                  {isProcessing ? 'Searching…' : 'Add & Update Meal Ingredient'}
+                </button>
+                <button
+                  onClick={() => handleReviewDecision('add')}
+                  disabled={!canAdd || isProcessing}
+                  className="w-full text-sm font-medium rounded-xl py-2.5 disabled:opacity-40"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+                  onMouseEnter={e => { if (canAdd) (e.currentTarget as HTMLElement).style.background = 'var(--border)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
+                >
+                  Add to Cart Only
+                </button>
+                <button
+                  onClick={() => handleReviewDecision('skip')}
+                  disabled={isProcessing}
+                  className="w-full text-sm rounded-xl py-2 text-ml-t3 disabled:opacity-40"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                >
+                  Skip this ingredient
+                </button>
               </div>
-            </div>
-
-            <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
-              {currentReview.upc && (
-                <>
-                  <button
-                    onClick={() => handleReviewDecision('add')}
-                    className="w-full text-sm font-semibold rounded-xl py-2.5 text-white"
-                    style={{ background: storeColor }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = storeColor; }}
-                  >
-                    Add "{currentReview.description}"
-                  </button>
-                  <button
-                    onClick={() => handleReviewDecision('update')}
-                    className="w-full text-sm font-medium rounded-xl py-2.5"
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--border)'; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
-                  >
-                    Add &amp; Update Meal Ingredient
-                  </button>
-                </>
-              )}
-              <button
-                onClick={() => handleReviewDecision('skip')}
-                className="w-full text-sm rounded-xl py-2 text-ml-t3"
-                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-              >
-                Skip this ingredient
-              </button>
-            </div>
-          </>
-        )}
+            </>
+          );
+        })()}
 
         {/* Step 4 – Adding */}
         {step === 'adding' && (

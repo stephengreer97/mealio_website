@@ -165,36 +165,38 @@ export async function refreshKrogerAccessToken(
   };
 }
 
+/** Fetch up to `limit` products from Kroger for a search term. */
+export async function krogerSearchProducts(
+  userAccessToken: string,
+  term: string,
+  locationId: string,
+  limit = 5
+): Promise<Array<{ upc: string; description: string }>> {
+  const params = new URLSearchParams({
+    'filter.term': term,
+    'filter.locationId': locationId,
+    'filter.limit': String(Math.min(limit, 10)),
+  });
+  const res = await fetch(`${KROGER_BASE}/products?${params}`, {
+    headers: { Authorization: `Bearer ${userAccessToken}`, Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  const products: any[] = data.data ?? [];
+  return products.map(p => ({ upc: p.upc ?? p.productId, description: p.description ?? term }));
+}
+
 /** Search for a product at a given Kroger store. Returns the UPC, description, and exact flag or null. */
 export async function krogerSearchProduct(
   userAccessToken: string,
   term: string,
   locationId: string
 ): Promise<{ upc: string; description: string; exact: boolean } | null> {
-  const params = new URLSearchParams({
-    'filter.term': term,
-    'filter.locationId': locationId,
-    'filter.limit': '1',
-  });
-  const res = await fetch(`${KROGER_BASE}/products?${params}`, {
-    headers: {
-      Authorization: `Bearer ${userAccessToken}`,
-      Accept: 'application/json',
-    },
-    cache: 'no-store',
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  const products: any[] = data.data ?? [];
-  if (products.length === 0) return null;
-  const p = products[0];
-  const description = p.description ?? term;
-  const score = scoreProductMatch(term, description);
-  return {
-    upc: p.upc ?? p.productId,
-    description,
-    exact: score >= 70,
-  };
+  const results = await krogerSearchProducts(userAccessToken, term, locationId, 1);
+  if (results.length === 0) return null;
+  const { upc, description } = results[0];
+  return { upc, description, exact: scoreProductMatch(term, description) >= 70 };
 }
 
 /** Add items to the user's Kroger cart. Returns true on success. */
