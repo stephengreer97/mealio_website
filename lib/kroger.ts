@@ -173,7 +173,7 @@ export async function krogerSearchProducts(
   limit = 5
 ): Promise<Array<{ upc: string; description: string }>> {
   const params = new URLSearchParams({
-    'filter.term': term,
+    'filter.term': term.slice(0, 60),
     'filter.locationId': locationId,
     'filter.limit': String(Math.min(limit, 10)),
   });
