@@ -183,6 +183,7 @@ export async function krogerSearchProducts(
   });
   if (!res.ok) return [];
   const data = await res.json();
+  console.log('[Kroger:search] term:', term, 'raw response:', JSON.stringify(data, null, 2));
   const products: any[] = data.data ?? [];
   return products.map(p => ({ upc: p.upc ?? p.productId, description: p.description ?? term }));
 }
