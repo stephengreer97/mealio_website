@@ -170,10 +170,12 @@ export async function krogerSearchProducts(
   userAccessToken: string,
   term: string,
   locationId: string,
-  limit = 5
-): Promise<Array<{ upc: string; description: string }>> {
+  limit = 5,
+  _retry = 0
+): Promise<Array<{ upc: string; description: string; imageUrl: string | null }>> {
+  const truncatedTerm = term.slice(0, 60);
   const params = new URLSearchParams({
-    'filter.term': term.slice(0, 60),
+    'filter.term': truncatedTerm,
     'filter.locationId': locationId,
     'filter.limit': String(Math.min(limit, 10)),
   });
@@ -183,9 +185,26 @@ export async function krogerSearchProducts(
   });
   if (!res.ok) return [];
   const data = await res.json();
-  console.log('[Kroger:search] term:', term, 'raw response:', JSON.stringify(data, null, 2));
+  console.log('[Kroger:search] term (sent):', truncatedTerm, 'raw response:', JSON.stringify(data, null, 2));
   const products: any[] = data.data ?? [];
-  return products.map(p => ({ upc: p.upc ?? p.productId, description: p.description ?? term }));
+
+  // Retry once if empty — Kroger occasionally returns nothing on the first call
+  if (products.length === 0 && _retry === 0) {
+    await new Promise(r => setTimeout(r, 400));
+    return krogerSearchProducts(userAccessToken, term, locationId, limit, 1);
+  }
+
+  return products
+    .filter(p => {
+      const f = p.fulfillment ?? {};
+      return f.inStore || f.shipToHome || f.delivery || f.curbside;
+    })
+    .map(p => {
+      const images: any[] = p.images ?? [];
+      const featured = images.find((img: any) => img.featured) ?? images[0];
+      const imageUrl: string | null = featured?.sizes?.find((s: any) => s.size === 'medium')?.url ?? null;
+      return { upc: p.upc ?? p.productId, description: p.description ?? term, imageUrl };
+    });
 }
 
 /** Search for a product at a given Kroger store. Returns the UPC, description, and exact flag or null. */

@@ -67,7 +67,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
-  suggestions: Array<{ upc: string; description: string }>;
+  suggestions: Array<{ upc: string; description: string; imageUrl: string | null }>;
   mealIds: string[];
   mealNames: string[];
 }
@@ -1407,6 +1407,7 @@ function KrogerCartFlow({
 
   const [selectedSuggIdx, setSelectedSuggIdx] = useState<number | 'custom'>(0);
   const [customText, setCustomText] = useState('');
+  const [hoveredSugg, setHoveredSugg] = useState<{ idx: number; rect: DOMRect } | null>(null);
   const [customSearching, setCustomSearching] = useState(false);
 
   const reviewQueue = searchResults.filter(r => !r.exact);
@@ -1629,6 +1630,8 @@ function KrogerCartFlow({
                         key={i}
                         type="button"
                         onClick={() => setSelectedSuggIdx(i)}
+                        onMouseEnter={e => s.imageUrl ? setHoveredSugg({ idx: i, rect: e.currentTarget.getBoundingClientRect() }) : undefined}
+                        onMouseLeave={() => setHoveredSugg(null)}
                         className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all"
                         style={{
                           border: `1.5px solid ${selectedSuggIdx === i ? storeColor : 'var(--border)'}`,
@@ -1669,6 +1672,28 @@ function KrogerCartFlow({
                   </div>
                 </div>
               </div>
+
+              {/* Floating product image on hover */}
+              {hoveredSugg && currentReview.suggestions[hoveredSugg.idx]?.imageUrl && (
+                <div style={{
+                  position: 'fixed',
+                  left: hoveredSugg.rect.right + 10,
+                  top: hoveredSugg.rect.top,
+                  zIndex: 200,
+                  background: 'var(--surface-raised)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 12,
+                  padding: 8,
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+                  pointerEvents: 'none',
+                }}>
+                  <img
+                    src={currentReview.suggestions[hoveredSugg.idx].imageUrl!}
+                    alt=""
+                    style={{ width: 120, height: 120, objectFit: 'contain', display: 'block' }}
+                  />
+                </div>
+              )}
 
               <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
                 <button
