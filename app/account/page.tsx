@@ -28,6 +28,13 @@ interface FollowedCreator {
   followed_at: string;
 }
 
+interface KrogerLocation {
+  locationId: string;
+  name: string;
+  chain?: string;
+  address: string;
+}
+
 const STORE_LABELS: Record<string, string> = {
   heb:            'H-E-B',
   walmart:        'Walmart',
@@ -80,7 +87,31 @@ export default function AccountPage() {
   const [followingLoading, setFollowingLoading] = useState(true);
   const [unfollowingId, setUnfollowingId] = useState<string | null>(null);
 
-  useEffect(() => { verifyAuth(); }, []);
+  // Kroger
+  const [krogerConnected, setKrogerConnected] = useState(false);
+  const [krogerLocationId, setKrogerLocationId] = useState<string | null>(null);
+  const [krogerLocationName, setKrogerLocationName] = useState<string | null>(null);
+  const [krogerConnecting, setKrogerConnecting] = useState(false);
+  const [krogerDisconnecting, setKrogerDisconnecting] = useState(false);
+  const [krogerLocations, setKrogerLocations] = useState<KrogerLocation[]>([]);
+  const [krogerZip, setKrogerZip] = useState('');
+  const [krogerSearching, setKrogerSearching] = useState(false);
+  const [krogerSavingLocation, setKrogerSavingLocation] = useState(false);
+  const [krogerMsg, setKrogerMsg] = useState('');
+
+  useEffect(() => {
+    verifyAuth();
+    // Show feedback from Kroger OAuth redirect
+    const params = new URLSearchParams(window.location.search);
+    const krogerParam = params.get('kroger');
+    if (krogerParam === 'connected') setKrogerMsg('Kroger account connected! Select your preferred store below.');
+    else if (krogerParam === 'denied') setKrogerMsg('Kroger authorization was cancelled.');
+    else if (krogerParam === 'error') setKrogerMsg('Something went wrong connecting to Kroger. Please try again.');
+    if (krogerParam) {
+      // Clean the query param without reload
+      window.history.replaceState({}, '', '/account');
+    }
+  }, []);
 
   const verifyAuth = async () => {
     try {
@@ -103,6 +134,17 @@ export default function AccountPage() {
         .then(d => setFollowingCreators(d.creators ?? []))
         .catch(() => {})
         .finally(() => setFollowingLoading(false));
+
+      fetch('/api/kroger/status', { headers: { Authorization: `Bearer ${accessToken}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d?.connected) {
+            setKrogerConnected(true);
+            setKrogerLocationId(d.locationId ?? null);
+            setKrogerLocationName(d.locationName ?? null);
+          }
+        })
+        .catch(() => {});
 
       setLoading(false);
     } catch { router.push('/'); }
@@ -233,6 +275,76 @@ export default function AccountPage() {
     } finally { setUnfollowingId(null); }
   };
 
+  const handleKrogerConnect = async () => {
+    setKrogerConnecting(true);
+    setKrogerMsg('');
+    try {
+      const accessToken = localStorage.getItem('accessToken');
+      const res = await fetch('/api/kroger/connect', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const data = await res.json();
+      if (data.redirectUrl) window.location.href = data.redirectUrl;
+      else setKrogerMsg(data.error || 'Failed to start Kroger connection.');
+    } catch { setKrogerMsg('Failed to start Kroger connection.'); }
+    finally { setKrogerConnecting(false); }
+  };
+
+  const handleKrogerDisconnect = async () => {
+    if (!window.confirm('Disconnect your Kroger account? You can reconnect anytime.')) return;
+    setKrogerDisconnecting(true);
+    try {
+      const accessToken = localStorage.getItem('accessToken');
+      await fetch('/api/kroger/disconnect', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      setKrogerConnected(false);
+      setKrogerLocationId(null);
+      setKrogerLocationName(null);
+      setKrogerLocations([]);
+      setKrogerMsg('');
+    } catch { setKrogerMsg('Failed to disconnect. Please try again.'); }
+    finally { setKrogerDisconnecting(false); }
+  };
+
+  const handleKrogerSearchStores = async () => {
+    if (!krogerZip.trim()) return;
+    setKrogerSearching(true);
+    setKrogerLocations([]);
+    try {
+      const accessToken = localStorage.getItem('accessToken');
+      const res = await fetch(`/api/kroger/locations?term=${encodeURIComponent(krogerZip)}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const data = await res.json();
+      setKrogerLocations(data.locations ?? []);
+      if ((data.locations ?? []).length === 0) setKrogerMsg('No Kroger stores found near that ZIP code.');
+    } catch { setKrogerMsg('Failed to search stores.'); }
+    finally { setKrogerSearching(false); }
+  };
+
+  const handleKrogerSaveLocation = async (loc: KrogerLocation) => {
+    setKrogerSavingLocation(true);
+    try {
+      const accessToken = localStorage.getItem('accessToken');
+      const res = await fetch('/api/kroger/set-location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ locationId: loc.locationId, locationName: loc.name }),
+      });
+      if (res.ok) {
+        setKrogerLocationId(loc.locationId);
+        setKrogerLocationName(loc.name);
+        setKrogerLocations([]);
+        setKrogerZip('');
+        setKrogerMsg('Store saved! You can now add meals directly to your Kroger cart.');
+      }
+    } catch { setKrogerMsg('Failed to save store.'); }
+    finally { setKrogerSavingLocation(false); }
+  };
+
   const handleLogout = () => { localStorage.clear(); router.push('/'); };
 
   const openManageSubscription = async () => {
@@ -349,6 +461,108 @@ export default function AccountPage() {
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
                 >
                   Upgrade to Full Access
+                </button>
+              </div>
+            )}
+          </SectionCard>
+
+          {/* Kroger */}
+          <SectionCard title="Kroger Cart" subtitle="Connect your Kroger account to add meal ingredients directly to your cart — no extension needed.">
+            {krogerMsg && (
+              <div className="px-4 py-3 rounded-xl text-sm mb-4" style={{
+                background: krogerMsg.startsWith('Kroger account connected') || krogerMsg.startsWith('Store saved')
+                  ? '#f0fdf4' : 'var(--brand-light)',
+                border: `1px solid ${krogerMsg.startsWith('Kroger account connected') || krogerMsg.startsWith('Store saved') ? '#bbf7d0' : 'var(--brand-border)'}`,
+                color: krogerMsg.startsWith('Kroger account connected') || krogerMsg.startsWith('Store saved') ? '#14532d' : '#9f1239',
+              }}>
+                {krogerMsg}
+              </div>
+            )}
+
+            {!krogerConnected ? (
+              <div>
+                <button
+                  onClick={handleKrogerConnect}
+                  disabled={krogerConnecting}
+                  className="text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors disabled:opacity-50"
+                  style={{ background: '#0063a1', color: '#fff', border: 'none', cursor: 'pointer' }}
+                  onMouseEnter={e => { if (!krogerConnecting) (e.currentTarget as HTMLElement).style.background = '#00497a'; }}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#0063a1'}
+                >
+                  {krogerConnecting ? 'Redirecting to Kroger…' : 'Connect Kroger Account'}
+                </button>
+                <p className="text-xs mt-2" style={{ color: 'var(--text-3)' }}>
+                  Works with Kroger, Ralphs, Fred Meyer, King Soopers, Harris Teeter, and 10+ more banners.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <div className="rounded-xl p-4 mb-4" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+                  <p className="font-semibold text-sm mb-0.5" style={{ color: '#14532d' }}>Connected</p>
+                  {krogerLocationName
+                    ? <p className="text-sm" style={{ color: '#166534' }}>Store: {krogerLocationName}</p>
+                    : <p className="text-sm" style={{ color: '#166534' }}>No store selected yet — search below.</p>}
+                </div>
+
+                {/* Store picker */}
+                <div className="mb-4">
+                  <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-2)' }}>
+                    {krogerLocationName ? 'Change store' : 'Select your store'}
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="ZIP code"
+                      value={krogerZip}
+                      onChange={e => setKrogerZip(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleKrogerSearchStores(); }}
+                      maxLength={10}
+                      style={{ ...inputStyle, flex: 1, width: 'auto' }}
+                      onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+                      onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+                    />
+                    <button
+                      onClick={handleKrogerSearchStores}
+                      disabled={krogerSearching || !krogerZip.trim()}
+                      className="text-sm font-semibold px-4 py-2 rounded-xl transition-colors disabled:opacity-50"
+                      style={{ background: 'var(--brand)', color: '#fff', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                      onMouseEnter={e => { if (!krogerSearching) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'; }}
+                      onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
+                    >
+                      {krogerSearching ? 'Searching…' : 'Search'}
+                    </button>
+                  </div>
+
+                  {krogerLocations.length > 0 && (
+                    <ul className="mt-2 rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                      {krogerLocations.map(loc => (
+                        <li key={loc.locationId} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <button
+                            onClick={() => handleKrogerSaveLocation(loc)}
+                            disabled={krogerSavingLocation}
+                            className="w-full text-left px-4 py-3 transition-colors disabled:opacity-50"
+                            style={{ background: krogerLocationId === loc.locationId ? 'var(--brand-light)' : 'var(--surface-raised)', border: 'none', cursor: 'pointer' }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = krogerLocationId === loc.locationId ? 'var(--brand-light)' : 'var(--surface-raised)'; }}
+                          >
+                            <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{loc.name}</p>
+                            <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>{loc.address}</p>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleKrogerDisconnect}
+                  disabled={krogerDisconnecting}
+                  className="text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                  style={{ border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface-raised)', cursor: 'pointer' }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface)'}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--surface-raised)'}
+                >
+                  {krogerDisconnecting ? 'Disconnecting…' : 'Disconnect Kroger'}
                 </button>
               </div>
             )}

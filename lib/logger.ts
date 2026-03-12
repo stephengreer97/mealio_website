@@ -50,7 +50,11 @@ export type EventType =
   // ── Payments ──────────────────────────────────────────────────────────────
   | 'PAYMENT:CHECKOUT'
   | 'PAYMENT:WEBHOOK'
-  | 'PAYMENT:PORTAL';
+  | 'PAYMENT:PORTAL'
+  // ── Kroger ────────────────────────────────────────────────────────────────
+  | 'KROGER:CALLBACK'
+  | 'KROGER:DISCONNECT'
+  | 'KROGER:ADD_TO_CART';
 
 export type Status = 'success' | 'failed' | 'pending' | 'error';
 

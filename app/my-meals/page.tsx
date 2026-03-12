@@ -1141,6 +1141,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
 
 function MealDetailModal({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
+  krogerConnected, krogerLocationId,
   onEdit, onDelete, onShare, onClose, onCreatorClick,
 }: {
   meal: Meal;
@@ -1148,6 +1149,8 @@ function MealDetailModal({
   isCreator: boolean;
   creatorChecked: boolean;
   copiedMealId: string | null;
+  krogerConnected: boolean;
+  krogerLocationId: string | null;
   onEdit: () => void;
   onDelete: () => void;
   onShare: () => void;
@@ -1155,6 +1158,32 @@ function MealDetailModal({
   onCreatorClick?: (id: string) => void;
 }) {
   const dragRef = useRef(false);
+  const [krogerLoading, setKrogerLoading] = useState(false);
+  const [krogerResult, setKrogerResult] = useState<{ added: string[]; notFound: string[] } | null>(null);
+
+  const handleAddToKroger = async () => {
+    if (!krogerLocationId) {
+      alert('Please select a Kroger store in Account Settings first.');
+      return;
+    }
+    setKrogerLoading(true);
+    setKrogerResult(null);
+    try {
+      const accessToken = localStorage.getItem('accessToken');
+      const res = await fetch('/api/kroger/add-to-cart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ ingredients: meal.ingredients, locationId: krogerLocationId }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setKrogerResult({ added: data.added ?? [], notFound: data.notFound ?? [] });
+      } else {
+        alert(data.error || 'Failed to add to Kroger cart.');
+      }
+    } catch { alert('Failed to add to Kroger cart.'); }
+    finally { setKrogerLoading(false); }
+  };
   const websiteHost = meal.website ? (() => {
     try { return new URL(meal.website).hostname.replace('www.', ''); } catch { return meal.website; }
   })() : null;
@@ -1255,8 +1284,34 @@ function MealDetailModal({
           )}
         </div>
 
+        {/* Kroger result feedback */}
+        {krogerResult && (
+          <div className="px-5 pb-3">
+            <div className="rounded-xl p-3 text-xs" style={{ background: krogerResult.added.length > 0 ? '#f0fdf4' : 'var(--brand-light)', border: `1px solid ${krogerResult.added.length > 0 ? '#bbf7d0' : 'var(--brand-border)'}` }}>
+              {krogerResult.added.length > 0 && (
+                <p style={{ color: '#14532d' }}>{krogerResult.added.length} item{krogerResult.added.length !== 1 ? 's' : ''} added to your Kroger cart.</p>
+              )}
+              {krogerResult.notFound.length > 0 && (
+                <p style={{ color: '#9f1239', marginTop: krogerResult.added.length > 0 ? '4px' : 0 }}>Not found: {krogerResult.notFound.join(', ')}</p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
+          {krogerConnected && (
+            <button
+              onClick={handleAddToKroger}
+              disabled={krogerLoading}
+              className="px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
+              style={{ background: '#0063a1', color: '#fff', border: 'none', cursor: 'pointer' }}
+              onMouseEnter={e => { if (!krogerLoading) (e.currentTarget as HTMLElement).style.background = '#00497a'; }}
+              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#0063a1'}
+            >
+              {krogerLoading ? 'Adding…' : 'Add to Kroger Cart'}
+            </button>
+          )}
           <button
             onClick={() => { onEdit(); onClose(); }}
             className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors"
@@ -1288,6 +1343,7 @@ function MealDetailModal({
 
 function DashboardMealCard({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
+  krogerConnected, krogerLocationId,
   onEdit, onDelete, onShare, onRemovePhoto, onCreatorClick,
 }: {
   meal: Meal;
@@ -1295,6 +1351,8 @@ function DashboardMealCard({
   isCreator: boolean;
   creatorChecked: boolean;
   copiedMealId: string | null;
+  krogerConnected: boolean;
+  krogerLocationId: string | null;
   onEdit: () => void;
   onDelete: () => void;
   onShare: () => void;
@@ -1316,6 +1374,8 @@ function DashboardMealCard({
           isCreator={isCreator}
           creatorChecked={creatorChecked}
           copiedMealId={copiedMealId}
+          krogerConnected={krogerConnected}
+          krogerLocationId={krogerLocationId}
           onEdit={onEdit}
           onDelete={onDelete}
           onShare={onShare}
@@ -1463,6 +1523,8 @@ export default function MyMealsPage() {
   const [copiedMealId, setCopiedMealId] = useState<string | null>(null);
   const [creatorPopupId, setCreatorPopupId] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState('');
+  const [krogerConnected, setKrogerConnected] = useState(false);
+  const [krogerLocationId, setKrogerLocationId] = useState<string | null>(null);
 
   useEffect(() => {
     verifyAuth();
@@ -1498,6 +1560,15 @@ export default function MyMealsPage() {
         if (d?.creator) setIsCreator(true);
         setCreatorChecked(true);
       }).catch(() => { setCreatorChecked(true); });
+
+      fetch('/api/kroger/status', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).then(r => r.ok ? r.json() : null).then(d => {
+        if (d?.connected) {
+          setKrogerConnected(true);
+          setKrogerLocationId(d.locationId ?? null);
+        }
+      }).catch(() => {});
 
       setLoading(false);
       loadMeals(accessToken);
@@ -1759,6 +1830,8 @@ export default function MyMealsPage() {
                       isCreator={isCreator}
                       creatorChecked={creatorChecked}
                       copiedMealId={copiedMealId}
+                      krogerConnected={krogerConnected}
+                      krogerLocationId={krogerLocationId}
                       onEdit={() => setEditingMeal(meal)}
                       onDelete={() => handleDelete(meal)}
                       onShare={() => handleShare(meal)}
