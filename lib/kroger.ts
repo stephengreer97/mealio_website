@@ -44,22 +44,61 @@ const JWT_SECRET = new TextEncoder().encode(
 );
 
 /** Create a short-lived state token to survive the OAuth round-trip. */
-export async function createKrogerStateToken(userId: string): Promise<string> {
-  return new SignJWT({ sub: userId, type: 'kroger_state' })
+export async function createKrogerStateToken(userId: string, returnTo?: string, popup?: boolean): Promise<string> {
+  return new SignJWT({ sub: userId, type: 'kroger_state', ...(returnTo ? { returnTo } : {}), ...(popup ? { popup: true } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('10m')
     .sign(JWT_SECRET);
 }
 
-export async function verifyKrogerStateToken(token: string): Promise<{ userId: string } | null> {
+export async function verifyKrogerStateToken(
+  token: string
+): Promise<{ userId: string; returnTo?: string; popup?: boolean } | null> {
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET);
     if (payload.type !== 'kroger_state') return null;
-    return { userId: payload.sub as string };
+    return { userId: payload.sub as string, returnTo: payload.returnTo as string | undefined, popup: payload.popup as boolean | undefined };
   } catch {
     return null;
   }
+}
+
+// ── Product match scoring ────────────────────────────────────────────────────
+
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+const CRITICAL_WORDS = new Set([
+  'organic', 'grass', 'fed', 'free', 'range', 'cage', 'large', 'small', 'jumbo',
+  'medium', 'extra', 'spicy', 'mild', 'hot', 'sweet', 'whole', 'skim', 'nonfat',
+  'lowfat', 'salted', 'unsalted', 'sodium', 'boneless', 'skinless', 'lean', 'ground',
+]);
+
+/**
+ * Returns 0-100 score for how well a search term matches a product description.
+ * If the search term contains critical words (organic, boneless, etc.) that are
+ * absent from the description, returns 0 — indicating a review is needed.
+ */
+export function scoreProductMatch(searchTerm: string, description: string): number {
+  const normSearch = normalizeText(searchTerm);
+  const normDesc   = normalizeText(description);
+  if (normSearch === normDesc) return 100;
+
+  const searchWords = normSearch.split(' ').filter(Boolean);
+  const descWordSet = new Set(normDesc.split(' ').filter(Boolean));
+
+  // If the search term specifies a critical attribute, the description must have it too
+  for (const w of searchWords) {
+    if (CRITICAL_WORDS.has(w) && !descWordSet.has(w)) return 0;
+  }
+
+  const matchCount = searchWords.filter(w => descWordSet.has(w)).length;
+  const matchPct   = matchCount / searchWords.length;
+  if (matchPct < 0.7) return 0;
+
+  return Math.round(matchPct * 100);
 }
 
 // ── Kroger API helpers ───────────────────────────────────────────────────────
@@ -100,8 +139,11 @@ export async function exchangeKrogerCode(
   return { accessToken: data.access_token, refreshToken: data.refresh_token };
 }
 
-/** Use a (decrypted) refresh token to get a fresh user access token. */
-export async function refreshKrogerAccessToken(refreshToken: string): Promise<string> {
+/** Use a (decrypted) refresh token to get a fresh user access token.
+ *  Also returns the new refresh token if Kroger rotated it (always store it). */
+export async function refreshKrogerAccessToken(
+  refreshToken: string
+): Promise<{ accessToken: string; newRefreshToken: string | null }> {
   const credentials = krogerCredentials();
   const res = await fetch(`${KROGER_BASE}/connect/oauth2/token`, {
     method: 'POST',
@@ -117,36 +159,70 @@ export async function refreshKrogerAccessToken(refreshToken: string): Promise<st
   });
   if (!res.ok) throw new Error('Failed to refresh Kroger access token');
   const data = await res.json();
-  return data.access_token;
+  return {
+    accessToken: data.access_token,
+    newRefreshToken: data.refresh_token ?? null,
+  };
 }
 
-/** Search for a product at a given Kroger store. Returns the UPC or null. */
+/** Fetch up to `limit` products from Kroger for a search term. */
+export async function krogerSearchProducts(
+  userAccessToken: string,
+  term: string,
+  locationId: string,
+  limit = 5,
+  _retry = 0
+): Promise<Array<{ upc: string; description: string; imageUrl: string | null }>> {
+  const truncatedTerm = term
+    .replace(/[™®©]/g, '')   // strip trademark symbols — Kroger counts each as a word
+    .trim()
+    .split(/\s+/)
+    .slice(0, 8)
+    .join(' ');
+  const params = new URLSearchParams({
+    'filter.term': truncatedTerm,
+    'filter.locationId': locationId,
+    'filter.limit': String(Math.min(limit, 10)),
+  });
+  const res = await fetch(`${KROGER_BASE}/products?${params}`, {
+    headers: { Authorization: `Bearer ${userAccessToken}`, Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  console.log('[Kroger:search] term (sent):', truncatedTerm, 'raw response:', JSON.stringify(data, null, 2));
+  const products: any[] = data.data ?? [];
+
+  // Retry once if empty — Kroger occasionally returns nothing on the first call
+  if (products.length === 0 && _retry === 0) {
+    await new Promise(r => setTimeout(r, 400));
+    return krogerSearchProducts(userAccessToken, term, locationId, limit, 1);
+  }
+
+  return products
+    .filter(p => {
+      const f = p.fulfillment;
+      if (!f) return true; // fulfillment not returned by this endpoint — don't filter
+      return f.inStore || f.shipToHome || f.delivery || f.curbside;
+    })
+    .map(p => {
+      const images: any[] = p.images ?? [];
+      const featured = images.find((img: any) => img.featured) ?? images[0];
+      const imageUrl: string | null = featured?.sizes?.find((s: any) => s.size === 'medium')?.url ?? null;
+      return { upc: p.upc ?? p.productId, description: p.description ?? term, imageUrl };
+    });
+}
+
+/** Search for a product at a given Kroger store. Returns the UPC, description, and exact flag or null. */
 export async function krogerSearchProduct(
   userAccessToken: string,
   term: string,
   locationId: string
-): Promise<{ upc: string; description: string } | null> {
-  const params = new URLSearchParams({
-    'filter.term': term,
-    'filter.locationId': locationId,
-    'filter.limit': '1',
-  });
-  const res = await fetch(`${KROGER_BASE}/products?${params}`, {
-    headers: {
-      Authorization: `Bearer ${userAccessToken}`,
-      Accept: 'application/json',
-    },
-    cache: 'no-store',
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  const products: any[] = data.data ?? [];
-  if (products.length === 0) return null;
-  const p = products[0];
-  return {
-    upc: p.upc ?? p.productId,
-    description: p.description ?? term,
-  };
+): Promise<{ upc: string; description: string; exact: boolean } | null> {
+  const results = await krogerSearchProducts(userAccessToken, term, locationId, 1);
+  if (results.length === 0) return null;
+  const { upc, description } = results[0];
+  return { upc, description, exact: scoreProductMatch(term, description) >= 70 };
 }
 
 /** Add items to the user's Kroger cart. Returns true on success. */
@@ -170,5 +246,9 @@ export async function krogerAddToCart(
     }),
     cache: 'no-store',
   });
-  return res.ok;
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`Kroger cart API ${res.status}: ${errBody}`);
+  }
+  return true;
 }

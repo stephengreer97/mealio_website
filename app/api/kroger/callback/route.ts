@@ -44,7 +44,21 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
   }
 
-  const { userId } = stateData;
+  const { userId, returnTo, popup } = stateData;
+  const returnBase = returnTo && returnTo.startsWith('/') ? returnTo : '/account';
+
+  const popupHtml = (result: 'connected' | 'denied' | 'error') =>
+    new NextResponse(
+      `<!DOCTYPE html><html><head><title>Kroger</title></head>` +
+      `<body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f0f4f8">` +
+      `<p style="color:#555;font-size:14px">Connecting… this window will close automatically.</p>` +
+      `<script>` +
+      `try{window.opener.postMessage({kroger:${JSON.stringify(result)}},${JSON.stringify(APP_URL)});}catch(e){}` +
+      `window.close();` +
+      `setTimeout(function(){document.body.innerHTML='<p style="font-family:sans-serif;text-align:center;margin-top:40vh;color:#555">You can close this window.</p>';},800);` +
+      `</script></body></html>`,
+      { headers: { 'Content-Type': 'text/html' } }
+    );
 
   try {
     const redirectUri = `${APP_URL}/api/kroger/callback`;
@@ -66,13 +80,17 @@ export async function GET(request: NextRequest) {
 
     if (dbError) {
       log({ event: 'KROGER:CALLBACK', status: 'error', userId, reason: 'db_error', error: dbError.message });
-      return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
+      if (popup) return popupHtml('error');
+      return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=error&detail=${encodeURIComponent('db:' + dbError.message)}`);
     }
 
     log({ event: 'KROGER:CALLBACK', status: 'success', userId });
-    return NextResponse.redirect(`${APP_URL}/account?kroger=connected`);
+    if (popup) return popupHtml('connected');
+    return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=connected`);
   } catch (err) {
+    const errMsg = encodeURIComponent(String(err).slice(0, 200));
     log({ event: 'KROGER:CALLBACK', status: 'error', userId, error: String(err) });
-    return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
+    if (popup) return popupHtml('error');
+    return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=error&detail=${errMsg}`);
   }
 }

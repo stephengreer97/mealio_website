@@ -25,7 +25,11 @@ export async function POST(request: NextRequest) {
   const proto = host.startsWith('localhost') ? 'http' : 'https';
   const APP_URL = `${proto}://${host}`;
 
-  const state = await createKrogerStateToken(decoded.userId);
+  const body = await request.json().catch(() => ({}));
+  const returnTo: string | undefined = typeof body?.returnTo === 'string' ? body.returnTo : undefined;
+  const popup: boolean = body?.popup === true;
+
+  const state = await createKrogerStateToken(decoded.userId, returnTo, popup);
 
   const params = new URLSearchParams({
     response_type: 'code',

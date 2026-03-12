@@ -6,6 +6,7 @@ import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import ExtensionNudge from '@/components/ExtensionNudge';
 import CreatorPopup from '@/components/CreatorPopup';
+import KrogerStorePickerModal from '@/components/KrogerStorePickerModal';
 
 interface User {
   id: string;
@@ -45,6 +46,31 @@ interface MealFilters {
   excludeIngredients: string[];
 }
 const EMPTY_FILTERS: MealFilters = { authors: [], tags: [], ingredients: [], difficulty: [], excludeIngredients: [] };
+
+// Stores that support the Kroger API cart integration
+const KROGER_API_STORES = new Set([
+  'kroger', 'ralphs', 'fred_meyer', 'king_soopers', 'smiths', 'frys',
+  'qfc', 'city_market', 'dillons', 'bakers', 'marianos', 'pick_n_save',
+  'metro_market', 'pay_less', 'harris_teeter',
+]);
+
+interface ConsolidatedIngredient {
+  productName: string;
+  quantity: number;
+  mealIds: string[];
+  mealNames: string[];
+}
+
+interface KrogerSearchResult {
+  term: string;
+  quantity: number;
+  upc: string | null;
+  description: string | null;
+  exact: boolean;
+  suggestions: Array<{ upc: string; description: string; imageUrl: string | null }>;
+  mealIds: string[];
+  mealNames: string[];
+}
 
 const ALL_TAGS = [
   // Time
@@ -1203,12 +1229,7 @@ function MealDetailModal({
         {/* Header */}
         <div className="flex items-start justify-between p-5 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div className="min-w-0 pr-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-base font-bold text-ml-t1 leading-tight">{meal.name}</h2>
-              <span className="text-xs font-medium rounded-full px-2 py-0.5 flex-shrink-0" style={{ background: STORE_COLORS[meal.store_id] ?? 'var(--surface)', color: STORE_COLORS[meal.store_id] ? '#fff' : 'var(--text-3)', border: STORE_COLORS[meal.store_id] ? 'none' : '1px solid var(--border)' }}>
-                {STORE_LABELS[meal.store_id] ?? meal.store_id}
-              </span>
-            </div>
+            <h2 className="text-base font-bold text-ml-t1 leading-tight">{meal.name}</h2>
             {meal.author && (
               meal.creator_id && onCreatorClick ? (
                 <button
@@ -1300,7 +1321,7 @@ function MealDetailModal({
 
         {/* Footer */}
         <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
-          {krogerConnected && (
+          {krogerConnected && KROGER_API_STORES.has(meal.store_id) && (
             <button
               onClick={handleAddToKroger}
               disabled={krogerLoading}
@@ -1341,9 +1362,407 @@ function MealDetailModal({
   );
 }
 
+// ── Kroger Cart Flow ──────────────────────────────────────────────────────────
+
+function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
+  const map = new Map<string, ConsolidatedIngredient>();
+  for (const meal of meals) {
+    for (const ing of meal.ingredients) {
+      const key = (ing.productName ?? '').toLowerCase().trim();
+      if (!key) continue;
+      if (map.has(key)) {
+        const e = map.get(key)!;
+        e.quantity += ing.quantity ?? 1;
+        if (!e.mealIds.includes(meal.id)) { e.mealIds.push(meal.id); e.mealNames.push(meal.name); }
+      } else {
+        map.set(key, { productName: ing.productName, quantity: ing.quantity ?? 1, mealIds: [meal.id], mealNames: [meal.name] });
+      }
+    }
+  }
+  return [...map.values()];
+}
+
+function KrogerCartFlow({
+  meals, locationId, accessToken, onClose, onMealUpdated,
+}: {
+  meals: Meal[];
+  locationId: string;
+  accessToken: string;
+  onClose: () => void;
+  onMealUpdated: (updated: Meal) => void;
+}) {
+  type Step = 'qty' | 'searching' | 'review' | 'adding' | 'done';
+  const [step, setStep] = useState<Step>('qty');
+  const [error, setError] = useState('');
+
+  // Step 1 – consolidated ingredient list with editable quantities
+  const [items, setItems] = useState<ConsolidatedIngredient[]>(() => consolidateIngredients(meals));
+
+  // Steps 3/4 – results
+  const [searchResults, setSearchResults] = useState<KrogerSearchResult[]>([]);
+  const [reviewIdx, setReviewIdx] = useState(0);
+  const [pickedItems, setPickedItems] = useState<{ upc: string; quantity: number }[]>([]);
+  const [totalAdded, setTotalAdded] = useState(0);
+  const [cartError, setCartError] = useState('');
+
+  const [selectedSuggIdx, setSelectedSuggIdx] = useState<number | 'custom'>(0);
+  const [customText, setCustomText] = useState('');
+  const [hoveredSugg, setHoveredSugg] = useState<{ idx: number; rect: DOMRect } | null>(null);
+  const [customSearching, setCustomSearching] = useState(false);
+
+  const reviewQueue = searchResults.filter(r => !r.exact);
+  const currentReview = reviewQueue[reviewIdx];
+
+  // Reset selection when moving to next item
+  useEffect(() => { setSelectedSuggIdx(0); setCustomText(''); }, [reviewIdx]);
+
+  const handleStartSearch = async () => {
+    setStep('searching');
+    setError('');
+    try {
+      const res = await fetch('/api/kroger/search-products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          ingredients: items.filter(i => i.quantity > 0).map(i => ({ productName: i.productName, quantity: i.quantity })),
+          locationId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Search failed');
+
+      const results: KrogerSearchResult[] = data.results.map((r: any) => {
+        const src = items.find(c => c.productName.toLowerCase().trim() === r.term.toLowerCase().trim());
+        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [] };
+      });
+      setSearchResults(results);
+
+      const needsReview = results.filter(r => !r.exact);
+      if (needsReview.length === 0) {
+        await doAddToCart(results.filter(r => r.upc).map(r => ({ upc: r.upc!, quantity: r.quantity })));
+      } else {
+        setReviewIdx(0);
+        setStep('review');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Search failed');
+      setStep('qty');
+    }
+  };
+
+  const resolveCurrentSelection = async (): Promise<{ upc: string | null; name: string } | null> => {
+    if (selectedSuggIdx === 'custom') {
+      const term = customText.trim();
+      if (!term) return null;
+      setCustomSearching(true);
+      try {
+        const res = await fetch('/api/kroger/search-products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({ ingredients: [{ productName: term, quantity: 1 }], locationId }),
+        });
+        const data = await res.json();
+        const result = data.results?.[0];
+        return { upc: result?.upc ?? null, name: term };
+      } finally { setCustomSearching(false); }
+    }
+    const s = currentReview.suggestions[selectedSuggIdx as number];
+    return s ? { upc: s.upc, name: s.description } : null;
+  };
+
+  const handleReviewDecision = async (action: 'skip' | 'add' | 'update') => {
+    const newPicked = [...pickedItems];
+
+    if (action !== 'skip') {
+      const resolved = await resolveCurrentSelection();
+      if (resolved?.upc) {
+        newPicked.push({ upc: resolved.upc, quantity: currentReview.quantity });
+      }
+      if (action === 'update' && resolved?.name) {
+        for (const mealId of currentReview.mealIds) {
+          const meal = meals.find(m => m.id === mealId);
+          if (!meal) continue;
+          const updatedIngredients = meal.ingredients.map(ing =>
+            ing.productName.toLowerCase().trim() === currentReview.term.toLowerCase().trim()
+              ? { ...ing, productName: resolved.name, searchTerm: resolved.name }
+              : ing
+          );
+          fetch(`/api/meals/${mealId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({ ingredients: updatedIngredients }),
+          }).then(r => r.ok ? r.json() : null).then(d => { if (d?.meal) onMealUpdated(d.meal); }).catch(() => {});
+        }
+      }
+    }
+
+    if (reviewIdx < reviewQueue.length - 1) {
+      setPickedItems(newPicked);
+      setReviewIdx(reviewIdx + 1);
+    } else {
+      const exactItems = searchResults.filter(r => r.exact && r.upc).map(r => ({ upc: r.upc!, quantity: r.quantity }));
+      await doAddToCart([...exactItems, ...newPicked]);
+    }
+  };
+
+  const doAddToCart = async (cartItems: { upc: string; quantity: number }[]) => {
+    setStep('adding');
+    if (cartItems.length === 0) { setTotalAdded(0); setStep('done'); return; }
+    try {
+      const res = await fetch('/api/kroger/add-to-cart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ items: cartItems, locationId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to add to cart');
+      setTotalAdded(cartItems.length);
+      setCartError('');
+    } catch (err) {
+      setTotalAdded(0);
+      setCartError(err instanceof Error ? err.message : 'Failed to add to cart');
+    }
+    setStep('done');
+  };
+
+  const updateQty = (i: number, delta: number) =>
+    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: Math.max(0, it.quantity + delta) } : it));
+
+  const removeItem = (i: number) =>
+    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: 0 } : it));
+
+  const storeColor = '#0063a1';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4" style={{ background: 'rgba(0,0,0,0.55)' }}>
+      <div className="w-full sm:max-w-xl rounded-t-2xl sm:rounded-2xl flex flex-col" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh' }} onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <h2 className="text-base font-bold text-ml-t1">
+            {step === 'qty' && 'Review Ingredients'}
+            {step === 'searching' && 'Finding Products…'}
+            {step === 'review' && `Review Match (${reviewIdx + 1} of ${reviewQueue.length})`}
+            {step === 'adding' && 'Adding to Cart…'}
+            {step === 'done' && 'Done!'}
+          </h2>
+          <button onClick={onClose} className="text-ml-t3 hover:text-ml-t1 text-xl leading-none">✕</button>
+        </div>
+
+        {/* Step 1 – Qty review */}
+        {step === 'qty' && (
+          <>
+            <div className="overflow-y-auto flex-1 px-5 py-4 space-y-1">
+              <p className="text-xs text-ml-t3 mb-3">
+                {meals.length} meal{meals.length !== 1 ? 's' : ''} · {items.length} ingredient{items.length !== 1 ? 's' : ''}
+              </p>
+              {items.map((it, i) => {
+                const zeroed = it.quantity === 0;
+                return (
+                  <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)', opacity: zeroed ? 0.45 : 1 }}>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-ml-t1 truncate" style={{ textDecoration: zeroed ? 'line-through' : 'none' }}>{it.productName}</p>
+                      <p className="text-xs text-ml-t3 truncate">{it.mealNames.join(', ')}</p>
+                    </div>
+                    <button onClick={() => updateQty(i, -1)} disabled={zeroed} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
+                    <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.quantity}</span>
+                    <button onClick={() => updateQty(i, 1)} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
+                    <button onClick={() => removeItem(i)} className="text-xs ml-1 flex-shrink-0" style={{ color: zeroed ? 'var(--brand)' : 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }} title={zeroed ? 'Restore' : 'Remove'}>
+                      {zeroed ? '↩' : '✕'}
+                    </button>
+                  </div>
+                );
+              })}
+              {error && <p className="text-xs pt-2" style={{ color: 'var(--brand)' }}>{error}</p>}
+            </div>
+            <div className="px-5 py-4 flex gap-3" style={{ borderTop: '1px solid var(--border)' }}>
+              <button
+                onClick={handleStartSearch}
+                disabled={items.filter(i => i.quantity > 0).length === 0}
+                className="flex-1 text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-40"
+                style={{ background: storeColor }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = storeColor; }}
+              >
+                Search Kroger Products →
+              </button>
+              <button onClick={onClose} className="px-4 text-sm text-ml-t2 rounded-xl" style={{ border: '1px solid var(--border)' }}>Cancel</button>
+            </div>
+          </>
+        )}
+
+        {/* Step 2 – Searching */}
+        {step === 'searching' && (
+          <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
+            <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
+            <p className="text-sm text-ml-t2">Searching for {items.length} ingredient{items.length !== 1 ? 's' : ''}…</p>
+          </div>
+        )}
+
+        {/* Step 3 – Review non-exact matches */}
+        {step === 'review' && currentReview && (() => {
+          const hasSuggestions = currentReview.suggestions.length > 0;
+          const canAdd = hasSuggestions
+            ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
+            : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
+          const isProcessing = customSearching;
+
+          return (
+            <>
+              <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
+                {/* What was searched */}
+                <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  <p className="text-xs text-ml-t3 mb-0.5">You searched for</p>
+                  <p className="text-sm font-semibold text-ml-t1">{currentReview.term}</p>
+                  {currentReview.mealNames.length > 0 && (
+                    <p className="text-xs text-ml-t3 mt-0.5">from: {currentReview.mealNames.join(', ')}</p>
+                  )}
+                </div>
+
+                {/* Selectable suggestions */}
+                <div>
+                  <p className="text-xs font-semibold text-ml-t3 mb-2 uppercase tracking-wide">
+                    {hasSuggestions ? 'Kroger suggests' : 'No match found'}
+                  </p>
+                  <div className="space-y-1.5">
+                    {currentReview.suggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setSelectedSuggIdx(i)}
+                        onMouseEnter={e => s.imageUrl ? setHoveredSugg({ idx: i, rect: e.currentTarget.getBoundingClientRect() }) : undefined}
+                        onMouseLeave={() => setHoveredSugg(null)}
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all"
+                        style={{
+                          border: `1.5px solid ${selectedSuggIdx === i ? storeColor : 'var(--border)'}`,
+                          background: selectedSuggIdx === i ? '#e8f4fb' : 'var(--surface)',
+                          color: 'var(--text-1)',
+                        }}
+                      >
+                        {s.description}
+                      </button>
+                    ))}
+
+                    {/* Custom / free text option */}
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSuggIdx('custom')}
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all"
+                        style={{
+                          border: `1.5px solid ${selectedSuggIdx === 'custom' ? storeColor : 'var(--border)'}`,
+                          background: selectedSuggIdx === 'custom' ? '#e8f4fb' : 'var(--surface)',
+                          color: selectedSuggIdx === 'custom' ? 'var(--text-1)' : 'var(--text-3)',
+                        }}
+                      >
+                        Other — type a product name…
+                      </button>
+                      {selectedSuggIdx === 'custom' && (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={customText}
+                          onChange={e => setCustomText(e.target.value)}
+                          placeholder="e.g. Ground Beef 80/20"
+                          className="w-full mt-1.5 px-3 py-2 text-sm rounded-lg focus:outline-none"
+                          style={{ border: `1.5px solid ${storeColor}`, background: 'var(--surface)', color: 'var(--text-1)' }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Floating product image on hover */}
+              {hoveredSugg && currentReview.suggestions[hoveredSugg.idx]?.imageUrl && (
+                <div style={{
+                  position: 'fixed',
+                  left: hoveredSugg.rect.right + 10,
+                  top: hoveredSugg.rect.top,
+                  zIndex: 200,
+                  background: 'var(--surface-raised)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 12,
+                  padding: 8,
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+                  pointerEvents: 'none',
+                }}>
+                  <img
+                    src={currentReview.suggestions[hoveredSugg.idx].imageUrl!}
+                    alt=""
+                    style={{ width: 120, height: 120, objectFit: 'contain', display: 'block' }}
+                  />
+                </div>
+              )}
+
+              <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+                <button
+                  onClick={() => handleReviewDecision('update')}
+                  disabled={!canAdd || isProcessing}
+                  className="w-full text-sm font-semibold rounded-xl py-2.5 text-white disabled:opacity-40"
+                  style={{ background: storeColor }}
+                  onMouseEnter={e => { if (canAdd) (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = storeColor; }}
+                >
+                  {isProcessing ? 'Searching…' : 'Add & Update Meal Ingredient'}
+                </button>
+                <button
+                  onClick={() => handleReviewDecision('add')}
+                  disabled={!canAdd || isProcessing}
+                  className="w-full text-sm font-medium rounded-xl py-2.5 disabled:opacity-40"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
+                  onMouseEnter={e => { if (canAdd) (e.currentTarget as HTMLElement).style.background = 'var(--border)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
+                >
+                  Add to Cart Only
+                </button>
+                <button
+                  onClick={() => handleReviewDecision('skip')}
+                  disabled={isProcessing}
+                  className="w-full text-sm rounded-xl py-2 text-ml-t3 disabled:opacity-40"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                >
+                  Skip this ingredient
+                </button>
+              </div>
+            </>
+          );
+        })()}
+
+        {/* Step 4 – Adding */}
+        {step === 'adding' && (
+          <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
+            <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
+            <p className="text-sm text-ml-t2">Adding items to your Kroger cart…</p>
+          </div>
+        )}
+
+        {/* Step 5 – Done */}
+        {step === 'done' && (
+          <>
+            <div className="flex-1 flex flex-col items-center justify-center py-10 px-6 gap-3 text-center">
+              {cartError
+                ? <><div className="text-4xl mb-2">⚠️</div><p className="text-base font-bold text-red-500">Failed to add items to cart.</p><p className="text-sm text-ml-t3">Kroger returned an error. Please try again or add items manually.</p></>
+                : totalAdded > 0
+                  ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your Kroger cart!</p><p className="text-sm text-ml-t3">Open kroger.com to review and checkout.</p></>
+                  : <><div className="text-4xl mb-2">😔</div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
+              }
+            </div>
+            <div className="px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <button onClick={onClose} className="w-full text-sm font-semibold rounded-xl py-2.5 text-white" style={{ background: storeColor }}>Done</button>
+            </div>
+          </>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
 function DashboardMealCard({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
   krogerConnected, krogerLocationId,
+  selectMode, selected, onToggleSelect,
   onEdit, onDelete, onShare, onRemovePhoto, onCreatorClick,
 }: {
   meal: Meal;
@@ -1353,6 +1772,9 @@ function DashboardMealCard({
   copiedMealId: string | null;
   krogerConnected: boolean;
   krogerLocationId: string | null;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onShare: () => void;
@@ -1385,12 +1807,28 @@ function DashboardMealCard({
       )}
 
       <div
-        className="flex items-start gap-4 p-4 rounded-xl cursor-pointer"
-        style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)' }}
-        onClick={() => setDetailOpen(true)}
-        onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
-        onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
+        className="flex items-start gap-4 p-4 rounded-xl cursor-pointer relative"
+        style={{
+          border: `1px solid ${selected ? '#0063a1' : 'var(--border)'}`,
+          background: selected ? '#e8f4fb' : 'var(--surface-raised)',
+          outline: selected ? '2px solid #0063a1' : 'none',
+          outlineOffset: '-1px',
+        }}
+        onClick={() => selectMode ? onToggleSelect?.() : setDetailOpen(true)}
+        onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
+        onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = 'var(--surface-raised)'; }}
       >
+        {selectMode && (
+          <div
+            className="absolute top-2 right-2 w-5 h-5 rounded flex items-center justify-center flex-shrink-0"
+            style={{
+              background: selected ? '#0063a1' : 'var(--surface)',
+              border: `2px solid ${selected ? '#0063a1' : 'var(--border)'}`,
+            }}
+          >
+            {selected && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><polyline points="1.5,6 4.5,9 10.5,3" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+          </div>
+        )}
         <div className="hidden sm:block">
           {meal.photo_url ? (
             <div className="flex-shrink-0">
@@ -1406,9 +1844,6 @@ function DashboardMealCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm font-semibold text-ml-t1">{meal.name}</p>
-            <span className="flex-shrink-0 text-xs font-medium rounded-full px-2 py-0.5" style={{ background: STORE_COLORS[meal.store_id] ?? 'var(--surface)', color: STORE_COLORS[meal.store_id] ? '#fff' : 'var(--text-3)', border: STORE_COLORS[meal.store_id] ? 'none' : '1px solid var(--border)' }}>
-              {STORE_LABELS[meal.store_id] ?? meal.store_id}
-            </span>
           </div>
 
           {(meal.author || meal.website) && (
@@ -1473,6 +1908,15 @@ function DashboardMealCard({
 
           <div className="flex items-center gap-2 mt-3 flex-wrap">
             <button
+              onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
+              className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+            >
+              View
+            </button>
+            <button
               onClick={e => { e.stopPropagation(); onEdit(); }}
               className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
               style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
@@ -1481,20 +1925,6 @@ function DashboardMealCard({
             >
               Edit
             </button>
-            <button
-              onClick={e => { e.stopPropagation(); onDelete(); }}
-              className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
-            >
-              Delete
-            </button>
-            {creatorChecked && !isCreator && (
-              <button onClick={e => { e.stopPropagation(); onShare(); }} className="px-3 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
-                {copiedMealId === meal.id ? '✓ Link copied!' : 'Share'}
-              </button>
-            )}
           </div>
         </div>
       </div>
@@ -1526,6 +1956,13 @@ export default function MyMealsPage() {
   const [krogerConnected, setKrogerConnected] = useState(false);
   const [krogerLocationId, setKrogerLocationId] = useState<string | null>(null);
 
+  // Store pill filter + multi-select for Kroger cart
+  const [selectedStore, setSelectedStore] = useState<string | null>(null);
+  const [selectedMealIds, setSelectedMealIds] = useState<Set<string>>(new Set());
+  const [showKrogerFlow, setShowKrogerFlow] = useState(false);
+  const [showKrogerStorePicker, setShowKrogerStorePicker] = useState(false);
+  const [krogerConnecting, setKrogerConnecting] = useState(false);
+
   useEffect(() => {
     verifyAuth();
   }, []);
@@ -1543,6 +1980,25 @@ export default function MyMealsPage() {
     try {
       const accessToken = localStorage.getItem('accessToken');
       if (!accessToken) { router.push('/'); return; }
+
+      // Handle Kroger OAuth callback redirect
+      const params = new URLSearchParams(window.location.search);
+      const krogerParam = params.get('kroger');
+      if (krogerParam) {
+        window.history.replaceState({}, '', '/my-meals');
+        if (krogerParam === 'connected') {
+          // Restore pending cart selection from before OAuth redirect
+          try {
+            const pending = sessionStorage.getItem('pendingKrogerCart');
+            if (pending) {
+              sessionStorage.removeItem('pendingKrogerCart');
+              const { mealIds, storeId } = JSON.parse(pending);
+              if (storeId) setSelectedStore(storeId);
+              if (mealIds?.length) setSelectedMealIds(new Set(mealIds));
+            }
+          } catch { /* ignore */ }
+        }
+      }
 
       const response = await fetch('/api/auth/verify', {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -1586,7 +2042,16 @@ export default function MyMealsPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        setMeals(data.meals ?? []);
+        const loaded: Meal[] = data.meals ?? [];
+        setMeals(loaded);
+        // Auto-select the store with the most meals (only on first load)
+        setSelectedStore(prev => {
+          if (prev) return prev; // already set (e.g. restored from sessionStorage)
+          if (loaded.length === 0) return null;
+          const counts: Record<string, number> = {};
+          for (const m of loaded) counts[m.store_id] = (counts[m.store_id] ?? 0) + 1;
+          return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+        });
       }
     } finally {
       setMealsLoading(false);
@@ -1632,6 +2097,66 @@ export default function MyMealsPage() {
     if (res.ok) {
       setMeals(prev => prev.map(m => m.id === meal.id ? { ...m, photo_url: null } : m));
     }
+  };
+
+  const handleKrogerCartClick = async () => {
+    if (selectedMealIds.size === 0) return;
+    if (!krogerConnected || !krogerLocationId) {
+      setKrogerConnecting(true);
+      try {
+        const res = await fetch('/api/kroger/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({ popup: true }),
+        });
+        const data = await res.json();
+        if (!data.redirectUrl) { setKrogerConnecting(false); return; }
+
+        const krogerPopup = window.open(data.redirectUrl, 'kroger-oauth', 'width=520,height=680,scrollbars=yes,resizable=yes');
+
+        if (!krogerPopup) {
+          // Popup blocked — fall back to full redirect
+          sessionStorage.setItem('pendingKrogerCart', JSON.stringify({ mealIds: [...selectedMealIds], storeId: selectedStore }));
+          window.location.href = data.redirectUrl;
+          return;
+        }
+
+        const handleMessage = (e: MessageEvent) => {
+          if (e.origin !== window.location.origin || e.data?.kroger !== 'connected') return;
+          window.removeEventListener('message', handleMessage);
+          clearInterval(closedPoll);
+          krogerPopup.close();
+          const token = localStorage.getItem('accessToken');
+          fetch('/api/kroger/status', { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+              setKrogerConnecting(false);
+              if (d?.connected) {
+                setKrogerConnected(true);
+                setKrogerLocationId(d.locationId ?? null);
+                if (d.locationId) {
+                  setShowKrogerFlow(true);
+                } else {
+                  setShowKrogerStorePicker(true);
+                }
+              }
+            })
+            .catch(() => setKrogerConnecting(false));
+        };
+
+        window.addEventListener('message', handleMessage);
+
+        const closedPoll = setInterval(() => {
+          if (krogerPopup.closed) {
+            clearInterval(closedPoll);
+            window.removeEventListener('message', handleMessage);
+            setKrogerConnecting(false);
+          }
+        }, 500);
+      } catch { setKrogerConnecting(false); }
+      return;
+    }
+    setShowKrogerFlow(true);
   };
 
   const notifyExtension = () => {
@@ -1750,6 +2275,47 @@ export default function MyMealsPage() {
             </div>
           </div>
 
+          {/* Store pills */}
+          {!mealsLoading && meals.length > 0 && (() => {
+            const storeCounts: Record<string, number> = {};
+            for (const m of meals) storeCounts[m.store_id] = (storeCounts[m.store_id] ?? 0) + 1;
+            const storeIds = Object.keys(storeCounts).sort((a, b) => storeCounts[b] - storeCounts[a]);
+            return (
+              <div className="flex gap-2 flex-wrap mb-4 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
+                {storeIds.map(storeId => {
+                  const color = STORE_COLORS[storeId];
+                  const isSelected = selectedStore === storeId;
+                  return (
+                    <button
+                      key={storeId}
+                      type="button"
+                      onClick={() => { setSelectedStore(storeId); setSelectedMealIds(new Set()); }}
+                      className="px-3 py-1 rounded-full text-xs font-semibold transition-all"
+                      style={isSelected
+                        ? { background: color ?? 'var(--text-1)', color: '#fff', border: `1.5px solid ${color ?? 'var(--text-1)'}` }
+                        : { background: 'transparent', color: 'var(--text-2)', border: '1.5px solid var(--border)' }}
+                    >
+                      {STORE_LABELS[storeId] ?? storeId} ({storeCounts[storeId]})
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {/* Select-mode banner for Kroger stores */}
+          {selectedStore && KROGER_API_STORES.has(selectedStore) && !mealsLoading && (
+            <div className="flex items-center gap-3 mb-4 px-3 py-2 rounded-lg text-xs" style={{ background: '#e8f4fb', border: '1px solid #bae6fd', color: '#0369a1' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>
+              <span>Select meals below to add their ingredients to your Kroger cart.</span>
+              {selectedMealIds.size > 0 && (
+                <button type="button" onClick={() => setSelectedMealIds(new Set())} className="ml-auto underline" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0369a1' }}>
+                  Clear ({selectedMealIds.size})
+                </button>
+              )}
+            </div>
+          )}
+
           {!mealsLoading && meals.length > 0 && (() => {
             const activeFilterCount = [filters.authors.length > 0, filters.tags.length > 0, filters.ingredients.length > 0, filters.difficulty.length > 0, filters.excludeIngredients.length > 0].filter(Boolean).length;
             const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
@@ -1808,7 +2374,9 @@ export default function MyMealsPage() {
           ) : (
             (() => {
               const q = mealSearch.trim().toLowerCase();
+              const isKrogerSelectMode = !!(selectedStore && KROGER_API_STORES.has(selectedStore));
               const filtered = meals.filter(m => {
+                if (selectedStore && m.store_id !== selectedStore) return false;
                 if (ownerFilter === 'mine' && m.creator_id) return false;
                 if (q && !(m.name.toLowerCase().includes(q) || m.author?.toLowerCase().includes(q))) return false;
                 if (filters.authors.length > 0 && !filters.authors.some(a => m.author?.toLowerCase().includes(a.toLowerCase()))) return false;
@@ -1832,6 +2400,13 @@ export default function MyMealsPage() {
                       copiedMealId={copiedMealId}
                       krogerConnected={krogerConnected}
                       krogerLocationId={krogerLocationId}
+                      selectMode={isKrogerSelectMode}
+                      selected={selectedMealIds.has(meal.id)}
+                      onToggleSelect={() => setSelectedMealIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(meal.id)) next.delete(meal.id); else next.add(meal.id);
+                        return next;
+                      })}
                       onEdit={() => setEditingMeal(meal)}
                       onDelete={() => handleDelete(meal)}
                       onShare={() => handleShare(meal)}
@@ -1874,6 +2449,50 @@ export default function MyMealsPage() {
           creatorId={creatorPopupId}
           token={accessToken}
           onClose={() => setCreatorPopupId(null)}
+        />
+      )}
+
+      {/* Floating "Add to Kroger Cart" button */}
+      {selectedMealIds.size > 0 && selectedStore && KROGER_API_STORES.has(selectedStore) && (
+        <div className="fixed bottom-6 left-1/2 z-40" style={{ transform: 'translateX(-50%)' }}>
+          <button
+            onClick={handleKrogerCartClick}
+            disabled={krogerConnecting}
+            className="flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg disabled:opacity-60 transition-transform active:scale-95"
+            style={{ background: '#0063a1', boxShadow: '0 4px 20px rgba(0,99,161,0.45)' }}
+            onMouseEnter={e => { if (!krogerConnecting) (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#0063a1'; }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+              <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+            </svg>
+            {krogerConnecting ? 'Connecting…' : `Add ${selectedMealIds.size} meal${selectedMealIds.size !== 1 ? 's' : ''} to Kroger Cart`}
+          </button>
+        </div>
+      )}
+
+      {/* Kroger store picker — shown after OAuth when no store is saved yet */}
+      {showKrogerStorePicker && (
+        <KrogerStorePickerModal
+          accessToken={accessToken}
+          onSaved={(locationId) => {
+            setKrogerLocationId(locationId);
+            setShowKrogerStorePicker(false);
+            setShowKrogerFlow(true);
+          }}
+          onClose={() => setShowKrogerStorePicker(false)}
+        />
+      )}
+
+      {/* Kroger cart flow modal */}
+      {showKrogerFlow && selectedStore && KROGER_API_STORES.has(selectedStore) && krogerLocationId && (
+        <KrogerCartFlow
+          meals={meals.filter(m => selectedMealIds.has(m.id))}
+          locationId={krogerLocationId}
+          accessToken={accessToken}
+          onClose={() => { setShowKrogerFlow(false); setSelectedMealIds(new Set()); }}
+          onMealUpdated={updated => setMeals(prev => prev.map(m => m.id === updated.id ? updated : m))}
         />
       )}
 

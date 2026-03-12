@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import {
   decryptKrogerToken,
+  encryptKrogerToken,
   refreshKrogerAccessToken,
   krogerSearchProduct,
   krogerAddToCart,
@@ -32,9 +33,55 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const ingredients: Array<{ productName: string; quantity?: number }> = body?.ingredients ?? [];
   const requestedLocationId: string | undefined = body?.locationId;
 
+  // Direct mode: caller provides pre-resolved {upc, quantity} items (from search-products + user review)
+  if (Array.isArray(body?.items)) {
+    const directItems: Array<{ upc: string; quantity: number }> = body.items;
+    if (!directItems.length) {
+      return NextResponse.json({ cartAdded: false, added: [], notFound: [] });
+    }
+
+    const supabase = createServerSupabaseClient();
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('kroger_refresh_token, kroger_location_id')
+      .eq('id', decoded.userId)
+      .single();
+
+    if (!profile?.kroger_refresh_token) {
+      return NextResponse.json({ error: 'Kroger account not connected' }, { status: 403 });
+    }
+
+    let userAccessToken: string;
+    try {
+      const decryptedRefresh = decryptKrogerToken(profile.kroger_refresh_token);
+      const { accessToken, newRefreshToken } = await refreshKrogerAccessToken(decryptedRefresh);
+      userAccessToken = accessToken;
+      if (newRefreshToken) {
+        await supabase
+          .from('user_profiles')
+          .update({ kroger_refresh_token: encryptKrogerToken(newRefreshToken) })
+          .eq('id', decoded.userId);
+      }
+    } catch (err) {
+      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'token_error', error: String(err) });
+      return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });
+    }
+
+    try {
+      await krogerAddToCart(userAccessToken, directItems);
+    } catch (err) {
+      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error', error: err });
+      return NextResponse.json({ error: 'Failed to add items to Kroger cart' }, { status: 502 });
+    }
+
+    log({ event: 'KROGER:ADD_TO_CART', status: 'success', userId: decoded.userId, detail: `direct added=${directItems.length}` });
+    return NextResponse.json({ cartAdded: true });
+  }
+
+  // Search-and-add mode (legacy, used by mobile app)
+  const ingredients: Array<{ productName: string; quantity?: number }> = body?.ingredients ?? [];
   if (!ingredients.length) {
     return NextResponse.json({ error: 'No ingredients provided' }, { status: 400 });
   }
@@ -59,7 +106,15 @@ export async function POST(request: NextRequest) {
   let userAccessToken: string;
   try {
     const decryptedRefresh = decryptKrogerToken(profile.kroger_refresh_token);
-    userAccessToken = await refreshKrogerAccessToken(decryptedRefresh);
+    const { accessToken, newRefreshToken } = await refreshKrogerAccessToken(decryptedRefresh);
+    userAccessToken = accessToken;
+    // Kroger rotates refresh tokens — always persist the new one if returned
+    if (newRefreshToken) {
+      await supabase
+        .from('user_profiles')
+        .update({ kroger_refresh_token: encryptKrogerToken(newRefreshToken) })
+        .eq('id', decoded.userId);
+    }
   } catch (err) {
     log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'token_error', error: String(err) });
     return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });
@@ -94,9 +149,11 @@ export async function POST(request: NextRequest) {
 
   let cartAdded = false;
   if (cartItems.length > 0) {
-    cartAdded = await krogerAddToCart(userAccessToken, cartItems);
-    if (!cartAdded) {
-      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error' });
+    try {
+      await krogerAddToCart(userAccessToken, cartItems);
+      cartAdded = true;
+    } catch (err) {
+      log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error', error: err });
       return NextResponse.json({ error: 'Failed to add items to Kroger cart' }, { status: 502 });
     }
   }
