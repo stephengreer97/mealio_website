@@ -177,7 +177,7 @@ export async function krogerSearchProducts(
     .replace(/[™®©]/g, '')   // strip trademark symbols — Kroger counts each as a word
     .trim()
     .split(/\s+/)
-    .slice(0, 9)
+    .slice(0, 8)
     .join(' ');
   const params = new URLSearchParams({
     'filter.term': truncatedTerm,
