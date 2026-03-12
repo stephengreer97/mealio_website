@@ -66,13 +66,14 @@ export async function GET(request: NextRequest) {
 
     if (dbError) {
       log({ event: 'KROGER:CALLBACK', status: 'error', userId, reason: 'db_error', error: dbError.message });
-      return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
+      return NextResponse.redirect(`${APP_URL}/account?kroger=error&detail=${encodeURIComponent('db:' + dbError.message)}`);
     }
 
     log({ event: 'KROGER:CALLBACK', status: 'success', userId });
     return NextResponse.redirect(`${APP_URL}/account?kroger=connected`);
   } catch (err) {
+    const errMsg = encodeURIComponent(String(err).slice(0, 200));
     log({ event: 'KROGER:CALLBACK', status: 'error', userId, error: String(err) });
-    return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
+    return NextResponse.redirect(`${APP_URL}/account?kroger=error&detail=${errMsg}`);
   }
 }
