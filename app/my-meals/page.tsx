@@ -6,6 +6,7 @@ import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import ExtensionNudge from '@/components/ExtensionNudge';
 import CreatorPopup from '@/components/CreatorPopup';
+import KrogerStorePickerModal from '@/components/KrogerStorePickerModal';
 
 interface User {
   id: string;
@@ -1934,6 +1935,7 @@ export default function MyMealsPage() {
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
   const [selectedMealIds, setSelectedMealIds] = useState<Set<string>>(new Set());
   const [showKrogerFlow, setShowKrogerFlow] = useState(false);
+  const [showKrogerStorePicker, setShowKrogerStorePicker] = useState(false);
   const [krogerConnecting, setKrogerConnecting] = useState(false);
 
   useEffect(() => {
@@ -2110,7 +2112,7 @@ export default function MyMealsPage() {
                 if (d.locationId) {
                   setShowKrogerFlow(true);
                 } else {
-                  alert('Kroger connected! Please select your store in Account Settings first.');
+                  setShowKrogerStorePicker(true);
                 }
               }
             })
@@ -2443,6 +2445,19 @@ export default function MyMealsPage() {
             {krogerConnecting ? 'Connecting…' : `Add ${selectedMealIds.size} meal${selectedMealIds.size !== 1 ? 's' : ''} to Kroger Cart`}
           </button>
         </div>
+      )}
+
+      {/* Kroger store picker — shown after OAuth when no store is saved yet */}
+      {showKrogerStorePicker && (
+        <KrogerStorePickerModal
+          accessToken={accessToken}
+          onSaved={(locationId) => {
+            setKrogerLocationId(locationId);
+            setShowKrogerStorePicker(false);
+            setShowKrogerFlow(true);
+          }}
+          onClose={() => setShowKrogerStorePicker(false)}
+        />
       )}
 
       {/* Kroger cart flow modal */}
