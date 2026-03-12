@@ -67,7 +67,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
-  suggestions: Array<{ upc: string; description: string; imageUrl: string | null }>;
+  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null }>;
   mealIds: string[];
   mealNames: string[];
 }
@@ -1383,10 +1383,11 @@ function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
 }
 
 function KrogerCartFlow({
-  meals, locationId, accessToken, onClose, onMealUpdated,
+  meals, locationId, storeId, accessToken, onClose, onMealUpdated,
 }: {
   meals: Meal[];
   locationId: string;
+  storeId: string;
   accessToken: string;
   onClose: () => void;
   onMealUpdated: (updated: Meal) => void;
@@ -1531,7 +1532,8 @@ function KrogerCartFlow({
   const removeItem = (i: number) =>
     setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: 0 } : it));
 
-  const storeColor = '#0063a1';
+  const storeColor = STORE_COLORS[storeId] ?? '#0063a1';
+  const storeName = STORE_LABELS[storeId] ?? 'Kroger';
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4" style={{ background: 'rgba(0,0,0,0.55)' }}>
@@ -1584,7 +1586,7 @@ function KrogerCartFlow({
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = storeColor; }}
               >
-                Search Kroger Products →
+                Search {storeName} Products →
               </button>
               <button onClick={onClose} className="px-4 text-sm text-ml-t2 rounded-xl" style={{ border: '1px solid var(--border)' }}>Cancel</button>
             </div>
@@ -1595,7 +1597,7 @@ function KrogerCartFlow({
         {step === 'searching' && (
           <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
             <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
-            <p className="text-sm text-ml-t2">Searching for {items.length} ingredient{items.length !== 1 ? 's' : ''}…</p>
+            <p className="text-sm text-ml-t2">Searching for {items.filter(i => i.quantity > 0).length} ingredient{items.filter(i => i.quantity > 0).length !== 1 ? 's' : ''}…</p>
           </div>
         )}
 
@@ -1639,7 +1641,10 @@ function KrogerCartFlow({
                           color: 'var(--text-1)',
                         }}
                       >
-                        {s.description}
+                        <span>{s.description}</span>
+                        {s.stockLevel === 'TEMPORARILY_OUT_OF_STOCK' && (
+                          <span className="block text-xs mt-0.5 font-medium" style={{ color: '#b45309' }}>⚠ Temporarily out of stock</span>
+                        )}
                       </button>
                     ))}
 
@@ -1733,7 +1738,7 @@ function KrogerCartFlow({
         {step === 'adding' && (
           <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
             <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
-            <p className="text-sm text-ml-t2">Adding items to your Kroger cart…</p>
+            <p className="text-sm text-ml-t2">Adding items to your {storeName} cart…</p>
           </div>
         )}
 
@@ -2459,15 +2464,15 @@ export default function MyMealsPage() {
             onClick={handleKrogerCartClick}
             disabled={krogerConnecting}
             className="flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg disabled:opacity-60 transition-transform active:scale-95"
-            style={{ background: '#0063a1', boxShadow: '0 4px 20px rgba(0,99,161,0.45)' }}
-            onMouseEnter={e => { if (!krogerConnecting) (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#0063a1'; }}
+            style={{ background: STORE_COLORS[selectedStore] ?? '#0063a1', boxShadow: `0 4px 20px ${(STORE_COLORS[selectedStore] ?? '#0063a1')}66` }}
+            onMouseEnter={e => { if (!krogerConnecting) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
               <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
             </svg>
-            {krogerConnecting ? 'Connecting…' : `Add ${selectedMealIds.size} meal${selectedMealIds.size !== 1 ? 's' : ''} to Kroger Cart`}
+            {krogerConnecting ? 'Connecting…' : `Add ${selectedMealIds.size} meal${selectedMealIds.size !== 1 ? 's' : ''} to ${STORE_LABELS[selectedStore] ?? 'Kroger'} Cart`}
           </button>
         </div>
       )}
@@ -2490,6 +2495,7 @@ export default function MyMealsPage() {
         <KrogerCartFlow
           meals={meals.filter(m => selectedMealIds.has(m.id))}
           locationId={krogerLocationId}
+          storeId={selectedStore}
           accessToken={accessToken}
           onClose={() => { setShowKrogerFlow(false); setSelectedMealIds(new Set()); }}
           onMealUpdated={updated => setMeals(prev => prev.map(m => m.id === updated.id ? updated : m))}
