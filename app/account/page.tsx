@@ -283,13 +283,56 @@ export default function AccountPage() {
       const accessToken = localStorage.getItem('accessToken');
       const res = await fetch('/api/kroger/connect', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ popup: true }),
       });
       const data = await res.json();
-      if (data.redirectUrl) window.location.href = data.redirectUrl;
-      else setKrogerMsg(data.error || 'Failed to start Kroger connection.');
-    } catch { setKrogerMsg('Failed to start Kroger connection.'); }
-    finally { setKrogerConnecting(false); }
+      if (!data.redirectUrl) { setKrogerMsg(data.error || 'Failed to start Kroger connection.'); setKrogerConnecting(false); return; }
+
+      const krogerPopup = window.open(data.redirectUrl, 'kroger-oauth', 'width=520,height=680,scrollbars=yes,resizable=yes');
+
+      if (!krogerPopup) {
+        // Popup blocked — fall back to full redirect
+        window.location.href = data.redirectUrl;
+        return;
+      }
+
+      const handleMessage = (e: MessageEvent) => {
+        if (e.origin !== window.location.origin || !['connected', 'denied', 'error'].includes(e.data?.kroger)) return;
+        window.removeEventListener('message', handleMessage);
+        clearInterval(closedPoll);
+        krogerPopup.close();
+        setKrogerConnecting(false);
+        if (e.data.kroger === 'connected') {
+          setKrogerMsg('Kroger account connected! Select your preferred store below.');
+          const token = localStorage.getItem('accessToken');
+          fetch('/api/kroger/status', { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+              if (d?.connected) {
+                setKrogerConnected(true);
+                setKrogerLocationId(d.locationId ?? null);
+                setKrogerLocationName(d.locationName ?? null);
+              }
+            })
+            .catch(() => {});
+        } else if (e.data.kroger === 'denied') {
+          setKrogerMsg('Kroger authorization was cancelled.');
+        } else {
+          setKrogerMsg('Something went wrong connecting to Kroger. Please try again.');
+        }
+      };
+
+      window.addEventListener('message', handleMessage);
+
+      const closedPoll = setInterval(() => {
+        if (krogerPopup.closed) {
+          clearInterval(closedPoll);
+          window.removeEventListener('message', handleMessage);
+          setKrogerConnecting(false);
+        }
+      }, 500);
+    } catch { setKrogerMsg('Failed to start Kroger connection.'); setKrogerConnecting(false); }
   };
 
   const handleKrogerDisconnect = async () => {
@@ -490,7 +533,7 @@ export default function AccountPage() {
                   onMouseEnter={e => { if (!krogerConnecting) (e.currentTarget as HTMLElement).style.background = '#00497a'; }}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#0063a1'}
                 >
-                  {krogerConnecting ? 'Redirecting to Kroger…' : 'Connect Kroger Account'}
+                  {krogerConnecting ? 'Opening Kroger…' : 'Connect Kroger Account'}
                 </button>
                 <p className="text-xs mt-2" style={{ color: 'var(--text-3)' }}>
                   Works with Kroger, Ralphs, Fred Meyer, King Soopers, Harris Teeter, and 10+ more banners.

@@ -2075,20 +2075,57 @@ export default function MyMealsPage() {
   const handleKrogerCartClick = async () => {
     if (selectedMealIds.size === 0) return;
     if (!krogerConnected || !krogerLocationId) {
-      // Save pending selection to sessionStorage and start OAuth
       setKrogerConnecting(true);
       try {
-        sessionStorage.setItem('pendingKrogerCart', JSON.stringify({
-          mealIds: [...selectedMealIds],
-          storeId: selectedStore,
-        }));
         const res = await fetch('/api/kroger/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-          body: JSON.stringify({ returnTo: '/my-meals' }),
+          body: JSON.stringify({ popup: true }),
         });
         const data = await res.json();
-        if (data.redirectUrl) window.location.href = data.redirectUrl;
+        if (!data.redirectUrl) { setKrogerConnecting(false); return; }
+
+        const krogerPopup = window.open(data.redirectUrl, 'kroger-oauth', 'width=520,height=680,scrollbars=yes,resizable=yes');
+
+        if (!krogerPopup) {
+          // Popup blocked — fall back to full redirect
+          sessionStorage.setItem('pendingKrogerCart', JSON.stringify({ mealIds: [...selectedMealIds], storeId: selectedStore }));
+          window.location.href = data.redirectUrl;
+          return;
+        }
+
+        const handleMessage = (e: MessageEvent) => {
+          if (e.origin !== window.location.origin || e.data?.kroger !== 'connected') return;
+          window.removeEventListener('message', handleMessage);
+          clearInterval(closedPoll);
+          krogerPopup.close();
+          const token = localStorage.getItem('accessToken');
+          fetch('/api/kroger/status', { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+              setKrogerConnecting(false);
+              if (d?.connected) {
+                setKrogerConnected(true);
+                setKrogerLocationId(d.locationId ?? null);
+                if (d.locationId) {
+                  setShowKrogerFlow(true);
+                } else {
+                  alert('Kroger connected! Please select your store in Account Settings first.');
+                }
+              }
+            })
+            .catch(() => setKrogerConnecting(false));
+        };
+
+        window.addEventListener('message', handleMessage);
+
+        const closedPoll = setInterval(() => {
+          if (krogerPopup.closed) {
+            clearInterval(closedPoll);
+            window.removeEventListener('message', handleMessage);
+            setKrogerConnecting(false);
+          }
+        }, 500);
       } catch { setKrogerConnecting(false); }
       return;
     }

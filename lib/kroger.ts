@@ -44,8 +44,8 @@ const JWT_SECRET = new TextEncoder().encode(
 );
 
 /** Create a short-lived state token to survive the OAuth round-trip. */
-export async function createKrogerStateToken(userId: string, returnTo?: string): Promise<string> {
-  return new SignJWT({ sub: userId, type: 'kroger_state', ...(returnTo ? { returnTo } : {}) })
+export async function createKrogerStateToken(userId: string, returnTo?: string, popup?: boolean): Promise<string> {
+  return new SignJWT({ sub: userId, type: 'kroger_state', ...(returnTo ? { returnTo } : {}), ...(popup ? { popup: true } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('10m')
@@ -54,11 +54,11 @@ export async function createKrogerStateToken(userId: string, returnTo?: string):
 
 export async function verifyKrogerStateToken(
   token: string
-): Promise<{ userId: string; returnTo?: string } | null> {
+): Promise<{ userId: string; returnTo?: string; popup?: boolean } | null> {
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET);
     if (payload.type !== 'kroger_state') return null;
-    return { userId: payload.sub as string, returnTo: payload.returnTo as string | undefined };
+    return { userId: payload.sub as string, returnTo: payload.returnTo as string | undefined, popup: payload.popup as boolean | undefined };
   } catch {
     return null;
   }
