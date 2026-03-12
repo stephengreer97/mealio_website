@@ -173,7 +173,12 @@ export async function krogerSearchProducts(
   limit = 5,
   _retry = 0
 ): Promise<Array<{ upc: string; description: string; imageUrl: string | null }>> {
-  const truncatedTerm = term.slice(0, 60);
+  const truncatedTerm = term
+    .replace(/[™®©]/g, '')   // strip trademark symbols — Kroger counts each as a word
+    .trim()
+    .split(/\s+/)
+    .slice(0, 9)
+    .join(' ');
   const params = new URLSearchParams({
     'filter.term': truncatedTerm,
     'filter.locationId': locationId,
