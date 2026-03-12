@@ -1319,7 +1319,7 @@ function MealDetailModal({
 
         {/* Footer */}
         <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
-          {krogerConnected && (
+          {krogerConnected && KROGER_API_STORES.has(meal.store_id) && (
             <button
               onClick={handleAddToKroger}
               disabled={krogerLoading}
@@ -1788,33 +1788,6 @@ function DashboardMealCard({
 
           <div className="flex items-center gap-2 mt-3 flex-wrap">
             <button
-              onClick={e => { e.stopPropagation(); onEdit(); }}
-              className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
-              style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-              onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
-            >
-              Edit
-            </button>
-            {selectMode && (
-              <>
-                <button
-                  onClick={e => { e.stopPropagation(); onDelete(); }}
-                  className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
-                  style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
-                >
-                  Delete
-                </button>
-                {creatorChecked && !isCreator && (
-                  <button onClick={e => { e.stopPropagation(); onShare(); }} className="px-3 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
-                    {copiedMealId === meal.id ? '✓ Link copied!' : 'Share'}
-                  </button>
-                )}
-              </>
-            )}
-            <button
               onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
               className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
@@ -1822,6 +1795,15 @@ function DashboardMealCard({
               onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
             >
               View
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(); }}
+              className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
+              style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+            >
+              Edit
             </button>
           </div>
         </div>
