@@ -90,7 +90,10 @@ export async function POST(request: NextRequest) {
           quantity: ing.quantity ?? 1,
           upc: top?.upc ?? null,
           description: top?.description ?? null,
-          exact: top ? scoreProductMatch(ing.productName, top.description) === 100 : false,
+          exact: top
+            ? scoreProductMatch(ing.productName, top.description) === 100
+              && top.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK'
+            : false,
           suggestions,
         };
       })
