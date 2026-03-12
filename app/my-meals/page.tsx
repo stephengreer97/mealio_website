@@ -1227,12 +1227,7 @@ function MealDetailModal({
         {/* Header */}
         <div className="flex items-start justify-between p-5 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div className="min-w-0 pr-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-base font-bold text-ml-t1 leading-tight">{meal.name}</h2>
-              <span className="text-xs font-medium rounded-full px-2 py-0.5 flex-shrink-0" style={{ background: STORE_COLORS[meal.store_id] ?? 'var(--surface)', color: STORE_COLORS[meal.store_id] ? '#fff' : 'var(--text-3)', border: STORE_COLORS[meal.store_id] ? 'none' : '1px solid var(--border)' }}>
-                {STORE_LABELS[meal.store_id] ?? meal.store_id}
-              </span>
-            </div>
+            <h2 className="text-base font-bold text-ml-t1 leading-tight">{meal.name}</h2>
             {meal.author && (
               meal.creator_id && onCreatorClick ? (
                 <button
@@ -1705,7 +1700,7 @@ function DashboardMealCard({
       >
         {selectMode && (
           <div
-            className="absolute top-2 right-2 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+            className="absolute top-2 right-2 w-5 h-5 rounded flex items-center justify-center flex-shrink-0"
             style={{
               background: selected ? '#0063a1' : 'var(--surface)',
               border: `2px solid ${selected ? '#0063a1' : 'var(--border)'}`,
@@ -1729,9 +1724,6 @@ function DashboardMealCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm font-semibold text-ml-t1">{meal.name}</p>
-            <span className="flex-shrink-0 text-xs font-medium rounded-full px-2 py-0.5" style={{ background: STORE_COLORS[meal.store_id] ?? 'var(--surface)', color: STORE_COLORS[meal.store_id] ? '#fff' : 'var(--text-3)', border: STORE_COLORS[meal.store_id] ? 'none' : '1px solid var(--border)' }}>
-              {STORE_LABELS[meal.store_id] ?? meal.store_id}
-            </span>
           </div>
 
           {(meal.author || meal.website) && (
@@ -1794,33 +1786,44 @@ function DashboardMealCard({
             </div>
           )}
 
-          {!selectMode && (
-            <div className="flex items-center gap-2 mt-3 flex-wrap">
-              <button
-                onClick={e => { e.stopPropagation(); onEdit(); }}
-                className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
-                style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-                onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
-              >
-                Edit
-              </button>
-              <button
-                onClick={e => { e.stopPropagation(); onDelete(); }}
-                className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
-              >
-                Delete
-              </button>
-              {creatorChecked && !isCreator && (
-                <button onClick={e => { e.stopPropagation(); onShare(); }} className="px-3 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
-                  {copiedMealId === meal.id ? '✓ Link copied!' : 'Share'}
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(); }}
+              className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
+              style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+            >
+              Edit
+            </button>
+            {selectMode && (
+              <>
+                <button
+                  onClick={e => { e.stopPropagation(); onDelete(); }}
+                  className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+                >
+                  Delete
                 </button>
-              )}
-            </div>
-          )}
+                {creatorChecked && !isCreator && (
+                  <button onClick={e => { e.stopPropagation(); onShare(); }} className="px-3 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
+                    {copiedMealId === meal.id ? '✓ Link copied!' : 'Share'}
+                  </button>
+                )}
+              </>
+            )}
+            <button
+              onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
+              className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+            >
+              View
+            </button>
+          </div>
         </div>
       </div>
     </>
@@ -1936,7 +1939,16 @@ export default function MyMealsPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        setMeals(data.meals ?? []);
+        const loaded: Meal[] = data.meals ?? [];
+        setMeals(loaded);
+        // Auto-select the store with the most meals (only on first load)
+        setSelectedStore(prev => {
+          if (prev) return prev; // already set (e.g. restored from sessionStorage)
+          if (loaded.length === 0) return null;
+          const counts: Record<string, number> = {};
+          for (const m of loaded) counts[m.store_id] = (counts[m.store_id] ?? 0) + 1;
+          return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+        });
       }
     } finally {
       setMealsLoading(false);
@@ -2128,19 +2140,8 @@ export default function MyMealsPage() {
             const storeCounts: Record<string, number> = {};
             for (const m of meals) storeCounts[m.store_id] = (storeCounts[m.store_id] ?? 0) + 1;
             const storeIds = Object.keys(storeCounts).sort((a, b) => storeCounts[b] - storeCounts[a]);
-            if (storeIds.length <= 1) return null;
             return (
               <div className="flex gap-2 flex-wrap mb-4 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
-                <button
-                  type="button"
-                  onClick={() => { setSelectedStore(null); setSelectedMealIds(new Set()); }}
-                  className="px-3 py-1 rounded-full text-xs font-semibold transition-all"
-                  style={selectedStore === null
-                    ? { background: 'var(--text-1)', color: 'var(--bg)', border: '1.5px solid var(--text-1)' }
-                    : { background: 'transparent', color: 'var(--text-2)', border: '1.5px solid var(--border)' }}
-                >
-                  All ({meals.length})
-                </button>
                 {storeIds.map(storeId => {
                   const color = STORE_COLORS[storeId];
                   const isSelected = selectedStore === storeId;
