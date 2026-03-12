@@ -1413,7 +1413,7 @@ function KrogerCartFlow({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
-          ingredients: items.map(i => ({ productName: i.productName, quantity: i.quantity })),
+          ingredients: items.filter(i => i.quantity > 0).map(i => ({ productName: i.productName, quantity: i.quantity })),
           locationId,
         }),
       });
@@ -1489,9 +1489,10 @@ function KrogerCartFlow({
   };
 
   const updateQty = (i: number, delta: number) =>
-    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: Math.max(1, it.quantity + delta) } : it));
+    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: Math.max(0, it.quantity + delta) } : it));
 
-  const removeItem = (i: number) => setItems(prev => prev.filter((_, idx) => idx !== i));
+  const removeItem = (i: number) =>
+    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: 0 } : it));
 
   const storeColor = '#0063a1';
 
@@ -1518,24 +1519,29 @@ function KrogerCartFlow({
               <p className="text-xs text-ml-t3 mb-3">
                 {meals.length} meal{meals.length !== 1 ? 's' : ''} · {items.length} ingredient{items.length !== 1 ? 's' : ''}
               </p>
-              {items.map((it, i) => (
-                <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-ml-t1 truncate">{it.productName}</p>
-                    <p className="text-xs text-ml-t3 truncate">{it.mealNames.join(', ')}</p>
+              {items.map((it, i) => {
+                const zeroed = it.quantity === 0;
+                return (
+                  <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)', opacity: zeroed ? 0.45 : 1 }}>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-ml-t1 truncate" style={{ textDecoration: zeroed ? 'line-through' : 'none' }}>{it.productName}</p>
+                      <p className="text-xs text-ml-t3 truncate">{it.mealNames.join(', ')}</p>
+                    </div>
+                    <button onClick={() => updateQty(i, -1)} disabled={zeroed} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
+                    <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.quantity}</span>
+                    <button onClick={() => updateQty(i, 1)} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
+                    <button onClick={() => removeItem(i)} className="text-xs ml-1 flex-shrink-0" style={{ color: zeroed ? 'var(--brand)' : 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }} title={zeroed ? 'Restore' : 'Remove'}>
+                      {zeroed ? '↩' : '✕'}
+                    </button>
                   </div>
-                  <button onClick={() => updateQty(i, -1)} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
-                  <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.quantity}</span>
-                  <button onClick={() => updateQty(i, 1)} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
-                  <button onClick={() => removeItem(i)} className="text-xs ml-1 flex-shrink-0" style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕</button>
-                </div>
-              ))}
+                );
+              })}
               {error && <p className="text-xs pt-2" style={{ color: 'var(--brand)' }}>{error}</p>}
             </div>
             <div className="px-5 py-4 flex gap-3" style={{ borderTop: '1px solid var(--border)' }}>
               <button
                 onClick={handleStartSearch}
-                disabled={items.length === 0}
+                disabled={items.filter(i => i.quantity > 0).length === 0}
                 className="flex-1 text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-40"
                 style={{ background: storeColor }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
