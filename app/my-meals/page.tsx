@@ -1583,8 +1583,8 @@ function KrogerCartFlow({
                 disabled={items.filter(i => i.quantity > 0).length === 0}
                 className="flex-1 text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-40"
                 style={{ background: storeColor }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = storeColor; }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
               >
                 Search {storeName} Products →
               </button>
@@ -1706,8 +1706,8 @@ function KrogerCartFlow({
                   disabled={!canAdd || isProcessing}
                   className="w-full text-sm font-semibold rounded-xl py-2.5 text-white disabled:opacity-40"
                   style={{ background: storeColor }}
-                  onMouseEnter={e => { if (canAdd) (e.currentTarget as HTMLElement).style.background = '#004d82'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = storeColor; }}
+                  onMouseEnter={e => { if (canAdd) (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
                 >
                   {isProcessing ? 'Searching…' : 'Add & Update Meal Ingredient'}
                 </button>
