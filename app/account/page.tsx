@@ -104,9 +104,10 @@ export default function AccountPage() {
     // Show feedback from Kroger OAuth redirect
     const params = new URLSearchParams(window.location.search);
     const krogerParam = params.get('kroger');
+    const krogerDetail = params.get('detail');
     if (krogerParam === 'connected') setKrogerMsg('Kroger account connected! Select your preferred store below.');
     else if (krogerParam === 'denied') setKrogerMsg('Kroger authorization was cancelled.');
-    else if (krogerParam === 'error') setKrogerMsg('Something went wrong connecting to Kroger. Please try again.');
+    else if (krogerParam === 'error') setKrogerMsg(`Something went wrong connecting to Kroger. Please try again.${krogerDetail ? ` (${decodeURIComponent(krogerDetail)})` : ''}`);
     if (krogerParam) {
       // Clean the query param without reload
       window.history.replaceState({}, '', '/account');
