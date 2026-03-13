@@ -1509,10 +1509,8 @@ function KrogerCartFlow({
         });
         const data = await res.json();
         const result = data.results?.[0];
-        if (result?.exact && result?.upc) {
-          return { upc: result.upc, name: term };
-        }
-        // Not an exact match — show new suggestions in-place so the user can pick
+        // Always show suggestions for custom searches — the user typed this term
+        // to review options, so never silently add even if the score is exact.
         setCustomSuggestions(result?.suggestions ?? []);
         setCustomSearchTerm(term);
         setSelectedSuggIdx(0);
