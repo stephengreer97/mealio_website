@@ -11,11 +11,13 @@ interface KrogerLocation {
 
 interface Props {
   accessToken: string;
+  /** When set, the picked location is always saved under this storeId regardless of chain mapping. */
+  targetStoreId?: string;
   onSaved: (locationId: string, locationName: string, storeId: string) => void;
   onClose: () => void;
 }
 
-export default function KrogerStorePickerModal({ accessToken, onSaved, onClose }: Props) {
+export default function KrogerStorePickerModal({ accessToken, targetStoreId, onSaved, onClose }: Props) {
   const [zip, setZip] = useState('');
   const [searching, setSearching] = useState(false);
   const [locations, setLocations] = useState<KrogerLocation[]>([]);
@@ -48,10 +50,10 @@ export default function KrogerStorePickerModal({ accessToken, onSaved, onClose }
       const res = await fetch('/api/kroger/set-location', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ locationId: loc.locationId, locationName: loc.name, storeId: loc.storeId }),
+        body: JSON.stringify({ locationId: loc.locationId, locationName: loc.name, storeId: targetStoreId ?? loc.storeId }),
       });
       if (!res.ok) { setError('Failed to save store. Please try again.'); return; }
-      onSaved(loc.locationId, loc.name, loc.storeId);
+      onSaved(loc.locationId, loc.name, targetStoreId ?? loc.storeId);
     } catch {
       setError('Failed to save store. Please try again.');
     } finally {

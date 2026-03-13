@@ -121,7 +121,7 @@ export async function GET(request: NextRequest) {
       locationId: loc.locationId,
       name: loc.name,
       chain: loc.chain,
-      storeId: chainToStoreId(loc.chain),
+      storeId: (() => { const sid = chainToStoreId(loc.chain); console.log('[Kroger:location] chain=%s → storeId=%s', loc.chain, sid); return sid; })(),
       address: loc.address
         ? `${loc.address.addressLine1}, ${loc.address.city}, ${loc.address.state} ${loc.address.zipCode}`
         : '',
