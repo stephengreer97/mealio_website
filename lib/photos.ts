@@ -41,6 +41,7 @@ export async function resolvePhotoUrl(
         'Referer':    'https://pixabay.com/',
         'Accept':     'image/webp,image/png,image/*,*/*',
       },
+      next: { revalidate: 86400 },
     });
   } catch (err) {
     log({ event: 'PHOTO:UPLOAD', status: 'error', userId, detail: 'Pixabay fetch failed', error: err });

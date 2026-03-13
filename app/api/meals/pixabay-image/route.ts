@@ -20,6 +20,9 @@ export async function GET(request: NextRequest) {
         'Referer':    'https://pixabay.com/',
         'Accept':     'image/webp,image/png,image/*,*/*',
       },
+      // Cache in Next.js data cache keyed by URL — subsequent requests for the
+      // same Pixabay image won't re-fetch from Pixabay's CDN (shared IP limit).
+      next: { revalidate: 86400 },
     });
   } catch {
     return new NextResponse('Fetch failed', { status: 502 });
