@@ -550,7 +550,7 @@ export default function AccountPage() {
                   Works with Kroger, Ralphs, Fred Meyer, King Soopers, Harris Teeter, and 10+ more banners.
                 </p>
                 <p className="text-xs mt-1.5" style={{ color: 'var(--text-3)' }}>
-                  Note: If you shop at a Kroger-family brand (Ralphs, Fred Meyer, etc.), you&apos;ll see a Kroger login screen during sign-in — this is normal and expected.
+                  Note: If you shop at a Kroger-family brand (Ralphs, Fred Meyer, etc.), you may see a Kroger login screen during sign-in — this is normal and expected.
                 </p>
               </div>
             ) : (

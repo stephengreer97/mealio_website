@@ -2578,7 +2578,7 @@ export default function MyMealsPage() {
           </button>
           {!krogerConnected && (
             <p className="text-xs px-3 py-1.5 rounded-xl text-center" style={{ background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(4px)', maxWidth: '320px' }}>
-              {selectedStore !== 'kroger' ? `You'll see a Kroger login screen — ${STORE_LABELS[selectedStore]} uses the Kroger sign-in system.` : "You'll be prompted to sign in to Kroger."}
+              {selectedStore !== 'kroger' ? `You may see a Kroger login screen — ${STORE_LABELS[selectedStore]} uses the Kroger sign-in system.` : "You'll be prompted to sign in to Kroger."}
             </p>
           )}
         </div>
