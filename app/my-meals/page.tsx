@@ -835,6 +835,9 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
 }) {
   const [name, setName] = useState('');
   const [storeId, setStoreId] = useState('');
+  const [recentStores, setRecentStores] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('mealio_recent_stores') || '[]'); } catch { return []; }
+  });
   const [author, setAuthor] = useState('');
   const [difficulty, setDifficulty] = useState<number | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -953,6 +956,9 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Failed to create meal.'); return; }
+      const updatedRecent = [storeId, ...recentStores.filter(id => id !== storeId)].slice(0, 3);
+      try { localStorage.setItem('mealio_recent_stores', JSON.stringify(updatedRecent)); } catch { /* ignore */ }
+      setRecentStores(updatedRecent);
       onCreated(data.meal);
     } catch (err) { setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.'); }
     finally { setSaving(false); }
@@ -999,9 +1005,18 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: storeId ? 'var(--text-1)' : 'var(--text-3)' }}
             >
               <option value="" disabled>Select a store…</option>
-              {Object.entries(STORE_LABELS).map(([id, label]) => (
-                <option key={id} value={id}>{label}</option>
-              ))}
+              {recentStores.length > 0 && (
+                <optgroup label="Recent">
+                  {recentStores.filter(id => STORE_LABELS[id]).map(id => (
+                    <option key={id} value={id}>{STORE_LABELS[id]}</option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label={recentStores.length > 0 ? 'All Stores' : ''}>
+                {Object.entries(STORE_LABELS).filter(([id]) => !recentStores.includes(id)).map(([id, label]) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
+              </optgroup>
             </select>
           </div>
 
