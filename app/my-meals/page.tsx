@@ -67,7 +67,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
-  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null }>;
+  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null }>;
   mealIds: string[];
   mealNames: string[];
 }
@@ -1674,7 +1674,12 @@ function KrogerCartFlow({
                           color: 'var(--text-1)',
                         }}
                       >
-                        <span>{s.description}</span>
+                        <span className="flex items-start justify-between gap-3">
+                          <span>{s.description}</span>
+                          {s.price != null && (
+                            <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>${s.price.toFixed(2)}</span>
+                          )}
+                        </span>
                         {s.stockLevel === 'TEMPORARILY_OUT_OF_STOCK' && (
                           <span className="block text-xs mt-0.5 font-medium" style={{ color: '#b45309' }}>⚠ Temporarily out of stock</span>
                         )}
