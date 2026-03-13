@@ -2545,10 +2545,11 @@ export default function MyMealsPage() {
       {showKrogerStorePicker && (
         <KrogerStorePickerModal
           accessToken={accessToken}
+          targetStoreId={selectedStore ?? undefined}
           onSaved={(locationId, locationName, storeId) => {
             setKrogerLocations(prev => ({ ...prev, [storeId]: { locationId, locationName } }));
             setShowKrogerStorePicker(false);
-            if (storeId === selectedStore) setShowKrogerFlow(true);
+            setShowKrogerFlow(true);
           }}
           onClose={() => setShowKrogerStorePicker(false)}
         />
