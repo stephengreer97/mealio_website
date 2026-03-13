@@ -2330,7 +2330,7 @@ export default function MyMealsPage() {
           {selectedStore && KROGER_API_STORES.has(selectedStore) && !mealsLoading && (
             <div className="flex items-center gap-3 mb-4 px-3 py-2 rounded-lg text-xs" style={{ background: '#e8f4fb', border: '1px solid #bae6fd', color: '#0369a1' }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>
-              <span>Select meals below to add their ingredients to your Kroger cart.</span>
+              <span>Select meals below to add their ingredients to your {STORE_LABELS[selectedStore] ?? 'Kroger'} cart.</span>
               {selectedMealIds.size > 0 && (
                 <button type="button" onClick={() => setSelectedMealIds(new Set())} className="ml-auto underline" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0369a1' }}>
                   Clear ({selectedMealIds.size})
