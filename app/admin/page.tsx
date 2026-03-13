@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-type Tab = 'applications' | 'meals' | 'stats' | 'broadcast';
+type Tab = 'applications' | 'meals' | 'stats' | 'broadcast' | 'storage';
 
 interface Application {
   id: string;
@@ -76,6 +76,13 @@ export default function AdminPage() {
   const [broadcastMessage, setBroadcastMessage] = useState('');
   const [broadcastSaving, setBroadcastSaving] = useState(false);
   const [broadcastStatus, setBroadcastStatus] = useState('');
+
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageDryRunResult, setStorageDryRunResult] = useState<{ orphanCount: number; estimatedBytes: number; paths: string[] } | null>(null);
+  const [storageDeleteResult, setStorageDeleteResult] = useState<{ deleted: number; estimatedBytes: number } | null>(null);
+  const [storageError, setStorageError] = useState('');
+  const [backfillLoading, setBackfillLoading] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<{ processed: number; skipped: number; errors: number; total: number } | null>(null);
 
   useEffect(() => {
     verifyAdmin();
@@ -191,6 +198,57 @@ export default function AdminPage() {
     setActionLoading(null);
   };
 
+  const runStorageDryRun = async () => {
+    setStorageLoading(true);
+    setStorageError('');
+    setStorageDryRunResult(null);
+    setStorageDeleteResult(null);
+    const res = await fetch('/api/admin/storage/cleanup-orphans?dryRun=true', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    setStorageLoading(false);
+    if (res.ok) {
+      const data = await res.json();
+      setStorageDryRunResult(data);
+    } else {
+      setStorageError('Dry run failed.');
+    }
+  };
+
+  const runStorageDelete = async () => {
+    if (!confirm(`Delete ${storageDryRunResult?.orphanCount} orphaned files? This cannot be undone.`)) return;
+    setStorageLoading(true);
+    setStorageError('');
+    const res = await fetch('/api/admin/storage/cleanup-orphans', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    setStorageLoading(false);
+    if (res.ok) {
+      const data = await res.json();
+      setStorageDeleteResult(data);
+      setStorageDryRunResult(null);
+    } else {
+      setStorageError('Delete failed.');
+    }
+  };
+
+  const runBackfill = async () => {
+    if (!confirm('This will download and hash all storage files not yet in photo_hashes. This may take several minutes. Continue?')) return;
+    setBackfillLoading(true);
+    setBackfillResult(null);
+    const res = await fetch('/api/admin/storage/backfill-hashes', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    setBackfillLoading(false);
+    if (res.ok) {
+      const data = await res.json();
+      setBackfillResult(data);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5' }}>
@@ -226,6 +284,7 @@ export default function AdminPage() {
         <button style={tabStyle('meals')} onClick={() => switchTab('meals')}>Meals</button>
         <button style={tabStyle('stats')} onClick={() => switchTab('stats')}>Stats</button>
         <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
+        <button style={tabStyle('storage')} onClick={() => switchTab('storage')}>Storage</button>
       </div>
 
       <div style={{ maxWidth: '1000px', margin: '32px auto', padding: '0 20px' }}>
@@ -558,6 +617,86 @@ export default function AdminPage() {
               </>
             )}
           </>
+        )}
+
+        {/* Storage Tab */}
+        {tab === 'storage' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+            {/* Orphan Cleanup */}
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+              <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Orphan Cleanup</h2>
+              <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
+                Finds storage files in the meal-photos bucket that are not referenced by any meal, preset meal, creator, or application.
+                Run a dry run first to preview what would be deleted.
+              </p>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <button
+                  onClick={runStorageDryRun}
+                  disabled={storageLoading}
+                  style={{ background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: storageLoading ? 'not-allowed' : 'pointer', opacity: storageLoading ? 0.7 : 1 }}
+                >
+                  {storageLoading ? 'Running…' : 'Dry Run'}
+                </button>
+                {storageDryRunResult && storageDryRunResult.orphanCount > 0 && (
+                  <button
+                    onClick={runStorageDelete}
+                    disabled={storageLoading}
+                    style={{ background: '#c40029', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: storageLoading ? 'not-allowed' : 'pointer', opacity: storageLoading ? 0.7 : 1 }}
+                  >
+                    Delete {storageDryRunResult.orphanCount} Orphans
+                  </button>
+                )}
+                {storageError && <span style={{ fontSize: '13px', color: '#c40029' }}>{storageError}</span>}
+              </div>
+              {storageDryRunResult && (
+                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#f8f9fa', borderRadius: '8px', fontSize: '13px' }}>
+                  <div style={{ fontWeight: 600, color: '#222', marginBottom: '6px' }}>
+                    Dry run: {storageDryRunResult.orphanCount} orphan{storageDryRunResult.orphanCount !== 1 ? 's' : ''} found
+                    — ~{(storageDryRunResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB
+                  </div>
+                  {storageDryRunResult.orphanCount === 0 ? (
+                    <div style={{ color: '#16a34a' }}>No orphans — storage is clean.</div>
+                  ) : (
+                    <div style={{ maxHeight: '160px', overflowY: 'auto', marginTop: '8px' }}>
+                      {storageDryRunResult.paths.map(p => (
+                        <div key={p} style={{ color: '#555', fontFamily: 'monospace', fontSize: '12px', padding: '2px 0' }}>{p}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {storageDeleteResult && (
+                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#e6f9ed', borderRadius: '8px', fontSize: '13px', color: '#1a7a3a', fontWeight: 600 }}>
+                  Deleted {storageDeleteResult.deleted} file{storageDeleteResult.deleted !== 1 ? 's' : ''} (~{(storageDeleteResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB freed)
+                </div>
+              )}
+            </div>
+
+            {/* Hash Backfill */}
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+              <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Backfill Photo Hashes</h2>
+              <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
+                One-time operation: downloads and SHA-256 hashes all existing storage files not yet in the photo_hashes table.
+                This enables deduplication for files uploaded before the feature was added. May take several minutes.
+              </p>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <button
+                  onClick={runBackfill}
+                  disabled={backfillLoading}
+                  style={{ background: '#555', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: backfillLoading ? 'not-allowed' : 'pointer', opacity: backfillLoading ? 0.7 : 1 }}
+                >
+                  {backfillLoading ? 'Backfilling…' : 'Backfill Hashes'}
+                </button>
+              </div>
+              {backfillResult && (
+                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#e6f9ed', borderRadius: '8px', fontSize: '13px', color: '#1a7a3a', fontWeight: 600 }}>
+                  Done — {backfillResult.processed} hashed, {backfillResult.skipped} skipped, {backfillResult.errors} errors (of {backfillResult.total} total files)
+                </div>
+              )}
+            </div>
+
+          </div>
         )}
 
         {/* Broadcast Tab */}

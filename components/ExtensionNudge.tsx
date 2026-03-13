@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 
 const CHROME_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
 const FIREFOX_URL = 'https://addons.mozilla.org/en-US/firefox/addon/mealio/';
-const EDGE_URL    = CHROME_URL;
+const EDGE_URL    = 'https://microsoftedge.microsoft.com/addons/detail/odmgaejgoagcjbimmdpecimocekjiobi';
 
 function getExtensionUrl(): string {
   if (typeof navigator === 'undefined') return CHROME_URL;

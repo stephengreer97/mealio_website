@@ -470,11 +470,14 @@ interface StoreModalProps {
   onClose: () => void;
   saving: boolean;
   error: string;
+  recentStores: string[];
 }
 
-function StoreModal({ meal, onSave, onClose, saving, error }: StoreModalProps) {
+function StoreModal({ meal, onSave, onClose, saving, error, recentStores }: StoreModalProps) {
   const [selectedStore, setSelectedStore] = useState('');
   const dragRef = useRef(false);
+  const recentStoreObjects = recentStores.map(id => STORES.find(s => s.id === id)).filter(Boolean) as typeof STORES;
+  const otherStores = STORES.filter(s => !recentStores.includes(s.id));
 
   return (
     <div
@@ -510,9 +513,18 @@ function StoreModal({ meal, onSave, onClose, saving, error }: StoreModalProps) {
               style={{ border: '1.5px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             >
               <option value="">Select a store…</option>
-              {STORES.map(s => (
-                <option key={s.id} value={s.id}>{s.label}</option>
-              ))}
+              {recentStoreObjects.length > 0 && (
+                <optgroup label="Recent">
+                  {recentStoreObjects.map(s => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label={recentStoreObjects.length > 0 ? 'All Stores' : ''}>
+                {otherStores.map(s => (
+                  <option key={s.id} value={s.id}>{s.label}</option>
+                ))}
+              </optgroup>
             </select>
           </div>
           {error && <p className="text-xs" style={{ color: 'var(--brand)' }}>{error}</p>}
@@ -847,6 +859,14 @@ export default function DiscoverPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [savedMealStores, setSavedMealStores] = useState<Map<string, string[]>>(new Map());
+  const [recentStores, setRecentStores] = useState<string[]>([]);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('mealio_recent_stores');
+      if (stored) setRecentStores(JSON.parse(stored));
+    } catch { /* ignore */ }
+  }, []);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const fetchingRef = useRef(false);
   const fetchGenRef = useRef(0);
@@ -1026,6 +1046,11 @@ export default function DiscoverPage() {
         const next = new Map(prev);
         next.set(addingMeal.id, [...(next.get(addingMeal.id) ?? []), storeLabel]);
         return next;
+      });
+      setRecentStores(prev => {
+        const updated = [storeId, ...prev.filter(id => id !== storeId)].slice(0, 3);
+        try { localStorage.setItem('mealio_recent_stores', JSON.stringify(updated)); } catch { /* ignore */ }
+        return updated;
       });
       setAddingMeal(null);
     } catch {
@@ -1338,6 +1363,7 @@ export default function DiscoverPage() {
           onClose={() => setAddingMeal(null)}
           saving={saving}
           error={saveError}
+          recentStores={recentStores}
         />
       )}
 
