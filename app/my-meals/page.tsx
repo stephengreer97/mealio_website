@@ -1601,7 +1601,7 @@ function KrogerCartFlow({
           <h2 className="text-base font-bold text-ml-t1">
             {step === 'qty' && 'Review Ingredients'}
             {step === 'searching' && 'Finding Products…'}
-            {step === 'review' && `Choose Product (${reviewIdx + 1} of ${reviewQueue.length})`}
+            {step === 'review' && `Review Unmatched Ingredients (${reviewIdx + 1} of ${reviewQueue.length})`}
             {step === 'adding' && 'Adding to Cart…'}
             {step === 'done' && 'Done!'}
           </h2>
