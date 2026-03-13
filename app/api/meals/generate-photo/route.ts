@@ -20,7 +20,8 @@ async function pixabaySearch(apiKey: string, query: string, perPage: number): Pr
   const url =
     `${PIXABAY_API}?key=${apiKey}&q=${encodeURIComponent(query)}` +
     `&image_type=photo&safesearch=true&per_page=${perPage}`;
-  const res = await fetch(url);
+  // Cache search results for 1 hour — same meal name always returns the same images
+  const res = await fetch(url, { next: { revalidate: 3600 } });
   if (!res.ok) return [];
   const data = await res.json() as PixabayResponse;
   return data.hits ?? [];
