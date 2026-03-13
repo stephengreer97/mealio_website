@@ -4,10 +4,6 @@ import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * GET /api/kroger/status
- * Returns the user's Kroger connection state.
- */
 export async function GET(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -18,7 +14,7 @@ export async function GET(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data: profile } = await supabase
     .from('user_profiles')
-    .select('kroger_refresh_token, kroger_location_id, kroger_location_name, kroger_connected_at')
+    .select('kroger_refresh_token, kroger_locations, kroger_connected_at')
     .eq('id', decoded.userId)
     .single();
 
@@ -28,8 +24,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     connected: true,
-    locationId: profile.kroger_location_id ?? null,
-    locationName: profile.kroger_location_name ?? null,
+    locations: (profile.kroger_locations ?? {}) as Record<string, { locationId: string; locationName: string | null }>,
     connectedAt: profile.kroger_connected_at ?? null,
   });
 }

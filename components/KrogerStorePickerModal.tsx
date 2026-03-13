@@ -5,12 +5,13 @@ import { useState } from 'react';
 interface KrogerLocation {
   locationId: string;
   name: string;
+  storeId: string;
   address?: string;
 }
 
 interface Props {
   accessToken: string;
-  onSaved: (locationId: string, locationName: string) => void;
+  onSaved: (locationId: string, locationName: string, storeId: string) => void;
   onClose: () => void;
 }
 
@@ -47,10 +48,10 @@ export default function KrogerStorePickerModal({ accessToken, onSaved, onClose }
       const res = await fetch('/api/kroger/set-location', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ locationId: loc.locationId, locationName: loc.name }),
+        body: JSON.stringify({ locationId: loc.locationId, locationName: loc.name, storeId: loc.storeId }),
       });
       if (!res.ok) { setError('Failed to save store. Please try again.'); return; }
-      onSaved(loc.locationId, loc.name);
+      onSaved(loc.locationId, loc.name, loc.storeId);
     } catch {
       setError('Failed to save store. Please try again.');
     } finally {
@@ -69,16 +70,14 @@ export default function KrogerStorePickerModal({ accessToken, onSaved, onClose }
         style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '85vh' }}
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
           <div>
-            <h2 className="text-base font-bold" style={{ color: 'var(--text-1)' }}>Select Your Kroger Store</h2>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>Search by ZIP code to find nearby stores</p>
+            <h2 className="text-base font-bold" style={{ color: 'var(--text-1)' }}>Select Your Store</h2>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>Search by ZIP to find nearby Kroger-family stores</p>
           </div>
           <button onClick={onClose} className="text-xl leading-none" style={{ color: 'var(--text-3)' }}>✕</button>
         </div>
 
-        {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
           <div className="flex gap-2 mb-3">
             <input
@@ -127,7 +126,6 @@ export default function KrogerStorePickerModal({ accessToken, onSaved, onClose }
           )}
         </div>
 
-        {/* Footer */}
         <div className="px-5 py-3" style={{ borderTop: '1px solid var(--border)' }}>
           <button
             onClick={onClose}

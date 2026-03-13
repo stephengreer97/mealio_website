@@ -5,6 +5,25 @@ export const dynamic = 'force-dynamic';
 
 const KROGER_BASE = 'https://api.kroger.com/v1';
 
+const CHAIN_TO_STORE_ID: Record<string, string> = {
+  'KROGER': 'kroger',
+  'RALPHS': 'ralphs',
+  'FRED MEYER': 'fred_meyer',
+  'KING SOOPERS': 'king_soopers',
+  "SMITH'S": 'smiths',
+  "FRY'S FOOD STORES": 'frys',
+  'QFC': 'qfc',
+  'CITY MARKET': 'city_market',
+  'DILLONS': 'dillons',
+  "BAKER'S": 'bakers',
+  "MARIANO'S": 'marianos',
+  "PICK 'N SAVE": 'pick_n_save',
+  'METRO MARKET': 'metro_market',
+  'PAY-LESS': 'pay_less',
+  'HARRIS TEETER': 'harris_teeter',
+  "CARR'S": 'carrs',
+};
+
 async function getClientToken(): Promise<string> {
   const clientId = process.env.KROGER_CLIENT_ID;
   const clientSecret = process.env.KROGER_CLIENT_SECRET;
@@ -72,6 +91,7 @@ export async function GET(request: NextRequest) {
       locationId: loc.locationId,
       name: loc.name,
       chain: loc.chain,
+      storeId: CHAIN_TO_STORE_ID[loc.chain?.toUpperCase() ?? ''] ?? 'kroger',
       address: loc.address
         ? `${loc.address.addressLine1}, ${loc.address.city}, ${loc.address.state} ${loc.address.zipCode}`
         : '',

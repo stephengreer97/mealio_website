@@ -1200,7 +1200,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
 
 function MealDetailModal({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
-  krogerConnected, krogerLocationId,
+  krogerConnected, krogerLocations,
   onEdit, onDelete, onShare, onClose, onCreatorClick,
 }: {
   meal: Meal;
@@ -1209,7 +1209,7 @@ function MealDetailModal({
   creatorChecked: boolean;
   copiedMealId: string | null;
   krogerConnected: boolean;
-  krogerLocationId: string | null;
+  krogerLocations: Record<string, { locationId: string; locationName: string }>;
   onEdit: () => void;
   onDelete: () => void;
   onShare: () => void;
@@ -1219,6 +1219,8 @@ function MealDetailModal({
   const dragRef = useRef(false);
   const [krogerLoading, setKrogerLoading] = useState(false);
   const [krogerResult, setKrogerResult] = useState<{ added: string[]; notFound: string[] } | null>(null);
+
+  const krogerLocationId = krogerLocations[meal.store_id]?.locationId ?? null;
 
   const handleAddToKroger = async () => {
     if (!krogerLocationId) {
@@ -1354,7 +1356,7 @@ function MealDetailModal({
 
         {/* Footer */}
         <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
-          {krogerConnected && KROGER_API_STORES.has(meal.store_id) && (
+          {krogerConnected && KROGER_API_STORES.has(meal.store_id) && krogerLocationId && (
             <button
               onClick={handleAddToKroger}
               disabled={krogerLoading}
@@ -1817,7 +1819,7 @@ function KrogerCartFlow({
 
 function DashboardMealCard({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
-  krogerConnected, krogerLocationId,
+  krogerConnected, krogerLocations,
   selectMode, selected, onToggleSelect,
   onEdit, onDelete, onShare, onRemovePhoto, onCreatorClick,
 }: {
@@ -1827,7 +1829,7 @@ function DashboardMealCard({
   creatorChecked: boolean;
   copiedMealId: string | null;
   krogerConnected: boolean;
-  krogerLocationId: string | null;
+  krogerLocations: Record<string, { locationId: string; locationName: string }>;
   selectMode?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
@@ -1853,7 +1855,7 @@ function DashboardMealCard({
           creatorChecked={creatorChecked}
           copiedMealId={copiedMealId}
           krogerConnected={krogerConnected}
-          krogerLocationId={krogerLocationId}
+          krogerLocations={krogerLocations}
           onEdit={onEdit}
           onDelete={onDelete}
           onShare={onShare}
@@ -2010,7 +2012,7 @@ export default function MyMealsPage() {
   const [creatorPopupId, setCreatorPopupId] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState('');
   const [krogerConnected, setKrogerConnected] = useState(false);
-  const [krogerLocationId, setKrogerLocationId] = useState<string | null>(null);
+  const [krogerLocations, setKrogerLocations] = useState<Record<string, { locationId: string; locationName: string }>>({});
 
   // Store pill filter + multi-select for Kroger cart
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
@@ -2078,7 +2080,7 @@ export default function MyMealsPage() {
       }).then(r => r.ok ? r.json() : null).then(d => {
         if (d?.connected) {
           setKrogerConnected(true);
-          setKrogerLocationId(d.locationId ?? null);
+          setKrogerLocations(d.locations ?? {});
         }
       }).catch(() => {});
 
@@ -2157,7 +2159,8 @@ export default function MyMealsPage() {
 
   const handleKrogerCartClick = async () => {
     if (selectedMealIds.size === 0) return;
-    if (!krogerConnected || !krogerLocationId) {
+    const storeLocationId = krogerLocations[selectedStore ?? '']?.locationId ?? null;
+    if (!krogerConnected || !storeLocationId) {
       setKrogerConnecting(true);
       try {
         const res = await fetch('/api/kroger/connect', {
@@ -2189,8 +2192,8 @@ export default function MyMealsPage() {
               setKrogerConnecting(false);
               if (d?.connected) {
                 setKrogerConnected(true);
-                setKrogerLocationId(d.locationId ?? null);
-                if (d.locationId) {
+                setKrogerLocations(d.locations ?? {});
+                if (d.locations?.[selectedStore ?? '']?.locationId) {
                   setShowKrogerFlow(true);
                 } else {
                   setShowKrogerStorePicker(true);
@@ -2455,7 +2458,7 @@ export default function MyMealsPage() {
                       creatorChecked={creatorChecked}
                       copiedMealId={copiedMealId}
                       krogerConnected={krogerConnected}
-                      krogerLocationId={krogerLocationId}
+                      krogerLocations={krogerLocations}
                       selectMode={isKrogerSelectMode}
                       selected={selectedMealIds.has(meal.id)}
                       onToggleSelect={() => setSelectedMealIds(prev => {
@@ -2537,20 +2540,20 @@ export default function MyMealsPage() {
       {showKrogerStorePicker && (
         <KrogerStorePickerModal
           accessToken={accessToken}
-          onSaved={(locationId) => {
-            setKrogerLocationId(locationId);
+          onSaved={(locationId, locationName, storeId) => {
+            setKrogerLocations(prev => ({ ...prev, [storeId]: { locationId, locationName } }));
             setShowKrogerStorePicker(false);
-            setShowKrogerFlow(true);
+            if (storeId === selectedStore) setShowKrogerFlow(true);
           }}
           onClose={() => setShowKrogerStorePicker(false)}
         />
       )}
 
       {/* Kroger cart flow modal */}
-      {showKrogerFlow && selectedStore && KROGER_API_STORES.has(selectedStore) && krogerLocationId && (
+      {showKrogerFlow && selectedStore && KROGER_API_STORES.has(selectedStore) && krogerLocations[selectedStore]?.locationId && (
         <KrogerCartFlow
           meals={meals.filter(m => selectedMealIds.has(m.id))}
-          locationId={krogerLocationId}
+          locationId={krogerLocations[selectedStore].locationId}
           storeId={selectedStore}
           accessToken={accessToken}
           onClose={() => { setShowKrogerFlow(false); setSelectedMealIds(new Set()); }}

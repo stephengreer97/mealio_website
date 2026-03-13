@@ -4,11 +4,6 @@ import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * POST /api/kroger/set-location
- * Body: { locationId, locationName }
- * Saves the user's preferred Kroger store location.
- */
 export async function POST(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -17,18 +12,26 @@ export async function POST(request: NextRequest) {
   if (!decoded) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await request.json();
-  const { locationId, locationName } = body ?? {};
+  const { locationId, locationName, storeId } = body ?? {};
   if (!locationId) return NextResponse.json({ error: 'locationId required' }, { status: 400 });
+  if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
 
   const supabase = createServerSupabaseClient();
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('kroger_locations')
+    .eq('id', decoded.userId)
+    .single();
+
+  const current = (profile?.kroger_locations ?? {}) as Record<string, { locationId: string; locationName: string | null }>;
+  const updated = { ...current, [storeId]: { locationId, locationName: locationName ?? null } };
+
   const { error } = await supabase
     .from('user_profiles')
-    .update({
-      kroger_location_id: locationId,
-      kroger_location_name: locationName ?? null,
-    })
+    .update({ kroger_locations: updated })
     .eq('id', decoded.userId);
 
   if (error) return NextResponse.json({ error: 'Failed to save location' }, { status: 500 });
-  return NextResponse.json({ success: true, locationId, locationName });
+  return NextResponse.json({ success: true, locationId, locationName, storeId });
 }
