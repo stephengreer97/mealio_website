@@ -98,7 +98,7 @@ export function scoreProductMatch(searchTerm: string, description: string): numb
   const matchPct   = matchCount / searchWords.length;
   if (matchPct < 0.7) return 0;
 
-  return Math.round(matchPct * 100);
+  return Math.min(99, Math.round(matchPct * 100)); // 100 reserved for exact string match only
 }
 
 // ── Kroger API helpers ───────────────────────────────────────────────────────
