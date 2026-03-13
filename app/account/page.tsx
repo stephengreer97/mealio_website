@@ -33,6 +33,7 @@ interface KrogerLocation {
   name: string;
   chain?: string;
   address: string;
+  storeId: string;
 }
 
 const STORE_LABELS: Record<string, string> = {
@@ -89,11 +90,10 @@ export default function AccountPage() {
 
   // Kroger
   const [krogerConnected, setKrogerConnected] = useState(false);
-  const [krogerLocationId, setKrogerLocationId] = useState<string | null>(null);
-  const [krogerLocationName, setKrogerLocationName] = useState<string | null>(null);
+  const [krogerLocations, setKrogerLocations] = useState<Record<string, { locationId: string; locationName: string }>>({});
   const [krogerConnecting, setKrogerConnecting] = useState(false);
   const [krogerDisconnecting, setKrogerDisconnecting] = useState(false);
-  const [krogerLocations, setKrogerLocations] = useState<KrogerLocation[]>([]);
+  const [krogerLocationsList, setKrogerLocationsList] = useState<KrogerLocation[]>([]);
   const [krogerZip, setKrogerZip] = useState('');
   const [krogerSearching, setKrogerSearching] = useState(false);
   const [krogerSavingLocation, setKrogerSavingLocation] = useState(false);
@@ -141,8 +141,7 @@ export default function AccountPage() {
         .then(d => {
           if (d?.connected) {
             setKrogerConnected(true);
-            setKrogerLocationId(d.locationId ?? null);
-            setKrogerLocationName(d.locationName ?? null);
+            setKrogerLocations(d.locations ?? {});
           }
         })
         .catch(() => {});
@@ -311,8 +310,7 @@ export default function AccountPage() {
             .then(d => {
               if (d?.connected) {
                 setKrogerConnected(true);
-                setKrogerLocationId(d.locationId ?? null);
-                setKrogerLocationName(d.locationName ?? null);
+                setKrogerLocations(d.locations ?? {});
               }
             })
             .catch(() => {});
@@ -345,9 +343,8 @@ export default function AccountPage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       setKrogerConnected(false);
-      setKrogerLocationId(null);
-      setKrogerLocationName(null);
-      setKrogerLocations([]);
+      setKrogerLocations({});
+      setKrogerLocationsList([]);
       setKrogerMsg('');
     } catch { setKrogerMsg('Failed to disconnect. Please try again.'); }
     finally { setKrogerDisconnecting(false); }
@@ -356,14 +353,14 @@ export default function AccountPage() {
   const handleKrogerSearchStores = async () => {
     if (!krogerZip.trim()) return;
     setKrogerSearching(true);
-    setKrogerLocations([]);
+    setKrogerLocationsList([]);
     try {
       const accessToken = localStorage.getItem('accessToken');
       const res = await fetch(`/api/kroger/locations?term=${encodeURIComponent(krogerZip)}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await res.json();
-      setKrogerLocations(data.locations ?? []);
+      setKrogerLocationsList(data.locations ?? []);
       if ((data.locations ?? []).length === 0) setKrogerMsg('No Kroger stores found near that ZIP code.');
     } catch { setKrogerMsg('Failed to search stores.'); }
     finally { setKrogerSearching(false); }
@@ -376,14 +373,13 @@ export default function AccountPage() {
       const res = await fetch('/api/kroger/set-location', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ locationId: loc.locationId, locationName: loc.name }),
+        body: JSON.stringify({ locationId: loc.locationId, locationName: loc.name, storeId: loc.storeId }),
       });
       if (res.ok) {
-        setKrogerLocationId(loc.locationId);
-        setKrogerLocationName(loc.name);
-        setKrogerLocations([]);
+        setKrogerLocations(prev => ({ ...prev, [loc.storeId]: { locationId: loc.locationId, locationName: loc.name } }));
+        setKrogerLocationsList([]);
         setKrogerZip('');
-        setKrogerMsg('Store saved! You can now add meals directly to your Kroger cart.');
+        setKrogerMsg('Store saved.');
       }
     } catch { setKrogerMsg('Failed to save store.'); }
     finally { setKrogerSavingLocation(false); }
@@ -546,15 +542,23 @@ export default function AccountPage() {
               <div>
                 <div className="rounded-xl p-4 mb-4" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
                   <p className="font-semibold text-sm mb-0.5" style={{ color: '#14532d' }}>Connected</p>
-                  {krogerLocationName
-                    ? <p className="text-sm" style={{ color: '#166534' }}>Store: {krogerLocationName}</p>
-                    : <p className="text-sm" style={{ color: '#166534' }}>No store selected yet — search below.</p>}
+                  {Object.keys(krogerLocations).length === 0 ? (
+                    <p className="text-sm" style={{ color: '#166534' }}>No stores selected yet — search below.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {Object.entries(krogerLocations).map(([sid, loc]) => (
+                        <p key={sid} className="text-sm" style={{ color: '#166534' }}>
+                          <span className="font-semibold">{STORE_LABELS[sid] ?? sid}:</span> {loc.locationName}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Store picker */}
                 <div className="mb-4">
                   <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-2)' }}>
-                    {krogerLocationName ? 'Change store' : 'Select your store'}
+                    Add or change store location
                   </p>
                   <div className="flex gap-2">
                     <input
@@ -580,17 +584,17 @@ export default function AccountPage() {
                     </button>
                   </div>
 
-                  {krogerLocations.length > 0 && (
+                  {krogerLocationsList.length > 0 && (
                     <ul className="mt-2 rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-                      {krogerLocations.map(loc => (
+                      {krogerLocationsList.map(loc => (
                         <li key={loc.locationId} style={{ borderBottom: '1px solid var(--border)' }}>
                           <button
                             onClick={() => handleKrogerSaveLocation(loc)}
                             disabled={krogerSavingLocation}
                             className="w-full text-left px-4 py-3 transition-colors disabled:opacity-50"
-                            style={{ background: krogerLocationId === loc.locationId ? 'var(--brand-light)' : 'var(--surface-raised)', border: 'none', cursor: 'pointer' }}
+                            style={{ background: krogerLocations[loc.storeId]?.locationId === loc.locationId ? 'var(--brand-light)' : 'var(--surface-raised)', border: 'none', cursor: 'pointer' }}
                             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = krogerLocationId === loc.locationId ? 'var(--brand-light)' : 'var(--surface-raised)'; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = krogerLocations[loc.storeId]?.locationId === loc.locationId ? 'var(--brand-light)' : 'var(--surface-raised)'; }}
                           >
                             <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{loc.name}</p>
                             <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>{loc.address}</p>
