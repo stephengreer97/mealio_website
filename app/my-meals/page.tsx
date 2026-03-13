@@ -2160,7 +2160,12 @@ export default function MyMealsPage() {
   const handleKrogerCartClick = async () => {
     if (selectedMealIds.size === 0) return;
     const storeLocationId = krogerLocations[selectedStore ?? '']?.locationId ?? null;
-    if (!krogerConnected || !storeLocationId) {
+    if (krogerConnected && !storeLocationId) {
+      // Connected but no location saved for this store brand — show store picker
+      setShowKrogerStorePicker(true);
+      return;
+    }
+    if (!krogerConnected) {
       setKrogerConnecting(true);
       try {
         const res = await fetch('/api/kroger/connect', {
