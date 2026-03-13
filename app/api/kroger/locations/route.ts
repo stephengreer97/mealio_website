@@ -11,18 +11,48 @@ const CHAIN_TO_STORE_ID: Record<string, string> = {
   'FRED MEYER': 'fred_meyer',
   'KING SOOPERS': 'king_soopers',
   "SMITH'S": 'smiths',
+  'SMITHS': 'smiths',
   "FRY'S FOOD STORES": 'frys',
+  'FRYS': 'frys',
   'QFC': 'qfc',
   'CITY MARKET': 'city_market',
   'DILLONS': 'dillons',
   "BAKER'S": 'bakers',
+  'BAKERS': 'bakers',
   "MARIANO'S": 'marianos',
+  'MARIANOS': 'marianos',
   "PICK 'N SAVE": 'pick_n_save',
+  'PICK N SAVE': 'pick_n_save',
   'METRO MARKET': 'metro_market',
   'PAY-LESS': 'pay_less',
+  'PAY LESS': 'pay_less',
   'HARRIS TEETER': 'harris_teeter',
+  'HARRISTEETER': 'harris_teeter',
   "CARR'S": 'carrs',
+  'CARRS': 'carrs',
 };
+
+function chainToStoreId(chain: string | null | undefined): string {
+  if (!chain) return 'kroger';
+  const upper = chain.toUpperCase().trim();
+  if (CHAIN_TO_STORE_ID[upper]) return CHAIN_TO_STORE_ID[upper];
+  // Fuzzy fallback for unexpected API formats
+  if (upper.includes('HARRIS') || upper === 'HT') return 'harris_teeter';
+  if (upper.includes('RALPH')) return 'ralphs';
+  if (upper.includes('FRED') && upper.includes('MEYER')) return 'fred_meyer';
+  if (upper.includes('KING') && upper.includes('SOOPERS')) return 'king_soopers';
+  if (upper.includes('SMITH')) return 'smiths';
+  if (upper.includes('DILLON')) return 'dillons';
+  if (upper.includes('MARIANO')) return 'marianos';
+  if (upper.includes('BAKER')) return 'bakers';
+  if (upper.includes('PICK') && upper.includes('SAVE')) return 'pick_n_save';
+  if (upper.includes('METRO') && upper.includes('MARKET')) return 'metro_market';
+  if (upper.includes('CITY') && upper.includes('MARKET')) return 'city_market';
+  if (upper.includes('FRY')) return 'frys';
+  if (upper.includes('CARR')) return 'carrs';
+  if (upper.includes('PAY') && upper.includes('LESS')) return 'pay_less';
+  return 'kroger';
+}
 
 async function getClientToken(): Promise<string> {
   const clientId = process.env.KROGER_CLIENT_ID;
@@ -91,7 +121,7 @@ export async function GET(request: NextRequest) {
       locationId: loc.locationId,
       name: loc.name,
       chain: loc.chain,
-      storeId: CHAIN_TO_STORE_ID[loc.chain?.toUpperCase() ?? ''] ?? 'kroger',
+      storeId: chainToStoreId(loc.chain),
       address: loc.address
         ? `${loc.address.addressLine1}, ${loc.address.city}, ${loc.address.state} ${loc.address.zipCode}`
         : '',
