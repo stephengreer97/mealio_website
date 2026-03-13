@@ -1601,7 +1601,7 @@ function KrogerCartFlow({
           <h2 className="text-base font-bold text-ml-t1">
             {step === 'qty' && 'Review Ingredients'}
             {step === 'searching' && 'Finding Products…'}
-            {step === 'review' && `Review Match (${reviewIdx + 1} of ${reviewQueue.length})`}
+            {step === 'review' && `Choose Product (${reviewIdx + 1} of ${reviewQueue.length})`}
             {step === 'adding' && 'Adding to Cart…'}
             {step === 'done' && 'Done!'}
           </h2>
@@ -1685,7 +1685,7 @@ function KrogerCartFlow({
                 {/* Selectable suggestions */}
                 <div>
                   <p className="text-xs font-semibold text-ml-t3 mb-2 uppercase tracking-wide">
-                    {hasSuggestions ? 'Kroger suggests' : 'No match found'}
+                    {hasSuggestions ? 'Kroger suggests' : 'No exact match found'}
                   </p>
                   <div className="space-y-1.5">
                     {displaySuggestions.map((s, i) => (
