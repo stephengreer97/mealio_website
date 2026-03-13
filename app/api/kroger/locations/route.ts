@@ -32,11 +32,7 @@ const CHAIN_TO_STORE_ID: Record<string, string> = {
   'CARRS': 'carrs',
 };
 
-function chainToStoreId(chain: string | null | undefined): string {
-  if (!chain) return 'kroger';
-  const upper = chain.toUpperCase().trim();
-  if (CHAIN_TO_STORE_ID[upper]) return CHAIN_TO_STORE_ID[upper];
-  // Fuzzy fallback for unexpected API formats
+function matchKeywords(upper: string): string | null {
   if (upper.includes('HARRIS') || upper === 'HT') return 'harris_teeter';
   if (upper.includes('RALPH')) return 'ralphs';
   if (upper.includes('FRED') && upper.includes('MEYER')) return 'fred_meyer';
@@ -48,9 +44,26 @@ function chainToStoreId(chain: string | null | undefined): string {
   if (upper.includes('PICK') && upper.includes('SAVE')) return 'pick_n_save';
   if (upper.includes('METRO') && upper.includes('MARKET')) return 'metro_market';
   if (upper.includes('CITY') && upper.includes('MARKET')) return 'city_market';
-  if (upper.includes('FRY')) return 'frys';
+  if (upper.includes("FRY'S") || upper.startsWith('FRYS')) return 'frys';
   if (upper.includes('CARR')) return 'carrs';
   if (upper.includes('PAY') && upper.includes('LESS')) return 'pay_less';
+  if (upper.includes('QFC')) return 'qfc';
+  return null;
+}
+
+function resolveStoreId(chain: string | null | undefined, name: string | null | undefined): string {
+  // Try exact chain match first
+  if (chain) {
+    const upper = chain.toUpperCase().trim();
+    if (CHAIN_TO_STORE_ID[upper]) return CHAIN_TO_STORE_ID[upper];
+    const fromChain = matchKeywords(upper);
+    if (fromChain) return fromChain;
+  }
+  // Fallback: derive from the location name (usually contains the brand name)
+  if (name) {
+    const fromName = matchKeywords(name.toUpperCase());
+    if (fromName) return fromName;
+  }
   return 'kroger';
 }
 
@@ -121,7 +134,7 @@ export async function GET(request: NextRequest) {
       locationId: loc.locationId,
       name: loc.name,
       chain: loc.chain,
-      storeId: (() => { const sid = chainToStoreId(loc.chain); console.log('[Kroger:location] chain=%s → storeId=%s', loc.chain, sid); return sid; })(),
+      storeId: (() => { const sid = resolveStoreId(loc.chain, loc.name); console.log('[Kroger:location] chain=%s name=%s → storeId=%s', loc.chain, loc.name, sid); return sid; })(),
       address: loc.address
         ? `${loc.address.addressLine1}, ${loc.address.city}, ${loc.address.state} ${loc.address.zipCode}`
         : '',

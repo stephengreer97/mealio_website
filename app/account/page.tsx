@@ -42,6 +42,21 @@ const STORE_LABELS: Record<string, string> = {
   kroger:         'Kroger',
   aldi:           'ALDI',
   central_market: 'Central Market',
+  ralphs:         'Ralphs',
+  fred_meyer:     'Fred Meyer',
+  king_soopers:   'King Soopers',
+  harris_teeter:  'Harris Teeter',
+  smiths:         "Smith's",
+  frys:           "Fry's Food Stores",
+  qfc:            'QFC',
+  city_market:    'City Market',
+  dillons:        'Dillons',
+  bakers:         "Baker's",
+  marianos:       "Mariano's",
+  pick_n_save:    "Pick 'n Save",
+  metro_market:   'Metro Market',
+  pay_less:       'Pay-Less',
+  carrs:          "Carr's",
 };
 
 function getInitials(name: string) {
@@ -507,7 +522,7 @@ export default function AccountPage() {
           </SectionCard>
 
           {/* Kroger */}
-          <SectionCard title="Kroger Cart" subtitle="Connect your Kroger account to add meal ingredients directly to your cart — no extension needed.">
+          <SectionCard title="Kroger Brands Integration" subtitle="Connect your Kroger account to add meal ingredients directly to your cart — no extension needed.">
             {krogerMsg && (
               <div className="px-4 py-3 rounded-xl text-sm mb-4" style={{
                 background: krogerMsg.startsWith('Kroger account connected') || krogerMsg.startsWith('Store saved')
