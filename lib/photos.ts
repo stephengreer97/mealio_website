@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { createServerSupabaseClient } from './supabase';
 import { log } from './logger';
 
@@ -52,11 +53,26 @@ export async function resolvePhotoUrl(
   }
 
   const contentType = imgRes.headers.get('content-type') ?? 'image/jpeg';
-  const buffer = await imgRes.arrayBuffer();
+  const arrayBuf = await imgRes.arrayBuffer();
+  const buffer = Buffer.from(arrayBuf);
+  const hash = createHash('sha256').update(buffer).digest('hex');
   const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
-  const path = `${userId}/${Date.now()}.${ext}`;
 
   const supabase = createServerSupabaseClient();
+
+  // Check for existing duplicate
+  const { data: existing } = await supabase
+    .from('photo_hashes')
+    .select('url')
+    .eq('hash', hash)
+    .maybeSingle();
+
+  if (existing?.url) {
+    log({ event: 'PHOTO:UPLOAD', status: 'success', userId, detail: `dedup:${existing.url}` });
+    return existing.url;
+  }
+
+  const path = `${userId}/${Date.now()}.${ext}`;
   const { data, error } = await supabase.storage
     .from('meal-photos')
     .upload(path, buffer, { contentType, upsert: false });
@@ -69,6 +85,9 @@ export async function resolvePhotoUrl(
   const { data: { publicUrl } } = supabase.storage
     .from('meal-photos')
     .getPublicUrl(data.path);
+
+  // Record hash (upsert handles race conditions gracefully)
+  await supabase.from('photo_hashes').upsert({ hash, url: publicUrl }, { onConflict: 'hash', ignoreDuplicates: true });
 
   log({ event: 'PHOTO:UPLOAD', status: 'success', userId, detail: publicUrl });
   return publicUrl;

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
@@ -37,9 +38,22 @@ export async function POST(request: NextRequest) {
   const ext = EXT_MAP[mimeType] ?? 'jpg';
 
   const buffer = Buffer.from(base64Data, 'base64');
-  const path = `${decoded.userId}/${Date.now()}.${ext}`;
+  const hash = createHash('sha256').update(buffer).digest('hex');
 
   const supabase = createServerSupabaseClient();
+
+  // Check for existing duplicate
+  const { data: existing } = await supabase
+    .from('photo_hashes')
+    .select('url')
+    .eq('hash', hash)
+    .maybeSingle();
+
+  if (existing?.url) {
+    return NextResponse.json({ url: existing.url }, { status: 200 });
+  }
+
+  const path = `${decoded.userId}/${Date.now()}.${ext}`;
   const { error: uploadError } = await supabase.storage
     .from('meal-photos')
     .upload(path, buffer, { contentType: mimeType, upsert: false });
@@ -52,6 +66,9 @@ export async function POST(request: NextRequest) {
   const { data: { publicUrl } } = supabase.storage
     .from('meal-photos')
     .getPublicUrl(path);
+
+  // Record hash (upsert handles race conditions gracefully)
+  await supabase.from('photo_hashes').upsert({ hash, url: publicUrl }, { onConflict: 'hash', ignoreDuplicates: true });
 
   return NextResponse.json({ url: publicUrl }, { status: 201 });
 }

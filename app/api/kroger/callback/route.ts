@@ -31,20 +31,27 @@ export async function GET(request: NextRequest) {
   const proto = host.startsWith('localhost') ? 'http' : 'https';
   const APP_URL = `${proto}://${host}`;
 
+  // Peek at state to detect mobile before we have full stateData
+  const statePreview = state ? await verifyKrogerStateToken(state).catch(() => null) : null;
+  const isMobile = statePreview?.mobile === true;
+
   if (error) {
+    if (isMobile) return NextResponse.redirect('mealio://kroger/denied');
     return NextResponse.redirect(`${APP_URL}/account?kroger=denied`);
   }
 
   if (!code || !state) {
+    if (isMobile) return NextResponse.redirect('mealio://kroger/error');
     return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
   }
 
-  const stateData = await verifyKrogerStateToken(state);
+  const stateData = statePreview ?? await verifyKrogerStateToken(state);
   if (!stateData) {
+    if (isMobile) return NextResponse.redirect('mealio://kroger/error');
     return NextResponse.redirect(`${APP_URL}/account?kroger=error`);
   }
 
-  const { userId, returnTo, popup } = stateData;
+  const { userId, returnTo, popup, mobile } = stateData;
   const returnBase = returnTo && returnTo.startsWith('/') ? returnTo : '/account';
 
   const popupHtml = (result: 'connected' | 'denied' | 'error') =>
@@ -86,11 +93,13 @@ export async function GET(request: NextRequest) {
 
     log({ event: 'KROGER:CALLBACK', status: 'success', userId });
     if (popup) return popupHtml('connected');
+    if (mobile) return NextResponse.redirect('mealio://kroger/connected');
     return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=connected`);
   } catch (err) {
     const errMsg = encodeURIComponent(String(err).slice(0, 200));
     log({ event: 'KROGER:CALLBACK', status: 'error', userId, error: String(err) });
     if (popup) return popupHtml('error');
+    if (mobile) return NextResponse.redirect('mealio://kroger/error');
     return NextResponse.redirect(`${APP_URL}${returnBase}?kroger=error&detail=${errMsg}`);
   }
 }

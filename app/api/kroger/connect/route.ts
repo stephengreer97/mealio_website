@@ -28,8 +28,9 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const returnTo: string | undefined = typeof body?.returnTo === 'string' ? body.returnTo : undefined;
   const popup: boolean = body?.popup === true;
+  const mobile: boolean = body?.mobile === true;
 
-  const state = await createKrogerStateToken(decoded.userId, returnTo, popup);
+  const state = await createKrogerStateToken(decoded.userId, returnTo, popup, mobile);
 
   const params = new URLSearchParams({
     response_type: 'code',

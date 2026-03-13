@@ -55,7 +55,10 @@ export type EventType =
   | 'KROGER:CALLBACK'
   | 'KROGER:DISCONNECT'
   | 'KROGER:SEARCH_PRODUCTS'
-  | 'KROGER:ADD_TO_CART';
+  | 'KROGER:ADD_TO_CART'
+  // ── Storage ───────────────────────────────────────────────────────────────
+  | 'STORAGE:CLEANUP'
+  | 'STORAGE:BACKFILL';
 
 export type Status = 'success' | 'failed' | 'pending' | 'error';
 

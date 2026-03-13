@@ -1786,8 +1786,21 @@ function KrogerCartFlow({
                   : <><div className="text-4xl mb-2">😔</div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
               }
             </div>
-            <div className="px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <button onClick={onClose} className="w-full text-sm font-semibold rounded-xl py-2.5 text-white" style={{ background: storeColor }}>Done</button>
+            <div className="px-5 py-4 flex gap-3" style={{ borderTop: '1px solid var(--border)' }}>
+              {!cartError && totalAdded > 0 && (
+                <a
+                  href={`https://www.${STORE_URLS[storeId] ?? 'kroger.com'}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 text-center text-sm font-semibold rounded-xl py-2.5 text-white"
+                  style={{ background: storeColor, textDecoration: 'none' }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                >
+                  View Cart →
+                </a>
+              )}
+              <button onClick={onClose} className="flex-1 text-sm font-semibold rounded-xl py-2.5" style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-1)' }}>Done</button>
             </div>
           </>
         )}
@@ -2492,7 +2505,7 @@ export default function MyMealsPage() {
 
       {/* Floating "Add to Kroger Cart" button */}
       {selectedMealIds.size > 0 && selectedStore && KROGER_API_STORES.has(selectedStore) && (
-        <div className="fixed bottom-6 left-1/2 z-40" style={{ transform: 'translateX(-50%)' }}>
+        <div className="fixed bottom-6 left-1/2 z-40 flex flex-col items-center gap-1.5" style={{ transform: 'translateX(-50%)' }}>
           <button
             onClick={handleKrogerCartClick}
             disabled={krogerConnecting}
@@ -2507,6 +2520,11 @@ export default function MyMealsPage() {
             </svg>
             {krogerConnecting ? 'Connecting…' : `Add ${selectedMealIds.size} meal${selectedMealIds.size !== 1 ? 's' : ''} to ${STORE_LABELS[selectedStore] ?? 'Kroger'} Cart`}
           </button>
+          {!krogerConnected && (
+            <p className="text-xs px-3 py-1.5 rounded-xl text-center" style={{ background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(4px)', maxWidth: '320px' }}>
+              {selectedStore !== 'kroger' ? `You'll see a Kroger login screen — ${STORE_LABELS[selectedStore]} uses the Kroger sign-in system.` : "You'll be prompted to sign in to Kroger."}
+            </p>
+          )}
         </div>
       )}
 

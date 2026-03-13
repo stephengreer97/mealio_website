@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 
 const CHROME_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
 const FIREFOX_URL = 'https://addons.mozilla.org/firefox/addon/mealio/';
-const EDGE_URL    = 'https://microsoftedge.microsoft.com/addons/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
+const EDGE_URL    = 'https://microsoftedge.microsoft.com/addons/detail/odmgaejgoagcjbimmdpecimocekjiobi';
 
 function getExtensionUrl(): string {
   if (typeof navigator === 'undefined') return CHROME_URL;
@@ -54,6 +54,10 @@ export default function AppFooter() {
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               >About</Link>
+              <Link href="/creator/apply" className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
+              >Become a Creator</Link>
             </nav>
           </div>
 
