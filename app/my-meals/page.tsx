@@ -1485,7 +1485,7 @@ function KrogerCartFlow({
 
       const needsReview = results.filter(r => !r.exact);
       if (needsReview.length === 0) {
-        await doAddToCart(results.filter(r => r.upc).map(r => ({ upc: r.upc!, quantity: r.quantity })));
+        await doAddToCart(results.filter(r => r.upc).map(r => ({ upc: r.upc!, quantity: r.quantity, description: r.description ?? '' })));
       } else {
         setReviewIdx(0);
         setStep('review');
