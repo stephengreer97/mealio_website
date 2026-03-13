@@ -4,6 +4,25 @@ import { createKrogerStateToken } from '@/lib/kroger';
 
 export const dynamic = 'force-dynamic';
 
+// Maps internal store IDs to Kroger OAuth banner values
+const STORE_ID_TO_BANNER: Record<string, string> = {
+  kroger:       'kroger',
+  ralphs:       'ralphs',
+  fred_meyer:   'fredmeyer',
+  king_soopers: 'kingsoopers',
+  smiths:       'smiths',
+  frys:         'frys',
+  qfc:          'qfc',
+  city_market:  'citymarket',
+  dillons:      'dillons',
+  bakers:       'bakers',
+  marianos:     'marianos',
+  pick_n_save:  'picknsave',
+  metro_market: 'metromarket',
+  pay_less:     'payless',
+  harris_teeter:'harristeeter',
+};
+
 /**
  * POST /api/kroger/connect
  * Returns a { redirectUrl } pointing to Kroger's OAuth authorization page.
@@ -29,6 +48,7 @@ export async function POST(request: NextRequest) {
   const returnTo: string | undefined = typeof body?.returnTo === 'string' ? body.returnTo : undefined;
   const popup: boolean = body?.popup === true;
   const mobile: boolean = body?.mobile === true;
+  const storeId: string | undefined = typeof body?.storeId === 'string' ? body.storeId : undefined;
 
   const state = await createKrogerStateToken(decoded.userId, returnTo, popup, mobile);
 
@@ -39,6 +59,9 @@ export async function POST(request: NextRequest) {
     scope: 'cart.basic:write product.compact',
     state,
   });
+
+  const banner = storeId ? (STORE_ID_TO_BANNER[storeId] ?? 'kroger') : 'kroger';
+  params.set('banner', banner);
 
   const redirectUrl = `https://api.kroger.com/v1/connect/oauth2/authorize?${params}`;
   return NextResponse.json({ redirectUrl });

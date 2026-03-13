@@ -2214,7 +2214,7 @@ export default function MyMealsPage() {
         const res = await fetch('/api/kroger/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-          body: JSON.stringify({ popup: true }),
+          body: JSON.stringify({ popup: true, storeId: selectedStore }),
         });
         const data = await res.json();
         if (!data.redirectUrl) { setKrogerConnecting(false); return; }
