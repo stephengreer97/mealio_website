@@ -3,7 +3,7 @@
     "apps": [],
     "details": [
       {
-        "appID": "TEAMID.co.mealio.app",
+        "appID": "8XYA9SH887.co.mealio.app",
         "paths": ["/meal/*", "/meal/p/*"]
       }
     ]
