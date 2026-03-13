@@ -378,6 +378,24 @@ const STORE_LABELS: Record<string, string> = {
   wegmans:       'Wegmans',
 };
 
+const STORE_URLS: Record<string, string> = {
+  kroger:        'kroger.com',
+  ralphs:        'ralphs.com',
+  fred_meyer:    'fredmeyer.com',
+  king_soopers:  'kingsoopers.com',
+  smiths:        'smithsfoodanddrug.com',
+  frys:          'frysfood.com',
+  qfc:           'qfc.com',
+  city_market:   'citymarket.com',
+  dillons:       'dillons.com',
+  bakers:        'bakersplus.com',
+  marianos:      'marianos.com',
+  pick_n_save:   'picknsave.com',
+  metro_market:  'metromarket.net',
+  pay_less:      'pay-less.com',
+  harris_teeter: 'harristeeter.com',
+};
+
 const STORE_COLORS: Record<string, string> = {
   heb:           '#dd0031',
   walmart:       '#0053E2',
@@ -1749,7 +1767,7 @@ function KrogerCartFlow({
               {cartError
                 ? <><div className="text-4xl mb-2">⚠️</div><p className="text-base font-bold text-red-500">Failed to add items to cart.</p><p className="text-sm text-ml-t3">Kroger returned an error. Please try again or add items manually.</p></>
                 : totalAdded > 0
-                  ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your Kroger cart!</p><p className="text-sm text-ml-t3">Open kroger.com to review and checkout.</p></>
+                  ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your {storeName} cart!</p><p className="text-sm text-ml-t3">Open {STORE_URLS[storeId] ?? 'kroger.com'} to review and checkout.</p></>
                   : <><div className="text-4xl mb-2">😔</div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
               }
             </div>
