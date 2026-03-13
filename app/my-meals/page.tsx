@@ -1445,12 +1445,21 @@ function KrogerCartFlow({
   const [customText, setCustomText] = useState('');
   const [hoveredSugg, setHoveredSugg] = useState<{ idx: number; rect: DOMRect } | null>(null);
   const [customSearching, setCustomSearching] = useState(false);
+  // Suggestions produced by a custom search (replaces currentReview.suggestions in-place)
+  const [customSuggestions, setCustomSuggestions] = useState<KrogerSearchResult['suggestions']>([]);
+  const [customSearchTerm, setCustomSearchTerm] = useState('');
+  const shouldShowSuggestionsRef = useRef(false);
 
   const reviewQueue = searchResults.filter(r => !r.exact);
   const currentReview = reviewQueue[reviewIdx];
 
   // Reset selection when moving to next item
-  useEffect(() => { setSelectedSuggIdx(0); setCustomText(''); }, [reviewIdx]);
+  useEffect(() => {
+    setSelectedSuggIdx(0);
+    setCustomText('');
+    setCustomSuggestions([]);
+    setCustomSearchTerm('');
+  }, [reviewIdx]);
 
   const handleStartSearch = async () => {
     setStep('searching');
@@ -1487,6 +1496,7 @@ function KrogerCartFlow({
   };
 
   const resolveCurrentSelection = async (): Promise<{ upc: string | null; name: string } | null> => {
+    shouldShowSuggestionsRef.current = false;
     if (selectedSuggIdx === 'custom') {
       const term = customText.trim();
       if (!term) return null;
@@ -1499,10 +1509,20 @@ function KrogerCartFlow({
         });
         const data = await res.json();
         const result = data.results?.[0];
-        return { upc: result?.upc ?? null, name: term };
+        if (result?.exact && result?.upc) {
+          return { upc: result.upc, name: term };
+        }
+        // Not an exact match — show new suggestions in-place so the user can pick
+        setCustomSuggestions(result?.suggestions ?? []);
+        setCustomSearchTerm(term);
+        setSelectedSuggIdx(0);
+        setCustomText('');
+        shouldShowSuggestionsRef.current = true;
+        return null;
       } finally { setCustomSearching(false); }
     }
-    const s = currentReview.suggestions[selectedSuggIdx as number];
+    const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentReview.suggestions;
+    const s = displaySuggestions[selectedSuggIdx as number];
     return s ? { upc: s.upc, name: s.description } : null;
   };
 
@@ -1511,6 +1531,7 @@ function KrogerCartFlow({
 
     if (action !== 'skip') {
       const resolved = await resolveCurrentSelection();
+      if (shouldShowSuggestionsRef.current) return; // custom search showed new suggestions — stay on this item
       if (resolved?.upc) {
         newPicked.push({ upc: resolved.upc, quantity: currentReview.quantity });
       }
@@ -1638,7 +1659,8 @@ function KrogerCartFlow({
 
         {/* Step 3 – Review non-exact matches */}
         {step === 'review' && currentReview && (() => {
-          const hasSuggestions = currentReview.suggestions.length > 0;
+          const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentReview.suggestions;
+          const hasSuggestions = displaySuggestions.length > 0;
           const canAdd = hasSuggestions
             ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
             : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
@@ -1654,6 +1676,9 @@ function KrogerCartFlow({
                   {currentReview.mealNames.length > 0 && (
                     <p className="text-xs text-ml-t3 mt-0.5">from: {currentReview.mealNames.join(', ')}</p>
                   )}
+                  {customSearchTerm && (
+                    <p className="text-xs mt-1" style={{ color: storeColor }}>Showing results for: "{customSearchTerm}"</p>
+                  )}
                 </div>
 
                 {/* Selectable suggestions */}
@@ -1662,7 +1687,7 @@ function KrogerCartFlow({
                     {hasSuggestions ? 'Kroger suggests' : 'No match found'}
                   </p>
                   <div className="space-y-1.5">
-                    {currentReview.suggestions.map((s, i) => (
+                    {displaySuggestions.map((s, i) => (
                       <button
                         key={i}
                         type="button"
@@ -1700,7 +1725,7 @@ function KrogerCartFlow({
                           color: selectedSuggIdx === 'custom' ? 'var(--text-1)' : 'var(--text-3)',
                         }}
                       >
-                        Other — type a product name…
+                        {customSuggestions.length > 0 ? 'Try a different search…' : 'Other — type a product name…'}
                       </button>
                       {selectedSuggIdx === 'custom' && (
                         <input
@@ -1708,6 +1733,7 @@ function KrogerCartFlow({
                           type="text"
                           value={customText}
                           onChange={e => setCustomText(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter' && customText.trim()) handleReviewDecision('add'); }}
                           placeholder="e.g. Ground Beef 80/20"
                           className="w-full mt-1.5 px-3 py-2 text-sm rounded-lg focus:outline-none"
                           style={{ border: `1.5px solid ${storeColor}`, background: 'var(--surface)', color: 'var(--text-1)' }}
@@ -1719,7 +1745,7 @@ function KrogerCartFlow({
               </div>
 
               {/* Floating product image on hover */}
-              {hoveredSugg && currentReview.suggestions[hoveredSugg.idx]?.imageUrl && (
+              {hoveredSugg && displaySuggestions[hoveredSugg.idx]?.imageUrl && (
                 <div style={{
                   position: 'fixed',
                   left: hoveredSugg.rect.right + 10,
@@ -1733,7 +1759,7 @@ function KrogerCartFlow({
                   pointerEvents: 'none',
                 }}>
                   <img
-                    src={currentReview.suggestions[hoveredSugg.idx].imageUrl!}
+                    src={displaySuggestions[hoveredSugg.idx].imageUrl!}
                     alt=""
                     style={{ width: 120, height: 120, objectFit: 'contain', display: 'block' }}
                   />
