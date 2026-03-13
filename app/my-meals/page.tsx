@@ -1782,14 +1782,14 @@ function KrogerCartFlow({
               {cartError
                 ? <><div className="text-4xl mb-2">⚠️</div><p className="text-base font-bold text-red-500">Failed to add items to cart.</p><p className="text-sm text-ml-t3">Kroger returned an error. Please try again or add items manually.</p></>
                 : totalAdded > 0
-                  ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your {storeName} cart!</p><p className="text-sm text-ml-t3">Open {STORE_URLS[storeId] ?? 'kroger.com'} to review and checkout.</p></>
+                  ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your {storeName} cart!</p><p className="text-sm text-ml-t3">Open your cart to review and checkout.</p></>
                   : <><div className="text-4xl mb-2">😔</div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
               }
             </div>
             <div className="px-5 py-4 flex gap-3" style={{ borderTop: '1px solid var(--border)' }}>
               {!cartError && totalAdded > 0 && (
                 <a
-                  href={`https://www.${STORE_URLS[storeId] ?? 'kroger.com'}`}
+                  href={`https://www.${STORE_URLS[storeId] ?? 'kroger.com'}/cart`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex-1 text-center text-sm font-semibold rounded-xl py-2.5 text-white"
