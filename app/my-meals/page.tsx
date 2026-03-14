@@ -4,7 +4,6 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
-import ExtensionNudge from '@/components/ExtensionNudge';
 import CreatorPopup from '@/components/CreatorPopup';
 import KrogerStorePickerModal from '@/components/KrogerStorePickerModal';
 
@@ -2403,13 +2402,22 @@ export default function MyMealsPage() {
             );
           })()}
 
-          {selectedStore && !KROGER_API_STORES.has(selectedStore) && <ExtensionNudge />}
-
-          {/* Mobile: one-click cart info (extension nudge is desktop-only) */}
           {selectedStore && !KROGER_API_STORES.has(selectedStore) && (
-            <p className="sm:hidden text-xs mb-4" style={{ color: 'var(--text-3)' }}>
-              One-click add to cart is available on desktop with the Mealio browser extension.
-            </p>
+            <div className="flex items-start gap-4 rounded-2xl px-5 py-4 mb-6" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)' }}>
+              <div className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'var(--brand)' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>
+                  {STORE_LABELS[selectedStore] ?? 'This store'} doesn&apos;t currently support cart integration
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
+                  Get the Mealio browser extension on desktop to add meal ingredients directly to your cart. Stay tuned for updates.
+                </p>
+              </div>
+            </div>
           )}
 
           {/* Select-mode banner for Kroger stores */}
