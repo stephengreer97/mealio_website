@@ -1646,7 +1646,7 @@ function KrogerCartFlow({
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
               >
-                Search {storeName} Products →
+                Add Ingredients to {storeName} Cart →
               </button>
               <button onClick={onClose} className="px-4 text-sm text-ml-t2 rounded-xl" style={{ border: '1px solid var(--border)' }}>Cancel</button>
             </div>
@@ -1791,14 +1791,26 @@ function KrogerCartFlow({
                 >
                   Add to Cart Only
                 </button>
-                <button
-                  onClick={() => handleReviewDecision('skip')}
-                  disabled={isProcessing}
-                  className="w-full text-sm rounded-xl py-2 text-ml-t3 disabled:opacity-40"
-                  style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-                >
-                  Skip this ingredient
-                </button>
+                <div className="flex gap-2">
+                  {reviewIdx > 0 && (
+                    <button
+                      onClick={() => { setReviewIdx(reviewIdx - 1); setPickedItems(prev => prev.slice(0, -1)); }}
+                      disabled={isProcessing}
+                      className="flex-1 text-sm rounded-xl py-2 text-ml-t3 disabled:opacity-40"
+                      style={{ background: 'none', border: '1px solid var(--border)', cursor: 'pointer' }}
+                    >
+                      ← Back
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleReviewDecision('skip')}
+                    disabled={isProcessing}
+                    className="flex-1 text-sm rounded-xl py-2 text-ml-t3 disabled:opacity-40"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    Skip this ingredient
+                  </button>
+                </div>
               </div>
             </>
           );
