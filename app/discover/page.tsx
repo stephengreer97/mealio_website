@@ -603,9 +603,30 @@ function MealDetailModal({
 
         {/* Body */}
         <div className="overflow-y-auto flex-1 p-5 space-y-4">
-          {meal.photo_url && (
-            <img src={meal.photo_url} alt={meal.name} className="w-full rounded-xl object-cover" style={{ maxHeight: '220px' }} />
-          )}
+          {meal.photo_url ? (
+            <div style={{ position: 'relative' }}>
+              <img src={meal.photo_url} alt={meal.name} className="w-full rounded-xl object-cover" style={{ maxHeight: '220px' }} />
+              {meal.tags && meal.tags.length > 0 && (
+                <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {meal.tags.slice(0, 3).map(tag => (
+                    <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
+                      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', color: '#fff', border: 'none' }}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : meal.tags && meal.tags.length > 0 ? (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {meal.tags.slice(0, 3).map(tag => (
+                <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                  {tag}
+                </span>
+              ))}
+            </div>
+          ) : null}
 
           <div className="flex items-center gap-4 flex-wrap">
             {meal.difficulty != null && (
@@ -633,17 +654,6 @@ function MealDetailModal({
               </a>
             )}
           </div>
-
-          {meal.tags && meal.tags.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {meal.tags.slice(0, 3).map(tag => (
-                <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
-                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
 
           {meal.story && (
             <p className="text-sm italic whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.story}</p>
