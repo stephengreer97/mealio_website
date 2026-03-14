@@ -9,8 +9,8 @@ export const contentType = 'image/png';
 
 export default async function OgImage() {
   const [pacificoData, dmSansData] = await Promise.all([
-    readFile(path.join(process.cwd(), 'app/fonts/Pacifico.woff2')),
-    readFile(path.join(process.cwd(), 'app/fonts/DMSans-Medium.woff2')),
+    readFile(path.join(process.cwd(), 'app/fonts/Pacifico.ttf')),
+    readFile(path.join(process.cwd(), 'app/fonts/DMSans-Medium.ttf')),
   ]);
 
   return new ImageResponse(
