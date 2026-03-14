@@ -1398,18 +1398,6 @@ function MealDetailModal({
 
         {/* Footer */}
         <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
-          {krogerConnected && KROGER_API_STORES.has(meal.store_id) && krogerLocationId && (
-            <button
-              onClick={handleAddToKroger}
-              disabled={krogerLoading}
-              className="px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
-              style={{ background: '#0063a1', color: '#fff', border: 'none', cursor: 'pointer' }}
-              onMouseEnter={e => { if (!krogerLoading) (e.currentTarget as HTMLElement).style.background = '#00497a'; }}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#0063a1'}
-            >
-              {krogerLoading ? 'Adding…' : 'Add to Kroger Cart'}
-            </button>
-          )}
           <button
             onClick={() => { onEdit(); onClose(); }}
             className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors"
