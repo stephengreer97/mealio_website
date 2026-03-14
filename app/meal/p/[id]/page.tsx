@@ -59,6 +59,7 @@ interface PresetMeal {
   story?: string | null;
   recipe?: string | null;
   photo_url?: string | null;
+  tags?: string[] | null;
 }
 
 function DifficultyDots({ level }: { level: number }) {
@@ -151,7 +152,8 @@ export default function SharedPresetMealPage() {
           ...(meal!.story      ? { story:     meal!.story }      : {}),
           ...(meal!.recipe     ? { recipe:    meal!.recipe }     : {}),
           ...(meal!.photo_url  ? { photoUrl:  meal!.photo_url }  : {}),
-          ...(meal!.serves     ? { serves:    meal!.serves }     : {}),
+          ...(meal!.serves          ? { serves: meal!.serves }             : {}),
+          ...(meal!.tags?.length    ? { tags:   meal!.tags }               : {}),
         }),
       });
 
