@@ -305,6 +305,8 @@ function FeaturedCreatorsCard({ creators, onCreatorClick }: { creators: Featured
         background: 'var(--surface-raised)',
         border: '1px solid var(--border)',
         padding: '16px 20px',
+        height: '81px',
+        overflow: 'hidden',
       }}
     >
       <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '12px' }}>
