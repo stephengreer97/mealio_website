@@ -2062,24 +2062,6 @@ function DashboardMealCard({
               >
                 View
               </button>
-              <button
-                onClick={e => { e.stopPropagation(); onEdit(); }}
-                className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
-              >
-                Edit
-              </button>
-              <button
-                onClick={e => { e.stopPropagation(); onDelete(); }}
-                className="px-3 py-1 text-xs font-medium text-ml-t2 rounded-lg transition-colors"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
-              >
-                Delete
-              </button>
             </div>
           )}
         </div>
