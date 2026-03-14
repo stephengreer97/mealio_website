@@ -1407,42 +1407,31 @@ function MealDetailModal({
         )}
 
         {/* Footer */}
-        {(() => {
-          const isKroger = KROGER_API_STORES.has(meal.store_id);
-          const showShare = creatorChecked && !isCreator;
-          if (isKroger && !showShare) return null;
-          return (
-            <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
-              {!isKroger && (
-                <>
-                  <button
-                    onClick={() => { onEdit(); onClose(); }}
-                    className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors"
-                    style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-                    onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => { onDelete(); onClose(); }}
-                    className="px-3 py-1.5 text-sm font-medium text-ml-t2 rounded-lg transition-colors"
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
-                  >
-                    Delete
-                  </button>
-                </>
-              )}
-              {showShare && (
-                <button onClick={onShare} className="px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
-                  {copiedMealId === meal.id ? '✓ Link copied!' : 'Share'}
-                </button>
-              )}
-            </div>
-          );
-        })()}
+        <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
+          <button
+            onClick={() => { onEdit(); onClose(); }}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors"
+            style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+          >
+            Edit
+          </button>
+          <button
+            onClick={() => { onDelete(); onClose(); }}
+            className="px-3 py-1.5 text-sm font-medium text-ml-t2 rounded-lg transition-colors"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'var(--border)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface)')}
+          >
+            Delete
+          </button>
+          {creatorChecked && !isCreator && (
+            <button onClick={onShare} className="px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
+              {copiedMealId === meal.id ? '✓ Link copied!' : 'Share'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
