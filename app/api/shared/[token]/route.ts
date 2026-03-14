@@ -11,7 +11,7 @@ export async function GET(
 
   const { data: meal, error } = await supabase
     .from('meals')
-    .select('id, name, store_id, ingredients, author, difficulty, website, recipe, photo_url')
+    .select('id, name, store_id, ingredients, author, difficulty, serves, website, recipe, photo_url')
     .eq('share_token', token)
     .single();
 

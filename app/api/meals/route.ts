@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { name, storeId, ingredients, createdAt, presetMealId, website, recipe, story, photoUrl, author, difficulty, tags, creatorId } = body;
+  const { name, storeId, ingredients, createdAt, presetMealId, website, recipe, story, photoUrl, author, difficulty, tags, creatorId, serves } = body;
 
   if (!name || !storeId || !Array.isArray(ingredients)) {
     return NextResponse.json({ error: 'name, storeId, and ingredients are required' }, { status: 400 });
@@ -92,6 +92,7 @@ export async function POST(request: NextRequest) {
       ...(difficulty ? { difficulty } : {}),
       ...(Array.isArray(tags) && tags.length ? { tags } : {}),
       ...(creatorId ? { creator_id: creatorId } : {}),
+      ...(serves    ? { serves }    : {}),
     })
     .select()
     .single();

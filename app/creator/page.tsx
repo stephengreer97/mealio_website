@@ -25,6 +25,7 @@ interface CreatorMeal {
   recipe: string | null;
   source: string | null;
   story: string | null;
+  serves: string | null;
   tags?: string[];
 }
 
@@ -185,6 +186,7 @@ function EditPresetMealModal({
   const dragRef = useRef(false);
   const [name, setName]           = useState(meal.name);
   const [difficulty, setDifficulty] = useState<number | null>(meal.difficulty ?? null);
+  const [serves, setServes]       = useState(meal.serves ?? '');
   const [recipe, setRecipe]       = useState(meal.recipe ?? '');
   const [source, setSource]       = useState(meal.source ?? '');
   const [story, setStory]         = useState(meal.story ?? '');
@@ -325,6 +327,7 @@ function EditPresetMealModal({
           story:       story.trim() || null,
           photoUrl:    finalPhotoUrl,
           difficulty:  difficulty ?? null,
+          serves:      serves.trim() || null,
           tags:        selectedTags,
         }),
       });
@@ -403,6 +406,12 @@ function EditPresetMealModal({
                 ))}
               </div>
             )}
+          </div>
+
+          {/* Serves */}
+          <div>
+            <label style={modalLabelStyle}>Serves <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
+            <input type="text" value={serves} onChange={e => setServes(e.target.value)} placeholder="e.g. 4 or 2-4" style={modalInputStyle} />
           </div>
 
           {/* Difficulty */}
@@ -519,6 +528,7 @@ export default function CreatorPortal() {
   const [mealRecipe, setMealRecipe]   = useState('');
   const [mealSource, setMealSource]   = useState('');
   const [mealStory, setMealStory]     = useState('');
+  const [mealServes, setMealServes]   = useState('');
   const [mealDifficulty, setMealDifficulty] = useState<number | null>(null);
   const [mealIngredients, setMealIngredients] = useState<Ingredient[]>([
     { productName: '', searchTerm: '', quantity: 1 },
@@ -639,6 +649,7 @@ export default function CreatorPortal() {
           recipe:      mealRecipe.trim() || null,
           source:      mealSource.trim() || '',
           story:       mealStory.trim() || null,
+          serves:      mealServes.trim() || null,
           difficulty:  mealDifficulty,
           photoUrl,
           tags:        mealTags,
@@ -653,7 +664,7 @@ export default function CreatorPortal() {
 
       setPublishSuccess(`"${mealName}" is now live in Discover!`);
       setMealName(''); setMealRecipe(''); setMealSource(''); setMealStory('');
-      setMealDifficulty(null); setMealTags([]); setPhotoFile(null); setPhotoPreview('');
+      setMealServes(''); setMealDifficulty(null); setMealTags([]); setPhotoFile(null); setPhotoPreview('');
       setThumbs([]); setFulls([]); setSelectedIdx(null);
       setMealIngredients([{ productName: '', searchTerm: '', quantity: 1 }]);
       setShowForm(false);
@@ -859,6 +870,12 @@ export default function CreatorPortal() {
               <div style={{ marginBottom: '16px' }}>
                 <label style={labelStyle}>Recipe URL <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
                 <input value={mealSource} onChange={e => setMealSource(e.target.value)} placeholder="https://yourblog.com/recipe" style={inputStyle} />
+              </div>
+
+              {/* Serves */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={labelStyle}>Serves <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
+                <input value={mealServes} onChange={e => setMealServes(e.target.value)} placeholder="e.g. 4 or 2-4" style={inputStyle} />
               </div>
 
               {/* Difficulty */}

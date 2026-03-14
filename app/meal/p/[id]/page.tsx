@@ -54,6 +54,7 @@ interface PresetMeal {
   author?: string | null;
   ingredients: Ingredient[];
   difficulty?: number | null;
+  serves?: string | null;
   source?: string | null;
   story?: string | null;
   recipe?: string | null;
@@ -148,6 +149,7 @@ export default function SharedPresetMealPage() {
           ...(meal!.story      ? { story:     meal!.story }      : {}),
           ...(meal!.recipe     ? { recipe:    meal!.recipe }     : {}),
           ...(meal!.photo_url  ? { photoUrl:  meal!.photo_url }  : {}),
+          ...(meal!.serves     ? { serves:    meal!.serves }     : {}),
         }),
       });
 
@@ -224,11 +226,18 @@ export default function SharedPresetMealPage() {
             <p className="text-sm text-gray-500 mb-2">by {meal.author}</p>
           )}
 
-          {/* Difficulty */}
-          {meal.difficulty != null && (
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-xs text-gray-400">Difficulty</span>
-              <DifficultyDots level={meal.difficulty} />
+          {/* Serves + Difficulty */}
+          {(meal.serves || meal.difficulty != null) && (
+            <div className="flex items-center gap-4 mb-3">
+              {meal.serves && (
+                <span className="text-xs text-gray-500">Serves <strong>{meal.serves}</strong></span>
+              )}
+              {meal.difficulty != null && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400">Difficulty</span>
+                  <DifficultyDots level={meal.difficulty} />
+                </div>
+              )}
             </div>
           )}
 

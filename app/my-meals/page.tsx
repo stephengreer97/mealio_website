@@ -33,6 +33,7 @@ interface Meal {
   author?: string | null;
   creator_id?: string | null;
   difficulty?: number | null;
+  serves?: string | null;
   tags?: string[] | null;
   website?: string | null;
   recipe?: string | null;
@@ -475,6 +476,7 @@ function compressImage(dataUrl: string, maxPx = 1200, quality = 0.82): Promise<s
 function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
   const [name, setName] = useState(meal.name);
   const [author, setAuthor] = useState(meal.author ?? '');
+  const [serves, setServes] = useState(meal.serves ?? '');
   const [difficulty, setDifficulty] = useState<number | null>(meal.difficulty ?? null);
   const [selectedTags, setSelectedTags] = useState<string[]>(meal.tags ?? []);
   const [website, setWebsite] = useState(meal.website ?? '');
@@ -600,6 +602,7 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
           name: name.trim(),
           ingredients,
           author:     author.trim()  || null,
+          serves:     serves.trim()  || null,
           difficulty: difficulty     ?? null,
           tags:       selectedTags,
           website:    website.trim() || null,
@@ -655,6 +658,18 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
               type="text"
               value={author}
               onChange={e => setAuthor(e.target.value)}
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Serves (optional)</label>
+            <input
+              type="text"
+              value={serves}
+              onChange={e => setServes(e.target.value)}
+              placeholder="e.g. 4 or 2-4"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
@@ -842,6 +857,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     try { return JSON.parse(localStorage.getItem('mealio_recent_stores') || '[]'); } catch { return []; }
   });
   const [author, setAuthor] = useState('');
+  const [serves, setServes] = useState('');
   const [difficulty, setDifficulty] = useState<number | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [website, setWebsite] = useState('');
@@ -949,6 +965,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           storeId,
           ingredients: validIngredients,
           author:     author.trim()  || null,
+          serves:     serves.trim()  || null,
           difficulty: difficulty     ?? null,
           tags:       selectedTags,
           website:    website.trim() || null,
@@ -1030,6 +1047,18 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               value={author}
               onChange={e => setAuthor(e.target.value)}
               placeholder="e.g., Ina Garten"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Serves (optional)</label>
+            <input
+              type="text"
+              value={serves}
+              onChange={e => setServes(e.target.value)}
+              placeholder="e.g. 4 or 2-4"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
@@ -1292,6 +1321,9 @@ function MealDetailModal({
           )}
 
           <div className="flex items-center gap-4 flex-wrap">
+            {meal.serves && (
+              <span className="text-xs text-ml-t3">Serves <strong>{meal.serves}</strong></span>
+            )}
             {meal.difficulty != null && (
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-ml-t3">Difficulty:</span>
@@ -1996,10 +2028,17 @@ function DashboardMealCard({
             </div>
           )}
 
-          {meal.difficulty != null && (
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-xs text-ml-t3">Difficulty:</span>
-              <DifficultyDots level={meal.difficulty} />
+          {(meal.serves || meal.difficulty != null) && (
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
+              {meal.serves && (
+                <span className="text-xs text-ml-t3">Serves <strong>{meal.serves}</strong></span>
+              )}
+              {meal.difficulty != null && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-ml-t3">Difficulty:</span>
+                  <DifficultyDots level={meal.difficulty} />
+                </div>
+              )}
             </div>
           )}
 

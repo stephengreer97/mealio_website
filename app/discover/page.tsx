@@ -286,6 +286,7 @@ interface PresetMeal {
   story?: string | null;
   photo_url?: string | null;
   difficulty?: number | null;
+  serves?: string | null;
   tags?: string[] | null;
 }
 
@@ -608,6 +609,9 @@ function MealDetailModal({
           )}
 
           <div className="flex items-center gap-4 flex-wrap">
+            {meal.serves && (
+              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Serves <strong>{meal.serves}</strong></span>
+            )}
             {meal.difficulty != null && (
               <div className="flex items-center gap-2">
                 <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
@@ -773,10 +777,17 @@ function MealCard({
             </div>
           )}
 
-          {meal.difficulty != null && (
-            <div className="flex items-center gap-2 mt-1.5">
-              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
-              <DifficultyDots level={meal.difficulty} />
+          {(meal.serves || meal.difficulty != null) && (
+            <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+              {meal.serves && (
+                <span className="text-xs" style={{ color: 'var(--text-3)' }}>Serves <strong>{meal.serves}</strong></span>
+              )}
+              {meal.difficulty != null && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
+                  <DifficultyDots level={meal.difficulty} />
+                </div>
+              )}
             </div>
           )}
 
@@ -1028,6 +1039,7 @@ const map = new Map<string, string[]>();
           ...(addingMeal.recipe       ? { recipe:     addingMeal.recipe     } : {}),
           ...(addingMeal.photo_url    ? { photoUrl:   addingMeal.photo_url  } : {}),
           ...(addingMeal.creator_id   ? { creatorId:  addingMeal.creator_id } : {}),
+          ...(addingMeal.serves       ? { serves:     addingMeal.serves     } : {}),
         }),
       });
       if (!res.ok) {

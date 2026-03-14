@@ -21,7 +21,7 @@ export async function PUT(
   }
 
   const { id } = await params;
-  const { name, ingredients, website, recipe, story, photoUrl, author, difficulty, tags } = await request.json();
+  const { name, ingredients, website, recipe, story, photoUrl, author, difficulty, tags, serves } = await request.json();
 
   const resolvedPhotoUrl = photoUrl !== undefined
     ? await resolvePhotoUrl(photoUrl, decoded.userId)
@@ -40,6 +40,7 @@ export async function PUT(
       ...(author      !== undefined && { author:     author     || null }),
       ...(difficulty  !== undefined && { difficulty: difficulty || null }),
       ...(tags        !== undefined && { tags: Array.isArray(tags) ? tags : [] }),
+      ...(serves      !== undefined && { serves: serves || null }),
       updated_at: new Date().toISOString(),
       edited: true,
     })

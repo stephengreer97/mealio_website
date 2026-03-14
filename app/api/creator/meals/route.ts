@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags } = body;
+  const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves } = body;
 
   if (!name?.trim() || !Array.isArray(ingredients) || ingredients.length === 0) {
     return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
@@ -53,6 +53,7 @@ export async function POST(request: NextRequest) {
       story:       story?.trim() || null,
       photo_url:   photoUrl || null,
       difficulty:  difficulty || null,
+      serves:      serves || null,
       ...(Array.isArray(tags) && tags.length ? { tags } : {}),
     })
     .select()

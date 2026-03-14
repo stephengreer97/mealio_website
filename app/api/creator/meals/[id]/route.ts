@@ -46,7 +46,7 @@ export async function PUT(
   }
 
   const body = await request.json();
-  const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags } = body;
+  const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves } = body;
 
   const normalizeUrl = (url?: string) => {
     if (!url?.trim()) return '';
@@ -62,6 +62,7 @@ export async function PUT(
   if (story !== undefined) updates.story = story?.trim() || null;
   if (photoUrl !== undefined) updates.photo_url = photoUrl || null;
   if (difficulty !== undefined) updates.difficulty = difficulty || null;
+  if (serves !== undefined) updates.serves = serves || null;
   if (tags !== undefined) updates.tags = Array.isArray(tags) ? tags : [];
 
   const { data: meal, error } = await supabase
