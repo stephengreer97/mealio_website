@@ -454,6 +454,7 @@ function DifficultyDots({ level }: { level: number }) {
 interface EditModalProps {
   meal: Meal;
   onSave: (updated: Meal) => void;
+  onDelete: (meal: Meal) => void;
   onClose: () => void;
   accessToken: string;
 }
@@ -473,7 +474,7 @@ function compressImage(dataUrl: string, maxPx = 1200, quality = 0.82): Promise<s
   });
 }
 
-function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
+function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalProps) {
   const [name, setName] = useState(meal.name);
   const [author, setAuthor] = useState(meal.author ?? '');
   const [serves, setServes] = useState(meal.serves ?? '');
@@ -836,6 +837,15 @@ function EditModal({ meal, onSave, onClose, accessToken }: EditModalProps) {
             className="px-5 py-2.5 text-sm rounded-xl transition-colors text-ml-t2 hover:bg-ml-surface"
           >
             Cancel
+          </button>
+          <button
+            onClick={() => { onDelete(meal); onClose(); }}
+            className="px-5 py-2.5 text-sm rounded-xl transition-colors"
+            style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; }}
+          >
+            Delete
           </button>
         </div>
 
@@ -2620,6 +2630,7 @@ export default function MyMealsPage() {
           meal={editingMeal}
           accessToken={localStorage.getItem('accessToken') ?? ''}
           onSave={handleEditSaved}
+          onDelete={handleDelete}
           onClose={() => setEditingMeal(null)}
         />
       )}
