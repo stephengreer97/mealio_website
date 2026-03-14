@@ -31,7 +31,7 @@ export async function POST(
   // Look up the shared meal
   const { data: sharedMeal, error: fetchError } = await supabase
     .from('meals')
-    .select('name, ingredients, author, difficulty, serves, website, recipe, photo_url')
+    .select('name, ingredients, author, difficulty, serves, website, recipe, photo_url, tags, story')
     .eq('share_token', token)
     .single();
 
@@ -78,6 +78,8 @@ export async function POST(
       ...(sharedMeal.recipe      ? { recipe: sharedMeal.recipe }           : {}),
       ...(sharedMeal.photo_url   ? { photo_url: sharedMeal.photo_url }     : {}),
       ...(sharedMeal.serves      ? { serves: sharedMeal.serves }           : {}),
+      ...(sharedMeal.tags?.length ? { tags: sharedMeal.tags }              : {}),
+      ...(sharedMeal.story       ? { story: sharedMeal.story }             : {}),
     })
     .select()
     .single();
