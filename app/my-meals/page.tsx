@@ -2307,15 +2307,6 @@ export default function MyMealsPage() {
 
       <div className="max-w-7xl mx-auto px-6 py-10 w-full flex-1">
 
-        {selectedStore && !KROGER_API_STORES.has(selectedStore) && <ExtensionNudge />}
-
-        {/* Mobile: one-click cart info (extension nudge is desktop-only) */}
-        {selectedStore && !KROGER_API_STORES.has(selectedStore) && (
-          <p className="sm:hidden text-xs mb-6" style={{ color: 'var(--text-3)' }}>
-            One-click add to cart is available on desktop with the Mealio browser extension.
-          </p>
-        )}
-
         {/* Page header */}
         <div className="mb-8 flex items-end justify-between gap-4">
           <div>
@@ -2411,6 +2402,15 @@ export default function MyMealsPage() {
               </div>
             );
           })()}
+
+          {selectedStore && !KROGER_API_STORES.has(selectedStore) && <ExtensionNudge />}
+
+          {/* Mobile: one-click cart info (extension nudge is desktop-only) */}
+          {selectedStore && !KROGER_API_STORES.has(selectedStore) && (
+            <p className="sm:hidden text-xs mb-4" style={{ color: 'var(--text-3)' }}>
+              One-click add to cart is available on desktop with the Mealio browser extension.
+            </p>
+          )}
 
           {/* Select-mode banner for Kroger stores */}
           {selectedStore && KROGER_API_STORES.has(selectedStore) && !mealsLoading && (
