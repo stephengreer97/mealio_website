@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
     let query = supabase
       .from('preset_meals')
       .select(`
-        id, name, source, recipe, story, ingredients, photo_url, author, difficulty, creator_id, created_at, tags,
+        id, name, source, recipe, story, ingredients, photo_url, author, difficulty, serves, creator_id, created_at, tags,
         creators!creator_id ( display_name, social_handle )
       `, { count: 'exact' })
       .in('creator_id', ids)
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
     let query = supabase
       .from('preset_meals')
       .select(`
-        id, name, source, recipe, story, ingredients, photo_url, author, difficulty, creator_id, created_at, tags,
+        id, name, source, recipe, story, ingredients, photo_url, author, difficulty, serves, creator_id, created_at, tags,
         creators!creator_id ( display_name, social_handle )
       `, { count: 'exact' })
       .order('created_at', { ascending: false })

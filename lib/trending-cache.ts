@@ -11,6 +11,7 @@ export interface TrendingMeal {
   photo_url: string;
   author: string;
   difficulty: number;
+  serves: string;
   creator_id: string;
   creator_name: string;
   creator_social: string;
