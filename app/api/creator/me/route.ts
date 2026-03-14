@@ -115,7 +115,7 @@ export async function GET(request: NextRequest) {
     ...m,
     trending_score: normalize(trendingMap.get(m.id) ?? minScore),
     saves_all: perMealSavesMap.get(m.id) ?? 0,
-  }));
+  })).sort((a, b) => b.trending_score - a.trending_score);
 
   // Platform totals for creator meals only (denominator for revenue share) + follower count
   const [
