@@ -1,28 +1,13 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useEffect } from 'react';
-
-const CHROME_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
-const FIREFOX_URL = 'https://addons.mozilla.org/firefox/addon/mealio/';
-const EDGE_URL    = 'https://microsoftedge.microsoft.com/addons/detail/odmgaejgoagcjbimmdpecimocekjiobi';
-
-function getExtensionUrl(): string {
-  if (typeof navigator === 'undefined') return CHROME_URL;
-  const ua = navigator.userAgent;
-  if (ua.includes('Firefox')) return FIREFOX_URL;
-  if (ua.includes('Edg/')) return EDGE_URL;
-  return CHROME_URL;
-}
 
 export default function AppFooter() {
-  const [extUrl, setExtUrl] = useState(CHROME_URL);
-  useEffect(() => { setExtUrl(getExtensionUrl()); }, []);
 
   return (
     <footer style={{ borderTop: '1px solid var(--border)', background: 'var(--surface-raised)' }}>
       <div className="max-w-5xl mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 mb-8">
           {/* Brand column */}
           <div>
             <div style={{ fontFamily: 'var(--font-pacifico), cursive', lineHeight: 1, marginBottom: '8px' }}>
@@ -61,21 +46,6 @@ export default function AppFooter() {
             </nav>
           </div>
 
-          {/* Extension CTA column */}
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-3)' }}>Get the Extension</p>
-            <a
-              href={extUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
-              style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none' }}
-              onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
-              onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
-            >
-              Add Extension — Free
-            </a>
-          </div>
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-6" style={{ borderTop: '1px solid var(--border)' }}>
