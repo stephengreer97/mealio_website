@@ -627,6 +627,11 @@ export default function CreatorPortal() {
       return;
     }
 
+    if (mealServes.trim() && !/^\d+(-\d+)?$/.test(mealServes.trim())) {
+      setPublishError('Serves must be a number or range (e.g. 4 or 2-4).');
+      return;
+    }
+
     setPublishing(true);
     try {
       const token = localStorage.getItem('accessToken');

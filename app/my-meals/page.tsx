@@ -954,6 +954,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     if (!storeId) { setError('Please select a store.'); return; }
     const validIngredients = ingredients.filter(i => i.productName.trim());
     if (validIngredients.length === 0) { setError('Add at least one ingredient.'); return; }
+    if (serves.trim() && !/^\d+(-\d+)?$/.test(serves.trim())) { setError('Serves must be a number or range (e.g. 4 or 2-4).'); return; }
     setSaving(true); setError('');
     try {
       const finalPhotoUrl = await uploadPendingPhoto();
