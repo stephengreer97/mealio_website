@@ -2050,14 +2050,6 @@ function DashboardMealCard({
             </div>
           )}
 
-          {meal.recipe && (
-            <div className="mt-2 select-none rounded-md" style={{ background: '#f2f2f2', padding: '7px 9px' }}>
-              <div className="relative" style={{ maxHeight: '3.6em', overflow: 'hidden' }}>
-                <p className="text-xs whitespace-pre-wrap leading-relaxed" style={{ color: '#555' }}>{meal.recipe}</p>
-                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '1.8em', background: 'linear-gradient(to bottom, rgba(242,242,242,0), rgba(242,242,242,1))' }} />
-              </div>
-            </div>
-          )}
 
           {KROGER_API_STORES.has(meal.store_id) && (
             <div className="flex items-center gap-2 mt-3 flex-wrap">

@@ -801,14 +801,6 @@ function MealCard({
             </div>
           )}
 
-          {meal.recipe && (
-            <div className="mt-2 select-none rounded-xl" style={{ background: 'var(--surface)', padding: '7px 9px' }}>
-              <div className="relative" style={{ maxHeight: '3.6em', overflow: 'hidden' }}>
-                <p className="text-xs whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-3)' }}>{meal.recipe}</p>
-                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '1.8em', background: 'linear-gradient(to bottom, rgba(244,243,241,0), rgba(244,243,241,1))' }} />
-              </div>
-            </div>
-          )}
 
           <div className="mt-3 flex items-center gap-2 flex-wrap">
             <button
