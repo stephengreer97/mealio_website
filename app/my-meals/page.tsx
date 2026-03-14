@@ -2424,7 +2424,7 @@ export default function MyMealsPage() {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>
-                  {STORE_LABELS[selectedStore] ?? 'This store'} doesn&apos;t currently support cart integration
+                  {STORE_LABELS[selectedStore] ?? 'This store'} doesn&apos;t currently support cart integration without the web extension
                 </p>
                 <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
                   Get the Mealio browser extension on desktop to add meal ingredients directly to your cart. Stay tuned for updates.
