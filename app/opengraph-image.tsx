@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og';
 
 export const runtime     = 'edge';
-export const alt         = 'Mealio — Grocery Shop Effortlessly';
+export const alt         = "Mealio — Shop meals, we'll fill the cart";
 export const size        = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 
@@ -21,7 +21,7 @@ export default function OgImage() {
           Mealio
         </div>
         <div style={{ fontSize: 34, color: 'rgba(255,255,255,0.82)', marginTop: 18, fontWeight: 400 }}>
-          Grocery shop effortlessly
+          Shop meals, we'll fill the cart
         </div>
         <div style={{
           marginTop: 40, fontSize: 20, color: 'rgba(255,255,255,0.6)',
