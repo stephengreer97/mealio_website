@@ -83,6 +83,7 @@ export default function SharedMealPage() {
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [selectedStore, setSelectedStore] = useState('');
+  const [recentStores, setRecentStores] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -92,6 +93,7 @@ export default function SharedMealPage() {
   useEffect(() => {
     const accessToken = localStorage.getItem('accessToken');
     setIsLoggedIn(!!accessToken);
+    try { setRecentStores(JSON.parse(localStorage.getItem('mealio_recent_stores') || '[]')); } catch { /* ignore */ }
 
     fetch(`/api/shared/${token}`)
       .then(r => {
@@ -154,6 +156,10 @@ export default function SharedMealPage() {
       }
 
       setSaved(true);
+      try {
+        const updated = [selectedStore, ...recentStores.filter(id => id !== selectedStore)].slice(0, 3);
+        localStorage.setItem('mealio_recent_stores', JSON.stringify(updated));
+      } catch { /* ignore */ }
     } catch {
       setSaveError('Something went wrong. Please try again.');
     } finally {
@@ -303,10 +309,19 @@ export default function SharedMealPage() {
                   onChange={e => setSelectedStore(e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-500"
                 >
-                  <option value="">Select a store…</option>
-                  {STORES.map(s => (
-                    <option key={s.id} value={s.id}>{s.label}</option>
-                  ))}
+                  <option value="" disabled>Select a store…</option>
+                  {recentStores.length > 0 && (
+                    <optgroup label="Recent">
+                      {recentStores.filter(id => STORES.find(s => s.id === id)).map(id => (
+                        <option key={id} value={id}>{STORES.find(s => s.id === id)!.label}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label={recentStores.length > 0 ? 'All Stores' : ''}>
+                    {STORES.filter(s => !recentStores.includes(s.id)).map(s => (
+                      <option key={s.id} value={s.id}>{s.label}</option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
 
