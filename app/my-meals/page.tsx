@@ -2050,19 +2050,17 @@ function DashboardMealCard({
             </div>
           )}
 
-          {!selectMode && (
-            <div className="flex justify-end mt-2">
-              <button
-                onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
-                className="px-3 py-1 text-xs font-medium rounded-lg transition-colors flex-shrink-0"
-                style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-                onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
-              >
-                View
-              </button>
-            </div>
-          )}
+          <div className="flex justify-end mt-2">
+            <button
+              onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
+              className="px-3 py-1 text-xs font-medium rounded-lg transition-colors flex-shrink-0"
+              style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+            >
+              View
+            </button>
+          </div>
 
         </div>
       </div>
