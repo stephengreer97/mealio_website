@@ -615,15 +615,6 @@ function MealDetailModal({
                 <DifficultyDots level={meal.difficulty} />
               </div>
             )}
-            {sourceHost && (
-              <a href={meal.source!} target="_blank" rel="noopener noreferrer"
-                className="text-xs flex items-center gap-1 hover:underline" style={{ color: 'var(--text-3)' }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-                </svg>
-                {sourceHost}
-              </a>
-            )}
             {meal.serves && (
               <span className="text-xs flex items-center gap-0.5" style={{ color: 'var(--text-3)' }}>
                 <svg width="12" height="12" viewBox="0 0 24 20" fill="currentColor">
@@ -632,6 +623,15 @@ function MealDetailModal({
                 </svg>
                 {meal.serves}
               </span>
+            )}
+            {sourceHost && (
+              <a href={meal.source!} target="_blank" rel="noopener noreferrer"
+                className="text-xs flex items-center gap-1 hover:underline" style={{ color: 'var(--text-3)' }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                </svg>
+                {sourceHost}
+              </a>
             )}
           </div>
 
@@ -749,7 +749,7 @@ function MealCard({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{meal.name}</p>
 
-          {(authorName || sourceHost || meal.serves) && (
+          {(authorName || sourceHost) && (
             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
               {authorName && (
                 meal.creator_id && onCreatorClick ? (
@@ -779,15 +779,6 @@ function MealCard({
                   </svg>
                   {sourceHost}
                 </a>
-              )}
-              {meal.serves && (
-                <span className="text-xs flex items-center gap-0.5" style={{ color: 'var(--text-3)' }}>
-                  <svg width="11" height="11" viewBox="0 0 24 20" fill="currentColor">
-                    <circle cx="12" cy="6" r="5"/>
-                    <path d="M1 20c0-5 5-8 11-8s11 3 11 8z"/>
-                  </svg>
-                  {meal.serves}
-                </span>
               )}
             </div>
           )}

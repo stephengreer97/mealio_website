@@ -226,31 +226,35 @@ export default function SharedPresetMealPage() {
             <p className="text-sm text-gray-500 mb-2">by {meal.author}</p>
           )}
 
-          {/* Serves + Difficulty */}
-          {(meal.serves || meal.difficulty != null) && (
-            <div className="flex items-center gap-4 mb-3">
-              {meal.serves && (
-                <span className="text-xs text-gray-500">Serves <strong>{meal.serves}</strong></span>
-              )}
+          {/* Difficulty + Serves + Source */}
+          {(meal.difficulty != null || meal.serves || meal.source) && (
+            <div className="flex items-center gap-4 mb-3 flex-wrap">
               {meal.difficulty != null && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-400">Difficulty</span>
                   <DifficultyDots level={meal.difficulty} />
                 </div>
               )}
+              {meal.serves && (
+                <span className="flex items-center gap-0.5 text-xs text-gray-400">
+                  <svg width="12" height="12" viewBox="0 0 24 20" fill="currentColor">
+                    <circle cx="12" cy="6" r="5"/>
+                    <path d="M1 20c0-5 5-8 11-8s11 3 11 8z"/>
+                  </svg>
+                  {meal.serves}
+                </span>
+              )}
+              {meal.source && (
+                <a
+                  href={meal.source}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-red-600 hover:text-red-700 truncate max-w-full"
+                >
+                  {meal.source.replace(/^https?:\/\/(www\.)?/, '')}
+                </a>
+              )}
             </div>
-          )}
-
-          {/* Source */}
-          {meal.source && (
-            <a
-              href={meal.source}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block text-xs text-red-600 hover:text-red-700 mb-3 truncate max-w-full"
-            >
-              {meal.source.replace(/^https?:\/\/(www\.)?/, '')}
-            </a>
           )}
 
           {/* Story */}
