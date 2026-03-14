@@ -1322,14 +1322,20 @@ function MealDetailModal({
           )}
 
           <div className="flex items-center gap-4 flex-wrap">
-            {meal.serves && (
-              <span className="text-xs text-ml-t3">Serves <strong>{meal.serves}</strong></span>
-            )}
             {meal.difficulty != null && (
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-ml-t3">Difficulty:</span>
                 <DifficultyDots level={meal.difficulty} />
               </div>
+            )}
+            {meal.serves && (
+              <span className="text-xs flex items-center gap-0.5 text-ml-t3">
+                <svg width="12" height="12" viewBox="0 0 24 20" fill="currentColor">
+                  <circle cx="12" cy="6" r="5"/>
+                  <path d="M1 20c0-5 5-8 11-8s11 3 11 8z"/>
+                </svg>
+                {meal.serves}
+              </span>
             )}
             {websiteHost && (
               <a href={meal.website!} target="_blank" rel="noopener noreferrer"
@@ -2029,17 +2035,10 @@ function DashboardMealCard({
             </div>
           )}
 
-          {(meal.serves || meal.difficulty != null) && (
-            <div className="flex items-center gap-3 mt-1 flex-wrap">
-              {meal.serves && (
-                <span className="text-xs text-ml-t3">Serves <strong>{meal.serves}</strong></span>
-              )}
-              {meal.difficulty != null && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-ml-t3">Difficulty:</span>
-                  <DifficultyDots level={meal.difficulty} />
-                </div>
-              )}
+          {meal.difficulty != null && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-ml-t3">Difficulty:</span>
+              <DifficultyDots level={meal.difficulty} />
             </div>
           )}
 
