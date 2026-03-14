@@ -2054,9 +2054,9 @@ function DashboardMealCard({
             <button
               onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
               className="px-3 py-1 text-xs font-medium rounded-lg transition-colors flex-shrink-0"
-              style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-              onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+              style={{ color: '#444', background: '#f3f4f6', border: '1px solid #e5e7eb' }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#e5e7eb'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#f3f4f6'; }}
             >
               View
             </button>
