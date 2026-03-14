@@ -609,9 +609,6 @@ function MealDetailModal({
           )}
 
           <div className="flex items-center gap-4 flex-wrap">
-            {meal.serves && (
-              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Serves <strong>{meal.serves}</strong></span>
-            )}
             {meal.difficulty != null && (
               <div className="flex items-center gap-2">
                 <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
@@ -626,6 +623,15 @@ function MealDetailModal({
                 </svg>
                 {sourceHost}
               </a>
+            )}
+            {meal.serves && (
+              <span className="text-xs flex items-center gap-0.5" style={{ color: 'var(--text-3)' }}>
+                <svg width="12" height="12" viewBox="0 0 24 20" fill="currentColor">
+                  <circle cx="12" cy="6" r="5"/>
+                  <path d="M1 20c0-5 5-8 11-8s11 3 11 8z"/>
+                </svg>
+                {meal.serves}
+              </span>
             )}
           </div>
 
@@ -743,7 +749,7 @@ function MealCard({
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{meal.name}</p>
 
-          {(authorName || sourceHost) && (
+          {(authorName || sourceHost || meal.serves) && (
             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
               {authorName && (
                 meal.creator_id && onCreatorClick ? (
@@ -774,20 +780,22 @@ function MealCard({
                   {sourceHost}
                 </a>
               )}
+              {meal.serves && (
+                <span className="text-xs flex items-center gap-0.5" style={{ color: 'var(--text-3)' }}>
+                  <svg width="11" height="11" viewBox="0 0 24 20" fill="currentColor">
+                    <circle cx="12" cy="6" r="5"/>
+                    <path d="M1 20c0-5 5-8 11-8s11 3 11 8z"/>
+                  </svg>
+                  {meal.serves}
+                </span>
+              )}
             </div>
           )}
 
-          {(meal.serves || meal.difficulty != null) && (
-            <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-              {meal.serves && (
-                <span className="text-xs" style={{ color: 'var(--text-3)' }}>Serves <strong>{meal.serves}</strong></span>
-              )}
-              {meal.difficulty != null && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
-                  <DifficultyDots level={meal.difficulty} />
-                </div>
-              )}
+          {meal.difficulty != null && (
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="text-xs" style={{ color: 'var(--text-3)' }}>Difficulty</span>
+              <DifficultyDots level={meal.difficulty} />
             </div>
           )}
 
