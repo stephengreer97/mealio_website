@@ -1997,6 +1997,17 @@ function DashboardMealCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm font-semibold text-ml-t1">{meal.name}</p>
+            {!selectMode && (
+              <button
+                onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
+                className="px-3 py-1 text-xs font-medium rounded-lg transition-colors flex-shrink-0"
+                style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
+              >
+                View
+              </button>
+            )}
           </div>
 
           {(meal.author || meal.website) && (
@@ -2051,19 +2062,6 @@ function DashboardMealCard({
           )}
 
 
-          {KROGER_API_STORES.has(meal.store_id) && (
-            <div className="flex items-center gap-2 mt-3 flex-wrap">
-              <button
-                onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
-                className="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
-                style={{ color: 'var(--brand)', background: 'var(--brand-light)', border: '1px solid #fecdd3' }}
-                onMouseEnter={e => { e.currentTarget.style.background = '#fecdd3'; e.currentTarget.style.borderColor = '#fca5a5'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand-light)'; e.currentTarget.style.borderColor = '#fecdd3'; }}
-              >
-                View
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </>
