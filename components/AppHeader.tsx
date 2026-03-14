@@ -64,18 +64,21 @@ export default function AppHeader() {
 
   return (
     <header style={{ background: 'var(--brand)', position: 'relative' }}>
-      <div className="max-w-5xl mx-auto px-6 py-3.5 flex justify-between items-center">
-        {/* Logo */}
-        <button
-          onClick={() => router.push('/discover')}
-          style={{ fontFamily: 'var(--font-pacifico), cursive', background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1 }}
-          aria-label="Mealio home"
-        >
-          <span style={{ fontSize: '36px', lineHeight: '1', display: 'inline-block', verticalAlign: 'middle', color: '#fff' }}>M</span>
-          <span style={{ fontSize: '26px', color: 'rgba(255,255,255,0.92)' }}>ealio</span>
-        </button>
+      <div className="max-w-5xl mx-auto px-6 py-3.5 flex items-center">
 
-        {/* Desktop Nav */}
+        {/* Logo — left */}
+        <div className="flex-1 flex items-center">
+          <button
+            onClick={() => router.push('/discover')}
+            style={{ fontFamily: 'var(--font-pacifico), cursive', background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1 }}
+            aria-label="Mealio home"
+          >
+            <span style={{ fontSize: '36px', lineHeight: '1', display: 'inline-block', verticalAlign: 'middle', color: '#fff' }}>M</span>
+            <span style={{ fontSize: '26px', color: 'rgba(255,255,255,0.92)' }}>ealio</span>
+          </button>
+        </div>
+
+        {/* Desktop Nav — center */}
         <nav className="hidden sm:flex items-center gap-0.5">
           <NavButton label="Discover" active={isNavActive('/discover')} onClick={() => router.push('/discover')} />
           <NavButton label="My Meals" active={isNavActive('/my-meals')} onClick={() => router.push('/my-meals')} />
@@ -85,10 +88,10 @@ export default function AppHeader() {
             active={pathname === '/help' || pathname === '/privacy' || pathname === '/terms'}
             onLabelClick={() => router.push('/help')}
             items={[
-              { label: 'Help & FAQ',     onClick: () => router.push('/help') },
-              { label: 'Privacy Policy', onClick: () => router.push('/privacy') },
+              { label: 'Help & FAQ',       onClick: () => router.push('/help') },
+              { label: 'Privacy Policy',   onClick: () => router.push('/privacy') },
               { label: 'Terms of Service', onClick: () => router.push('/terms') },
-              { label: 'Contact',        onClick: () => { window.location.href = 'mailto:contact@mealio.co'; } },
+              { label: 'Contact',          onClick: () => { window.location.href = 'mailto:contact@mealio.co'; } },
             ]}
           />
 
@@ -100,23 +103,35 @@ export default function AppHeader() {
               ...(isAdmin   ? [{ label: 'Admin',          onClick: () => router.push('/admin')   }] : []),
               ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator') }] : []),
               { label: 'Manage Account', onClick: () => router.push('/account') },
-              { label: 'Log Out',        onClick: handleLogout },
             ]}
           />
         </nav>
 
-        {/* Mobile Hamburger */}
-        <button
-          ref={hamburgerRef}
-          className="sm:hidden flex flex-col justify-center items-center gap-[5px] p-2"
-          onClick={() => setMobileOpen(prev => !prev)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-          aria-label="Menu"
-        >
-          <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(6.5px) rotate(45deg)' : 'none' }} />
-          <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', opacity: mobileOpen ? 0 : 1, transition: 'opacity 0.15s' }} />
-          <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(-6.5px) rotate(-45deg)' : 'none' }} />
-        </button>
+        {/* Right — Log Out (desktop) + Hamburger (mobile) */}
+        <div className="flex-1 flex items-center justify-end">
+          <button
+            onClick={handleLogout}
+            className="hidden sm:block px-4 py-2 text-sm font-medium rounded-lg transition-colors"
+            style={{ color: 'rgba(255,255,255,0.75)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; }}
+          >
+            Log Out
+          </button>
+
+          {/* Mobile Hamburger */}
+          <button
+            ref={hamburgerRef}
+            className="sm:hidden flex flex-col justify-center items-center gap-[5px] p-2"
+            onClick={() => setMobileOpen(prev => !prev)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+            aria-label="Menu"
+          >
+            <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(6.5px) rotate(45deg)' : 'none' }} />
+            <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', opacity: mobileOpen ? 0 : 1, transition: 'opacity 0.15s' }} />
+            <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(-6.5px) rotate(-45deg)' : 'none' }} />
+          </button>
+        </div>
       </div>
 
       {/* Mobile Menu */}
@@ -220,11 +235,11 @@ function DropdownMenu({
               onClick={() => { setOpen(false); item.onClick(); }}
               className="block w-full text-left px-4 py-2.5 text-sm transition-colors"
               style={{
-                color: item.label === 'Log Out' ? 'var(--brand)' : 'var(--text-1)',
+                color: 'var(--text-1)',
                 background: 'transparent',
                 border: 'none',
                 cursor: 'pointer',
-                fontWeight: item.label === 'Log Out' ? 500 : 400,
+                fontWeight: 400,
               }}
               onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
