@@ -32,17 +32,19 @@ export async function resolvePhotoUrl(
 
   if (!pixabayUrl) return photoUrl; // already a resolved URL, pass through
 
-  // Download from Pixabay with the required Referer header
+  const workerUrl    = (process.env.PIXABAY_WORKER_URL ?? '').replace(/\/$/, '');
+  const workerSecret = process.env.PIXABAY_WORKER_SECRET ?? '';
+
+  // Download via Cloudflare Worker (adds required Referer header, uses shared IPs)
   let imgRes: Response;
   try {
-    imgRes = await fetch(pixabayUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Mealio/1.0; +https://mealio.co)',
-        'Referer':    'https://pixabay.com/',
-        'Accept':     'image/webp,image/png,image/*,*/*',
+    imgRes = await fetch(
+      `${workerUrl}/image?url=${encodeURIComponent(pixabayUrl)}`,
+      {
+        headers: { 'Authorization': `Bearer ${workerSecret}` },
+        next: { revalidate: 86400 },
       },
-      next: { revalidate: 86400 },
-    });
+    );
   } catch (err) {
     log({ event: 'PHOTO:UPLOAD', status: 'error', userId, detail: 'Pixabay fetch failed', error: err });
     return photoUrl; // fall back to proxy URL — better than nothing

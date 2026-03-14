@@ -4,7 +4,8 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
-const PIXABAY_API = 'https://pixabay.com/api/';
+const WORKER_URL    = (process.env.PIXABAY_WORKER_URL ?? '').replace(/\/$/, '');
+const WORKER_SECRET = process.env.PIXABAY_WORKER_SECRET ?? '';
 
 interface PixabayHit {
   previewURL:   string;
@@ -18,10 +19,13 @@ interface PixabayResponse {
 
 async function pixabaySearch(apiKey: string, query: string, perPage: number): Promise<PixabayHit[]> {
   const url =
-    `${PIXABAY_API}?key=${apiKey}&q=${encodeURIComponent(query)}` +
+    `${WORKER_URL}/api?key=${apiKey}&q=${encodeURIComponent(query)}` +
     `&image_type=photo&safesearch=true&per_page=${perPage}`;
   // Cache search results for 1 hour — same meal name always returns the same images
-  const res = await fetch(url, { next: { revalidate: 3600 } });
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${WORKER_SECRET}` },
+    next: { revalidate: 3600 },
+  });
   if (!res.ok) return [];
   const data = await res.json() as PixabayResponse;
   return data.hits ?? [];

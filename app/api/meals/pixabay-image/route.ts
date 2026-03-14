@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-// Proxy for Pixabay webformatURL images. Browsers can't load pixabay.com/get/ URLs
-// directly because Pixabay's CDN requires Referer: https://pixabay.com/. This route
-// adds that header server-side and streams the image back.
+const WORKER_URL    = (process.env.PIXABAY_WORKER_URL ?? '').replace(/\/$/, '');
+const WORKER_SECRET = process.env.PIXABAY_WORKER_SECRET ?? '';
+
+// Proxy for Pixabay webformatURL images. Routes through the Cloudflare Worker
+// which adds the required Referer header and uses Cloudflare's shared IPs.
 export async function GET(request: NextRequest) {
   const url = request.nextUrl.searchParams.get('url') ?? '';
 
@@ -14,16 +16,13 @@ export async function GET(request: NextRequest) {
 
   let imgRes: Response;
   try {
-    imgRes = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Mealio/1.0; +https://mealio.co)',
-        'Referer':    'https://pixabay.com/',
-        'Accept':     'image/webp,image/png,image/*,*/*',
+    imgRes = await fetch(
+      `${WORKER_URL}/image?url=${encodeURIComponent(url)}`,
+      {
+        headers: { 'Authorization': `Bearer ${WORKER_SECRET}` },
+        next: { revalidate: 86400 },
       },
-      // Cache in Next.js data cache keyed by URL — subsequent requests for the
-      // same Pixabay image won't re-fetch from Pixabay's CDN (shared IP limit).
-      next: { revalidate: 86400 },
-    });
+    );
   } catch {
     return new NextResponse('Fetch failed', { status: 502 });
   }
