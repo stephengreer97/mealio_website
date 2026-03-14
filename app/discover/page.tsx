@@ -835,7 +835,6 @@ export default function DiscoverPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [hasSavedMeals, setHasSavedMeals] = useState(true);
   const [isFirefox, setIsFirefox] = useState(false);
 
   useEffect(() => {
@@ -906,8 +905,7 @@ export default function DiscoverPage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       }).then(r => r.ok ? r.json() : null).then(d => {
         if (!d?.meals) return;
-        if (d.meals.length === 0) setHasSavedMeals(false);
-        const map = new Map<string, string[]>();
+const map = new Map<string, string[]>();
         for (const m of d.meals) {
           if (!m.preset_meal_id) continue;
           const storeLabel = STORES.find(s => s.id === m.store_id)?.label ?? m.store_id;
@@ -1087,28 +1085,6 @@ export default function DiscoverPage() {
         <div className="mb-10">
           <TrendingCarousel meals={meals} onMealClick={setCarouselMeal} />
 
-          {/* Getting Started */}
-          {!hasSavedMeals && (
-            <div className="rounded-2xl p-8 mb-8 mt-8" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
-              <h2 className="text-base font-bold mb-6" style={{ color: 'var(--text-1)' }}>Getting started</h2>
-              <div className="space-y-5">
-                {[
-                  { n: 1, title: 'Go to a supported grocery store', desc: 'Visit any major grocery retailer online. Mealio detects the store automatically.' },
-                  { n: 2, title: 'Save your first meal', desc: 'Click "Add Meal," name it, then add items to your cart. Mealio records every ingredient so you can reorder with one click. You can also browse Discover to instantly add pre-built meals without recording anything.' },
-                ].map(step => (
-                  <div key={step.n} className="flex items-start gap-4">
-                    <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>
-                      {step.n}
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>{step.title}</p>
-                      <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>{step.desc}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           <div className="lg:flex lg:gap-8 lg:items-start">
 
