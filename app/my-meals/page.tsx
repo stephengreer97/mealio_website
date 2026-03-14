@@ -1,6 +1,10 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+
+const CHROME_EXT_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
+const FIREFOX_EXT_URL = 'https://addons.mozilla.org/en-US/firefox/addon/mealio/';
+const EDGE_EXT_URL    = 'https://microsoftedge.microsoft.com/addons/detail/odmgaejgoagcjbimmdpecimocekjiobi';
 import { useRouter } from 'next/navigation';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
@@ -2056,6 +2060,15 @@ export default function MyMealsPage() {
   const [krogerConnected, setKrogerConnected] = useState(false);
   const [krogerLocations, setKrogerLocations] = useState<Record<string, { locationId: string; locationName: string }>>({});
 
+  // Browser detection for extension link
+  const [extUrl, setExtUrl] = useState(CHROME_EXT_URL);
+  const [extLabel, setExtLabel] = useState('Add to Chrome');
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    if (ua.includes('Firefox/')) { setExtUrl(FIREFOX_EXT_URL); setExtLabel('Add to Firefox'); }
+    else if (ua.includes('Edg/')) { setExtUrl(EDGE_EXT_URL); setExtLabel('Add to Edge'); }
+  }, []);
+
   // Store pill filter + multi-select for Kroger cart
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
   const [selectedMealIds, setSelectedMealIds] = useState<Set<string>>(new Set());
@@ -2417,6 +2430,17 @@ export default function MyMealsPage() {
                   Get the Mealio browser extension on desktop to add meal ingredients directly to your cart. Stay tuned for updates.
                 </p>
               </div>
+              <a
+                href={extUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+                style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none' }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
+              >
+                {extLabel}
+              </a>
             </div>
           )}
 
