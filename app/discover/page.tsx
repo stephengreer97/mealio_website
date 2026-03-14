@@ -1092,22 +1092,9 @@ export default function DiscoverPage() {
             <div className="rounded-2xl p-8 mb-8 mt-8" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
               <h2 className="text-base font-bold mb-6" style={{ color: 'var(--text-1)' }}>Getting started</h2>
               <div className="space-y-5">
-                <div className="flex items-start gap-4">
-                  <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>1</div>
-                  <div>
-                    <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>Install the Web Extension</p>
-                    <p className="text-sm mt-0.5" style={{ color: 'var(--text-2)' }}>
-                      Add Mealio to your browser to start saving meals and adding ingredients to your cart.{' '}
-                      <a href={isFirefox ? FIREFOX_EXT_URL : CHROME_EXT_URL} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2" style={{ color: 'var(--brand)' }}>
-                        Get the {isFirefox ? 'Firefox' : 'Chrome'} extension →
-                      </a>
-                    </p>
-                  </div>
-                </div>
                 {[
-                  { n: 2, title: 'Open the extension and sign in', desc: 'Click the Mealio icon in your browser toolbar. You will be logged in automatically.' },
-                  { n: 3, title: 'Go to a supported grocery store', desc: 'Visit any major grocery retailer online. Mealio detects the store automatically.' },
-                  { n: 4, title: 'Save your first meal', desc: 'Click "Add Meal," name it, then add items to your cart. Mealio records every ingredient so you can reorder with one click. You can also browse Discover to instantly add pre-built meals without recording anything.' },
+                  { n: 1, title: 'Go to a supported grocery store', desc: 'Visit any major grocery retailer online. Mealio detects the store automatically.' },
+                  { n: 2, title: 'Save your first meal', desc: 'Click "Add Meal," name it, then add items to your cart. Mealio records every ingredient so you can reorder with one click. You can also browse Discover to instantly add pre-built meals without recording anything.' },
                 ].map(step => (
                   <div key={step.n} className="flex items-start gap-4">
                     <div className="w-7 h-7 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5" style={{ background: 'var(--brand)' }}>
