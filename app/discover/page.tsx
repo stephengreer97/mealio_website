@@ -1035,6 +1035,7 @@ const map = new Map<string, string[]>();
           ...(addingMeal.difficulty   ? { difficulty: addingMeal.difficulty } : {}),
           ...(addingMeal.tags?.length ? { tags:       addingMeal.tags       } : {}),
           ...(addingMeal.source       ? { website:    addingMeal.source     } : {}),
+          ...(addingMeal.story        ? { story:      addingMeal.story      } : {}),
           ...(addingMeal.recipe       ? { recipe:     addingMeal.recipe     } : {}),
           ...(addingMeal.photo_url    ? { photoUrl:   addingMeal.photo_url  } : {}),
           ...(addingMeal.creator_id   ? { creatorId:  addingMeal.creator_id } : {}),
