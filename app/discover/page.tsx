@@ -304,12 +304,12 @@ function FeaturedCreatorsCard({ creators, onCreatorClick }: { creators: Featured
       style={{
         background: 'var(--surface-raised)',
         border: '1px solid var(--border)',
-        padding: '16px 20px',
+        padding: '10px 20px',
         height: '81px',
         overflow: 'hidden',
       }}
     >
-      <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '12px' }}>
+      <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px' }}>
         Featured Creators
       </p>
       <div className="flex gap-3 flex-wrap">
@@ -320,22 +320,19 @@ function FeaturedCreatorsCard({ creators, onCreatorClick }: { creators: Featured
               key={c.id}
               onClick={() => onCreatorClick(c.id)}
               title={c.display_name}
-              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
               {c.photo_url ? (
                 <img
                   src={c.photo_url}
                   alt={c.display_name}
-                  style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--border)' }}
+                  style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--border)' }}
                 />
               ) : (
-                <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid var(--border)' }}>
-                  <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff' }}>{initials}</span>
+                <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'var(--brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid var(--border)' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#fff' }}>{initials}</span>
                 </div>
               )}
-              <span style={{ fontSize: '11px', color: 'var(--text-2)', maxWidth: 56, textAlign: 'center', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: '1.3' }}>
-                {c.display_name}
-              </span>
             </button>
           );
         })}
