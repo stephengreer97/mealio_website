@@ -15,7 +15,7 @@ export default function AppFooter() {
               <span style={{ fontSize: '21px', color: 'var(--brand)' }}>ealio</span>
             </div>
             <p className="text-xs leading-relaxed" style={{ color: 'var(--text-3)', maxWidth: '200px' }}>
-              Save meals. Fill your cart in one click. Works at 36+ grocery stores.
+              Shop meals, we'll fill the cart.
             </p>
           </div>
 
@@ -35,10 +35,6 @@ export default function AppFooter() {
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               >Help & FAQ</Link>
-              <Link href="/about" className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
-                onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
-                onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
-              >About</Link>
               <Link href="/creator/apply" className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}

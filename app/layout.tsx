@@ -30,18 +30,18 @@ export const metadata: Metadata = {
     default:  'Mealio',
     template: '%s | Mealio',
   },
-  description: 'Save meal recipes and add all ingredients to your grocery cart in one click. Works with HEB, Walmart, Kroger, and more.',
+  description: "Shop meals, we'll fill the cart. Save your favorite meals and add all ingredients to your grocery cart in one click.",
   openGraph: {
     type:        'website',
     siteName:    'Mealio',
     title:       'Mealio',
-    description: 'Save meal recipes and add all ingredients to your grocery cart in one click.',
+    description: "Shop meals, we'll fill the cart.",
     url:         '/',
   },
   twitter: {
     card:        'summary_large_image',
     title:       'Mealio',
-    description: 'Save meal recipes and add all ingredients to your grocery cart in one click.',
+    description: "Shop meals, we'll fill the cart.",
   },
   appleWebApp: {
     capable:         true,
