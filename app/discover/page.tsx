@@ -297,45 +297,129 @@ interface FeaturedCreator {
 }
 
 function FeaturedCreatorsCard({ creators, onCreatorClick }: { creators: FeaturedCreator[]; onCreatorClick: (id: string) => void }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<FeaturedCreator[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setResults([]); return; }
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await fetch(`/api/creators/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        setResults(data.creators ?? []);
+      } catch { /* ignore */ } finally { setSearching(false); }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   if (creators.length === 0) return null;
+
   return (
     <div
       className="rounded-2xl"
-      style={{
-        background: 'var(--surface-raised)',
-        border: '1px solid var(--border)',
-        padding: '10px 20px',
-        height: '81px',
-        overflow: 'hidden',
-      }}
+      style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', padding: '14px 16px' }}
     >
-      <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '8px' }}>
+      <p style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-3)', marginBottom: '12px' }}>
         Featured Creators
       </p>
-      <div className="flex gap-3 flex-wrap">
+
+      {/* Avatars + names */}
+      <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
         {creators.map(c => {
-          const initials = c.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+          const initials = c.display_name.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase();
           return (
             <button
               key={c.id}
               onClick={() => onCreatorClick(c.id)}
-              title={c.display_name}
-              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px', background: 'none', border: 'none', cursor: 'pointer', padding: 0, minWidth: '58px', maxWidth: '58px' }}
             >
               {c.photo_url ? (
                 <img
                   src={c.photo_url}
                   alt={c.display_name}
-                  style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--border)' }}
+                  style={{ width: 52, height: 52, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--border)', flexShrink: 0 }}
                 />
               ) : (
-                <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'var(--brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid var(--border)' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#fff' }}>{initials}</span>
+                <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'var(--brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid var(--border)', flexShrink: 0 }}>
+                  <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff' }}>{initials}</span>
                 </div>
               )}
+              <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-2)', textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}>
+                {c.display_name}
+              </span>
             </button>
           );
         })}
+      </div>
+
+      {/* Creator search */}
+      <div style={{ marginTop: '12px', position: 'relative' }}>
+        <div style={{ position: 'relative' }}>
+          <svg
+            width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+            style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)', pointerEvents: 'none' }}
+          >
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input
+            type="text"
+            placeholder="Search all creators…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              border: '1.5px solid var(--border)', borderRadius: '10px',
+              padding: '7px 10px 7px 30px',
+              fontSize: '13px', background: 'var(--surface)', color: 'var(--text-1)', outline: 'none',
+            }}
+            onFocus={e => (e.target.style.borderColor = 'var(--brand)')}
+            onBlur={e => (e.target.style.borderColor = 'var(--border)')}
+          />
+          {searching && (
+            <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)' }}>
+              <div style={{ width: '12px', height: '12px', border: '2px solid var(--border)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+            </div>
+          )}
+        </div>
+
+        {/* Results */}
+        {query.trim() && (
+          <div style={{ marginTop: '6px', border: '1px solid var(--border)', borderRadius: '10px', overflow: 'hidden', background: 'var(--surface-raised)' }}>
+            {!searching && results.length === 0 ? (
+              <p style={{ padding: '12px', fontSize: '13px', color: 'var(--text-3)', textAlign: 'center', margin: 0 }}>No creators found</p>
+            ) : (
+              results.map((c, i) => {
+                const initials = c.display_name.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase();
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => { onCreatorClick(c.id); setQuery(''); setResults([]); }}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
+                      padding: '9px 12px', background: 'none', border: 'none',
+                      borderTop: i > 0 ? '1px solid var(--border)' : 'none',
+                      cursor: 'pointer', textAlign: 'left',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                  >
+                    {c.photo_url ? (
+                      <img src={c.photo_url} alt={c.display_name} style={{ width: 30, height: 30, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: '1.5px solid var(--border)' }} />
+                    ) : (
+                      <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'var(--brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: '#fff' }}>{initials}</span>
+                      </div>
+                    )}
+                    <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.display_name}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
