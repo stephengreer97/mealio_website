@@ -1095,28 +1095,26 @@ const map = new Map<string, string[]>();
         </div>
       )}
 
-      {isCreator && (
-        <div className="w-full" style={{ background: 'var(--brand)', borderBottom: '1px solid var(--brand-dark)' }}>
-          <div className="max-w-7xl mx-auto px-6 py-2.5 flex items-center justify-between gap-4">
-            <p className="text-sm font-medium text-white">
-              🍽️ You&apos;re a Mealio Creator — manage your meals and track your stats in the Creator Portal.
-            </p>
-            <a
-              href="/creator"
-              className="text-xs font-semibold whitespace-nowrap px-3 py-1.5 rounded-lg transition-opacity hover:opacity-90"
-              style={{ background: 'rgba(255,255,255,0.2)', color: '#fff', border: '1px solid rgba(255,255,255,0.3)' }}
-            >
-              Go to Portal →
-            </a>
-          </div>
-        </div>
-      )}
-
       <div className="max-w-7xl mx-auto px-6 py-10 w-full flex-1">
 
         {/* Discover Section */}
         <div className="mb-10">
           <TrendingCarousel meals={meals} onMealClick={setCarouselMeal} />
+
+          {isCreator && (
+            <div className="flex items-center justify-between gap-4 mt-4 px-4 py-3 rounded-xl" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)' }}>
+              <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+                You&apos;re a Mealio Creator — manage your meals and track your stats in the Creator Portal.
+              </p>
+              <a
+                href="/creator"
+                className="text-xs font-semibold whitespace-nowrap px-3 py-1.5 rounded-lg transition-opacity hover:opacity-80"
+                style={{ background: 'var(--brand)', color: '#fff' }}
+              >
+                Go to Portal →
+              </a>
+            </div>
+          )}
 
 
           <div className="lg:flex lg:gap-8 lg:items-start">
