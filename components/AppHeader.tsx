@@ -15,14 +15,22 @@ export default function AppHeader() {
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
     if (!token) return;
-    fetch('/api/creator/me', { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data?.creator) setIsCreator(true); })
-      .catch(() => {});
     try {
       const user = JSON.parse(localStorage.getItem('user') ?? '{}');
-      if (user?.isAdmin) setIsAdmin(true);
+      if (user?.isAdmin)   setIsAdmin(true);
+      if (user?.isCreator) setIsCreator(true);
     } catch {}
+    fetch('/api/creator/me', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        const creator = !!data?.creator;
+        setIsCreator(creator);
+        try {
+          const user = JSON.parse(localStorage.getItem('user') ?? '{}');
+          localStorage.setItem('user', JSON.stringify({ ...user, isCreator: creator }));
+        } catch {}
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {

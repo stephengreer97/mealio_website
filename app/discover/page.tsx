@@ -910,9 +910,20 @@ export default function DiscoverPage() {
       setUser(data.user);
       setToken(accessToken);
 
+      try {
+        const cached = JSON.parse(localStorage.getItem('user') ?? '{}');
+        if (cached?.isCreator) setIsCreator(true);
+      } catch {}
       fetch('/api/creator/me', { headers: { Authorization: `Bearer ${accessToken}` } })
         .then(r => r.ok ? r.json() : null)
-        .then(d => { if (d?.creator) setIsCreator(true); })
+        .then(d => {
+          const creator = !!d?.creator;
+          setIsCreator(creator);
+          try {
+            const u = JSON.parse(localStorage.getItem('user') ?? '{}');
+            localStorage.setItem('user', JSON.stringify({ ...u, isCreator: creator }));
+          } catch {}
+        })
         .catch(() => {});
 
       fetch('/api/meals', {
