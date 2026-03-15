@@ -3,6 +3,14 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { getCachedTrendingMeals } from '@/lib/trending-cache';
 
+const HANDLE_RE = /^[a-z0-9_-]{3,30}$/;
+const RESERVED_HANDLES = new Set([
+  'about', 'account', 'admin', 'api', 'check-email', 'creator', 'discover',
+  'fonts', 'forgot-password', 'help', 'meal', 'my-meals', 'pricing', 'privacy',
+  'reset-password', 'robots', 'sitemap', 'signout', 'terms', 'verify-email',
+  'mealio', 'app', 'www', 'mail', 'support',
+]);
+
 // PATCH /api/creator/me — update creator profile fields
 export async function PATCH(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -13,11 +21,45 @@ export async function PATCH(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const body = await request.json();
-  const { photoUrl } = body;
+  const { photoUrl, handle } = body;
+
+  const updates: Record<string, unknown> = {};
+
+  if (photoUrl !== undefined) updates.photo_url = photoUrl ?? null;
+
+  if (handle !== undefined) {
+    const h = (handle ?? '').toLowerCase().trim();
+    if (h === '') {
+      updates.handle = null;
+    } else {
+      if (!HANDLE_RE.test(h)) {
+        return NextResponse.json(
+          { error: 'Handle must be 3–30 characters and contain only letters, numbers, hyphens, or underscores.' },
+          { status: 400 }
+        );
+      }
+      if (RESERVED_HANDLES.has(h)) {
+        return NextResponse.json({ error: 'That handle is not available.' }, { status: 400 });
+      }
+      // Check uniqueness (exclude self)
+      const { data: existing } = await supabase
+        .from('creators')
+        .select('id')
+        .eq('handle', h)
+        .neq('user_id', decoded.userId)
+        .maybeSingle();
+      if (existing) {
+        return NextResponse.json({ error: 'That handle is already taken.' }, { status: 409 });
+      }
+      updates.handle = h;
+    }
+  }
+
+  if (Object.keys(updates).length === 0) return NextResponse.json({ ok: true });
 
   const { error } = await supabase
     .from('creators')
-    .update({ photo_url: photoUrl ?? null })
+    .update(updates)
     .eq('user_id', decoded.userId);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -41,7 +83,7 @@ export async function GET(request: NextRequest) {
   // Get creator profile
   const { data: creator, error: creatorError } = await supabase
     .from('creators')
-    .select('id, display_name, bio, social_handle, photo_url, approved_at')
+    .select('id, display_name, bio, social_handle, photo_url, approved_at, handle')
     .eq('user_id', decoded.userId)
     .maybeSingle();
 

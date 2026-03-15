@@ -12,6 +12,7 @@ interface Creator {
   social_handle: string | null;
   photo_url: string | null;
   approved_at: string;
+  handle: string | null;
 }
 
 interface CreatorMeal {
@@ -542,7 +543,34 @@ export default function CreatorPortal() {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
+  // Handle state
+  const [handleInput, setHandleInput]     = useState('');
+  const [handleSaving, setHandleSaving]   = useState(false);
+  const [handleError, setHandleError]     = useState('');
+  const [handleSuccess, setHandleSuccess] = useState('');
+
   useEffect(() => { loadPortal(); }, []);
+
+  const saveHandle = async () => {
+    setHandleError('');
+    setHandleSuccess('');
+    setHandleSaving(true);
+    try {
+      const token = localStorage.getItem('accessToken');
+      const res = await fetch('/api/creator/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ handle: handleInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setHandleError(data.error || 'Failed to save.'); return; }
+      setCreator(prev => prev ? { ...prev, handle: handleInput.trim() || null } : prev);
+      setHandleSuccess('Saved!');
+      setTimeout(() => setHandleSuccess(''), 2500);
+    } finally {
+      setHandleSaving(false);
+    }
+  };
 
   const loadPortal = async () => {
     const token = localStorage.getItem('accessToken');
@@ -558,6 +586,7 @@ export default function CreatorPortal() {
     if (!data.creator) { router.push('/creator/apply'); return; }
 
     setCreator(data.creator);
+    setHandleInput(data.creator.handle ?? '');
     setMeals((data.meals ?? []).slice().sort((a: CreatorMeal, b: CreatorMeal) => b.trending_score - a.trending_score));
     setStats(data.stats ?? null);
     setLoading(false);
@@ -724,6 +753,38 @@ export default function CreatorPortal() {
             <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 700, color: '#111' }}>{creator?.display_name}</h1>
             {creator?.social_handle && <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#666' }}>{creator.social_handle}</p>}
           </div>
+        </div>
+
+        {/* Profile link / handle */}
+        <div style={{ background: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', marginBottom: '16px' }}>
+          <p style={{ margin: '0 0 8px', fontSize: '12px', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Your profile link</p>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <span style={{ fontSize: '14px', color: '#999', whiteSpace: 'nowrap' }}>mealio.co/</span>
+            <input
+              value={handleInput}
+              onChange={e => { setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setHandleError(''); setHandleSuccess(''); }}
+              placeholder="yourhandle"
+              maxLength={30}
+              style={{ flex: 1, border: '1px solid #e0e0e0', borderRadius: '8px', padding: '8px 10px', fontSize: '14px', outline: 'none' }}
+            />
+            <button
+              onClick={saveHandle}
+              disabled={handleSaving}
+              style={{ background: handleSaving ? '#aaa' : '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 14px', fontSize: '13px', fontWeight: 600, cursor: handleSaving ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+            >
+              {handleSaving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          {handleError && <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#c40029' }}>{handleError}</p>}
+          {handleSuccess && <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#276749' }}>{handleSuccess}</p>}
+          {creator?.handle && !handleError && !handleSuccess && (
+            <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#888' }}>
+              Shareable link:{' '}
+              <a href={`/${creator.handle}`} target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>
+                mealio.co/{creator.handle}
+              </a>
+            </p>
+          )}
         </div>
 
         {/* Stats */}
