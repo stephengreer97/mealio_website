@@ -21,8 +21,71 @@ interface User {
 
 interface Ingredient {
   productName: string;
-  searchTerm?: string;
-  quantity?: number;
+  searchTerm?: string | null;
+  qty: number;
+  unit: string;
+  measure?: string | null;
+}
+
+interface IngredientForm {
+  productName: string;
+  measure: string;
+  unit: string;
+  searchTerm: string | null;
+  qty: number;
+}
+
+const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp'];
+
+function normIng(raw: any): Ingredient {
+  return {
+    productName: raw.productName ?? raw.product_name ?? raw.name ?? '',
+    searchTerm: raw.searchTerm ?? raw.search_term ?? null,
+    qty: raw.qty ?? raw.quantity ?? 1,
+    unit: raw.unit ?? 'qty',
+    measure: raw.measure ?? null,
+  };
+}
+
+function fmtMeasurement(ing: Ingredient): string {
+  if (!ing.unit || ing.unit === 'qty') return `${ing.productName}, ${ing.qty ?? 1}`;
+  return `${ing.productName}, ${ing.measure ?? ''} ${ing.unit}`;
+}
+
+function ingSearchTerm(ing: Ingredient): string {
+  if (ing.searchTerm) return ing.searchTerm;
+  if (!ing.unit || ing.unit === 'qty') return ing.productName;
+  return `${ing.productName}, ${ing.measure ?? ''}${ing.unit}`;
+}
+
+function toFormIng(ing: Ingredient): IngredientForm {
+  return {
+    productName: ing.productName,
+    measure: ing.unit === 'qty' ? String(ing.qty ?? 1) : (ing.measure ?? ''),
+    unit: ing.unit === 'qty' ? 'Qty' : ing.unit,
+    searchTerm: ing.searchTerm ?? null,
+    qty: ing.qty ?? 1,
+  };
+}
+
+function fromFormIng(form: IngredientForm): Ingredient {
+  if (form.unit === 'Qty') {
+    const q = parseInt(form.measure) || 1;
+    return {
+      productName: form.productName.trim(),
+      qty: q,
+      unit: 'qty',
+      measure: null,
+      searchTerm: form.searchTerm ?? null,
+    };
+  }
+  return {
+    productName: form.productName.trim(),
+    qty: form.qty,
+    unit: form.unit,
+    measure: form.measure.trim() || null,
+    searchTerm: form.searchTerm ?? null,
+  };
 }
 
 interface Meal {
@@ -60,7 +123,7 @@ const KROGER_API_STORES = new Set([
 
 interface ConsolidatedIngredient {
   productName: string;
-  quantity: number;
+  qty: number;
   mealIds: string[];
   mealNames: string[];
 }
@@ -487,10 +550,10 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
   const [photoUrl, setPhotoUrl] = useState(meal.photo_url ?? '');
   const [photoPreview, setPhotoPreview] = useState(meal.photo_url ?? '');
   const [pendingPhotoDataUrl, setPendingPhotoDataUrl] = useState<string | null>(null);
-  const [ingredients, setIngredients] = useState<Ingredient[]>(
-    meal.ingredients.map(i => ({ ...i }))
+  const [ingredients, setIngredients] = useState<IngredientForm[]>(
+    meal.ingredients.map(i => toFormIng(normIng(i)))
   );
-  const [newIngredient, setNewIngredient] = useState('');
+  const [productsOpen, setProductsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const dragRef = useRef(false);
   const [error, setError] = useState('');
@@ -566,29 +629,16 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
     return data.url ?? null;
   };
 
-  const updateIngredientName = (i: number, value: string) => {
-    setIngredients(prev => prev.map((ing, idx) =>
-      idx === i ? { ...ing, productName: value, searchTerm: value } : ing
-    ));
-  };
-
-  const updateIngredientQty = (i: number, delta: number) => {
+  const updateFormField = (i: number, field: keyof IngredientForm, value: string | number) => {
     setIngredients(prev => prev.map((ing, idx) => {
       if (idx !== i) return ing;
-      const qty = Math.max(1, (ing.quantity ?? 1) + delta);
-      return { ...ing, quantity: qty };
+      if (field === 'productName') return { ...ing, productName: value as string, searchTerm: null };
+      return { ...ing, [field]: value };
     }));
   };
 
   const removeIngredient = (i: number) => {
     setIngredients(prev => prev.filter((_, idx) => idx !== i));
-  };
-
-  const addIngredient = () => {
-    const trimmed = newIngredient.trim();
-    if (!trimmed) return;
-    setIngredients(prev => [...prev, { productName: trimmed, searchTerm: trimmed, quantity: 1 }]);
-    setNewIngredient('');
   };
 
   const handleSave = async () => {
@@ -603,7 +653,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
         body: JSON.stringify({
           name: name.trim(),
           storeId:    editStoreId,
-          ingredients,
+          ingredients: ingredients.filter(f => f.productName.trim()).map(fromFormIng),
           author:     author.trim()  || null,
           serves:     serves.trim()  || null,
           difficulty: difficulty     ?? null,
@@ -787,37 +837,97 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
 
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-2">
-              Ingredients ({ingredients.length})
+              Measurements ({ingredients.filter(f => f.productName.trim()).length})
             </label>
             <div className="space-y-1.5 max-h-52 overflow-y-auto mb-2">
               {ingredients.map((ing, i) => (
-                <div key={i} className="flex items-center gap-2">
+                <div key={i} className="flex items-center gap-1.5">
                   <input
                     type="text"
                     value={ing.productName}
-                    onChange={e => updateIngredientName(i, e.target.value)}
+                    onChange={e => updateFormField(i, 'productName', e.target.value)}
+                    placeholder="Ingredient"
                     className="flex-1 rounded-lg px-2 py-1.5 text-xs focus:outline-none"
                     style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                   />
-                  <button type="button" onClick={() => updateIngredientQty(i, -1)} className="w-6 h-6 text-ml-t2 rounded text-xs leading-none flex items-center justify-center transition-colors" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>−</button>
-                  <span className="text-xs text-ml-t2 w-4 text-center">{ing.quantity ?? 1}</span>
-                  <button type="button" onClick={() => updateIngredientQty(i, 1)} className="w-6 h-6 text-ml-t2 rounded text-xs leading-none flex items-center justify-center transition-colors" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>+</button>
-                  <button type="button" onClick={() => removeIngredient(i)} className="text-xs ml-1 transition-colors" style={{ color: 'var(--brand)' }}>✕</button>
+                  <input
+                    type={ing.unit === 'Qty' ? 'number' : 'text'}
+                    value={ing.measure}
+                    min={ing.unit === 'Qty' ? 1 : undefined}
+                    onChange={e => updateFormField(i, 'measure', e.target.value)}
+                    placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                    className="rounded-lg px-2 py-1.5 text-xs focus:outline-none text-center"
+                    style={{ width: '52px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+                  />
+                  <select
+                    value={ing.unit}
+                    onChange={e => updateFormField(i, 'unit', e.target.value)}
+                    className="rounded-lg px-1 py-1.5 text-xs focus:outline-none"
+                    style={{ width: '72px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+                  >
+                    {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                  <button type="button" onClick={() => removeIngredient(i)} className="text-xs transition-colors flex-shrink-0" style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer' }}>✕</button>
                 </div>
               ))}
             </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newIngredient}
-                onChange={e => setNewIngredient(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addIngredient(); } }}
-                placeholder="Add ingredient…"
-                className="flex-1 rounded-lg px-2 py-1.5 text-xs focus:outline-none"
-                style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-              />
-              <button type="button" onClick={addIngredient} className="px-3 py-1.5 text-xs rounded-lg transition-colors" style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>+ Add</button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setIngredients(prev => [...prev, { productName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
+              className="text-xs transition-colors"
+              style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              + Add ingredient
+            </button>
+          </div>
+
+          {/* Products section (collapsed by default) */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setProductsOpen(v => !v)}
+              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide"
+              style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              Products ({ingredients.filter(f => f.productName.trim()).length})
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                {productsOpen ? <polyline points="18 15 12 9 6 15"/> : <polyline points="6 9 12 15 18 9"/>}
+              </svg>
+            </button>
+            {productsOpen && (
+              <div className="mt-2 space-y-1.5">
+                {ingredients.filter(f => f.productName.trim()).map((form, i) => {
+                  const effectiveQty = form.unit === 'Qty' ? (parseInt(form.measure) || 1) : form.qty;
+                  const searchLabel = form.searchTerm
+                    ? `${effectiveQty}x ${form.searchTerm}`
+                    : `${effectiveQty}x ${form.productName}`;
+                  return (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="flex-1 text-xs" style={{ color: form.searchTerm ? 'var(--text-1)' : 'var(--text-3)' }}>
+                        {searchLabel}
+                      </span>
+                      {form.unit !== 'Qty' && (
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => updateFormField(i, 'qty', Math.max(1, form.qty - 1))}
+                            className="w-5 h-5 rounded text-xs flex items-center justify-center"
+                            style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
+                          >−</button>
+                          <span className="text-xs w-4 text-center" style={{ color: 'var(--text-1)' }}>{form.qty}</span>
+                          <button
+                            type="button"
+                            onClick={() => updateFormField(i, 'qty', form.qty + 1)}
+                            className="w-5 h-5 rounded text-xs flex items-center justify-center"
+                            style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
+                          >+</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div>
@@ -892,8 +1002,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   const [photoUrl, setPhotoUrl] = useState('');
   const [photoPreview, setPhotoPreview] = useState('');
   const [pendingPhotoDataUrl, setPendingPhotoDataUrl] = useState<string | null>(null);
-  const [ingredients, setIngredients] = useState<Ingredient[]>([{ productName: '', searchTerm: '', quantity: 1 }]);
-  const [newIngredient, setNewIngredient] = useState('');
+  const [ingredients, setIngredients] = useState<IngredientForm[]>([{ productName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
@@ -959,26 +1068,20 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     return data.url ?? null;
   };
 
-  const updateIngredientName = (i: number, value: string) =>
-    setIngredients(prev => prev.map((ing, idx) => idx === i ? { ...ing, productName: value, searchTerm: value } : ing));
-
-  const updateIngredientQty = (i: number, delta: number) =>
-    setIngredients(prev => prev.map((ing, idx) => idx === i ? { ...ing, quantity: Math.max(1, (ing.quantity ?? 1) + delta) } : ing));
+  const updateFormField = (i: number, field: keyof IngredientForm, value: string | number) =>
+    setIngredients(prev => prev.map((ing, idx) => {
+      if (idx !== i) return ing;
+      if (field === 'productName') return { ...ing, productName: value as string, searchTerm: null };
+      return { ...ing, [field]: value };
+    }));
 
   const removeIngredient = (i: number) =>
     setIngredients(prev => prev.filter((_, idx) => idx !== i));
 
-  const addIngredient = () => {
-    const trimmed = newIngredient.trim();
-    if (!trimmed) return;
-    setIngredients(prev => [...prev, { productName: trimmed, searchTerm: trimmed, quantity: 1 }]);
-    setNewIngredient('');
-  };
-
   const handleSave = async () => {
     if (!name.trim()) { setError('Meal name is required.'); return; }
     if (!storeId) { setError('Please select a store.'); return; }
-    const validIngredients = ingredients.filter(i => i.productName.trim());
+    const validIngredients = ingredients.filter(i => i.productName.trim()).map(fromFormIng);
     if (validIngredients.length === 0) { setError('Add at least one ingredient.'); return; }
     if (serves.trim() && !/^\d+(-\d+)?$/.test(serves.trim())) { setError('Serves must be a number or range (e.g. 4 or 2-4).'); return; }
     setSaving(true); setError('');
@@ -1181,37 +1284,47 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Ingredients ({ingredients.filter(i => i.productName.trim()).length})</label>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Measurements ({ingredients.filter(i => i.productName.trim()).length})</label>
             <div className="space-y-1.5 max-h-52 overflow-y-auto mb-2">
               {ingredients.map((ing, i) => (
-                <div key={i} className="flex items-center gap-2">
+                <div key={i} className="flex items-center gap-1.5">
                   <input
                     type="text"
                     value={ing.productName}
-                    onChange={e => updateIngredientName(i, e.target.value)}
-                    placeholder="e.g., Chicken breast"
+                    onChange={e => updateFormField(i, 'productName', e.target.value)}
+                    placeholder="Ingredient"
                     className="flex-1 rounded-lg px-2 py-1.5 text-xs focus:outline-none"
                     style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                   />
-                  <button type="button" onClick={() => updateIngredientQty(i, -1)} className="w-6 h-6 text-ml-t2 rounded text-xs leading-none flex items-center justify-center transition-colors" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>−</button>
-                  <span className="text-xs text-ml-t2 w-4 text-center">{ing.quantity ?? 1}</span>
-                  <button type="button" onClick={() => updateIngredientQty(i, 1)} className="w-6 h-6 text-ml-t2 rounded text-xs leading-none flex items-center justify-center transition-colors" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>+</button>
-                  <button type="button" onClick={() => removeIngredient(i)} className="text-xs ml-1 transition-colors" style={{ color: 'var(--brand)' }}>✕</button>
+                  <input
+                    type={ing.unit === 'Qty' ? 'number' : 'text'}
+                    value={ing.measure}
+                    min={ing.unit === 'Qty' ? 1 : undefined}
+                    onChange={e => updateFormField(i, 'measure', e.target.value)}
+                    placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                    className="rounded-lg px-2 py-1.5 text-xs focus:outline-none text-center"
+                    style={{ width: '52px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+                  />
+                  <select
+                    value={ing.unit}
+                    onChange={e => updateFormField(i, 'unit', e.target.value)}
+                    className="rounded-lg px-1 py-1.5 text-xs focus:outline-none"
+                    style={{ width: '72px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+                  >
+                    {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                  <button type="button" onClick={() => removeIngredient(i)} className="text-xs transition-colors flex-shrink-0" style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer' }}>✕</button>
                 </div>
               ))}
             </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newIngredient}
-                onChange={e => setNewIngredient(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addIngredient(); } }}
-                placeholder="Add ingredient…"
-                className="flex-1 rounded-lg px-2 py-1.5 text-xs focus:outline-none"
-                style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-              />
-              <button type="button" onClick={addIngredient} className="px-3 py-1.5 text-xs rounded-lg transition-colors" style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>+ Add</button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setIngredients(prev => [...prev, { productName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
+              className="text-xs transition-colors"
+              style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              + Add ingredient
+            </button>
           </div>
 
           <div>
@@ -1260,7 +1373,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
 function MealDetailModal({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
   krogerConnected, krogerLocations,
-  onEdit, onDelete, onShare, onClose, onCreatorClick,
+  onEdit, onDelete, onShare, onClose, onCreatorClick, accessToken,
 }: {
   meal: Meal;
   isPro: boolean;
@@ -1274,10 +1387,15 @@ function MealDetailModal({
   onShare: () => void;
   onClose: () => void;
   onCreatorClick?: (id: string) => void;
+  accessToken: string;
 }) {
   const dragRef = useRef(false);
   const [krogerLoading, setKrogerLoading] = useState(false);
   const [krogerResult, setKrogerResult] = useState<{ added: string[]; notFound: string[] } | null>(null);
+  const [productsOpen, setProductsOpen] = useState(false);
+  const [productIngredients, setProductIngredients] = useState<Ingredient[]>(
+    meal.ingredients.map(normIng)
+  );
 
   const krogerLocationId = krogerLocations[meal.store_id]?.locationId ?? null;
 
@@ -1293,7 +1411,7 @@ function MealDetailModal({
       const res = await fetch('/api/kroger/add-to-cart', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ ingredients: meal.ingredients, locationId: krogerLocationId }),
+        body: JSON.stringify({ ingredients: productIngredients.map(i => ({ productName: i.productName, quantity: i.qty })), locationId: krogerLocationId }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -1400,12 +1518,16 @@ function MealDetailModal({
           )}
 
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide mb-2.5" style={{ color: 'var(--text-3)' }}>Ingredients</p>
+            <p className="text-xs font-semibold uppercase tracking-wide mb-2.5" style={{ color: 'var(--text-3)' }}>Measurements</p>
             <ul className="space-y-2">
-              {meal.ingredients.map((ing, i) => (
-                <li key={i} className="flex items-center justify-between gap-4" style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                  <span className="text-sm text-ml-t1">{ing.productName}</span>
-                  <span className="text-xs font-medium text-ml-t3 flex-shrink-0">×{ing.quantity ?? 1}</span>
+              {productIngredients.map((ing, i) => (
+                <li
+                  key={i}
+                  className="text-sm"
+                  style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px', color: ing.searchTerm ? 'var(--brand)' : 'var(--text-1)', cursor: ing.searchTerm ? 'help' : 'default' }}
+                  title={ing.searchTerm ? `${ing.qty}x ${ing.searchTerm}` : undefined}
+                >
+                  {fmtMeasurement(ing)}
                 </li>
               ))}
             </ul>
@@ -1417,6 +1539,67 @@ function MealDetailModal({
               <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.recipe}</p>
             </div>
           )}
+
+          {/* Products section */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setProductsOpen(v => !v)}
+              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide"
+              style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              Products ({productIngredients.length})
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                {productsOpen ? <polyline points="18 15 12 9 6 15"/> : <polyline points="6 9 12 15 18 9"/>}
+              </svg>
+            </button>
+            {productsOpen && (
+              <div className="mt-2 space-y-1.5">
+                {productIngredients.map((ing, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="flex-1 text-xs" style={{ color: ing.searchTerm ? 'var(--text-1)' : 'var(--text-3)' }}>
+                      {ing.searchTerm ? `${ing.qty}x ${ing.searchTerm}` : `${ing.qty}x ${ingSearchTerm(ing)}`}
+                    </span>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = productIngredients.map((pi, idx) =>
+                            idx === i ? { ...pi, qty: Math.max(1, pi.qty - 1) } : pi
+                          );
+                          setProductIngredients(updated);
+                          fetch(`/api/meals/${meal.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+                            body: JSON.stringify({ ingredients: updated }),
+                          }).catch(() => {});
+                        }}
+                        className="w-5 h-5 rounded text-xs flex items-center justify-center"
+                        style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
+                      >−</button>
+                      <span className="text-xs w-4 text-center" style={{ color: 'var(--text-1)' }}>{ing.qty}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = productIngredients.map((pi, idx) =>
+                            idx === i ? { ...pi, qty: pi.qty + 1 } : pi
+                          );
+                          setProductIngredients(updated);
+                          fetch(`/api/meals/${meal.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+                            body: JSON.stringify({ ingredients: updated }),
+                          }).catch(() => {});
+                        }}
+                        className="w-5 h-5 rounded text-xs flex items-center justify-center"
+                        style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
+                      >+</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Kroger result feedback */}
@@ -1469,15 +1652,16 @@ function MealDetailModal({
 function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
   const map = new Map<string, ConsolidatedIngredient>();
   for (const meal of meals) {
-    for (const ing of meal.ingredients) {
+    for (const rawIng of meal.ingredients) {
+      const ing = normIng(rawIng);
       const key = (ing.productName ?? '').toLowerCase().trim();
       if (!key) continue;
       if (map.has(key)) {
         const e = map.get(key)!;
-        e.quantity += ing.quantity ?? 1;
+        e.qty += ing.qty ?? 1;
         if (!e.mealIds.includes(meal.id)) { e.mealIds.push(meal.id); e.mealNames.push(meal.name); }
       } else {
-        map.set(key, { productName: ing.productName, quantity: ing.quantity ?? 1, mealIds: [meal.id], mealNames: [meal.name] });
+        map.set(key, { productName: ing.productName, qty: ing.qty ?? 1, mealIds: [meal.id], mealNames: [meal.name] });
       }
     }
   }
@@ -1538,7 +1722,7 @@ function KrogerCartFlow({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
-          ingredients: items.filter((it, i) => checkedItems[i] && it.quantity > 0).map(i => ({ productName: i.productName, quantity: i.quantity })),
+          ingredients: items.filter((it, i) => checkedItems[i] && it.qty > 0).map(i => ({ productName: i.productName, quantity: i.qty })),
           locationId,
         }),
       });
@@ -1652,7 +1836,7 @@ function KrogerCartFlow({
   };
 
   const updateQty = (i: number, delta: number) =>
-    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: Math.max(0, it.quantity + delta) } : it));
+    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, qty: Math.max(0, it.qty + delta) } : it));
 
   const toggleChecked = (i: number) =>
     setCheckedItems(prev => prev.map((c, idx) => idx === i ? !c : c));
@@ -1693,7 +1877,7 @@ function KrogerCartFlow({
               </div>
               {items.map((it, i) => {
                 const checked = checkedItems[i] ?? true;
-                const zeroed = it.quantity === 0;
+                const zeroed = it.qty === 0;
                 const excluded = !checked;
                 return (
                   <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)', opacity: excluded ? 0.45 : 1 }}>
@@ -1709,7 +1893,7 @@ function KrogerCartFlow({
                       <p className="text-xs text-ml-t3">{it.mealNames.join(', ')}</p>
                     </div>
                     <button onClick={() => updateQty(i, -1)} disabled={zeroed || excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
-                    <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.quantity}</span>
+                    <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.qty}</span>
                     <button onClick={() => updateQty(i, 1)} disabled={excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
                   </div>
                 );
@@ -1719,7 +1903,7 @@ function KrogerCartFlow({
             <div className="px-5 py-4 flex gap-3" style={{ borderTop: '1px solid var(--border)' }}>
               <button
                 onClick={handleStartSearch}
-                disabled={items.filter((it, i) => checkedItems[i] && it.quantity > 0).length === 0}
+                disabled={items.filter((it, i) => checkedItems[i] && it.qty > 0).length === 0}
                 className="flex-1 text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-40"
                 style={{ background: storeColor }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
@@ -1736,7 +1920,7 @@ function KrogerCartFlow({
         {step === 'searching' && (
           <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
             <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
-            <p className="text-sm text-ml-t2">{(() => { const n = items.filter((it, i) => checkedItems[i] && it.quantity > 0).length; return `Searching for ${n} ingredient${n !== 1 ? 's' : ''}…`; })()}</p>
+            <p className="text-sm text-ml-t2">{(() => { const n = items.filter((it, i) => checkedItems[i] && it.qty > 0).length; return `Searching for ${n} ingredient${n !== 1 ? 's' : ''}…`; })()}</p>
           </div>
         )}
 
@@ -1958,7 +2142,7 @@ function DashboardMealCard({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
   krogerConnected, krogerLocations,
   selectMode, selected, onToggleSelect,
-  onEdit, onDelete, onShare, onRemovePhoto, onCreatorClick,
+  onEdit, onDelete, onShare, onRemovePhoto, onCreatorClick, accessToken,
 }: {
   meal: Meal;
   isPro: boolean;
@@ -1975,6 +2159,7 @@ function DashboardMealCard({
   onShare: () => void;
   onRemovePhoto: () => void;
   onCreatorClick?: (id: string) => void;
+  accessToken: string;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -1998,6 +2183,7 @@ function DashboardMealCard({
           onShare={onShare}
           onClose={() => setDetailOpen(false)}
           onCreatorClick={onCreatorClick}
+          accessToken={accessToken}
         />
       )}
 
@@ -2628,6 +2814,7 @@ export default function MyMealsPage() {
                       onShare={() => handleShare(meal)}
                       onRemovePhoto={() => handleRemovePhoto(meal)}
                       onCreatorClick={id => setCreatorPopupId(id)}
+                      accessToken={accessToken}
                     />
                     </div>
                   ))}

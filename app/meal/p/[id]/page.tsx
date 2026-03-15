@@ -44,8 +44,25 @@ const STORES = [
 
 interface Ingredient {
   productName: string;
-  searchTerm?: string;
-  quantity?: number;
+  searchTerm?: string | null;
+  qty: number;
+  unit: string;
+  measure?: string | null;
+}
+
+function normIng(raw: any): Ingredient {
+  return {
+    productName: raw.productName ?? raw.product_name ?? raw.name ?? '',
+    searchTerm: raw.searchTerm ?? raw.search_term ?? null,
+    qty: raw.qty ?? raw.quantity ?? 1,
+    unit: raw.unit ?? 'qty',
+    measure: raw.measure ?? null,
+  };
+}
+
+function fmtMeasurement(ing: Ingredient): string {
+  if (!ing.unit || ing.unit === 'qty') return `${ing.productName}, ${ing.qty ?? 1}`;
+  return `${ing.productName}, ${ing.measure ?? ''} ${ing.unit}`;
 }
 
 interface PresetMeal {
@@ -101,7 +118,7 @@ export default function SharedPresetMealPage() {
         return r.json();
       })
       .then(data => {
-        if (data?.meal) setMeal(data.meal);
+        if (data?.meal) setMeal({ ...data.meal, ingredients: (data.meal.ingredients ?? []).map(normIng) });
       })
       .catch(() => setNotFound(true))
       .finally(() => setLoading(false));
@@ -275,16 +292,15 @@ export default function SharedPresetMealPage() {
             </p>
           )}
 
-          {/* Ingredients */}
+          {/* Measurements */}
           <div className="mb-4">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-              Ingredients ({meal.ingredients.length})
+              Measurements ({meal.ingredients.length})
             </p>
             <ul className="space-y-1">
               {meal.ingredients.map((item, i) => (
-                <li key={i} className="flex items-center justify-between gap-8 text-sm text-gray-700">
-                  <span>{item.productName}</span>
-                  <span className="text-xs font-semibold text-gray-400 flex-shrink-0">×{item.quantity ?? 1}</span>
+                <li key={i} className="text-sm text-gray-700">
+                  {fmtMeasurement(item)}
                 </li>
               ))}
             </ul>

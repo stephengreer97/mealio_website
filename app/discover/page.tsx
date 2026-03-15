@@ -269,8 +269,25 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
 
 interface Ingredient {
   productName: string;
-  searchTerm?: string;
-  quantity?: number;
+  searchTerm?: string | null;
+  qty: number;
+  unit: string;
+  measure?: string | null;
+}
+
+function normIng(raw: any): Ingredient {
+  return {
+    productName: raw.productName ?? raw.product_name ?? raw.name ?? '',
+    searchTerm: raw.searchTerm ?? raw.search_term ?? null,
+    qty: raw.qty ?? raw.quantity ?? 1,
+    unit: raw.unit ?? 'qty',
+    measure: raw.measure ?? null,
+  };
+}
+
+function fmtMeasurement(ing: Ingredient): string {
+  if (!ing.unit || ing.unit === 'qty') return `${ing.productName}, ${ing.qty ?? 1}`;
+  return `${ing.productName}, ${ing.measure ?? ''} ${ing.unit}`;
 }
 
 interface PresetMeal {
@@ -744,12 +761,11 @@ function MealDetailModal({
           )}
 
           <div>
-            <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Ingredients</p>
+            <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Measurements</p>
             <ul className="space-y-1.5">
               {meal.ingredients.map((ing, i) => (
-                <li key={i} className="flex items-center justify-between gap-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <span className="text-sm" style={{ color: 'var(--text-1)' }}>{(ing as any).productName ?? (ing as any).product_name ?? (ing as any).name ?? ''}</span>
-                  <span className="text-xs font-medium flex-shrink-0" style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono, monospace)' }}>×{ing.quantity ?? 1}</span>
+                <li key={i} className="py-2 text-sm" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-1)' }}>
+                  {fmtMeasurement(normIng(ing))}
                 </li>
               ))}
             </ul>
