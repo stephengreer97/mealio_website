@@ -87,14 +87,6 @@ export default function AccountPage() {
   const [passwordSuccess, setPasswordSuccess] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
 
-  const [creatorPhotoUrl, setCreatorPhotoUrl] = useState<string | null>(null);
-  const [creatorPhotoPreview, setCreatorPhotoPreview] = useState('');
-  const [isCreator, setIsCreator] = useState(false);
-  const [photoUploading, setPhotoUploading] = useState(false);
-  const [photoSaving, setPhotoSaving] = useState(false);
-  const [photoError, setPhotoError] = useState('');
-  const [photoSuccess, setPhotoSuccess] = useState('');
-
   const [deletedMeals, setDeletedMeals] = useState<DeletedMeal[]>([]);
   const [deletedMealsOpen, setDeletedMealsOpen] = useState(false);
   const [deletedMealsLoading, setDeletedMealsLoading] = useState(false);
@@ -139,11 +131,6 @@ export default function AccountPage() {
 
       const data = await response.json();
       setUser(data.user);
-
-      fetch('/api/creator/me', { headers: { Authorization: `Bearer ${accessToken}` } })
-        .then(r => r.ok ? r.json() : null)
-        .then(d => { if (d?.creator) { setIsCreator(true); setCreatorPhotoUrl(d.creator.photo_url ?? null); } })
-        .catch(() => {});
 
       fetch('/api/creators/following', { headers: { Authorization: `Bearer ${accessToken}` } })
         .then(r => r.ok ? r.json() : { creators: [] })
@@ -226,49 +213,6 @@ export default function AccountPage() {
     } catch (err: any) {
       setPasswordError(err.message);
     } finally { setPasswordLoading(false); }
-  };
-
-  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setPhotoUploading(true);
-    setPhotoError('');
-    setPhotoSuccess('');
-    const reader = new FileReader();
-    reader.onload = async ev => {
-      const imageData = ev.target?.result as string;
-      setCreatorPhotoPreview(imageData);
-      try {
-        const accessToken = localStorage.getItem('accessToken');
-        const res = await fetch('/api/images/upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-          body: JSON.stringify({ imageData }),
-        });
-        const data = await res.json();
-        if (res.ok) setCreatorPhotoUrl(data.url);
-        else setPhotoError(data.error || 'Upload failed.');
-      } catch { setPhotoError('Upload failed.'); }
-      finally { setPhotoUploading(false); }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSavePhoto = async () => {
-    setPhotoSaving(true);
-    setPhotoError('');
-    setPhotoSuccess('');
-    try {
-      const accessToken = localStorage.getItem('accessToken');
-      const res = await fetch('/api/creator/me', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ photoUrl: creatorPhotoUrl }),
-      });
-      if (res.ok) { setPhotoSuccess('Photo saved!'); setCreatorPhotoPreview(''); }
-      else { const d = await res.json(); setPhotoError(d.error || 'Save failed.'); }
-    } catch { setPhotoError('Save failed.'); }
-    finally { setPhotoSaving(false); }
   };
 
   const handleUnfollow = async (creatorId: string) => {
@@ -633,62 +577,6 @@ export default function AccountPage() {
               </div>
             )}
           </SectionCard>
-
-          {/* Creator Photo */}
-          {isCreator && (
-            <SectionCard title="Creator Photo" subtitle="This photo appears next to your name in the Discover tab.">
-              <div className="flex items-center gap-5">
-                <div className="relative flex-shrink-0">
-                  <div
-                    className="rounded-full overflow-hidden flex items-center justify-center"
-                    style={{ width: '72px', height: '72px', border: '2px solid var(--border)', background: 'var(--surface)' }}
-                  >
-                    {(creatorPhotoPreview || creatorPhotoUrl) ? (
-                      <img src={creatorPhotoPreview || creatorPhotoUrl!} alt="Creator photo" className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="text-base font-bold" style={{ color: 'var(--text-3)' }}>
-                        {user?.email?.[0]?.toUpperCase()}
-                      </span>
-                    )}
-                  </div>
-                  {photoUploading && (
-                    <div className="absolute inset-0 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.75)' }}>
-                      <div className="w-5 h-5 rounded-full animate-spin" style={{ border: '2px solid var(--border)', borderTopColor: 'var(--brand)' }} />
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <label
-                    htmlFor="creatorPhotoInput"
-                    className="inline-block cursor-pointer text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
-                    style={{ border: '1.5px solid var(--border)', color: 'var(--text-1)', background: 'var(--surface-raised)' }}
-                  >
-                    {(creatorPhotoPreview || creatorPhotoUrl) ? 'Change Photo' : 'Upload Photo'}
-                  </label>
-                  <input id="creatorPhotoInput" type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
-
-                  {creatorPhotoPreview && !photoUploading && (
-                    <div>
-                      <button
-                        onClick={handleSavePhoto}
-                        disabled={photoSaving}
-                        className="text-sm font-semibold px-4 py-2 rounded-xl transition-colors disabled:opacity-50"
-                        style={{ background: 'var(--brand)', color: '#fff', border: 'none', cursor: 'pointer' }}
-                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
-                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
-                      >
-                        {photoSaving ? 'Saving…' : 'Save Photo'}
-                      </button>
-                    </div>
-                  )}
-
-                  {photoError && <p className="text-xs" style={{ color: 'var(--error)' }}>{photoError}</p>}
-                  {photoSuccess && <p className="text-xs" style={{ color: 'var(--success)' }}>{photoSuccess}</p>}
-                </div>
-              </div>
-            </SectionCard>
-          )}
 
           </div>{/* end left column */}
 

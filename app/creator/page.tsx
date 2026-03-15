@@ -508,6 +508,123 @@ function EditPresetMealModal({
   );
 }
 
+// ── Meal View Modal ───────────────────────────────────────────────────────────
+
+function MealViewModal({
+  meal, onEdit, onClose,
+}: {
+  meal: CreatorMeal;
+  onEdit: () => void;
+  onClose: () => void;
+}) {
+  const dragRef = useRef(false);
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4"
+      onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
+      onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
+    >
+      <div className="bg-white w-full sm:rounded-2xl sm:max-w-lg rounded-t-2xl shadow-2xl flex flex-col max-h-[92vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 flex-shrink-0">
+          <h2 className="text-base font-bold text-gray-900 truncate pr-4">{meal.name}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1">
+          {meal.photo_url && (
+            <img src={meal.photo_url} alt={meal.name} className="w-full h-52 object-cover" />
+          )}
+
+          <div className="p-5 space-y-4">
+            {/* Meta row */}
+            {(meal.difficulty != null || meal.serves || meal.source) && (
+              <div className="flex items-center gap-4 flex-wrap">
+                {meal.difficulty != null && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-400">Difficulty</span>
+                    <div className="flex gap-0.5">
+                      {[1,2,3,4,5].map(i => (
+                        <span key={i} className={`text-sm ${i <= meal.difficulty! ? 'text-red-500' : 'text-gray-200'}`}>●</span>
+                      ))}
+                    </div>
+                    <span className="text-xs text-gray-400">{DIFFICULTY_LABELS[meal.difficulty]}</span>
+                  </div>
+                )}
+                {meal.serves && (
+                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                    <svg width="12" height="12" viewBox="0 0 24 20" fill="currentColor"><circle cx="12" cy="6" r="5"/><path d="M1 20c0-5 5-8 11-8s11 3 11 8z"/></svg>
+                    {meal.serves}
+                  </span>
+                )}
+                {meal.source && (
+                  <a href={meal.source} target="_blank" rel="noopener noreferrer" className="text-xs text-red-600 hover:text-red-700 truncate max-w-[180px]">
+                    {meal.source.replace(/^https?:\/\/(www\.)?/, '')}
+                  </a>
+                )}
+              </div>
+            )}
+
+            {/* Tags */}
+            {meal.tags && meal.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {meal.tags.map(tag => (
+                  <span key={tag} className="text-xs bg-gray-100 text-gray-600 px-2.5 py-1 rounded-full font-medium">{tag}</span>
+                ))}
+              </div>
+            )}
+
+            {/* Story */}
+            {meal.story && (
+              <p className="text-sm text-gray-500 italic leading-relaxed whitespace-pre-wrap">{meal.story}</p>
+            )}
+
+            {/* Ingredients */}
+            <div>
+              <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Ingredients ({meal.ingredients.length})</p>
+              <ul className="space-y-1.5">
+                {meal.ingredients.map((ing, i) => (
+                  <li key={i} className="flex items-center justify-between gap-4 text-sm text-gray-700">
+                    <span>{ing.productName}</span>
+                    <span className="text-xs font-semibold text-gray-400 flex-shrink-0">×{ing.quantity ?? 1}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Recipe */}
+            {meal.recipe && (
+              <div>
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Recipe</p>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap leading-relaxed">{meal.recipe}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-4 border-t border-gray-100 flex gap-3 flex-shrink-0">
+          <button
+            onClick={onEdit}
+            className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl py-2.5 text-sm transition-colors"
+          >
+            Edit Meal
+          </button>
+          <button
+            onClick={onClose}
+            className="px-5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Creator Portal ─────────────────────────────────────────────────────────────
 
 export default function CreatorPortal() {
@@ -519,6 +636,8 @@ export default function CreatorPortal() {
 
   const [copiedMealId, setCopiedMealId] = useState<string | null>(null);
   const [editingMeal, setEditingMeal] = useState<CreatorMeal | null>(null);
+  const [viewingMeal, setViewingMeal] = useState<CreatorMeal | null>(null);
+  const publishDragRef = useRef(false);
 
   // Publish form state
   const [showForm, setShowForm] = useState(false);
@@ -1040,27 +1159,34 @@ export default function CreatorPortal() {
             </div>
           )}
 
-          {/* ── Publish button / form ── */}
-          {!showForm ? (
-            <button
-              onClick={() => setShowForm(true)}
-              className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold rounded-2xl py-3.5 text-sm transition-colors flex items-center justify-center gap-2"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              Publish New Meal
-            </button>
-          ) : (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm">
-              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-50">
-                <h3 className="text-base font-bold text-gray-900">Publish a New Meal</h3>
-                <button
-                  onClick={() => { setShowForm(false); setPublishError(''); }}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              </div>
+          {/* ── Publish button ── */}
+          <button
+            onClick={() => setShowForm(true)}
+            className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold rounded-2xl py-3.5 text-sm transition-colors flex items-center justify-center gap-2"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Publish New Meal
+          </button>
 
+          {/* ── Publish modal ── */}
+          {showForm && (
+            <div
+              className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4"
+              onMouseDown={e => { publishDragRef.current = e.target !== e.currentTarget; }}
+              onClick={e => { if (e.target !== e.currentTarget || publishDragRef.current) return; setShowForm(false); setPublishError(''); }}
+            >
+              <div className="bg-white w-full sm:rounded-2xl sm:max-w-lg rounded-t-2xl shadow-2xl flex flex-col max-h-[92vh]">
+                <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+                  <h3 className="text-base font-bold text-gray-900">Publish a New Meal</h3>
+                  <button
+                    onClick={() => { setShowForm(false); setPublishError(''); }}
+                    className="text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+
+              <div className="overflow-y-auto flex-1">
               <form onSubmit={handlePublish} className="p-6 space-y-5">
 
                 {/* Name */}
@@ -1242,6 +1368,8 @@ export default function CreatorPortal() {
                   </button>
                 </div>
               </form>
+              </div>
+            </div>
             </div>
           )}
 
@@ -1260,20 +1388,24 @@ export default function CreatorPortal() {
               <div className="space-y-2">
                 {meals.map(meal => (
                   <div key={meal.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center gap-4 p-4 hover:shadow-md transition-shadow">
-                    {meal.photo_url ? (
-                      <img src={meal.photo_url} alt={meal.name} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" />
-                    ) : (
-                      <div className="w-14 h-14 rounded-xl bg-gray-100 flex-shrink-0 flex items-center justify-center text-2xl select-none">🍽️</div>
-                    )}
-
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-gray-900 text-sm leading-snug truncate">{meal.name}</div>
-                      <div className="text-xs text-gray-400 mt-0.5">
-                        <span className="font-medium text-gray-500">{meal.saves_all.toLocaleString()}</span> save{meal.saves_all !== 1 ? 's' : ''}
-                        <span className="mx-1.5 text-gray-200">·</span>
-                        Trending <span className="font-medium text-gray-500">{meal.trending_score}</span>/100
+                    <button
+                      onClick={() => setViewingMeal(meal)}
+                      className="flex items-center gap-4 flex-1 min-w-0 text-left bg-none border-none p-0 cursor-pointer"
+                    >
+                      {meal.photo_url ? (
+                        <img src={meal.photo_url} alt={meal.name} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" />
+                      ) : (
+                        <div className="w-14 h-14 rounded-xl bg-gray-100 flex-shrink-0 flex items-center justify-center text-2xl select-none">🍽️</div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-900 text-sm leading-snug truncate">{meal.name}</div>
+                        <div className="text-xs text-gray-400 mt-0.5">
+                          <span className="font-medium text-gray-500">{meal.saves_all.toLocaleString()}</span> save{meal.saves_all !== 1 ? 's' : ''}
+                          <span className="mx-1.5 text-gray-200">·</span>
+                          Trending <span className="font-medium text-gray-500">{meal.trending_score}</span>/100
+                        </div>
                       </div>
-                    </div>
+                    </button>
 
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <button
@@ -1319,6 +1451,13 @@ export default function CreatorPortal() {
         </div>
       </div>
 
+      {viewingMeal && !editingMeal && (
+        <MealViewModal
+          meal={viewingMeal}
+          onEdit={() => { setEditingMeal(viewingMeal); setViewingMeal(null); }}
+          onClose={() => setViewingMeal(null)}
+        />
+      )}
       {editingMeal && (
         <EditPresetMealModal
           meal={editingMeal}
