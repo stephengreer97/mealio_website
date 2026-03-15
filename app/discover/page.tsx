@@ -843,6 +843,7 @@ export default function DiscoverPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isCreator, setIsCreator] = useState(false);
   const [isFirefox, setIsFirefox] = useState(false);
 
   useEffect(() => {
@@ -908,6 +909,11 @@ export default function DiscoverPage() {
       const data = await response.json();
       setUser(data.user);
       setToken(accessToken);
+
+      fetch('/api/creator/me', { headers: { Authorization: `Bearer ${accessToken}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.creator) setIsCreator(true); })
+        .catch(() => {});
 
       fetch('/api/meals', {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -1086,6 +1092,23 @@ const map = new Map<string, string[]>();
         <div className="w-full py-2.5 px-4 text-center text-sm" style={{ background: 'var(--brand-light)', borderBottom: '1px solid var(--brand-border)', color: 'var(--brand)' }}>
           <span className="font-medium">Free plan: </span>limited to 3 saved meals.{' '}
           <a href="/pricing" className="underline font-semibold hover:opacity-80 transition-opacity">Upgrade to Full Access →</a>
+        </div>
+      )}
+
+      {isCreator && (
+        <div className="w-full" style={{ background: 'var(--brand)', borderBottom: '1px solid var(--brand-dark)' }}>
+          <div className="max-w-7xl mx-auto px-6 py-2.5 flex items-center justify-between gap-4">
+            <p className="text-sm font-medium text-white">
+              🍽️ You&apos;re a Mealio Creator — manage your meals and track your stats in the Creator Portal.
+            </p>
+            <a
+              href="/creator"
+              className="text-xs font-semibold whitespace-nowrap px-3 py-1.5 rounded-lg transition-opacity hover:opacity-90"
+              style={{ background: 'rgba(255,255,255,0.2)', color: '#fff', border: '1px solid rgba(255,255,255,0.3)' }}
+            >
+              Go to Portal →
+            </a>
+          </div>
         </div>
       )}
 
