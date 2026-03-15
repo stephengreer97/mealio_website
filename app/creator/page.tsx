@@ -894,8 +894,7 @@ export default function CreatorPortal() {
               {/* Recipe */}
               <div style={{ marginBottom: '16px' }}>
                 <label style={labelStyle}>Recipe Instructions <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <textarea value={mealRecipe} onChange={e => setMealRecipe(e.target.value)} rows={6} placeholder={'1. Boil 4 cups of water...
-2. Add 200g of noodles...'} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+                <textarea value={mealRecipe} onChange={e => setMealRecipe(e.target.value)} rows={6} placeholder={'1. Boil 4 cups of water...\n2. Add 200g of noodles...'} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
               </div>
 
               {/* Tags */}
