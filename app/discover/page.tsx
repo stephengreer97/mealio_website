@@ -1102,14 +1102,14 @@ const map = new Map<string, string[]>();
           <TrendingCarousel meals={meals} onMealClick={setCarouselMeal} />
 
           {isCreator && (
-            <div className="flex items-center justify-between gap-4 mt-4 px-4 py-3 rounded-xl" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)' }}>
-              <p className="text-sm" style={{ color: 'var(--text-2)' }}>
+            <div className="flex items-center justify-between gap-4 my-4 px-4 py-3 rounded-xl" style={{ background: '#fff1f2', border: '1px solid #fecdd3' }}>
+              <p className="text-sm font-medium" style={{ color: '#be123c' }}>
                 You&apos;re a Mealio Creator — manage your meals and track your stats in the Creator Portal.
               </p>
               <a
                 href="/creator"
                 className="text-xs font-semibold whitespace-nowrap px-3 py-1.5 rounded-lg transition-opacity hover:opacity-80"
-                style={{ background: 'var(--brand)', color: '#fff' }}
+                style={{ background: '#be123c', color: '#fff' }}
               >
                 Go to Portal →
               </a>
