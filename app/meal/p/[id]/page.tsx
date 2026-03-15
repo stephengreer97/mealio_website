@@ -52,6 +52,7 @@ interface PresetMeal {
   id: string;
   name: string;
   author?: string | null;
+  creator_id?: string | null;
   ingredients: Ingredient[];
   difficulty?: number | null;
   serves?: string | null;
@@ -231,7 +232,9 @@ export default function SharedPresetMealPage() {
 
           {/* Author */}
           {meal.author && (
-            <p className="text-sm text-gray-500 mb-2">by {meal.author}</p>
+            meal.creator_id
+              ? <a href={`/discover?creator=${meal.creator_id}`} className="text-sm text-red-600 hover:text-red-700 mb-2 block">by {meal.author}</a>
+              : <p className="text-sm text-gray-500 mb-2">by {meal.author}</p>
           )}
 
           {/* Difficulty + Serves + Source */}

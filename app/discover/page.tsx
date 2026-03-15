@@ -887,6 +887,11 @@ export default function DiscoverPage() {
   useEffect(() => { verifyAuth(); }, []);
 
   useEffect(() => {
+    const creatorId = new URLSearchParams(window.location.search).get('creator');
+    if (creatorId) setCreatorPopupId(creatorId);
+  }, []);
+
+  useEffect(() => {
     if (!filterOpen) return;
     const handle = (e: MouseEvent) => {
       if (filterBtnRef.current && !filterBtnRef.current.contains(e.target as Node)) setFilterOpen(false);
