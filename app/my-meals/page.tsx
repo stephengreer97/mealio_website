@@ -1524,8 +1524,8 @@ function MealDetailModal({
                 <li
                   key={i}
                   className="text-sm"
-                  style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px', color: ing.searchTerm ? 'var(--brand)' : 'var(--text-1)', cursor: ing.searchTerm ? 'help' : 'default' }}
-                  title={ing.searchTerm ? `${ing.qty}x ${ing.searchTerm}` : undefined}
+                  style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px', color: ing.searchTerm ? '#3b82f6' : 'var(--text-1)', cursor: ing.searchTerm ? 'help' : 'default' }}
+                  title={ing.searchTerm ? (ing.unit === 'qty' ? `${ing.qty}x ${ing.searchTerm}` : ing.searchTerm) : undefined}
                 >
                   {fmtMeasurement(ing)}
                 </li>
@@ -1555,48 +1555,17 @@ function MealDetailModal({
             </button>
             {productsOpen && (
               <div className="mt-2 space-y-1.5">
-                {productIngredients.map((ing, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className="flex-1 text-xs" style={{ color: ing.searchTerm ? 'var(--text-1)' : 'var(--text-3)' }}>
-                      {ing.searchTerm ? `${ing.qty}x ${ing.searchTerm}` : `${ing.qty}x ${ingSearchTerm(ing)}`}
-                    </span>
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const updated = productIngredients.map((pi, idx) =>
-                            idx === i ? { ...pi, qty: Math.max(1, pi.qty - 1) } : pi
-                          );
-                          setProductIngredients(updated);
-                          fetch(`/api/meals/${meal.id}`, {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-                            body: JSON.stringify({ ingredients: updated }),
-                          }).catch(() => {});
-                        }}
-                        className="w-5 h-5 rounded text-xs flex items-center justify-center"
-                        style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
-                      >−</button>
-                      <span className="text-xs w-4 text-center" style={{ color: 'var(--text-1)' }}>{ing.qty}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const updated = productIngredients.map((pi, idx) =>
-                            idx === i ? { ...pi, qty: pi.qty + 1 } : pi
-                          );
-                          setProductIngredients(updated);
-                          fetch(`/api/meals/${meal.id}`, {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-                            body: JSON.stringify({ ingredients: updated }),
-                          }).catch(() => {});
-                        }}
-                        className="w-5 h-5 rounded text-xs flex items-center justify-center"
-                        style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
-                      >+</button>
+                {productIngredients.map((ing, i) => {
+                  const label = ing.searchTerm ? ing.searchTerm : ingSearchTerm(ing);
+                  const displayLabel = ing.unit === 'qty' ? `${ing.qty}x ${label}` : label;
+                  return (
+                    <div key={i} className="flex items-center">
+                      <span className="flex-1 text-xs" style={{ color: ing.searchTerm ? 'var(--text-1)' : 'var(--text-3)' }}>
+                        {displayLabel}
+                      </span>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
