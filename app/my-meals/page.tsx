@@ -1667,13 +1667,13 @@ function KrogerCartFlow({
         {step === 'qty' && (
           <>
             <div className="overflow-y-auto flex-1 px-5 py-4 space-y-1">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs text-ml-t3">
-                  {meals.length} meal{meals.length !== 1 ? 's' : ''} · {items.length} ingredient{items.length !== 1 ? 's' : ''}
-                </p>
+              <div className="flex items-center gap-3 mb-3">
                 <button onClick={toggleAll} className="text-xs font-medium" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}>
                   {allChecked ? 'Uncheck all' : 'Check all'}
                 </button>
+                <p className="text-xs text-ml-t3">
+                  {meals.length} meal{meals.length !== 1 ? 's' : ''} · {items.length} ingredient{items.length !== 1 ? 's' : ''}
+                </p>
               </div>
               {items.map((it, i) => {
                 const checked = checkedItems[i] ?? true;
