@@ -95,16 +95,9 @@ export default function AppHeader() {
             ]}
           />
 
-          <DropdownMenu
-            label="Account"
-            active={pathname === '/account'}
-            onLabelClick={() => router.push('/account')}
-            items={[
-              ...(isAdmin   ? [{ label: 'Admin',          onClick: () => router.push('/admin')   }] : []),
-              ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator') }] : []),
-              { label: 'Manage Account', onClick: () => router.push('/account') },
-            ]}
-          />
+          {isCreator && <NavButton label="Creator" active={pathname.startsWith('/creator')} onClick={() => router.push('/creator')} />}
+          {isAdmin   && <NavButton label="Admin"   active={pathname === '/admin'}           onClick={() => router.push('/admin')}   />}
+          <NavButton label="Account" active={isNavActive('/account')} onClick={() => router.push('/account')} />
         </nav>
 
         {/* Right — Log Out (desktop) + Hamburger (mobile) */}
