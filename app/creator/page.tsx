@@ -255,7 +255,7 @@ function EditPresetMealModal({
       } else {
         setError(data.error || 'No image found for this meal name.');
       }
-    } catch (err) {
+    } catch {
       setError('Failed to generate photo.');
     } finally {
       setGenerating(false);
@@ -308,7 +308,6 @@ function EditPresetMealModal({
         return u.startsWith('http://') || u.startsWith('https://') ? u : `https://${u}`;
       };
 
-      // If the user picked a new photo, upload it now (avoids race condition)
       let finalPhotoUrl = photoUrl || null;
       if (pendingPhotoDataUrl) {
         const uploaded = await uploadPhoto(pendingPhotoDataUrl);
@@ -509,6 +508,8 @@ function EditPresetMealModal({
   );
 }
 
+// ── Creator Portal ─────────────────────────────────────────────────────────────
+
 export default function CreatorPortal() {
   const router = useRouter();
   const [creator, setCreator] = useState<Creator | null>(null);
@@ -543,14 +544,28 @@ export default function CreatorPortal() {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle state
+  // Handle state (kept for backward compat, consumed by saveProfile)
   const [handleInput, setHandleInput]     = useState('');
   const [handleSaving, setHandleSaving]   = useState(false);
   const [handleError, setHandleError]     = useState('');
   const [handleSuccess, setHandleSuccess] = useState('');
 
+  // Profile editing state
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileBio, setProfileBio]         = useState('');
+  const [profileWebsite, setProfileWebsite] = useState('');
+  const [profilePhotoFile, setProfilePhotoFile]       = useState<File | null>(null);
+  const [profilePhotoPreview, setProfilePhotoPreview] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError]   = useState('');
+  const profilePhotoInputRef = useRef<HTMLInputElement>(null);
+
+  // UI state
+  const [showEarnings, setShowEarnings] = useState(false);
+
   useEffect(() => { loadPortal(); }, []);
 
+  // Legacy saveHandle — kept for functional compatibility
   const saveHandle = async () => {
     setHandleError('');
     setHandleSuccess('');
@@ -569,6 +584,61 @@ export default function CreatorPortal() {
       setTimeout(() => setHandleSuccess(''), 2500);
     } finally {
       setHandleSaving(false);
+    }
+  };
+
+  // Suppress unused-variable warnings for legacy state
+  void saveHandle; void handleSaving; void handleError; void handleSuccess;
+
+  const openEditProfile = () => {
+    setProfileBio(creator?.bio ?? '');
+    setProfileWebsite(creator?.social_handle ?? '');
+    setProfilePhotoPreview(creator?.photo_url ?? '');
+    setProfilePhotoFile(null);
+    setProfileError('');
+    setEditingProfile(true);
+  };
+
+  const cancelEditProfile = () => {
+    setEditingProfile(false);
+    setProfileError('');
+  };
+
+  const saveProfile = async () => {
+    setProfileSaving(true);
+    setProfileError('');
+    try {
+      const token = localStorage.getItem('accessToken');
+      let photoUrl: string | undefined;
+      if (profilePhotoFile) {
+        photoUrl = await uploadImageFile(profilePhotoFile, token!);
+      }
+      const body: Record<string, unknown> = {
+        bio:          profileBio.trim() || null,
+        socialHandle: profileWebsite.trim() || null,
+        handle:       handleInput.trim() || null,
+      };
+      if (photoUrl !== undefined) body.photoUrl = photoUrl;
+
+      const res = await fetch('/api/creator/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) { setProfileError(data.error || 'Failed to save.'); return; }
+      setCreator(prev => prev ? {
+        ...prev,
+        bio:           profileBio.trim() || null,
+        social_handle: profileWebsite.trim() || null,
+        handle:        handleInput.trim() || null,
+        ...(photoUrl ? { photo_url: photoUrl } : {}),
+      } : prev);
+      setEditingProfile(false);
+    } catch {
+      setProfileError('Something went wrong. Please try again.');
+    } finally {
+      setProfileSaving(false);
     }
   };
 
@@ -727,320 +797,541 @@ export default function CreatorPortal() {
 
   if (loading) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5' }}>
-        <p style={{ color: '#888' }}>Loading…</p>
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="w-8 h-8 border-4 border-red-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   const qtrComponent     = stats ? (stats.qtrPct     * 0.5).toFixed(1) : '0.0';
   const alltimeComponent = stats ? (stats.alltimePct * 0.5).toFixed(1) : '0.0';
+  const combinedShare    = stats ? (parseFloat(qtrComponent) + parseFloat(alltimeComponent)).toFixed(1) : '0.0';
 
   return (
     <>
-    <div style={{ minHeight: '100vh', background: '#f5f5f5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
-      <AppHeader />
+      <div className="min-h-screen bg-gray-50">
+        <AppHeader />
 
-      <div style={{ maxWidth: '720px', margin: '0 auto', padding: '24px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '20px' }}>
-          {creator?.photo_url ? (
-            <img src={creator.photo_url} alt={creator.display_name} style={{ width: '56px', height: '56px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: '2px solid #e5e7eb' }} />
-          ) : (
-            <div style={{ width: '56px', height: '56px', borderRadius: '50%', background: '#f3f4f6', border: '2px solid #e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px', flexShrink: 0 }}>👤</div>
-          )}
-          <div>
-            <p style={{ margin: '0 0 2px', fontSize: '12px', color: '#888' }}>Creator Portal</p>
-            <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 700, color: '#111' }}>{creator?.display_name}</h1>
-            {creator?.social_handle && <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#666' }}>{creator.social_handle}</p>}
+        <div className="max-w-3xl mx-auto px-4 py-8 space-y-4">
+
+          {/* ── Profile card ── */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            {!editingProfile ? (
+              <div className="p-6">
+                <div className="flex items-start gap-5">
+                  {/* Avatar */}
+                  <div className="flex-shrink-0">
+                    {creator?.photo_url ? (
+                      <img src={creator.photo_url} alt={creator.display_name} className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
+                    ) : (
+                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center text-3xl select-none">👤</div>
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Creator Portal</p>
+                        <h1 className="text-xl font-bold text-gray-900 leading-tight">{creator?.display_name}</h1>
+                        {creator?.social_handle && (
+                          <p className="text-sm text-gray-500 mt-0.5">{creator.social_handle}</p>
+                        )}
+                        {creator?.bio && (
+                          <p className="text-sm text-gray-600 mt-2 leading-relaxed">{creator.bio}</p>
+                        )}
+                        {creator?.handle && (
+                          <a
+                            href={`/${creator.handle}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 mt-2 font-medium"
+                          >
+                            mealio.co/{creator.handle}
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                          </a>
+                        )}
+                      </div>
+                      <button
+                        onClick={openEditProfile}
+                        className="flex-shrink-0 text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors whitespace-nowrap"
+                      >
+                        Edit Profile
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Placeholder nudge if profile is sparse */}
+                {!creator?.bio && !creator?.handle && (
+                  <p className="mt-4 text-xs text-gray-400 border-t border-gray-50 pt-4">
+                    Add a bio, website, and profile link to make your creator page shine.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="text-base font-bold text-gray-900">Edit Profile</h2>
+                  <button onClick={cancelEditProfile} className="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+
+                {/* Profile photo */}
+                <div className="flex items-center gap-4 mb-5">
+                  <button
+                    type="button"
+                    onClick={() => profilePhotoInputRef.current?.click()}
+                    className="relative group flex-shrink-0 rounded-full focus:outline-none"
+                  >
+                    {profilePhotoPreview ? (
+                      <img src={profilePhotoPreview} alt="" className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
+                    ) : (
+                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center text-3xl select-none">👤</div>
+                    )}
+                    <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                    </div>
+                  </button>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-700">Profile photo</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Click avatar to change</p>
+                  </div>
+                  <input
+                    ref={profilePhotoInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={e => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setProfilePhotoFile(file);
+                      setProfilePhotoPreview(URL.createObjectURL(file));
+                    }}
+                  />
+                </div>
+
+                {/* Bio */}
+                <div className="mb-4">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Bio</label>
+                  <textarea
+                    value={profileBio}
+                    onChange={e => setProfileBio(e.target.value)}
+                    rows={3}
+                    placeholder="Tell people about yourself and your cooking style…"
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 resize-none transition-colors"
+                  />
+                </div>
+
+                {/* Website / Social */}
+                <div className="mb-4">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Website / Social</label>
+                  <input
+                    type="text"
+                    value={profileWebsite}
+                    onChange={e => setProfileWebsite(e.target.value)}
+                    placeholder="@yourhandle or https://yoursite.com"
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors"
+                  />
+                </div>
+
+                {/* Profile link */}
+                <div className="mb-5">
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Profile link</label>
+                  <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-400 transition-colors">
+                    <span className="px-3 py-2.5 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
+                    <input
+                      value={handleInput}
+                      onChange={e => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                      placeholder="yourhandle"
+                      maxLength={30}
+                      className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">3–30 characters, letters, numbers, hyphens, underscores</p>
+                </div>
+
+                {profileError && (
+                  <p className="text-sm text-red-600 mb-4">{profileError}</p>
+                )}
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={saveProfile}
+                    disabled={profileSaving}
+                    className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-2.5 text-sm transition-colors"
+                  >
+                    {profileSaving ? 'Saving…' : 'Save Profile'}
+                  </button>
+                  <button
+                    onClick={cancelEditProfile}
+                    className="px-5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
 
-        {/* Profile link / handle */}
-        <div style={{ background: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', marginBottom: '16px' }}>
-          <p style={{ margin: '0 0 8px', fontSize: '12px', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Your profile link</p>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <span style={{ fontSize: '14px', color: '#999', whiteSpace: 'nowrap' }}>mealio.co/</span>
-            <input
-              value={handleInput}
-              onChange={e => { setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setHandleError(''); setHandleSuccess(''); }}
-              placeholder="yourhandle"
-              maxLength={30}
-              style={{ flex: 1, border: '1px solid #e0e0e0', borderRadius: '8px', padding: '8px 10px', fontSize: '14px', outline: 'none' }}
-            />
-            <button
-              onClick={saveHandle}
-              disabled={handleSaving}
-              style={{ background: handleSaving ? '#aaa' : '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 14px', fontSize: '13px', fontWeight: 600, cursor: handleSaving ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
-            >
-              {handleSaving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-          {handleError && <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#c40029' }}>{handleError}</p>}
-          {handleSuccess && <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#276749' }}>{handleSuccess}</p>}
-          {creator?.handle && !handleError && !handleSuccess && (
-            <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#888' }}>
-              Shareable link:{' '}
-              <a href={`/${creator.handle}`} target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>
-                mealio.co/{creator.handle}
-              </a>
-            </p>
-          )}
-        </div>
-
-        {/* Stats */}
-        {stats && (
-          <>
-            {/* Row 1: Raw save counts */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '12px' }}>
+          {/* ── Stats ── */}
+          {stats && (
+            <div className="grid grid-cols-3 gap-3">
               {[
-                { label: 'Followers',            value: stats.followers.toLocaleString() },
-                { label: 'Saves (this quarter)', value: stats.savesQtr.toLocaleString() },
-                { label: 'Saves (all time)',     value: stats.savesAll.toLocaleString() },
+                { label: 'Followers',         value: stats.followers.toLocaleString(),  icon: '👥' },
+                { label: 'Saves this quarter', value: stats.savesQtr.toLocaleString(),  icon: '📥' },
+                { label: 'Saves all time',    value: stats.savesAll.toLocaleString(),   icon: '⭐' },
               ].map(s => (
-                <div key={s.label} style={{ background: 'white', borderRadius: '10px', padding: '16px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '26px', fontWeight: 700, color: '#333' }}>{s.value}</div>
-                  <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>{s.label}</div>
+                <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-center">
+                  <div className="text-2xl mb-1.5">{s.icon}</div>
+                  <div className="text-2xl font-bold text-gray-900">{s.value}</div>
+                  <div className="text-xs text-gray-400 mt-0.5 leading-tight">{s.label}</div>
                 </div>
               ))}
             </div>
+          )}
 
-          </>
-        )}
+          {/* ── Earnings ── */}
+          {stats && (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+              <button
+                onClick={() => setShowEarnings(prev => !prev)}
+                className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-gray-800">How earnings work</span>
+                  <span className="text-xs bg-red-50 text-red-600 font-semibold px-2 py-0.5 rounded-full">
+                    Your share: {combinedShare}%
+                  </span>
+                </div>
+                <svg
+                  width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round"
+                  style={{ transform: showEarnings ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+                >
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
 
-        {/* Revenue info */}
-        {stats && (
-          <div style={{ background: '#fff8f0', border: '1px solid #ffe0b2', borderRadius: '10px', padding: '16px', marginBottom: '24px', fontSize: '13px', color: '#555', lineHeight: 1.8 }}>
-            <strong style={{ color: '#dd0031', display: 'block', marginBottom: '8px' }}>How earnings work</strong>
-            <div>Each quarter, 1/3 of subscription profit goes to the creator pool. Your share is split evenly between two factors:</div>
-            <div style={{ margin: '10px 0', fontFamily: 'monospace', fontSize: '12px', background: '#fff3e0', borderRadius: '6px', padding: '10px 12px', lineHeight: 2 }}>
-              <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.05em', color: '#bbb', marginBottom: '4px', fontFamily: 'sans-serif' }}>EXAMPLE</div>
-              <div>Quarterly saves:&nbsp; 485 of 16,420 → 2.95% × 50% = <strong>1.48%</strong></div>
-              <div>All-time saves:&nbsp;&nbsp; 3,896 of 67,741 → 5.75% × 50% = <strong>2.88%</strong></div>
-              <div style={{ borderTop: '1px solid #ffe0b2', marginTop: '6px', paddingTop: '6px' }}>
-                Combined share: <strong style={{ color: '#dd0031' }}>4.36%</strong> of the creator pool
-              </div>
+              {showEarnings && (
+                <div className="px-5 pb-5 border-t border-gray-50">
+                  <p className="mt-4 text-sm text-gray-500 leading-relaxed">
+                    Each quarter, 1/3 of subscription profit goes to the creator pool. Your share is split evenly between two factors:
+                  </p>
+                  <div className="mt-3 bg-orange-50 border border-orange-100 rounded-xl p-4 font-mono text-xs leading-7 text-gray-600">
+                    <div className="text-xs font-sans font-bold text-gray-300 mb-2 tracking-widest uppercase">Example</div>
+                    <div>Quarterly saves: 485 of 16,420 → 2.95% × 50% = <strong>1.48%</strong></div>
+                    <div>All-time saves: &nbsp;3,896 of 67,741 → 5.75% × 50% = <strong>2.88%</strong></div>
+                    <div className="border-t border-orange-200 mt-3 pt-3">
+                      Combined share: <strong className="text-red-600">4.36%</strong> of the creator pool
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs text-gray-400">Payouts above $25 are issued at quarter end via Tremendous.</p>
+                </div>
+              )}
             </div>
-            <div style={{ color: '#888', fontSize: '12px' }}>Payouts above $25 are issued at quarter end via Tremendous.</div>
-          </div>
-        )}
+          )}
 
-        {publishSuccess && (
-          <div style={{ background: '#f0fff4', border: '1px solid #c6f6d5', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', fontSize: '14px', color: '#276749' }}>
-            {publishSuccess}
-          </div>
-        )}
+          {/* ── Publish success ── */}
+          {publishSuccess && (
+            <div className="bg-green-50 border border-green-200 rounded-2xl px-5 py-3.5 text-sm text-green-700 font-medium flex items-center gap-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              {publishSuccess}
+            </div>
+          )}
 
-        {/* Publish button / form */}
-        {!showForm ? (
-          <button onClick={() => setShowForm(true)} style={{ width: '100%', background: '#dd0031', color: 'white', border: 'none', borderRadius: '10px', padding: '14px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', marginBottom: '24px' }}>
-            + Publish New Meal
-          </button>
-        ) : (
-          <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '24px' }}>
-            <h3 style={{ margin: '0 0 20px', fontSize: '16px', color: '#222' }}>Publish a New Meal</h3>
-            <form onSubmit={handlePublish}>
-
-              {/* Name */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Meal Name <span style={{ color: '#dd0031' }}>*</span></label>
-                <input value={mealName} onChange={e => setMealName(e.target.value)} placeholder="e.g. Spicy Chicken Ramen" style={inputStyle} />
+          {/* ── Publish button / form ── */}
+          {!showForm ? (
+            <button
+              onClick={() => setShowForm(true)}
+              className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold rounded-2xl py-3.5 text-sm transition-colors flex items-center justify-center gap-2"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Publish New Meal
+            </button>
+          ) : (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm">
+              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-50">
+                <h3 className="text-base font-bold text-gray-900">Publish a New Meal</h3>
+                <button
+                  onClick={() => { setShowForm(false); setPublishError(''); }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
               </div>
 
-              {/* Source */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Recipe URL <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <input value={mealSource} onChange={e => setMealSource(e.target.value)} placeholder="https://yourblog.com/recipe" style={inputStyle} />
-              </div>
+              <form onSubmit={handlePublish} className="p-6 space-y-5">
 
-              {/* Photo */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Photo <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                  {photoPreview && (
-                    <div style={{ position: 'relative' }}>
-                      <img src={photoPreview} alt="" style={{ width: '64px', height: '64px', borderRadius: '8px', objectFit: 'cover', display: 'block' }} />
-                      <button
-                        type="button"
-                        onClick={() => { setPhotoPreview(''); setPhotoFile(null); }}
-                        style={{ position: 'absolute', top: '-8px', right: '-8px', width: '20px', height: '20px', borderRadius: '50%', background: '#333', color: 'white', border: 'none', cursor: 'pointer', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}
-                        title="Remove photo"
-                      >
-                        ✕
-                      </button>
+                {/* Name */}
+                <div>
+                  <label className={pLabelCls}>Meal Name <span className="text-red-500">*</span></label>
+                  <input value={mealName} onChange={e => setMealName(e.target.value)} placeholder="e.g. Spicy Chicken Ramen" className={pInputCls} />
+                </div>
+
+                {/* Source */}
+                <div>
+                  <label className={pLabelCls}>Recipe URL <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input value={mealSource} onChange={e => setMealSource(e.target.value)} placeholder="https://yourblog.com/recipe" className={pInputCls} />
+                </div>
+
+                {/* Photo */}
+                <div>
+                  <label className={pLabelCls}>Photo <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {photoPreview && (
+                      <div className="relative">
+                        <img src={photoPreview} alt="" className="w-16 h-16 rounded-xl object-cover block border border-gray-100" />
+                        <button
+                          type="button"
+                          onClick={() => { setPhotoPreview(''); setPhotoFile(null); }}
+                          className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-gray-800 text-white border-none cursor-pointer text-xs flex items-center justify-center leading-none"
+                          title="Remove photo"
+                        >✕</button>
+                      </div>
+                    )}
+                    <input type="file" accept="image/*" ref={photoInputRef} onChange={handlePhotoChange} className="hidden" />
+                    <button type="button" onClick={() => photoInputRef.current?.click()} className={pSecBtnCls}>
+                      Choose photo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGeneratePhoto}
+                      disabled={generating || !mealName.trim()}
+                      className={`${pSecBtnCls} disabled:opacity-40 disabled:cursor-not-allowed`}
+                    >
+                      {generating ? 'Generating…' : 'Generate photo'}
+                    </button>
+                  </div>
+                  {thumbs.length > 0 && (
+                    <div className="flex gap-2 mt-3">
+                      {thumbs.map((thumb, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => selectSuggestion(i)}
+                          className="flex-1 p-0 border-none rounded-xl overflow-hidden cursor-pointer bg-none"
+                          style={{ outline: selectedIdx === i ? '2.5px solid #3b82f6' : '2.5px solid transparent', outlineOffset: '2px' }}
+                        >
+                          <img src={thumb} alt="" className="w-full aspect-square object-cover block" />
+                        </button>
+                      ))}
                     </div>
                   )}
-                  <input type="file" accept="image/*" ref={photoInputRef} onChange={handlePhotoChange} style={{ display: 'none' }} />
-                  <button type="button" onClick={() => photoInputRef.current?.click()} style={{ fontSize: '13px', padding: '8px 14px', border: '1px solid #ddd', borderRadius: '8px', background: '#fafafa', cursor: 'pointer' }}>
-                    Choose photo
+                </div>
+
+                {/* Difficulty */}
+                <div>
+                  <label className={pLabelCls}>Difficulty <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <div className="flex items-center gap-2">
+                    {[1, 2, 3, 4, 5].map(v => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setMealDifficulty(mealDifficulty === v ? null : v)}
+                        className="w-10 h-10 rounded-xl text-sm font-semibold transition-colors"
+                        style={{
+                          border: `1.5px solid ${mealDifficulty === v ? '#dd0031' : '#e5e7eb'}`,
+                          background: mealDifficulty === v ? '#dd0031' : '#fafafa',
+                          color: mealDifficulty === v ? 'white' : '#6b7280',
+                          cursor: 'pointer',
+                        }}
+                      >{v}</button>
+                    ))}
+                    {mealDifficulty && <span className="text-sm text-gray-400 ml-1">{DIFFICULTY_LABELS[mealDifficulty]}</span>}
+                  </div>
+                </div>
+
+                {/* Serves */}
+                <div>
+                  <label className={pLabelCls}>Serves <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input value={mealServes} onChange={e => setMealServes(e.target.value)} placeholder="e.g. 4 or 2-4" className={pInputCls} />
+                </div>
+
+                {/* Story */}
+                <div>
+                  <label className={pLabelCls}>Story <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <textarea
+                    value={mealStory}
+                    onChange={e => setMealStory(e.target.value)}
+                    rows={3}
+                    placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+                    className={`${pInputCls} resize-y font-sans`}
+                  />
+                </div>
+
+                {/* Ingredients */}
+                <div>
+                  <label className={pLabelCls}>Ingredients <span className="text-red-500">*</span></label>
+                  <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3 mb-3 text-xs text-gray-500 leading-relaxed">
+                    Name each ingredient as it would appear in a grocery store search — specific enough to find the right product, but generic enough to work across stores.
+                    <div className="mt-1.5 space-x-3">
+                      <span><span className="text-green-600 font-semibold">✓</span> &quot;Chicken Stock, 32 oz&quot; · &quot;Garlic&quot; · &quot;Rotisserie Chicken&quot;</span>
+                      <span><span className="text-red-500 font-semibold">✗</span> &quot;Costco Bananas&quot; · &quot;Fresh Herbs&quot;</span>
+                    </div>
+                  </div>
+                  <div className="space-y-2 mb-2">
+                    {mealIngredients.map((ing, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <input
+                          value={ing.productName}
+                          onChange={e => updateIngredient(i, 'productName', e.target.value)}
+                          placeholder="e.g. Chicken Stock, 32 oz"
+                          className={`${pInputCls} flex-1`}
+                        />
+                        <input
+                          type="number"
+                          value={ing.quantity}
+                          min={1}
+                          onChange={e => updateIngredient(i, 'quantity', parseInt(e.target.value) || 1)}
+                          className={`${pInputCls} w-16 text-center`}
+                        />
+                        {mealIngredients.length > 1 && (
+                          <button type="button" onClick={() => removeIngredientRow(i)} className="text-gray-300 hover:text-red-400 text-lg leading-none cursor-pointer transition-colors bg-none border-none px-1">×</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-4 text-xs text-gray-400 mb-3 px-0.5">
+                    <span className="flex-1">Grocery store product name</span>
+                    <span className="w-16 text-center">Qty</span>
+                  </div>
+                  <button type="button" onClick={addIngredientRow} className="text-sm text-red-600 hover:text-red-700 font-medium bg-none border-none cursor-pointer p-0 transition-colors">
+                    + Add ingredient
+                  </button>
+                </div>
+
+                {/* Recipe */}
+                <div>
+                  <label className={pLabelCls}>Recipe Instructions <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <textarea
+                    value={mealRecipe}
+                    onChange={e => setMealRecipe(e.target.value)}
+                    rows={6}
+                    placeholder={'1. Boil 4 cups of water...\n2. Add 200g of noodles...'}
+                    className={`${pInputCls} resize-y font-sans`}
+                  />
+                </div>
+
+                {/* Tags */}
+                <div>
+                  <label className={pLabelCls}>Tags <span className="text-gray-400 font-normal">(up to 3)</span></label>
+                  <TagPicker selected={mealTags} onChange={setMealTags} />
+                </div>
+
+                {publishError && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+                    {publishError}
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-1">
+                  <button
+                    type="submit"
+                    disabled={publishing}
+                    className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition-colors"
+                  >
+                    {publishing ? 'Publishing…' : 'Publish Meal'}
                   </button>
                   <button
                     type="button"
-                    onClick={handleGeneratePhoto}
-                    disabled={generating || !mealName.trim()}
-                    style={{ fontSize: '13px', padding: '8px 14px', border: '1px solid #ddd', borderRadius: '8px', background: '#fafafa', cursor: generating || !mealName.trim() ? 'not-allowed' : 'pointer', opacity: generating || !mealName.trim() ? 0.5 : 1 }}
+                    onClick={() => { setShowForm(false); setPublishError(''); }}
+                    className="px-5 py-3 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
                   >
-                    {generating ? 'Generating…' : 'Generate photo'}
+                    Cancel
                   </button>
                 </div>
-                {thumbs.length > 0 && (
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                    {thumbs.map((thumb, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => selectSuggestion(i)}
-                        style={{ flex: 1, padding: 0, border: 'none', borderRadius: '8px', overflow: 'hidden', cursor: 'pointer', outline: selectedIdx === i ? '2.5px solid #3b82f6' : '2.5px solid transparent', outlineOffset: '2px', background: 'none' }}
-                      >
-                        <img src={thumb} alt="" style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', display: 'block' }} />
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              </form>
+            </div>
+          )}
 
-              {/* Difficulty */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Difficulty <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {[1, 2, 3, 4, 5].map(v => (
-                    <button key={v} type="button" onClick={() => setMealDifficulty(mealDifficulty === v ? null : v)}
-                      style={{ width: '40px', height: '40px', borderRadius: '50%', border: `1.5px solid ${mealDifficulty === v ? '#dd0031' : '#ddd'}`, background: mealDifficulty === v ? '#dd0031' : '#fafafa', color: mealDifficulty === v ? 'white' : '#888', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
-                      {v}
-                    </button>
-                  ))}
-                  {mealDifficulty && <span style={{ alignSelf: 'center', fontSize: '13px', color: '#888' }}>{DIFFICULTY_LABELS[mealDifficulty]}</span>}
-                </div>
-              </div>
+          {/* ── Published meals ── */}
+          <div>
+            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 px-1">
+              Published Meals {meals.length > 0 && `(${meals.length})`}
+            </h3>
 
-              {/* Serves */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Serves <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <input value={mealServes} onChange={e => setMealServes(e.target.value)} placeholder="e.g. 4 or 2-4" style={inputStyle} />
+            {meals.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
+                <div className="text-4xl mb-3">🍽️</div>
+                <p className="text-sm text-gray-400">No meals published yet. Hit the button above to get started!</p>
               </div>
-
-              {/* Story */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Story <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <textarea value={mealStory} onChange={e => setMealStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…" style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
-              </div>
-
-              {/* Ingredients */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Ingredients <span style={{ color: '#dd0031' }}>*</span></label>
-                <div style={{ background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: '8px', padding: '10px 12px', marginBottom: '12px', fontSize: '12.5px', color: '#666', lineHeight: 1.6 }}>
-                  Name each ingredient as it would appear in a grocery store search — specific enough to find the right product, but generic enough to work across stores. Include the size or quantity when it matters.
-                  <div style={{ marginTop: '6px', color: '#999' }}>
-                    <span style={{ color: '#22c55e', fontWeight: 600 }}>✓ Good:</span> "Chicken Stock, 32 oz" &nbsp;·&nbsp; "Garlic" &nbsp;·&nbsp; "Rotisserie Chicken"<br />
-                    <span style={{ color: '#ef4444', fontWeight: 600 }}>✗ Avoid:</span> "Costco Bananas" &nbsp;·&nbsp; "Fresh Herbs"
-                  </div>
-                </div>
-                {mealIngredients.map((ing, i) => (
-                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 60px 32px', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
-                    <input value={ing.productName} onChange={e => updateIngredient(i, 'productName', e.target.value)} placeholder="e.g. Chicken Stock, 32 oz" style={{ ...inputStyle, marginBottom: 0 }} />
-                    <input type="number" value={ing.quantity} min={1} onChange={e => updateIngredient(i, 'quantity', parseInt(e.target.value) || 1)} style={{ ...inputStyle, marginBottom: 0, textAlign: 'center' }} />
-                    {mealIngredients.length > 1 && (
-                      <button type="button" onClick={() => removeIngredientRow(i)} style={{ background: 'none', border: 'none', color: '#aaa', fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}>×</button>
+            ) : (
+              <div className="space-y-2">
+                {meals.map(meal => (
+                  <div key={meal.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center gap-4 p-4 hover:shadow-md transition-shadow">
+                    {meal.photo_url ? (
+                      <img src={meal.photo_url} alt={meal.name} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" />
+                    ) : (
+                      <div className="w-14 h-14 rounded-xl bg-gray-100 flex-shrink-0 flex items-center justify-center text-2xl select-none">🍽️</div>
                     )}
+
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-gray-900 text-sm leading-snug truncate">{meal.name}</div>
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        <span className="font-medium text-gray-500">{meal.saves_all.toLocaleString()}</span> save{meal.saves_all !== 1 ? 's' : ''}
+                        <span className="mx-1.5 text-gray-200">·</span>
+                        Trending <span className="font-medium text-gray-500">{meal.trending_score}</span>/100
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button
+                        onClick={() => setEditingMeal(meal)}
+                        className="text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-2.5 py-1.5 hover:bg-gray-50 transition-colors"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const url = `${process.env.NEXT_PUBLIC_APP_URL}/meal/p/${meal.id}`;
+                          await navigator.clipboard.writeText(url).catch(() => prompt('Copy this share link:', url));
+                          setCopiedMealId(meal.id);
+                          setTimeout(() => setCopiedMealId(id => (id === meal.id ? null : id)), 3000);
+                        }}
+                        className={`text-xs font-semibold border rounded-lg px-2.5 py-1.5 transition-colors ${
+                          copiedMealId === meal.id
+                            ? 'text-green-600 bg-green-50 border-green-200'
+                            : 'text-gray-500 hover:text-gray-800 border-gray-200 hover:bg-gray-50'
+                        }`}
+                      >
+                        {copiedMealId === meal.id ? '✓ Copied' : 'Share'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteMeal(meal.id, meal.name)}
+                        className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors rounded-lg"
+                        title="Unpublish"
+                      >
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6l-1 14H6L5 6"/>
+                          <path d="M10 11v6M14 11v6"/>
+                          <path d="M9 6V4h6v2"/>
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 ))}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 60px', gap: '8px', marginBottom: '6px' }}>
-                  <div style={{ fontSize: '11px', color: '#aaa' }}>Grocery store product name</div>
-                  <div style={{ fontSize: '11px', color: '#aaa', textAlign: 'center' }}>Qty</div>
-                </div>
-                <button type="button" onClick={addIngredientRow} style={{ fontSize: '13px', color: '#dd0031', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                  + Add ingredient
-                </button>
               </div>
-
-              {/* Recipe */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Recipe Instructions <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <textarea value={mealRecipe} onChange={e => setMealRecipe(e.target.value)} rows={6} placeholder={'1. Boil 4 cups of water...\n2. Add 200g of noodles...'} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
-              </div>
-
-              {/* Tags */}
-              <div style={{ marginBottom: '24px' }}>
-                <label style={labelStyle}>Tags <span style={{ color: '#999', fontWeight: 400 }}>(up to 3)</span></label>
-                <TagPicker selected={mealTags} onChange={setMealTags} />
-              </div>
-                            {publishError && (
-                <div style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '12px', marginBottom: '16px', fontSize: '14px', color: '#c40029' }}>
-                  {publishError}
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button type="submit" disabled={publishing} style={{ flex: 1, background: publishing ? '#aaa' : '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '14px', fontWeight: 600, cursor: publishing ? 'not-allowed' : 'pointer' }}>
-                  {publishing ? 'Publishing…' : 'Publish Meal'}
-                </button>
-                <button type="button" onClick={() => { setShowForm(false); setPublishError(''); }} style={{ padding: '12px 20px', border: '1px solid #ddd', borderRadius: '8px', background: 'white', fontSize: '14px', cursor: 'pointer', color: '#666' }}>
-                  Cancel
-                </button>
-              </div>
-            </form>
+            )}
           </div>
-        )}
 
-        {/* Published meals */}
-        <h3 style={{ margin: '0 0 12px', fontSize: '16px', color: '#333' }}>Your Published Meals</h3>
-        {meals.length === 0 ? (
-          <div style={{ background: 'white', borderRadius: '10px', padding: '32px', textAlign: 'center', color: '#aaa', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
-            No meals published yet. Publish your first meal above!
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {meals.map(meal => (
-              <div key={meal.id} style={{ background: 'white', borderRadius: '10px', padding: '14px 16px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', display: 'flex', alignItems: 'center', gap: '14px' }}>
-                {meal.photo_url && <img src={meal.photo_url} alt={meal.name} style={{ width: '52px', height: '52px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} />}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: '14px', color: '#222' }}>{meal.name}</div>
-                  <div style={{ fontSize: '12px', color: '#999', marginTop: '2px' }}>
-                    {meal.saves_all.toLocaleString()} all-time save{meal.saves_all !== 1 ? 's' : ''} · Trending {meal.trending_score}/100
-                  </div>
-                </div>
-                <button
-                  onClick={() => setEditingMeal(meal)}
-                  style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '6px', color: '#6b7280', fontSize: '12px', fontWeight: 600, padding: '4px 10px', cursor: 'pointer', flexShrink: 0 }}
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={async () => {
-                    const url = `${process.env.NEXT_PUBLIC_APP_URL}/meal/p/${meal.id}`;
-                    await navigator.clipboard.writeText(url).catch(() => prompt('Copy this share link:', url));
-                    setCopiedMealId(meal.id);
-                    setTimeout(() => setCopiedMealId(id => (id === meal.id ? null : id)), 3000);
-                  }}
-                  style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: '6px', color: copiedMealId === meal.id ? '#16a34a' : '#6b7280', fontSize: '12px', fontWeight: 600, padding: '4px 10px', cursor: 'pointer', flexShrink: 0 }}
-                >
-                  {copiedMealId === meal.id ? '✓ Copied' : 'Share'}
-                </button>
-                <button onClick={() => handleDeleteMeal(meal.id, meal.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0, padding: '2px 6px', lineHeight: 1 }} title="Unpublish">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#dd0031" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6l-1 14H6L5 6" />
-                    <path d="M10 11v6M14 11v6" />
-                    <path d="M9 6V4h6v2" />
-                  </svg>
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        </div>
       </div>
-    </div>
 
-    {editingMeal && (
-      <EditPresetMealModal
-        meal={editingMeal}
-        onSave={handleEditSaved}
-        onClose={() => setEditingMeal(null)}
-      />
-    )}
-    <AppFooter />
+      {editingMeal && (
+        <EditPresetMealModal
+          meal={editingMeal}
+          onSave={handleEditSaved}
+          onClose={() => setEditingMeal(null)}
+        />
+      )}
+      <AppFooter />
     </>
   );
 }
+
+// ── Modal styles (used by EditPresetMealModal) ────────────────────────────────
 
 const modalLabelStyle: React.CSSProperties = {
   display: 'block', fontSize: '12px', fontWeight: 600, color: '#555', marginBottom: '5px', textTransform: 'uppercase', letterSpacing: '0.03em',
@@ -1061,11 +1352,8 @@ const qtyBtnStyle: React.CSSProperties = {
   background: '#fafafa', color: '#555', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
 };
 
-const labelStyle: React.CSSProperties = {
-  display: 'block', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px',
-};
+// ── Publish form Tailwind class constants ─────────────────────────────────────
 
-const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: '8px',
-  fontSize: '14px', boxSizing: 'border-box', outline: 'none', marginBottom: 0,
-};
+const pLabelCls = 'block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5';
+const pInputCls = 'w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors';
+const pSecBtnCls = 'text-sm px-3.5 py-2 border border-gray-200 rounded-xl bg-gray-50 hover:bg-gray-100 text-gray-600 font-medium cursor-pointer transition-colors';

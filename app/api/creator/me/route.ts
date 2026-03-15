@@ -21,11 +21,13 @@ export async function PATCH(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const body = await request.json();
-  const { photoUrl, handle } = body;
+  const { photoUrl, handle, bio, socialHandle } = body;
 
   const updates: Record<string, unknown> = {};
 
   if (photoUrl !== undefined) updates.photo_url = photoUrl ?? null;
+  if (bio !== undefined) updates.bio = typeof bio === 'string' ? (bio.trim() || null) : null;
+  if (socialHandle !== undefined) updates.social_handle = typeof socialHandle === 'string' ? (socialHandle.trim() || null) : null;
 
   if (handle !== undefined) {
     const h = (handle ?? '').toLowerCase().trim();
