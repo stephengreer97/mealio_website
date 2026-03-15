@@ -83,6 +83,7 @@ export default function AppHeader() {
           <NavButton label="Discover" active={isNavActive('/discover')} onClick={() => router.push('/discover')} />
           <NavButton label="My Meals" active={isNavActive('/my-meals')} onClick={() => router.push('/my-meals')} />
 
+          {isCreator && <CreatorNavButton active={pathname.startsWith('/creator')} onClick={() => router.push('/creator')} />}
           <DropdownMenu
             label="Help & FAQ"
             active={pathname === '/help' || pathname === '/privacy' || pathname === '/terms'}
@@ -94,8 +95,6 @@ export default function AppHeader() {
               { label: 'Contact',          onClick: () => { window.location.href = 'mailto:contact@mealio.co'; } },
             ]}
           />
-
-          {isCreator && <NavButton label="Creator" active={pathname.startsWith('/creator')} onClick={() => router.push('/creator')} />}
           {isAdmin   && <NavButton label="Admin"   active={pathname === '/admin'}           onClick={() => router.push('/admin')}   />}
           <NavButton label="Account" active={isNavActive('/account')} onClick={() => router.push('/account')} />
         </nav>
@@ -152,6 +151,25 @@ export default function AppHeader() {
         </div>
       )}
     </header>
+  );
+}
+
+function CreatorNavButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-4 py-2 text-sm font-semibold rounded-lg transition-colors"
+      style={{
+        background: active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.15)',
+        color: '#fff',
+        border: '1px solid rgba(255,255,255,0.35)',
+        cursor: 'pointer',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.25)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.15)'; }}
+    >
+      Creator Portal
+    </button>
   );
 }
 
