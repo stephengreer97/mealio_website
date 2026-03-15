@@ -476,6 +476,7 @@ function compressImage(dataUrl: string, maxPx = 1200, quality = 0.82): Promise<s
 
 function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalProps) {
   const [name, setName] = useState(meal.name);
+  const [editStoreId, setEditStoreId] = useState(meal.store_id);
   const [author, setAuthor] = useState(meal.author ?? '');
   const [serves, setServes] = useState(meal.serves ?? '');
   const [difficulty, setDifficulty] = useState<number | null>(meal.difficulty ?? null);
@@ -601,6 +602,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
           name: name.trim(),
+          storeId:    editStoreId,
           ingredients,
           author:     author.trim()  || null,
           serves:     serves.trim()  || null,
@@ -641,6 +643,20 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
         </div>
 
         <div className="overflow-y-auto px-6 py-4 space-y-4 flex-1">
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Store</label>
+            <select
+              value={editStoreId}
+              onChange={e => setEditStoreId(e.target.value)}
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            >
+              {Object.entries(STORE_LABELS).map(([id, label]) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+          </div>
 
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Meal Name</label>
@@ -2343,6 +2359,7 @@ export default function MyMealsPage() {
   const handleEditSaved = (updated: Meal) => {
     setMeals(prev => prev.map(m => (m.id === updated.id ? updated : m)));
     setEditingMeal(null);
+    if (updated.store_id) setSelectedStore(updated.store_id);
     notifyExtension();
   };
 
