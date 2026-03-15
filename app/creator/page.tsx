@@ -366,6 +366,12 @@ function EditPresetMealModal({
             <input value={name} onChange={e => setName(e.target.value)} style={modalInputStyle} />
           </div>
 
+          {/* Recipe URL */}
+          <div>
+            <label style={modalLabelStyle}>Recipe URL <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
+            <input type="url" value={source} onChange={e => setSource(e.target.value)} placeholder="https://…" style={modalInputStyle} />
+          </div>
+
           {/* Photo */}
           <div>
             <label style={modalLabelStyle}>Photo <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
@@ -408,12 +414,6 @@ function EditPresetMealModal({
             )}
           </div>
 
-          {/* Serves */}
-          <div>
-            <label style={modalLabelStyle}>Serves <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
-            <input type="text" value={serves} onChange={e => setServes(e.target.value)} placeholder="e.g. 4 or 2-4" style={modalInputStyle} />
-          </div>
-
           {/* Difficulty */}
           <div>
             <label style={modalLabelStyle}>Difficulty <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
@@ -427,28 +427,16 @@ function EditPresetMealModal({
             </div>
           </div>
 
-          {/* Tags */}
+          {/* Serves */}
           <div>
-            <label style={modalLabelStyle}>Tags <span style={{ fontWeight: 400, color: '#aaa' }}>(up to 3)</span></label>
-            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
-          </div>
-
-          {/* Recipe URL */}
-          <div>
-            <label style={modalLabelStyle}>Recipe URL <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
-            <input type="url" value={source} onChange={e => setSource(e.target.value)} placeholder="https://…" style={modalInputStyle} />
+            <label style={modalLabelStyle}>Serves <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
+            <input type="text" value={serves} onChange={e => setServes(e.target.value)} placeholder="e.g. 4 or 2-4" style={modalInputStyle} />
           </div>
 
           {/* Story */}
           <div>
             <label style={modalLabelStyle}>Story <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
             <textarea value={story} onChange={e => setStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…" style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
-          </div>
-
-          {/* Recipe */}
-          <div>
-            <label style={modalLabelStyle}>Recipe Instructions <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
-            <textarea value={recipe} onChange={e => setRecipe(e.target.value)} rows={5} style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
           </div>
 
           {/* Ingredients */}
@@ -483,6 +471,18 @@ function EditPresetMealModal({
               />
               <button type="button" onClick={addIngredient} style={{ ...modalBtnStyle, flexShrink: 0 }}>Add</button>
             </div>
+          </div>
+
+          {/* Recipe */}
+          <div>
+            <label style={modalLabelStyle}>Recipe Instructions <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
+            <textarea value={recipe} onChange={e => setRecipe(e.target.value)} rows={5} style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+          </div>
+
+          {/* Tags */}
+          <div>
+            <label style={modalLabelStyle}>Tags <span style={{ fontWeight: 400, color: '#aaa' }}>(up to 3)</span></label>
+            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
           </div>
 
           {error && (
@@ -785,6 +785,12 @@ export default function CreatorPortal() {
                 <input value={mealName} onChange={e => setMealName(e.target.value)} placeholder="e.g. Spicy Chicken Ramen" style={inputStyle} />
               </div>
 
+              {/* Source */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={labelStyle}>Recipe URL <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
+                <input value={mealSource} onChange={e => setMealSource(e.target.value)} placeholder="https://yourblog.com/recipe" style={inputStyle} />
+              </div>
+
               {/* Photo */}
               <div style={{ marginBottom: '16px' }}>
                 <label style={labelStyle}>Photo <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
@@ -831,6 +837,32 @@ export default function CreatorPortal() {
                 )}
               </div>
 
+              {/* Difficulty */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={labelStyle}>Difficulty <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {[1, 2, 3, 4, 5].map(v => (
+                    <button key={v} type="button" onClick={() => setMealDifficulty(mealDifficulty === v ? null : v)}
+                      style={{ width: '40px', height: '40px', borderRadius: '50%', border: `1.5px solid ${mealDifficulty === v ? '#dd0031' : '#ddd'}`, background: mealDifficulty === v ? '#dd0031' : '#fafafa', color: mealDifficulty === v ? 'white' : '#888', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
+                      {v}
+                    </button>
+                  ))}
+                  {mealDifficulty && <span style={{ alignSelf: 'center', fontSize: '13px', color: '#888' }}>{DIFFICULTY_LABELS[mealDifficulty]}</span>}
+                </div>
+              </div>
+
+              {/* Serves */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={labelStyle}>Serves <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
+                <input value={mealServes} onChange={e => setMealServes(e.target.value)} placeholder="e.g. 4 or 2-4" style={inputStyle} />
+              </div>
+
+              {/* Story */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={labelStyle}>Story <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
+                <textarea value={mealStory} onChange={e => setMealStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…" style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+
               {/* Ingredients */}
               <div style={{ marginBottom: '16px' }}>
                 <label style={labelStyle}>Ingredients <span style={{ color: '#dd0031' }}>*</span></label>
@@ -859,42 +891,11 @@ export default function CreatorPortal() {
                 </button>
               </div>
 
-              {/* Story */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Story <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <textarea value={mealStory} onChange={e => setMealStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…" style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
-              </div>
-
               {/* Recipe */}
               <div style={{ marginBottom: '16px' }}>
                 <label style={labelStyle}>Recipe Instructions <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <textarea value={mealRecipe} onChange={e => setMealRecipe(e.target.value)} rows={6} placeholder={'1. Boil 4 cups of water...\n2. Add 200g of noodles...'} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
-              </div>
-
-              {/* Source */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Recipe URL <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <input value={mealSource} onChange={e => setMealSource(e.target.value)} placeholder="https://yourblog.com/recipe" style={inputStyle} />
-              </div>
-
-              {/* Serves */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Serves <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <input value={mealServes} onChange={e => setMealServes(e.target.value)} placeholder="e.g. 4 or 2-4" style={inputStyle} />
-              </div>
-
-              {/* Difficulty */}
-              <div style={{ marginBottom: '16px' }}>
-                <label style={labelStyle}>Difficulty <span style={{ color: '#999', fontWeight: 400 }}>(optional)</span></label>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {[1, 2, 3, 4, 5].map(v => (
-                    <button key={v} type="button" onClick={() => setMealDifficulty(mealDifficulty === v ? null : v)}
-                      style={{ width: '40px', height: '40px', borderRadius: '50%', border: `1.5px solid ${mealDifficulty === v ? '#dd0031' : '#ddd'}`, background: mealDifficulty === v ? '#dd0031' : '#fafafa', color: mealDifficulty === v ? 'white' : '#888', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
-                      {v}
-                    </button>
-                  ))}
-                  {mealDifficulty && <span style={{ alignSelf: 'center', fontSize: '13px', color: '#888' }}>{DIFFICULTY_LABELS[mealDifficulty]}</span>}
-                </div>
+                <textarea value={mealRecipe} onChange={e => setMealRecipe(e.target.value)} rows={6} placeholder={'1. Boil 4 cups of water...
+2. Add 200g of noodles...'} style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
               </div>
 
               {/* Tags */}
@@ -902,8 +903,7 @@ export default function CreatorPortal() {
                 <label style={labelStyle}>Tags <span style={{ color: '#999', fontWeight: 400 }}>(up to 3)</span></label>
                 <TagPicker selected={mealTags} onChange={setMealTags} />
               </div>
-
-              {publishError && (
+                            {publishError && (
                 <div style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '12px', marginBottom: '16px', fontSize: '14px', color: '#c40029' }}>
                   {publishError}
                 </div>
