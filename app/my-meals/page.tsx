@@ -1484,6 +1484,7 @@ function KrogerCartFlow({
 
   // Step 1 – consolidated ingredient list with editable quantities
   const [items, setItems] = useState<ConsolidatedIngredient[]>(() => consolidateIngredients(meals));
+  const [checkedItems, setCheckedItems] = useState<boolean[]>(() => consolidateIngredients(meals).map(() => true));
 
   // Steps 3/4 – results
   const [searchResults, setSearchResults] = useState<KrogerSearchResult[]>([]);
@@ -1521,7 +1522,7 @@ function KrogerCartFlow({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
-          ingredients: items.filter(i => i.quantity > 0).map(i => ({ productName: i.productName, quantity: i.quantity })),
+          ingredients: items.filter((it, i) => checkedItems[i] && it.quantity > 0).map(i => ({ productName: i.productName, quantity: i.quantity })),
           locationId,
         }),
       });
@@ -1637,8 +1638,11 @@ function KrogerCartFlow({
   const updateQty = (i: number, delta: number) =>
     setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: Math.max(0, it.quantity + delta) } : it));
 
-  const removeItem = (i: number) =>
-    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, quantity: 0 } : it));
+  const toggleChecked = (i: number) =>
+    setCheckedItems(prev => prev.map((c, idx) => idx === i ? !c : c));
+
+  const allChecked = checkedItems.every(c => c);
+  const toggleAll = () => setCheckedItems(prev => prev.map(() => !allChecked));
 
   const storeColor = STORE_COLORS[storeId] ?? '#0063a1';
   const storeName = STORE_LABELS[storeId] ?? 'Kroger';
@@ -1663,23 +1667,34 @@ function KrogerCartFlow({
         {step === 'qty' && (
           <>
             <div className="overflow-y-auto flex-1 px-5 py-4 space-y-1">
-              <p className="text-xs text-ml-t3 mb-3">
-                {meals.length} meal{meals.length !== 1 ? 's' : ''} · {items.length} ingredient{items.length !== 1 ? 's' : ''}
-              </p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs text-ml-t3">
+                  {meals.length} meal{meals.length !== 1 ? 's' : ''} · {items.length} ingredient{items.length !== 1 ? 's' : ''}
+                </p>
+                <button onClick={toggleAll} className="text-xs font-medium" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}>
+                  {allChecked ? 'Uncheck all' : 'Check all'}
+                </button>
+              </div>
               {items.map((it, i) => {
+                const checked = checkedItems[i] ?? true;
                 const zeroed = it.quantity === 0;
+                const excluded = !checked;
                 return (
-                  <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)', opacity: zeroed ? 0.45 : 1 }}>
+                  <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)', opacity: excluded ? 0.45 : 1 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleChecked(i)}
+                      className="flex-shrink-0"
+                      style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: storeColor }}
+                    />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-ml-t1 truncate" style={{ textDecoration: zeroed ? 'line-through' : 'none' }}>{it.productName}</p>
-                      <p className="text-xs text-ml-t3 truncate">{it.mealNames.join(', ')}</p>
+                      <p className="text-sm text-ml-t1" style={{ textDecoration: excluded ? 'line-through' : 'none' }}>{it.productName}</p>
+                      <p className="text-xs text-ml-t3">{it.mealNames.join(', ')}</p>
                     </div>
-                    <button onClick={() => updateQty(i, -1)} disabled={zeroed} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
+                    <button onClick={() => updateQty(i, -1)} disabled={zeroed || excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
                     <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.quantity}</span>
-                    <button onClick={() => updateQty(i, 1)} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
-                    <button onClick={() => removeItem(i)} className="text-xs ml-1 flex-shrink-0" style={{ color: zeroed ? 'var(--brand)' : 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }} title={zeroed ? 'Restore' : 'Remove'}>
-                      {zeroed ? '↩' : '✕'}
-                    </button>
+                    <button onClick={() => updateQty(i, 1)} disabled={excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
                   </div>
                 );
               })}
@@ -1688,7 +1703,7 @@ function KrogerCartFlow({
             <div className="px-5 py-4 flex gap-3" style={{ borderTop: '1px solid var(--border)' }}>
               <button
                 onClick={handleStartSearch}
-                disabled={items.filter(i => i.quantity > 0).length === 0}
+                disabled={items.filter((it, i) => checkedItems[i] && it.quantity > 0).length === 0}
                 className="flex-1 text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-40"
                 style={{ background: storeColor }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
@@ -1705,7 +1720,7 @@ function KrogerCartFlow({
         {step === 'searching' && (
           <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
             <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
-            <p className="text-sm text-ml-t2">Searching for {items.filter(i => i.quantity > 0).length} ingredient{items.filter(i => i.quantity > 0).length !== 1 ? 's' : ''}…</p>
+            <p className="text-sm text-ml-t2">{(() => { const n = items.filter((it, i) => checkedItems[i] && it.quantity > 0).length; return `Searching for ${n} ingredient${n !== 1 ? 's' : ''}…`; })()}</p>
           </div>
         )}
 
