@@ -665,42 +665,6 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Serves (optional)</label>
-            <input
-              type="text"
-              value={serves}
-              onChange={e => setServes(e.target.value)}
-              placeholder="e.g. 4 or 2-4"
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Difficulty (optional)</label>
-            <div className="flex gap-2">
-              {[1, 2, 3, 4, 5].map(v => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setDifficulty(difficulty === v ? null : v)}
-                  className="w-9 h-9 rounded-lg text-sm font-semibold transition-all"
-                  style={difficulty === v
-                    ? { background: 'var(--brand)', border: '1px solid var(--brand)', color: '#fff' }
-                    : { border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface)' }}
-                >
-                  {v}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
-            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
-          </div>
-
-          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Website (optional)</label>
             <input
               type="url"
@@ -708,29 +672,6 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               onChange={e => setWebsite(e.target.value)}
               placeholder="https://…"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Story (optional)</label>
-            <textarea
-              value={story}
-              onChange={e => setStory(e.target.value)}
-              rows={3}
-              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
-            <textarea
-              value={recipe}
-              onChange={e => setRecipe(e.target.value)}
-              rows={4}
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
           </div>
@@ -786,6 +727,49 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
           </div>
 
           <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Difficulty (optional)</label>
+            <div className="flex gap-2">
+              {[1, 2, 3, 4, 5].map(v => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setDifficulty(difficulty === v ? null : v)}
+                  className="w-9 h-9 rounded-lg text-sm font-semibold transition-all"
+                  style={difficulty === v
+                    ? { background: 'var(--brand)', border: '1px solid var(--brand)', color: '#fff' }
+                    : { border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface)' }}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Serves (optional)</label>
+            <input
+              type="text"
+              value={serves}
+              onChange={e => setServes(e.target.value)}
+              placeholder="e.g. 4 or 2-4"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Story (optional)</label>
+            <textarea
+              value={story}
+              onChange={e => setStory(e.target.value)}
+              rows={3}
+              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-2">
               Ingredients ({ingredients.length})
             </label>
@@ -818,6 +802,22 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               />
               <button type="button" onClick={addIngredient} className="px-3 py-1.5 text-xs rounded-lg transition-colors" style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>+ Add</button>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
+            <textarea
+              value={recipe}
+              onChange={e => setRecipe(e.target.value)}
+              rows={4}
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
+            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
           </div>
 
           {error && <p className="text-xs" style={{ color: 'var(--brand)' }}>{error}</p>}
@@ -1016,18 +1016,6 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
         <div className="overflow-y-auto px-6 py-4 space-y-4 flex-1">
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Meal Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="e.g., Taco Tuesday"
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Store</label>
             <select
               value={storeId}
@@ -1052,6 +1040,18 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           </div>
 
           <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Meal Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g., Taco Tuesday"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Author (optional)</label>
             <input
               type="text"
@@ -1064,42 +1064,6 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Serves (optional)</label>
-            <input
-              type="text"
-              value={serves}
-              onChange={e => setServes(e.target.value)}
-              placeholder="e.g. 4 or 2-4"
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Difficulty (optional)</label>
-            <div className="flex gap-2">
-              {[1, 2, 3, 4, 5].map(v => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setDifficulty(difficulty === v ? null : v)}
-                  className="w-9 h-9 rounded-lg text-sm font-semibold transition-all"
-                  style={difficulty === v
-                    ? { background: 'var(--brand)', border: '1px solid var(--brand)', color: '#fff' }
-                    : { border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface)' }}
-                >
-                  {v}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
-            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
-          </div>
-
-          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Website (optional)</label>
             <input
               type="url"
@@ -1107,29 +1071,6 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               onChange={e => setWebsite(e.target.value)}
               placeholder="https://…"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Story (optional)</label>
-            <textarea
-              value={story}
-              onChange={e => setStory(e.target.value)}
-              rows={3}
-              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
-            <textarea
-              value={recipe}
-              onChange={e => setRecipe(e.target.value)}
-              rows={4}
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
           </div>
@@ -1181,6 +1122,49 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           </div>
 
           <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Difficulty (optional)</label>
+            <div className="flex gap-2">
+              {[1, 2, 3, 4, 5].map(v => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setDifficulty(difficulty === v ? null : v)}
+                  className="w-9 h-9 rounded-lg text-sm font-semibold transition-all"
+                  style={difficulty === v
+                    ? { background: 'var(--brand)', border: '1px solid var(--brand)', color: '#fff' }
+                    : { border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface)' }}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Serves (optional)</label>
+            <input
+              type="text"
+              value={serves}
+              onChange={e => setServes(e.target.value)}
+              placeholder="e.g. 4 or 2-4"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Story (optional)</label>
+            <textarea
+              value={story}
+              onChange={e => setStory(e.target.value)}
+              rows={3}
+              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-2">Ingredients ({ingredients.filter(i => i.productName.trim()).length})</label>
             <div className="space-y-1.5 max-h-52 overflow-y-auto mb-2">
               {ingredients.map((ing, i) => (
@@ -1212,6 +1196,22 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               />
               <button type="button" onClick={addIngredient} className="px-3 py-1.5 text-xs rounded-lg transition-colors" style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>+ Add</button>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
+            <textarea
+              value={recipe}
+              onChange={e => setRecipe(e.target.value)}
+              rows={4}
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
+            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
           </div>
 
           {error && <p className="text-xs" style={{ color: 'var(--brand)' }}>{error}</p>}
