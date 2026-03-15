@@ -1397,12 +1397,9 @@ const map = new Map<string, string[]>();
                 ))}
               </div>
               {/* Desktop: two explicit columns — avoids CSS columns stacking/click bugs */}
-              <div className="hidden sm:block">
-                <FeaturedCreatorsCard creators={featuredCreators} onCreatorClick={id => setCreatorPopupId(id)} />
-                {featuredCreators.length > 0 && <div style={{ height: 12 }} />}
-              </div>
               <div className="hidden sm:flex gap-3 items-start">
-                <div className="flex-1 flex flex-col gap-3">
+                <div className="flex-1 min-w-0 flex flex-col gap-3">
+                  <FeaturedCreatorsCard creators={featuredCreators} onCreatorClick={id => setCreatorPopupId(id)} />
                   {visible.filter((_, i) => i % 2 === 0).map(meal => (
                     <div key={meal.id}>
                       <MealCard
@@ -1414,7 +1411,7 @@ const map = new Map<string, string[]>();
                     </div>
                   ))}
                 </div>
-                <div className="flex-1 flex flex-col gap-3">
+                <div className="flex-1 min-w-0 flex flex-col gap-3">
                   {visible.filter((_, i) => i % 2 !== 0).map(meal => (
                     <div key={meal.id}>
                       <MealCard
