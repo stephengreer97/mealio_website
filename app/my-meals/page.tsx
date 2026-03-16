@@ -3434,15 +3434,14 @@ export default function MyMealsPage() {
       {/* Choose Products flow modal */}
       {choosingProductsMeal && KROGER_API_STORES.has(choosingProductsMeal.store_id) && krogerLocations[choosingProductsMeal.store_id]?.locationId && (
         <ChooseProductsFlow
+          key={choosingProductsMeal.id}
           meal={choosingProductsMeal}
           locationId={krogerLocations[choosingProductsMeal.store_id].locationId}
           storeId={choosingProductsMeal.store_id}
           accessToken={accessToken}
           onClose={() => advanceChooseQueue()}
           onMealUpdated={updated => {
-            const newMeals = meals.map(m => m.id === updated.id ? updated : m);
-            setMeals(newMeals);
-            advanceChooseQueue(newMeals);
+            setMeals(prev => prev.map(m => m.id === updated.id ? updated : m));
           }}
         />
       )}
