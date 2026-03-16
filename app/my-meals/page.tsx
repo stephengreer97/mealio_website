@@ -152,7 +152,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
-  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null; size?: string | null }>;
+  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null; size?: string | null; soldBy?: string | null }>;
   mealIds: string[];
   mealIngredients: MealIngredientQty[];
   mealNames: string[];
@@ -1985,9 +1985,11 @@ function KrogerCartFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.size ? `${s.description}, ${s.size}` : s.description}</span>
+                          <span>{s.soldBy === 'WEIGHT' ? s.description : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
                           {s.price != null && (
-                            <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>${s.price.toFixed(2)}</span>
+                            <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>
+                              {s.soldBy === 'WEIGHT' && s.size ? `$${s.price.toFixed(2)} / ${s.size.replace(/(\d)([a-zA-Z])/, '$1 $2').toLowerCase()}` : `$${s.price.toFixed(2)}`}
+                            </span>
                           )}
                         </span>
                         {s.stockLevel === 'TEMPORARILY_OUT_OF_STOCK' && (
@@ -2434,9 +2436,11 @@ function ChooseProductsFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.size ? `${s.description}, ${s.size}` : s.description}</span>
+                          <span>{s.soldBy === 'WEIGHT' ? s.description : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
                           {s.price != null && (
-                            <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>${s.price.toFixed(2)}</span>
+                            <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>
+                              {s.soldBy === 'WEIGHT' && s.size ? `$${s.price.toFixed(2)} / ${s.size.replace(/(\d)([a-zA-Z])/, '$1 $2').toLowerCase()}` : `$${s.price.toFixed(2)}`}
+                            </span>
                           )}
                         </span>
                         {s.stockLevel === 'TEMPORARILY_OUT_OF_STOCK' && (
