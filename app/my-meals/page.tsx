@@ -1541,7 +1541,7 @@ function MealDetailModal({
                   key={i}
                   className="text-sm"
                   style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px', color: ing.searchTerm ? '#3b82f6' : 'var(--text-1)', cursor: ing.searchTerm ? 'help' : 'default' }}
-                  title={ing.searchTerm ? (ing.unit === 'qty' ? `${ing.productQty ?? ing.qty}x ${ing.searchTerm}` : ing.searchTerm) : undefined}
+                  title={ing.searchTerm ? `${ing.productQty ?? ing.qty}x ${ing.searchTerm}` : undefined}
                 >
                   {fmtMeasurement(ing)}
                 </li>
@@ -1576,7 +1576,7 @@ function MealDetailModal({
                 {productsOpen && (
                   <div className="mt-2 space-y-1.5">
                     {productsWithTerm.map((ing, i) => {
-                      const displayLabel = ing.unit === 'qty' ? `${ing.productQty ?? ing.qty}x ${ing.searchTerm}` : ing.searchTerm!;
+                      const displayLabel = `${ing.productQty ?? ing.qty}x ${ing.searchTerm}`;
                       return (
                         <div key={i} className="flex items-center">
                           <span className="flex-1 text-xs" style={{ color: 'var(--text-1)' }}>
