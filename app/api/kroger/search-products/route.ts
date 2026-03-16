@@ -104,6 +104,10 @@ export async function POST(request: NextRequest) {
           // User already picked a product — search with their chosen term
           searchStr = ing.searchTerm;
           suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+          // Repeat once in case of a transient empty response
+          if (suggestions.length === 0) {
+            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+          }
           // Retry 1: fall back to ingredientName + measure/unit (if non-qty)
           if (suggestions.length === 0 && unit !== 'qty') {
             searchStr = buildSearchTerm(base, ing.measure ?? null, unit);
