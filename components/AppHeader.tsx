@@ -77,7 +77,7 @@ export default function AppHeader() {
     ...(isAdmin   ? [{ label: 'Admin',          onClick: () => router.push('/admin'),   active: pathname === '/admin' }] : []),
     ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator'), active: pathname.startsWith('/creator') }] : []),
     ...(isLoggedIn ? [{ label: 'Manage Account', onClick: () => router.push('/account'), active: pathname === '/account' }] : []),
-    { label: isLoggedIn ? 'Log Out' : 'Sign In', onClick: isLoggedIn ? handleLogout : handleSignIn, active: false, danger: isLoggedIn },
+    { label: isLoggedIn ? 'Log Out' : 'Sign In / Sign Up', onClick: isLoggedIn ? handleLogout : handleSignIn, active: false, danger: isLoggedIn },
   ] as { label: string; onClick: () => void; active: boolean; danger?: boolean }[];
 
   return (
@@ -126,7 +126,7 @@ export default function AppHeader() {
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; }}
           >
-            {isLoggedIn ? 'Log Out' : 'Sign In'}
+            {isLoggedIn ? 'Log Out' : 'Sign In / Sign Up'}
           </button>
 
           {/* Mobile Hamburger */}
