@@ -147,6 +147,7 @@ interface ConsolidatedIngredient {
 }
 
 interface KrogerSearchResult {
+  searchTerm?: string | null;
   term: string;
   quantity: number;
   upc: string | null;
@@ -1746,7 +1747,7 @@ function KrogerCartFlow({
 
       const results: KrogerSearchResult[] = data.results.map((r: any) => {
         const src = items.find(c => c.ingredientName.toLowerCase().trim() === r.term.toLowerCase().trim());
-        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [], mealIngredients: src?.mealIngredients ?? [], ingredientName: src?.ingredientName ?? r.term };
+        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [], mealIngredients: src?.mealIngredients ?? [], ingredientName: src?.ingredientName ?? r.term, searchTerm: src?.searchTerm ?? null };
       });
       setSearchResults(results);
 
@@ -1956,7 +1957,7 @@ function KrogerCartFlow({
                 {/* What was searched */}
                 <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                   <p className="text-xs text-ml-t3 mb-0.5">You searched for</p>
-                  <p className="text-sm font-semibold text-ml-t1">{currentReview.term}</p>
+                  <p className="text-sm font-semibold text-ml-t1">{currentReview.searchTerm || currentReview.term}</p>
                   {currentReview.mealNames.length > 0 && (
                     <p className="text-xs text-ml-t3 mt-0.5">from: {currentReview.mealNames.join(', ')}</p>
                   )}
