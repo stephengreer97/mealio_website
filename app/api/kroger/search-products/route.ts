@@ -104,6 +104,16 @@ export async function POST(request: NextRequest) {
           // User already picked a product — search with their chosen term
           searchStr = ing.searchTerm;
           suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+          // Retry 1: fall back to ingredientName + measure/unit (if non-qty)
+          if (suggestions.length === 0 && unit !== 'qty') {
+            searchStr = buildSearchTerm(base, ing.measure ?? null, unit);
+            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+          }
+          // Retry 2: fall back to bare ingredientName
+          if (suggestions.length === 0) {
+            searchStr = base.split(' ').slice(0, 8).join(' ');
+            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+          }
         } else if (usesMeasurement) {
           // Try with measure + unit first
           searchStr = buildSearchTerm(base, ing.measure ?? null, unit);
