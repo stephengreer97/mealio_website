@@ -2225,7 +2225,8 @@ function ChooseProductsFlow({
   const [error, setError] = useState('');
   const [searchResults, setSearchResults] = useState<KrogerSearchResult[]>([]);
   const [pickIdx, setPickIdx] = useState(0);
-  const [selections, setSelections] = useState<Map<string, string>>(new Map());
+  const [selections, setSelections] = useState<Map<string, { description: string; qty: number }>>(new Map());
+  const [productQtyMap, setProductQtyMap] = useState<Map<string, number>>(new Map());
   const [selectedSuggIdx, setSelectedSuggIdx] = useState<number | 'custom'>(0);
   const [customText, setCustomText] = useState('');
   const [customSuggestions, setCustomSuggestions] = useState<KrogerSearchResult['suggestions']>([]);
@@ -2239,6 +2240,16 @@ function ChooseProductsFlow({
   const storeName = STORE_LABELS[storeId] ?? 'Kroger';
   const unchosenIngredients = meal.ingredients.map(normIng).filter(i => !i.searchTerm);
   const currentResult = searchResults[pickIdx];
+  const currentIngQty = productQtyMap.get(currentResult?.ingredientName ?? '') ?? 1;
+
+  const adjustCurrentQty = (delta: number) => {
+    if (!currentResult) return;
+    setProductQtyMap(prev => {
+      const next = new Map(prev);
+      next.set(currentResult.ingredientName, Math.max(1, (prev.get(currentResult.ingredientName) ?? 1) + delta));
+      return next;
+    });
+  };
 
   useEffect(() => { doSearch(); }, []);
 
@@ -2307,7 +2318,7 @@ function ChooseProductsFlow({
       }
       const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentResult?.suggestions ?? [];
       const s = displaySuggestions[selectedSuggIdx as number];
-      if (s && currentResult) newSelections.set(currentResult.ingredientName, s.description);
+      if (s && currentResult) newSelections.set(currentResult.ingredientName, { description: s.description, qty: currentIngQty });
     }
 
     setSelections(newSelections);
@@ -2318,12 +2329,12 @@ function ChooseProductsFlow({
     }
   };
 
-  const doSave = async (selMap: Map<string, string>) => {
+  const doSave = async (selMap: Map<string, { description: string; qty: number }>) => {
     setStep('saving');
     const updatedIngredients = meal.ingredients.map(rawIng => {
       const ing = normIng(rawIng);
       const chosen = selMap.get(ing.ingredientName);
-      return chosen !== undefined ? { ...rawIng, searchTerm: chosen } : rawIng;
+      return chosen !== undefined ? { ...rawIng, searchTerm: chosen.description, productQty: chosen.qty } : rawIng;
     });
     const count = selMap.size;
     try {
@@ -2465,6 +2476,30 @@ function ChooseProductsFlow({
               )}
 
               <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+                <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  <span className="text-sm text-ml-t2">Qty to add to cart</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => adjustCurrentQty(-1)}
+                      disabled={currentIngQty <= 1}
+                      className="w-7 h-7 rounded flex items-center justify-center text-sm disabled:opacity-30"
+                      style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
+                    >−</button>
+                    <span className="text-sm font-semibold w-5 text-center" style={{ color: 'var(--text-1)' }}>{currentIngQty}</span>
+                    <button
+                      type="button"
+                      onClick={() => adjustCurrentQty(1)}
+                      className="w-7 h-7 rounded flex items-center justify-center text-sm"
+                      style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
+                    >+</button>
+                  </div>
+                </div>
+                {currentIngQty > 5 && (
+                  <p className="text-xs" style={{ color: '#b45309' }}>
+                    ⚠ {currentIngQty} is a lot for one item — does this come in a multipack or bulk size?
+                  </p>
+                )}
                 <button
                   onClick={() => handleNext(false)}
                   disabled={!canPick || customSearching}
