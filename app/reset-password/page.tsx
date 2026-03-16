@@ -68,7 +68,7 @@ export default function ResetPasswordPage() {
       }
 
       setStatus('success');
-      setTimeout(() => router.push('/'), 2000);
+      setTimeout(() => router.push('/signin'), 2000);
     } catch {
       setErrorMessage('Something went wrong. Please try again.');
       setSubmitting(false);

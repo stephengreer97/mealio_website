@@ -58,11 +58,11 @@ export default function AppHeader() {
 
   const handleLogout = () => {
     localStorage.clear();
-    router.push('/');
+    router.push('/discover');
   };
 
   const handleSignIn = () => {
-    router.push('/');
+    router.push('/signin');
   };
 
   const isNavActive = (path: string) => pathname === path;

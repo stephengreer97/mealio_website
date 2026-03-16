@@ -81,7 +81,7 @@ function CheckEmailContent() {
           )}
 
           <button
-            onClick={() => router.push('/')}
+            onClick={() => router.push('/signin')}
             className="w-full text-gray-400 py-2 text-sm hover:text-gray-600 transition"
           >
             Back to sign in

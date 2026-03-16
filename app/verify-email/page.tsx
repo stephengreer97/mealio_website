@@ -133,7 +133,7 @@ export default function VerifyEmailPage() {
             <h2 className="text-xl font-bold text-gray-900 mb-3">Verification failed</h2>
             <p className="text-gray-500 text-sm mb-6">{errorMessage}</p>
             <button
-              onClick={() => router.push('/')}
+              onClick={() => router.push('/signin')}
               className="w-full bg-red-600 text-white py-3 rounded-lg font-semibold hover:bg-red-700 transition"
             >
               Back to Sign In

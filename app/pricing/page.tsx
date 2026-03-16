@@ -45,7 +45,7 @@ export default function PricingPage() {
 
   const handleCheckout = async () => {
     const token = localStorage.getItem('accessToken');
-    if (!token) { router.push('/'); return; }
+    if (!token) { router.push('/signin'); return; }
     setCheckoutLoading(true);
     try {
       const priceId = billing === 'monthly' ? MONTHLY_PRICE_ID : ANNUAL_PRICE_ID;
@@ -98,7 +98,7 @@ export default function PricingPage() {
             </button>
           ) : (
             <button
-              onClick={() => router.push('/')}
+              onClick={() => router.push('/discover')}
               className="text-sm font-semibold transition-colors"
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--brand)' }}
             >

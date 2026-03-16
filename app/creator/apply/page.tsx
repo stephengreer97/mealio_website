@@ -28,12 +28,12 @@ export default function CreatorApply() {
   const verifyAuth = async () => {
     try {
       const accessToken = localStorage.getItem('accessToken');
-      if (!accessToken) { router.push('/'); return; }
+      if (!accessToken) { router.push('/signin'); return; }
 
       const res = await fetch('/api/auth/verify', {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (!res.ok) { localStorage.clear(); router.push('/'); return; }
+      if (!res.ok) { localStorage.clear(); router.push('/signin'); return; }
 
       const data = await res.json();
       setUserEmail(data.user.email);
@@ -49,7 +49,7 @@ export default function CreatorApply() {
 
       setLoading(false);
     } catch {
-      router.push('/');
+      router.push('/signin');
     }
   };
 

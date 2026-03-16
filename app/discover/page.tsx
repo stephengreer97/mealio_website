@@ -1156,7 +1156,7 @@ export default function DiscoverPage() {
   const visible = [...unsaved, ...saved];
 
   const handleAddMeal = (meal: PresetMeal) => {
-    if (!token) { router.push('/?tab=signup'); return; }
+    if (!token) { router.push('/signin?tab=signup'); return; }
     setSaveError('');
     setAddingMeal(meal);
   };

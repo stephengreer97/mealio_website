@@ -93,12 +93,12 @@ export default function AdminPage() {
   const verifyAdmin = async () => {
     try {
       const t = token();
-      if (!t) { router.push('/'); return; }
+      if (!t) { router.push('/signin'); return; }
 
       const res = await fetch('/api/auth/verify', {
         headers: { Authorization: `Bearer ${t}` },
       });
-      if (!res.ok) { localStorage.clear(); router.push('/'); return; }
+      if (!res.ok) { localStorage.clear(); router.push('/signin'); return; }
 
       const data = await res.json();
       if (!data.user?.isAdmin) { router.push('/discover'); return; }
@@ -106,7 +106,7 @@ export default function AdminPage() {
       setLoading(false);
       loadApplications();
     } catch {
-      router.push('/');
+      router.push('/signin');
     }
   };
 

@@ -124,10 +124,10 @@ export default function AccountPage() {
   const verifyAuth = async () => {
     try {
       const accessToken = localStorage.getItem('accessToken');
-      if (!accessToken) { router.push('/'); return; }
+      if (!accessToken) { router.push('/signin'); return; }
 
       const response = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${accessToken}` } });
-      if (!response.ok) { router.push('/'); return; }
+      if (!response.ok) { router.push('/signin'); return; }
 
       const data = await response.json();
       setUser(data.user);
@@ -149,7 +149,7 @@ export default function AccountPage() {
         .catch(() => {});
 
       setLoading(false);
-    } catch { router.push('/'); }
+    } catch { router.push('/signin'); }
   };
 
   const fetchDeletedMeals = async () => {
@@ -344,7 +344,7 @@ export default function AccountPage() {
     finally { setKrogerSavingLocation(false); }
   };
 
-  const handleLogout = () => { localStorage.clear(); router.push('/'); };
+  const handleLogout = () => { localStorage.clear(); router.push('/discover'); };
 
   const openManageSubscription = async () => {
     setPortalLoading(true);

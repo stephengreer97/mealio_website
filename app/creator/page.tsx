@@ -818,10 +818,10 @@ export default function CreatorPortal() {
 
   const loadPortal = async () => {
     const token = localStorage.getItem('accessToken');
-    if (!token) { router.push('/'); return; }
+    if (!token) { router.push('/signin'); return; }
 
     const authRes = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } });
-    if (!authRes.ok) { localStorage.clear(); router.push('/'); return; }
+    if (!authRes.ok) { localStorage.clear(); router.push('/signin'); return; }
 
     const meRes = await fetch('/api/creator/me', { headers: { Authorization: `Bearer ${token}` } });
     if (!meRes.ok) { router.push('/creator/apply'); return; }

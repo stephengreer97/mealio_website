@@ -2810,7 +2810,7 @@ export default function MyMealsPage() {
   const verifyAuth = async () => {
     try {
       const accessToken = localStorage.getItem('accessToken');
-      if (!accessToken) { router.push('/'); return; }
+      if (!accessToken) { router.push('/signin'); return; }
 
       // Handle Kroger OAuth callback redirect
       const params = new URLSearchParams(window.location.search);
@@ -2835,7 +2835,7 @@ export default function MyMealsPage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      if (!response.ok) { localStorage.clear(); router.push('/'); return; }
+      if (!response.ok) { localStorage.clear(); router.push('/signin'); return; }
 
       const data = await response.json();
       setUser(data.user);
@@ -2861,7 +2861,7 @@ export default function MyMealsPage() {
       loadMeals(accessToken);
     } catch {
       localStorage.clear();
-      router.push('/');
+      router.push('/discover');
     }
   };
 
