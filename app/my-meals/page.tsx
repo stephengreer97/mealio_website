@@ -109,6 +109,10 @@ interface Meal {
   created_at?: string;
 }
 
+function hasUnchosenProducts(meal: Meal): boolean {
+  return meal.ingredients.some(raw => !normIng(raw).searchTerm);
+}
+
 interface MealFilters {
   authors: string[];
   tags: string[];
@@ -2204,11 +2208,331 @@ function KrogerCartFlow({
   );
 }
 
+// ── Choose Products Flow ──────────────────────────────────────────────────────
+
+function ChooseProductsFlow({
+  meal, locationId, storeId, accessToken, onClose, onMealUpdated,
+}: {
+  meal: Meal;
+  locationId: string;
+  storeId: string;
+  accessToken: string;
+  onClose: () => void;
+  onMealUpdated: (updated: Meal) => void;
+}) {
+  type Step = 'searching' | 'picking' | 'saving' | 'done';
+  const [step, setStep] = useState<Step>('searching');
+  const [error, setError] = useState('');
+  const [searchResults, setSearchResults] = useState<KrogerSearchResult[]>([]);
+  const [pickIdx, setPickIdx] = useState(0);
+  const [selections, setSelections] = useState<Map<string, string>>(new Map());
+  const [selectedSuggIdx, setSelectedSuggIdx] = useState<number | 'custom'>(0);
+  const [customText, setCustomText] = useState('');
+  const [customSuggestions, setCustomSuggestions] = useState<KrogerSearchResult['suggestions']>([]);
+  const [customSearchTerm, setCustomSearchTerm] = useState('');
+  const [customSearching, setCustomSearching] = useState(false);
+  const [hoveredSugg, setHoveredSugg] = useState<{ idx: number; rect: DOMRect } | null>(null);
+  const [savedCount, setSavedCount] = useState(0);
+  const shouldShowSuggestionsRef = useRef(false);
+
+  const storeColor = STORE_COLORS[storeId] ?? '#0063a1';
+  const storeName = STORE_LABELS[storeId] ?? 'Kroger';
+  const unchosenIngredients = meal.ingredients.map(normIng).filter(i => !i.searchTerm);
+  const currentResult = searchResults[pickIdx];
+
+  useEffect(() => { doSearch(); }, []);
+
+  useEffect(() => {
+    setSelectedSuggIdx(0);
+    setCustomText('');
+    setCustomSuggestions([]);
+    setCustomSearchTerm('');
+    shouldShowSuggestionsRef.current = false;
+  }, [pickIdx]);
+
+  const doSearch = async () => {
+    setStep('searching');
+    setError('');
+    try {
+      const res = await fetch('/api/kroger/search-products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          ingredients: unchosenIngredients.map(i => ({ productName: i.ingredientName, searchTerm: null, unit: i.unit, measure: i.measure, quantity: 1 })),
+          locationId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Search failed');
+      setSearchResults(data.results.map((r: any) => ({
+        ...r,
+        suggestions: r.suggestions ?? [],
+        mealIds: [meal.id],
+        mealNames: [meal.name],
+        mealIngredients: [],
+        ingredientName: unchosenIngredients.find(i => i.ingredientName.toLowerCase().trim() === r.term.toLowerCase().trim())?.ingredientName ?? r.term,
+      })));
+      setPickIdx(0);
+      setStep('picking');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Search failed');
+    }
+  };
+
+  const handleNext = async (skip: boolean) => {
+    if (customSearching) return;
+    let newSelections = new Map(selections);
+
+    if (!skip) {
+      if (selectedSuggIdx === 'custom') {
+        const term = customText.trim();
+        if (!term) return;
+        shouldShowSuggestionsRef.current = false;
+        setCustomSearching(true);
+        try {
+          const res = await fetch('/api/kroger/search-products', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({ ingredients: [{ productName: term, quantity: 1 }], locationId }),
+          });
+          const data = await res.json();
+          setCustomSuggestions(data.results?.[0]?.suggestions ?? []);
+          setCustomSearchTerm(term);
+          setSelectedSuggIdx(0);
+          setCustomText('');
+          shouldShowSuggestionsRef.current = true;
+        } finally { setCustomSearching(false); }
+        if (shouldShowSuggestionsRef.current) return;
+        return;
+      }
+      const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentResult?.suggestions ?? [];
+      const s = displaySuggestions[selectedSuggIdx as number];
+      if (s && currentResult) newSelections.set(currentResult.ingredientName, s.description);
+    }
+
+    setSelections(newSelections);
+    if (pickIdx < searchResults.length - 1) {
+      setPickIdx(pickIdx + 1);
+    } else {
+      await doSave(newSelections);
+    }
+  };
+
+  const doSave = async (selMap: Map<string, string>) => {
+    setStep('saving');
+    const updatedIngredients = meal.ingredients.map(rawIng => {
+      const ing = normIng(rawIng);
+      const chosen = selMap.get(ing.ingredientName);
+      return chosen !== undefined ? { ...rawIng, searchTerm: chosen } : rawIng;
+    });
+    const count = selMap.size;
+    try {
+      const res = await fetch(`/api/meals/${meal.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ ingredients: updatedIngredients }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      if (data.meal) onMealUpdated(data.meal);
+      setSavedCount(count);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save');
+    }
+    setStep('done');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4" style={{ background: 'rgba(0,0,0,0.55)' }}>
+      <div className="w-full sm:max-w-xl rounded-t-2xl sm:rounded-2xl flex flex-col" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh' }} onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="min-w-0">
+            <h2 className="text-base font-bold text-ml-t1">
+              {step === 'searching' && 'Searching Products…'}
+              {step === 'picking' && `Choose Product (${pickIdx + 1} of ${searchResults.length})`}
+              {step === 'saving' && 'Saving…'}
+              {step === 'done' && 'Products Chosen!'}
+            </h2>
+            <p className="text-xs text-ml-t3 truncate">{meal.name}</p>
+          </div>
+          <button onClick={onClose} className="text-ml-t3 hover:text-ml-t1 text-xl leading-none flex-shrink-0 ml-3">✕</button>
+        </div>
+
+        {/* Searching */}
+        {step === 'searching' && (
+          <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
+            {error ? (
+              <>
+                <p className="text-sm text-red-500 text-center px-6">{error}</p>
+                <button onClick={doSearch} className="text-sm px-4 py-2 rounded-xl text-white" style={{ background: storeColor }}>Retry</button>
+              </>
+            ) : (
+              <>
+                <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
+                <p className="text-sm text-ml-t2">Searching for {unchosenIngredients.length} ingredient{unchosenIngredients.length !== 1 ? 's' : ''}…</p>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Picking */}
+        {step === 'picking' && currentResult && (() => {
+          const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentResult.suggestions;
+          const hasSuggestions = displaySuggestions.length > 0;
+          const canPick = hasSuggestions
+            ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
+            : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
+          const isLast = pickIdx === searchResults.length - 1;
+
+          return (
+            <>
+              <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
+                <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  <p className="text-xs text-ml-t3 mb-0.5">Searching for</p>
+                  <p className="text-sm font-semibold text-ml-t1">{currentResult.ingredientName}</p>
+                  {customSearchTerm && (
+                    <p className="text-xs mt-1" style={{ color: storeColor }}>Showing results for: "{customSearchTerm}"</p>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold text-ml-t3 mb-2 uppercase tracking-wide">
+                    {hasSuggestions ? `${storeName} products` : 'No products found'}
+                  </p>
+                  <div className="space-y-1.5">
+                    {displaySuggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setSelectedSuggIdx(i)}
+                        onMouseEnter={e => s.imageUrl ? setHoveredSugg({ idx: i, rect: e.currentTarget.getBoundingClientRect() }) : undefined}
+                        onMouseLeave={() => setHoveredSugg(null)}
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all"
+                        style={{
+                          border: `1.5px solid ${selectedSuggIdx === i ? storeColor : 'var(--border)'}`,
+                          background: selectedSuggIdx === i ? '#e8f4fb' : 'var(--surface)',
+                          color: 'var(--text-1)',
+                        }}
+                      >
+                        <span className="flex items-start justify-between gap-3">
+                          <span>{s.description}</span>
+                          {s.price != null && (
+                            <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>${s.price.toFixed(2)}</span>
+                          )}
+                        </span>
+                        {s.stockLevel === 'TEMPORARILY_OUT_OF_STOCK' && (
+                          <span className="block text-xs mt-0.5 font-medium" style={{ color: '#b45309' }}>⚠ Temporarily out of stock</span>
+                        )}
+                      </button>
+                    ))}
+
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSuggIdx('custom')}
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all"
+                        style={{
+                          border: `1.5px solid ${selectedSuggIdx === 'custom' ? storeColor : 'var(--border)'}`,
+                          background: selectedSuggIdx === 'custom' ? '#e8f4fb' : 'var(--surface)',
+                          color: selectedSuggIdx === 'custom' ? 'var(--text-1)' : 'var(--text-3)',
+                        }}
+                      >
+                        {customSuggestions.length > 0 ? 'Try a different search…' : 'Other — type a product name…'}
+                      </button>
+                      {selectedSuggIdx === 'custom' && (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={customText}
+                          onChange={e => setCustomText(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter' && customText.trim()) handleNext(false); }}
+                          placeholder="e.g. Ground Beef 80/20"
+                          className="w-full mt-1.5 px-3 py-2 text-sm rounded-lg focus:outline-none"
+                          style={{ border: `1.5px solid ${storeColor}`, background: 'var(--surface)', color: 'var(--text-1)' }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {hoveredSugg && displaySuggestions[hoveredSugg.idx]?.imageUrl && (
+                <div style={{ position: 'fixed', left: hoveredSugg.rect.right + 10, top: hoveredSugg.rect.top, zIndex: 200, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 12, padding: 8, boxShadow: '0 4px 20px rgba(0,0,0,0.15)', pointerEvents: 'none' }}>
+                  <img src={displaySuggestions[hoveredSugg.idx].imageUrl!} alt="" style={{ width: 120, height: 120, objectFit: 'contain', display: 'block' }} />
+                </div>
+              )}
+
+              <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+                <button
+                  onClick={() => handleNext(false)}
+                  disabled={!canPick || customSearching}
+                  className="w-full text-sm font-semibold rounded-xl py-2.5 text-white disabled:opacity-40"
+                  style={{ background: storeColor }}
+                  onMouseEnter={e => { if (canPick) (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                >
+                  {customSearching ? 'Searching…' : isLast ? 'Save Products' : 'Choose & Next →'}
+                </button>
+                <div className="flex gap-2">
+                  {pickIdx > 0 && (
+                    <button
+                      onClick={() => setPickIdx(pickIdx - 1)}
+                      disabled={customSearching}
+                      className="flex-1 text-sm rounded-xl py-2 text-ml-t3 disabled:opacity-40"
+                      style={{ background: 'none', border: '1px solid var(--border)', cursor: 'pointer' }}
+                    >← Back</button>
+                  )}
+                  <button
+                    onClick={() => handleNext(true)}
+                    disabled={customSearching}
+                    className="flex-1 text-sm rounded-xl py-2 text-ml-t3 disabled:opacity-40"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+                  >{isLast ? 'Skip & Save' : 'Skip'}</button>
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
+        {/* Saving */}
+        {step === 'saving' && (
+          <div className="flex-1 flex flex-col items-center justify-center py-12 gap-4">
+            <div className="w-8 h-8 rounded-full animate-spin" style={{ border: '3px solid var(--border)', borderTopColor: storeColor }} />
+            <p className="text-sm text-ml-t2">Saving your product choices…</p>
+          </div>
+        )}
+
+        {/* Done */}
+        {step === 'done' && (
+          <>
+            <div className="px-6 pt-6 pb-3 text-center flex-shrink-0">
+              {error
+                ? <><div className="text-4xl mb-2">⚠️</div><p className="text-base font-bold text-red-500">Failed to save.</p><p className="text-sm text-ml-t3">{error}</p></>
+                : savedCount > 0
+                  ? <><div className="text-4xl mb-2">✅</div><p className="text-base font-bold text-ml-t1">Products chosen!</p><p className="text-sm text-ml-t3">{savedCount} of {unchosenIngredients.length} ingredient{unchosenIngredients.length !== 1 ? 's' : ''} linked to a {storeName} product.</p></>
+                  : <><div className="text-4xl mb-2">👋</div><p className="text-base font-bold text-ml-t1">No products chosen.</p><p className="text-sm text-ml-t3">You can choose products at any time from the meal card.</p></>
+              }
+            </div>
+            <div className="flex-1" />
+            <div className="px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+              <button onClick={onClose} className="w-full text-sm font-semibold rounded-xl py-2.5" style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-1)' }}>Done</button>
+            </div>
+          </>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
 function DashboardMealCard({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
   krogerConnected, krogerLocations,
   selectMode, selected, onToggleSelect,
   onEdit, onDelete, onShare, onRemovePhoto, onCreatorClick, accessToken,
+  onChooseProducts,
 }: {
   meal: Meal;
   isPro: boolean;
@@ -2226,6 +2550,7 @@ function DashboardMealCard({
   onRemovePhoto: () => void;
   onCreatorClick?: (id: string) => void;
   accessToken: string;
+  onChooseProducts?: () => void;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -2344,7 +2669,26 @@ function DashboardMealCard({
             </div>
           )}
 
-          <div className="flex justify-end mt-2">
+          {hasUnchosenProducts(meal) && KROGER_API_STORES.has(meal.store_id) && (
+            <div className="mt-2 flex items-center gap-1.5">
+              <span className="text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a' }}>
+                ⚠ Products not chosen
+              </span>
+            </div>
+          )}
+
+          <div className="flex justify-end mt-2 gap-2 flex-wrap">
+            {hasUnchosenProducts(meal) && KROGER_API_STORES.has(meal.store_id) && onChooseProducts && (
+              <button
+                onClick={e => { e.stopPropagation(); onChooseProducts(); }}
+                className="px-3 py-1 text-xs font-semibold rounded-lg flex-shrink-0"
+                style={{ color: '#fff', background: STORE_COLORS[meal.store_id] ?? '#0063a1', border: 'none' }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+              >
+                Choose Products
+              </button>
+            )}
             <button
               onClick={e => { e.stopPropagation(); setDetailOpen(true); }}
               className="px-3 py-1 text-xs font-medium rounded-lg transition-colors flex-shrink-0"
@@ -2401,6 +2745,8 @@ export default function MyMealsPage() {
   const [showKrogerFlow, setShowKrogerFlow] = useState(false);
   const [showKrogerStorePicker, setShowKrogerStorePicker] = useState(false);
   const [krogerConnecting, setKrogerConnecting] = useState(false);
+  const [choosingProductsMeal, setChoosingProductsMeal] = useState<Meal | null>(null);
+  const pendingChooseFlowMealRef = useRef<Meal | null>(null);
 
   useEffect(() => {
     verifyAuth();
@@ -2602,6 +2948,72 @@ export default function MyMealsPage() {
       return;
     }
     setShowKrogerFlow(true);
+  };
+
+  const handleChooseProducts = async (meal: Meal) => {
+    const storeId = meal.store_id;
+    const storeLocationId = krogerLocations[storeId]?.locationId ?? null;
+
+    if (krogerConnected && storeLocationId) {
+      setChoosingProductsMeal(meal);
+      return;
+    }
+
+    if (krogerConnected && !storeLocationId) {
+      pendingChooseFlowMealRef.current = meal;
+      setShowKrogerStorePicker(true);
+      return;
+    }
+
+    // Not connected — OAuth popup
+    pendingChooseFlowMealRef.current = meal;
+    setKrogerConnecting(true);
+    try {
+      const res = await fetch('/api/kroger/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ popup: true, storeId }),
+      });
+      const data = await res.json();
+      if (!data.redirectUrl) { setKrogerConnecting(false); return; }
+
+      const krogerPopup = window.open(data.redirectUrl, 'kroger-oauth', 'width=520,height=680,scrollbars=yes,resizable=yes');
+      if (!krogerPopup) { setKrogerConnecting(false); return; }
+
+      const handleMessage = (e: MessageEvent) => {
+        if (e.origin !== window.location.origin || e.data?.kroger !== 'connected') return;
+        window.removeEventListener('message', handleMessage);
+        clearInterval(closedPoll);
+        krogerPopup.close();
+        const token = localStorage.getItem('accessToken');
+        fetch('/api/kroger/status', { headers: { Authorization: `Bearer ${token}` } })
+          .then(r => r.ok ? r.json() : null)
+          .then(d => {
+            setKrogerConnecting(false);
+            if (d?.connected) {
+              setKrogerConnected(true);
+              setKrogerLocations(d.locations ?? {});
+              const pending = pendingChooseFlowMealRef.current;
+              if (pending && d.locations?.[pending.store_id]?.locationId) {
+                pendingChooseFlowMealRef.current = null;
+                setChoosingProductsMeal(pending);
+              } else {
+                setShowKrogerStorePicker(true);
+              }
+            }
+          })
+          .catch(() => setKrogerConnecting(false));
+      };
+
+      window.addEventListener('message', handleMessage);
+      const closedPoll = setInterval(() => {
+        if (krogerPopup.closed) {
+          clearInterval(closedPoll);
+          window.removeEventListener('message', handleMessage);
+          setKrogerConnecting(false);
+        }
+      }, 500);
+    } catch { setKrogerConnecting(false); }
   };
 
   const notifyExtension = () => {
@@ -2881,6 +3293,7 @@ export default function MyMealsPage() {
                       onRemovePhoto={() => handleRemovePhoto(meal)}
                       onCreatorClick={id => setCreatorPopupId(id)}
                       accessToken={accessToken}
+                      onChooseProducts={KROGER_API_STORES.has(meal.store_id) ? () => handleChooseProducts(meal) : undefined}
                     />
                     </div>
                   ))}
@@ -2955,7 +3368,13 @@ export default function MyMealsPage() {
           onSaved={(locationId, locationName, storeId) => {
             setKrogerLocations(prev => ({ ...prev, [storeId]: { locationId, locationName } }));
             setShowKrogerStorePicker(false);
-            setShowKrogerFlow(true);
+            if (pendingChooseFlowMealRef.current) {
+              const m = pendingChooseFlowMealRef.current;
+              pendingChooseFlowMealRef.current = null;
+              setChoosingProductsMeal(m);
+            } else {
+              setShowKrogerFlow(true);
+            }
           }}
           onClose={() => setShowKrogerStorePicker(false)}
         />
@@ -2970,6 +3389,21 @@ export default function MyMealsPage() {
           accessToken={accessToken}
           onClose={() => { setShowKrogerFlow(false); setSelectedMealIds(new Set()); }}
           onMealUpdated={updated => setMeals(prev => prev.map(m => m.id === updated.id ? updated : m))}
+        />
+      )}
+
+      {/* Choose Products flow modal */}
+      {choosingProductsMeal && KROGER_API_STORES.has(choosingProductsMeal.store_id) && krogerLocations[choosingProductsMeal.store_id]?.locationId && (
+        <ChooseProductsFlow
+          meal={choosingProductsMeal}
+          locationId={krogerLocations[choosingProductsMeal.store_id].locationId}
+          storeId={choosingProductsMeal.store_id}
+          accessToken={accessToken}
+          onClose={() => setChoosingProductsMeal(null)}
+          onMealUpdated={updated => {
+            setMeals(prev => prev.map(m => m.id === updated.id ? updated : m));
+            setChoosingProductsMeal(null);
+          }}
         />
       )}
 
