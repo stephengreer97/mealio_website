@@ -1809,7 +1809,7 @@ function KrogerCartFlow({
           const updatedIngredients = meal.ingredients.map(ing => {
             const ni = normIng(ing);
             if (ni.ingredientName.toLowerCase().trim() === currentReview.ingredientName.toLowerCase().trim()) {
-              return { ...ing, searchTerm: resolved.name };
+              return { ...ing, searchTerm: resolved.name, productQty: getReviewTotalQty() };
             }
             return ing;
           });
