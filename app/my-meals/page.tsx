@@ -2381,7 +2381,7 @@ function ChooseProductsFlow({
                       >+</button>
                     </div>
                   </div>
-                  {currentIngQty > 5 && (
+                  {currentIngQty > 2 && (
                     <p className="text-xs" style={{ color: '#b45309' }}>
                       ⚠ {currentIngQty} is a lot for one item — does this come in a multipack or bulk size?
                     </p>
