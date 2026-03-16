@@ -745,6 +745,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               type="text"
               value={author}
               onChange={e => setAuthor(e.target.value)}
+              placeholder="e.g., Ina Garten"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
