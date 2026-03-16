@@ -132,16 +132,16 @@ export async function POST(request: NextRequest) {
           suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
         }
 
-        const top = suggestions[0] ?? null;
+        // Pick the best match across all suggestions, not just the first
+        const scored = suggestions.map(s => ({ s, score: scoreProductMatch(searchStr, s.description) }));
+        const exactMatch = scored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
+        const top = exactMatch?.s ?? suggestions[0] ?? null;
         return {
           term: base, // always echo ingredientName back for client matching
           quantity: ing.quantity ?? 1,
           upc: top?.upc ?? null,
           description: top?.description ?? null,
-          exact: top
-            ? scoreProductMatch(searchStr, top.description) === 100
-              && top.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK'
-            : false,
+          exact: !!exactMatch,
           suggestions,
         };
       })
