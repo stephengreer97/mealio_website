@@ -58,7 +58,7 @@ export default function AppHeader() {
 
   const handleLogout = () => {
     localStorage.clear();
-    router.push('/discover');
+    window.location.href = '/discover';
   };
 
   const handleSignIn = () => {
