@@ -125,6 +125,12 @@ const KROGER_API_STORES = new Set([
   'metro_market', 'pay_less', 'harris_teeter',
 ]);
 
+interface MealIngredientQty {
+  mealId: string;
+  mealName: string;
+  qty: number;
+}
+
 interface ConsolidatedIngredient {
   ingredientName: string;
   searchTerm: string | null;
@@ -133,6 +139,7 @@ interface ConsolidatedIngredient {
   productQty: number;
   mealIds: string[];
   mealNames: string[];
+  mealIngredients: MealIngredientQty[];
 }
 
 interface KrogerSearchResult {
@@ -143,6 +150,7 @@ interface KrogerSearchResult {
   exact: boolean;
   suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null }>;
   mealIds: string[];
+  mealIngredients: MealIngredientQty[];
   mealNames: string[];
   ingredientName: string;
 }
@@ -1633,12 +1641,20 @@ function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
       const ing = normIng(rawIng);
       const key = ing.ingredientName.toLowerCase().trim();
       if (!key) continue;
+      const ingQty = ing.productQty ?? 1;
       if (map.has(key)) {
         const e = map.get(key)!;
-        e.productQty += ing.productQty ?? 1;
-        if (!e.mealIds.includes(meal.id)) { e.mealIds.push(meal.id); e.mealNames.push(meal.name); }
+        e.productQty += ingQty;
+        if (!e.mealIds.includes(meal.id)) {
+          e.mealIds.push(meal.id);
+          e.mealNames.push(meal.name);
+          e.mealIngredients.push({ mealId: meal.id, mealName: meal.name, qty: ingQty });
+        } else {
+          const mi = e.mealIngredients.find(m => m.mealId === meal.id);
+          if (mi) mi.qty += ingQty;
+        }
       } else {
-        map.set(key, { ingredientName: ing.ingredientName, searchTerm: ing.searchTerm ?? null, unit: ing.unit ?? 'qty', measure: ing.measure ?? null, productQty: ing.productQty ?? 1, mealIds: [meal.id], mealNames: [meal.name] });
+        map.set(key, { ingredientName: ing.ingredientName, searchTerm: ing.searchTerm ?? null, unit: ing.unit ?? 'qty', measure: ing.measure ?? null, productQty: ingQty, mealIds: [meal.id], mealNames: [meal.name], mealIngredients: [{ mealId: meal.id, mealName: meal.name, qty: ingQty }] });
       }
     }
   }
@@ -1680,8 +1696,29 @@ function KrogerCartFlow({
   const [customSearchTerm, setCustomSearchTerm] = useState('');
   const shouldShowSuggestionsRef = useRef(false);
 
+  // Per-review-item meal quantities: reviewIdx → mealId → qty
+  const [reviewMealQtys, setReviewMealQtys] = useState<Record<number, Record<string, number>>>({});
+
   const reviewQueue = searchResults.filter(r => !r.exact);
   const currentReview = reviewQueue[reviewIdx];
+
+  function getReviewMealQtys(): Record<string, number> {
+    if (reviewMealQtys[reviewIdx]) return reviewMealQtys[reviewIdx];
+    const init: Record<string, number> = {};
+    for (const mi of currentReview?.mealIngredients ?? []) init[mi.mealId] = mi.qty;
+    return init;
+  }
+
+  function getReviewTotalQty(): number {
+    return Object.values(getReviewMealQtys()).reduce((s, q) => s + q, 0);
+  }
+
+  function adjustReviewMealQty(mealId: string, delta: number) {
+    setReviewMealQtys(prev => {
+      const cur = prev[reviewIdx] ?? getReviewMealQtys();
+      return { ...prev, [reviewIdx]: { ...cur, [mealId]: Math.max(1, (cur[mealId] ?? 1) + delta) } };
+    });
+  }
 
   // Reset selection when moving to next item
   useEffect(() => {
@@ -1708,7 +1745,7 @@ function KrogerCartFlow({
 
       const results: KrogerSearchResult[] = data.results.map((r: any) => {
         const src = items.find(c => c.ingredientName.toLowerCase().trim() === r.term.toLowerCase().trim());
-        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [], ingredientName: src?.ingredientName ?? r.term };
+        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [], mealIngredients: src?.mealIngredients ?? [], ingredientName: src?.ingredientName ?? r.term };
       });
       setSearchResults(results);
 
@@ -1761,7 +1798,7 @@ function KrogerCartFlow({
       const resolved = await resolveCurrentSelection();
       if (shouldShowSuggestionsRef.current) return; // custom search showed new suggestions — stay on this item
       if (resolved?.upc) {
-        newPicked.push({ upc: resolved.upc, quantity: currentReview.quantity, description: resolved.name });
+        newPicked.push({ upc: resolved.upc, quantity: getReviewTotalQty(), description: resolved.name });
       }
       if (action === 'update' && resolved?.name) {
         for (const mealId of currentReview.mealIds) {
@@ -1988,6 +2025,56 @@ function KrogerCartFlow({
                     </div>
                   </div>
                 </div>
+
+                {/* Per-recipe qty editors */}
+                {(() => {
+                  const mealQtys = getReviewMealQtys();
+                  const mealIngredients = currentReview.mealIngredients ?? [];
+                  if (mealIngredients.length === 0) return null;
+                  return (
+                    <div className="rounded-xl px-4 py-3 space-y-2.5" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                      <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>
+                        Qty by recipe
+                      </p>
+                      {mealIngredients.map(mi => {
+                        const qty = mealQtys[mi.mealId] ?? mi.qty;
+                        const isHigh = qty > 2;
+                        return (
+                          <div key={mi.mealId}>
+                            <div className="flex items-center gap-2">
+                              <span className="flex-1 text-sm truncate" style={{ color: 'var(--text-1)' }}>{mi.mealName}</span>
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => adjustReviewMealQty(mi.mealId, -1)}
+                                  className="w-6 h-6 rounded text-sm flex items-center justify-center"
+                                  style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
+                                >−</button>
+                                <span className="text-sm w-5 text-center font-medium" style={{ color: 'var(--text-1)' }}>{qty}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => adjustReviewMealQty(mi.mealId, 1)}
+                                  className="w-6 h-6 rounded text-sm flex items-center justify-center"
+                                  style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
+                                >+</button>
+                              </div>
+                            </div>
+                            {isHigh && (
+                              <p className="text-xs mt-1" style={{ color: '#b45309' }}>
+                                ⚠ {qty} is a lot for one item — does this come in a multipack or bulk size?
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {mealIngredients.length > 1 && (
+                        <p className="text-xs pt-1" style={{ color: 'var(--text-3)', borderTop: '1px solid var(--border)' }}>
+                          Total adding to cart: {getReviewTotalQty()}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Floating product image on hover */}
