@@ -2672,7 +2672,7 @@ function DashboardMealCard({
           {hasUnchosenProducts(meal) && KROGER_API_STORES.has(meal.store_id) && (
             <div className="mt-2 flex items-center gap-1.5">
               <span className="text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a' }}>
-                ⚠ Products not chosen
+                ⚠ Cannot add to cart until products have been chosen
               </span>
             </div>
           )}
@@ -2747,6 +2747,7 @@ export default function MyMealsPage() {
   const [krogerConnecting, setKrogerConnecting] = useState(false);
   const [choosingProductsMeal, setChoosingProductsMeal] = useState<Meal | null>(null);
   const pendingChooseFlowMealRef = useRef<Meal | null>(null);
+  const chooseQueueRef = useRef<string[]>([]);
 
   useEffect(() => {
     verifyAuth();
@@ -3014,6 +3015,27 @@ export default function MyMealsPage() {
         }
       }, 500);
     } catch { setKrogerConnecting(false); }
+  };
+
+  const advanceChooseQueue = (currentMeals?: Meal[]) => {
+    const mealsToCheck = currentMeals ?? meals;
+    while (chooseQueueRef.current.length > 0) {
+      const nextId = chooseQueueRef.current.shift()!;
+      const nextMeal = mealsToCheck.find(m => m.id === nextId);
+      if (nextMeal && hasUnchosenProducts(nextMeal)) {
+        setChoosingProductsMeal(nextMeal);
+        return;
+      }
+    }
+    setChoosingProductsMeal(null);
+  };
+
+  const handleFloatingChooseProducts = async () => {
+    const mealsToChoose = meals.filter(m => selectedMealIds.has(m.id)).filter(hasUnchosenProducts);
+    if (mealsToChoose.length === 0) return;
+    const [first, ...rest] = mealsToChoose;
+    chooseQueueRef.current = rest.map(m => m.id);
+    await handleChooseProducts(first);
   };
 
   const notifyExtension = () => {
@@ -3335,30 +3357,47 @@ export default function MyMealsPage() {
         />
       )}
 
-      {/* Floating "Add to Kroger Cart" button */}
-      {selectedMealIds.size > 0 && selectedStore && KROGER_API_STORES.has(selectedStore) && (
-        <div className="fixed bottom-6 left-1/2 z-40 flex flex-col items-center gap-1.5" style={{ transform: 'translateX(-50%)' }}>
-          <button
-            onClick={handleKrogerCartClick}
-            disabled={krogerConnecting}
-            className="flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg disabled:opacity-60 transition-transform active:scale-95"
-            style={{ background: STORE_COLORS[selectedStore] ?? '#0063a1', boxShadow: `0 4px 20px ${(STORE_COLORS[selectedStore] ?? '#0063a1')}66` }}
-            onMouseEnter={e => { if (!krogerConnecting) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
-              <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
-            </svg>
-            {krogerConnecting ? 'Connecting…' : `Add ${selectedMealIds.size} meal${selectedMealIds.size !== 1 ? 's' : ''} to ${STORE_LABELS[selectedStore] ?? 'Kroger'} Cart`}
-          </button>
-          {!krogerConnected && (
-            <p className="text-xs px-3 py-1.5 rounded-xl text-center" style={{ background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(4px)', maxWidth: '320px' }}>
-              {selectedStore !== 'kroger' ? `You may see a Kroger login screen — ${STORE_LABELS[selectedStore]} uses the Kroger sign-in system.` : "You'll be prompted to sign in to Kroger."}
-            </p>
-          )}
-        </div>
-      )}
+      {/* Floating action button — "Choose Products" or "Add to Cart" */}
+      {selectedMealIds.size > 0 && selectedStore && KROGER_API_STORES.has(selectedStore) && (() => {
+        const storeColor = STORE_COLORS[selectedStore] ?? '#0063a1';
+        const storeName = STORE_LABELS[selectedStore] ?? 'Kroger';
+        const needsChoose = meals.filter(m => selectedMealIds.has(m.id)).some(hasUnchosenProducts);
+        const unchosenCount = meals.filter(m => selectedMealIds.has(m.id)).filter(hasUnchosenProducts).length;
+        return (
+          <div className="fixed bottom-6 left-1/2 z-40 flex flex-col items-center gap-1.5" style={{ transform: 'translateX(-50%)' }}>
+            <button
+              onClick={needsChoose ? handleFloatingChooseProducts : handleKrogerCartClick}
+              disabled={krogerConnecting}
+              className="flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg disabled:opacity-60 transition-transform active:scale-95"
+              style={{ background: storeColor, boxShadow: `0 4px 20px ${storeColor}66` }}
+              onMouseEnter={e => { if (!krogerConnecting) (e.currentTarget as HTMLElement).style.opacity = '0.88'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+            >
+              {needsChoose ? (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  {krogerConnecting ? 'Connecting…' : `Choose Products for ${unchosenCount} meal${unchosenCount !== 1 ? 's' : ''}`}
+                </>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+                    <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+                  </svg>
+                  {krogerConnecting ? 'Connecting…' : `Add ${selectedMealIds.size} meal${selectedMealIds.size !== 1 ? 's' : ''} to ${storeName} Cart`}
+                </>
+              )}
+            </button>
+            {!krogerConnected && !needsChoose && (
+              <p className="text-xs px-3 py-1.5 rounded-xl text-center" style={{ background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(4px)', maxWidth: '320px' }}>
+                {selectedStore !== 'kroger' ? `You may see a Kroger login screen — ${storeName} uses the Kroger sign-in system.` : "You'll be prompted to sign in to Kroger."}
+              </p>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Kroger store picker — shown after OAuth when no store is saved yet */}
       {showKrogerStorePicker && (
@@ -3399,10 +3438,11 @@ export default function MyMealsPage() {
           locationId={krogerLocations[choosingProductsMeal.store_id].locationId}
           storeId={choosingProductsMeal.store_id}
           accessToken={accessToken}
-          onClose={() => setChoosingProductsMeal(null)}
+          onClose={() => advanceChooseQueue()}
           onMealUpdated={updated => {
-            setMeals(prev => prev.map(m => m.id === updated.id ? updated : m));
-            setChoosingProductsMeal(null);
+            const newMeals = meals.map(m => m.id === updated.id ? updated : m);
+            setMeals(newMeals);
+            advanceChooseQueue(newMeals);
           }}
         />
       )}
