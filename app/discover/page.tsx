@@ -268,7 +268,7 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
 }
 
 interface Ingredient {
-  productName: string;
+  ingredientName: string;
   searchTerm?: string | null;
   qty: number;
   unit: string;
@@ -277,7 +277,7 @@ interface Ingredient {
 
 function normIng(raw: any): Ingredient {
   return {
-    productName: raw.productName ?? raw.product_name ?? raw.name ?? '',
+    ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
     searchTerm: raw.searchTerm ?? raw.search_term ?? null,
     qty: raw.qty ?? raw.quantity ?? 1,
     unit: raw.unit ?? 'qty',
@@ -286,8 +286,8 @@ function normIng(raw: any): Ingredient {
 }
 
 function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return `${ing.productName}, ${ing.qty ?? 1}`;
-  return `${ing.productName}, ${ing.measure ?? ''} ${ing.unit}`;
+  if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
+  return `${ing.ingredientName}, ${ing.measure ?? ''} ${ing.unit}`;
 }
 
 interface PresetMeal {
@@ -1122,7 +1122,7 @@ const map = new Map<string, string[]>();
   const activeFilterCount = [filters.authors.length > 0, filters.tags.length > 0, filters.ingredients.length > 0, filters.difficulty.length > 0, filters.excludeIngredients.length > 0].filter(Boolean).length;
   const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
   const authorSuggestions = [...new Set(meals.flatMap(m => [m.author, m.creator_name]).filter((a): a is string => Boolean(a)))];
-  const ingName = (i: any) => ((i.productName ?? i.product_name ?? i.name ?? '') as string).toLowerCase();
+  const ingName = (i: any) => ((i.ingredientName ?? i.productName ?? i.product_name ?? i.name ?? '') as string).toLowerCase();
   const matchesMeal = (m: PresetMeal) => {
     if (q && !(m.name.toLowerCase().includes(q) || m.author?.toLowerCase().includes(q) || m.creator_name?.toLowerCase().includes(q) || m.source?.toLowerCase().includes(q))) return false;
     if (filters.authors.length > 0 && !filters.authors.some(a => m.author?.toLowerCase().includes(a.toLowerCase()) || m.creator_name?.toLowerCase().includes(a.toLowerCase()))) return false;

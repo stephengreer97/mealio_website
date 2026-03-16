@@ -43,7 +43,7 @@ const STORES = [
 ];
 
 interface Ingredient {
-  productName: string;
+  ingredientName: string;
   searchTerm?: string | null;
   qty: number;
   unit: string;
@@ -52,7 +52,7 @@ interface Ingredient {
 
 function normIng(raw: any): Ingredient {
   return {
-    productName: raw.productName ?? raw.product_name ?? raw.name ?? '',
+    ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
     searchTerm: raw.searchTerm ?? raw.search_term ?? null,
     qty: raw.qty ?? raw.quantity ?? 1,
     unit: raw.unit ?? 'qty',
@@ -61,8 +61,8 @@ function normIng(raw: any): Ingredient {
 }
 
 function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return `${ing.productName}, ${ing.qty ?? 1}`;
-  return `${ing.productName}, ${ing.measure ?? ''} ${ing.unit}`;
+  if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
+  return `${ing.ingredientName}, ${ing.measure ?? ''} ${ing.unit}`;
 }
 
 interface PresetMeal {

@@ -42,15 +42,16 @@ interface Stats {
 }
 
 interface Ingredient {
-  productName: string;
+  ingredientName: string;
   searchTerm?: string | null;
   qty: number;
   unit: string;
   measure?: string | null;
+  productQty?: number;
 }
 
 interface IngredientForm {
-  productName: string;
+  ingredientName: string;
   measure: string;
   unit: string;
   searchTerm: string | null;
@@ -61,22 +62,23 @@ const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', '
 
 function normIng(raw: any): Ingredient {
   return {
-    productName: raw.productName ?? raw.product_name ?? raw.name ?? '',
+    ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
     searchTerm: raw.searchTerm ?? raw.search_term ?? null,
     qty: raw.qty ?? raw.quantity ?? 1,
     unit: raw.unit ?? 'qty',
     measure: raw.measure ?? null,
+    productQty: raw.productQty ?? raw.qty ?? raw.quantity ?? 1,
   };
 }
 
 function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return `${ing.productName}, ${ing.qty ?? 1}`;
-  return `${ing.productName}, ${ing.measure ?? ''} ${ing.unit}`;
+  if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
+  return `${ing.ingredientName}, ${ing.measure ?? ''} ${ing.unit}`;
 }
 
 function toFormIng(ing: Ingredient): IngredientForm {
   return {
-    productName: ing.productName,
+    ingredientName: ing.ingredientName,
     measure: ing.unit === 'qty' ? String(ing.qty ?? 1) : (ing.measure ?? ''),
     unit: ing.unit === 'qty' ? 'Qty' : ing.unit,
     searchTerm: ing.searchTerm ?? null,
@@ -88,19 +90,21 @@ function fromFormIng(form: IngredientForm): Ingredient {
   if (form.unit === 'Qty') {
     const q = parseInt(form.measure) || 1;
     return {
-      productName: form.productName.trim(),
+      ingredientName: form.ingredientName.trim(),
       qty: q,
       unit: 'qty',
       measure: null,
       searchTerm: form.searchTerm ?? null,
+      productQty: q,
     };
   }
   return {
-    productName: form.productName.trim(),
+    ingredientName: form.ingredientName.trim(),
     qty: form.qty,
     unit: form.unit,
     measure: form.measure.trim() || null,
     searchTerm: form.searchTerm ?? null,
+    productQty: 1,
   };
 }
 
@@ -335,7 +339,7 @@ function EditPresetMealModal({
   const updateFormField = (i: number, field: keyof IngredientForm, value: string | number) =>
     setIngredients(prev => prev.map((ing, idx) => {
       if (idx !== i) return ing;
-      if (field === 'productName') return { ...ing, productName: value as string, searchTerm: null };
+      if (field === 'ingredientName') return { ...ing, ingredientName: value as string, searchTerm: null };
       return { ...ing, [field]: value };
     }));
 
@@ -366,7 +370,7 @@ function EditPresetMealModal({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
         body: JSON.stringify({
           name:        name.trim(),
-          ingredients: ingredients.filter(f => f.productName.trim()).map(fromFormIng),
+          ingredients: ingredients.filter(f => f.ingredientName.trim()).map(fromFormIng),
           recipe:      recipe.trim() || null,
           source:      normalizeUrl(source),
           story:       story.trim() || null,
@@ -378,7 +382,7 @@ function EditPresetMealModal({
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Failed to save.'); return; }
-      onSave({ ...meal, ...data.meal, ingredients: ingredients.filter(f => f.productName.trim()).map(fromFormIng), recipe: recipe.trim() || null, source: normalizeUrl(source), story: story.trim() || null, tags: selectedTags });
+      onSave({ ...meal, ...data.meal, ingredients: ingredients.filter(f => f.ingredientName.trim()).map(fromFormIng), recipe: recipe.trim() || null, source: normalizeUrl(source), story: story.trim() || null, tags: selectedTags });
     } catch (err) { setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.'); }
     finally { setSaving(false); }
   };
@@ -486,14 +490,14 @@ function EditPresetMealModal({
 
           {/* Measurements */}
           <div>
-            <label style={modalLabelStyle}>Measurements ({ingredients.filter(f => f.productName.trim()).length})</label>
+            <label style={modalLabelStyle}>Measurements ({ingredients.filter(f => f.ingredientName.trim()).length})</label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '200px', overflowY: 'auto', marginBottom: '8px', paddingRight: '4px' }}>
               {ingredients.map((ing, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <input
                     type="text"
-                    value={ing.productName}
-                    onChange={e => updateFormField(i, 'productName', e.target.value)}
+                    value={ing.ingredientName}
+                    onChange={e => updateFormField(i, 'ingredientName', e.target.value)}
                     placeholder="Ingredient name"
                     style={{ ...modalInputStyle, flex: 1, marginBottom: 0 }}
                   />
@@ -518,7 +522,7 @@ function EditPresetMealModal({
             </div>
             <button
               type="button"
-              onClick={() => setIngredients(prev => [...prev, { productName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
+              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
               style={{ fontSize: '13px', color: '#dd0031', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
               + Add ingredient
@@ -703,7 +707,7 @@ export default function CreatorPortal() {
   const [mealServes, setMealServes]   = useState('');
   const [mealDifficulty, setMealDifficulty] = useState<number | null>(null);
   const [mealIngredients, setMealIngredients] = useState<IngredientForm[]>([
-    { productName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 },
+    { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 },
   ]);
   const [mealTags, setMealTags]           = useState<string[]>([]);
   const [photoFile, setPhotoFile]         = useState<File | null>(null);
@@ -872,7 +876,7 @@ export default function CreatorPortal() {
   };
 
   const addIngredientRow = () =>
-    setMealIngredients(prev => [...prev, { productName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
+    setMealIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
 
   const removeIngredientRow = (i: number) =>
     setMealIngredients(prev => prev.filter((_, idx) => idx !== i));
@@ -880,7 +884,7 @@ export default function CreatorPortal() {
   const updateIngredientForm = (i: number, field: keyof IngredientForm, value: string | number) =>
     setMealIngredients(prev => prev.map((ing, idx) => {
       if (idx !== i) return ing;
-      if (field === 'productName') return { ...ing, productName: value as string, searchTerm: null };
+      if (field === 'ingredientName') return { ...ing, ingredientName: value as string, searchTerm: null };
       return { ...ing, [field]: value };
     }));
 
@@ -889,7 +893,7 @@ export default function CreatorPortal() {
     setPublishError('');
     setPublishSuccess('');
 
-    const validIngredientForms = mealIngredients.filter(i => i.productName.trim());
+    const validIngredientForms = mealIngredients.filter(i => i.ingredientName.trim());
     const validIngredients = validIngredientForms.map(fromFormIng);
     if (!mealName.trim() || validIngredients.length === 0) {
       setPublishError('Meal name and at least one ingredient are required.');
@@ -936,7 +940,7 @@ export default function CreatorPortal() {
       setMealName(''); setMealRecipe(''); setMealSource(''); setMealStory('');
       setMealServes(''); setMealDifficulty(null); setMealTags([]); setPhotoFile(null); setPhotoPreview('');
       setThumbs([]); setFulls([]); setSelectedIdx(null);
-      setMealIngredients([{ productName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
+      setMealIngredients([{ ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
       setShowForm(false);
       loadPortal();
     } catch (err) {
@@ -1347,8 +1351,8 @@ export default function CreatorPortal() {
                     {mealIngredients.map((ing, i) => (
                       <div key={i} className="flex items-center gap-2">
                         <input
-                          value={ing.productName}
-                          onChange={e => updateIngredientForm(i, 'productName', e.target.value)}
+                          value={ing.ingredientName}
+                          onChange={e => updateIngredientForm(i, 'ingredientName', e.target.value)}
                           placeholder="Ingredient name"
                           className={`${pInputCls} flex-1`}
                         />
