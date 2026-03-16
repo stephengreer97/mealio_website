@@ -2417,6 +2417,33 @@ function ChooseProductsFlow({
                   )}
                 </div>
 
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                    <span className="text-sm text-ml-t2">Qty to add to cart</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => adjustCurrentQty(-1)}
+                        disabled={currentIngQty <= 1}
+                        className="w-7 h-7 rounded flex items-center justify-center text-sm disabled:opacity-30"
+                        style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
+                      >−</button>
+                      <span className="text-sm font-semibold w-5 text-center" style={{ color: 'var(--text-1)' }}>{currentIngQty}</span>
+                      <button
+                        type="button"
+                        onClick={() => adjustCurrentQty(1)}
+                        className="w-7 h-7 rounded flex items-center justify-center text-sm"
+                        style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
+                      >+</button>
+                    </div>
+                  </div>
+                  {currentIngQty > 5 && (
+                    <p className="text-xs" style={{ color: '#b45309' }}>
+                      ⚠ {currentIngQty} is a lot for one item — does this come in a multipack or bulk size?
+                    </p>
+                  )}
+                </div>
+
                 <div>
                   <p className="text-xs font-semibold text-ml-t3 mb-2 uppercase tracking-wide">
                     {hasSuggestions ? `${storeName} products` : 'No products found'}
@@ -2487,30 +2514,6 @@ function ChooseProductsFlow({
               )}
 
               <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
-                <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                  <span className="text-sm text-ml-t2">Qty to add to cart</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => adjustCurrentQty(-1)}
-                      disabled={currentIngQty <= 1}
-                      className="w-7 h-7 rounded flex items-center justify-center text-sm disabled:opacity-30"
-                      style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
-                    >−</button>
-                    <span className="text-sm font-semibold w-5 text-center" style={{ color: 'var(--text-1)' }}>{currentIngQty}</span>
-                    <button
-                      type="button"
-                      onClick={() => adjustCurrentQty(1)}
-                      className="w-7 h-7 rounded flex items-center justify-center text-sm"
-                      style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
-                    >+</button>
-                  </div>
-                </div>
-                {currentIngQty > 5 && (
-                  <p className="text-xs" style={{ color: '#b45309' }}>
-                    ⚠ {currentIngQty} is a lot for one item — does this come in a multipack or bulk size?
-                  </p>
-                )}
                 <button
                   onClick={() => handleNext(false)}
                   disabled={!canPick || customSearching}
