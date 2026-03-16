@@ -2030,63 +2030,6 @@ function KrogerCartFlow({
                   </div>
                 </div>
 
-                {/* Per-recipe qty editors */}
-                {(() => {
-                  const mealQtys = getReviewMealQtys();
-                  const mealIngredients = currentReview.mealIngredients ?? [];
-                  if (mealIngredients.length === 0) return null;
-                  return (
-                    <div className="rounded-xl px-4 py-3 space-y-2.5" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                      <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>
-                        Qty by recipe
-                      </p>
-                      {mealIngredients.map(mi => {
-                        const qty = mealQtys[mi.mealId] ?? mi.qty;
-                        const isHigh = qty > 2;
-                        const mealObj = meals.find(m => m.id === mi.mealId);
-                        const ingredientTooltip = mealObj
-                          ? mealObj.ingredients.map(rawIng => { const n = normIng(rawIng); return fmtMeasurement(n); }).join('\n')
-                          : '';
-                        return (
-                          <div key={mi.mealId}>
-                            <div className="flex items-center gap-2">
-                              <span
-                                className="flex-1 text-sm truncate"
-                                style={{ color: 'var(--text-1)', cursor: ingredientTooltip ? 'help' : 'default' }}
-                                title={ingredientTooltip || undefined}
-                              >{mi.mealName}</span>
-                              <div className="flex items-center gap-1 flex-shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => adjustReviewMealQty(mi.mealId, -1)}
-                                  className="w-6 h-6 rounded text-sm flex items-center justify-center"
-                                  style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
-                                >−</button>
-                                <span className="text-sm w-5 text-center font-medium" style={{ color: 'var(--text-1)' }}>{qty}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => adjustReviewMealQty(mi.mealId, 1)}
-                                  className="w-6 h-6 rounded text-sm flex items-center justify-center"
-                                  style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
-                                >+</button>
-                              </div>
-                            </div>
-                            {isHigh && (
-                              <p className="text-xs mt-1" style={{ color: '#b45309' }}>
-                                ⚠ {qty} is a lot for one item — does this come in a multipack or bulk size?
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })}
-                      {mealIngredients.length > 1 && (
-                        <p className="text-xs pt-1" style={{ color: 'var(--text-3)', borderTop: '1px solid var(--border)' }}>
-                          Total adding to cart: {getReviewTotalQty()}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
               </div>
 
               {/* Floating product image on hover */}
