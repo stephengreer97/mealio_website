@@ -128,6 +128,8 @@ const KROGER_API_STORES = new Set([
 interface ConsolidatedIngredient {
   ingredientName: string;
   searchTerm: string | null;
+  unit: string;
+  measure: string | null;
   productQty: number;
   mealIds: string[];
   mealNames: string[];
@@ -1636,7 +1638,7 @@ function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
         e.productQty += ing.productQty ?? 1;
         if (!e.mealIds.includes(meal.id)) { e.mealIds.push(meal.id); e.mealNames.push(meal.name); }
       } else {
-        map.set(key, { ingredientName: ing.ingredientName, searchTerm: ing.searchTerm ?? null, productQty: ing.productQty ?? 1, mealIds: [meal.id], mealNames: [meal.name] });
+        map.set(key, { ingredientName: ing.ingredientName, searchTerm: ing.searchTerm ?? null, unit: ing.unit ?? 'qty', measure: ing.measure ?? null, productQty: ing.productQty ?? 1, mealIds: [meal.id], mealNames: [meal.name] });
       }
     }
   }
@@ -1697,7 +1699,7 @@ function KrogerCartFlow({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
-          ingredients: items.filter((it, i) => checkedItems[i] && it.productQty > 0).map(i => ({ productName: i.searchTerm ?? i.ingredientName, quantity: i.productQty })),
+          ingredients: items.filter((it, i) => checkedItems[i] && it.productQty > 0).map(i => ({ productName: i.ingredientName, searchTerm: i.searchTerm, unit: i.unit, measure: i.measure, quantity: i.productQty })),
           locationId,
         }),
       });
@@ -1705,7 +1707,7 @@ function KrogerCartFlow({
       if (!res.ok) throw new Error(data.error || 'Search failed');
 
       const results: KrogerSearchResult[] = data.results.map((r: any) => {
-        const src = items.find(c => (c.searchTerm ?? c.ingredientName).toLowerCase().trim() === r.term.toLowerCase().trim());
+        const src = items.find(c => c.ingredientName.toLowerCase().trim() === r.term.toLowerCase().trim());
         return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [], ingredientName: src?.ingredientName ?? r.term };
       });
       setSearchResults(results);

@@ -14,13 +14,22 @@ export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/kroger/search-products
- * Body: { ingredients: Array<{ productName: string; quantity?: number }>, locationId?: string }
+ * Body: { ingredients: Array<{ productName: string; searchTerm?: string | null; unit?: string; measure?: string | null; quantity?: number }>, locationId?: string }
  *
- * Searches Kroger for each ingredient and returns per-ingredient results with
- * an `exact` flag indicating whether the match is confident enough to auto-add.
+ * For each ingredient:
+ *   - If searchTerm is set, use it directly.
+ *   - Else if unit is not 'qty', try "<productName> <measure> <unit>" (capped at 8 words).
+ *     If that returns no suggestions, fall back to just "<productName>".
+ *   - Else use productName directly.
  *
- * Returns: { results: Array<{ term, quantity, upc, description, exact }> }
+ * Returns: { results: Array<{ term, quantity, upc, description, exact, suggestions }> }
+ * `term` echoes back productName (ingredientName) for client-side matching.
  */
+
+function buildSearchTerm(base: string, measure: string | null, unit: string): string {
+  const full = `${base} ${measure ?? ''} ${unit}`.replace(/\s+/g, ' ').trim();
+  return full.split(' ').slice(0, 8).join(' ');
+}
 export async function POST(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -33,7 +42,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const ingredients: Array<{ productName: string; quantity?: number }> = body?.ingredients ?? [];
+  const ingredients: Array<{ productName: string; searchTerm?: string | null; unit?: string; measure?: string | null; quantity?: number }> = body?.ingredients ?? [];
   const requestedLocationId: string | undefined = body?.locationId;
 
   if (!ingredients.length) {
@@ -83,15 +92,40 @@ export async function POST(request: NextRequest) {
     const batch = ingredients.slice(i, i + BATCH);
     const batchResults = await Promise.all(
       batch.map(async (ing) => {
-        const suggestions = await krogerSearchProducts(userAccessToken, ing.productName, locationId, 5);
+        const base = ing.productName;
+        const unit = ing.unit ?? 'qty';
+        const usesMeasurement = !ing.searchTerm && unit !== 'qty';
+
+        // Determine the actual search string
+        let searchStr: string;
+        let suggestions: Awaited<ReturnType<typeof krogerSearchProducts>>;
+
+        if (ing.searchTerm) {
+          // User already picked a product — search with their chosen term
+          searchStr = ing.searchTerm;
+          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+        } else if (usesMeasurement) {
+          // Try with measure + unit first
+          searchStr = buildSearchTerm(base, ing.measure ?? null, unit);
+          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+          // Fall back to base name if no results
+          if (suggestions.length === 0) {
+            searchStr = base.split(' ').slice(0, 8).join(' ');
+            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+          }
+        } else {
+          searchStr = base.split(' ').slice(0, 8).join(' ');
+          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 5);
+        }
+
         const top = suggestions[0] ?? null;
         return {
-          term: ing.productName,
+          term: base, // always echo ingredientName back for client matching
           quantity: ing.quantity ?? 1,
           upc: top?.upc ?? null,
           description: top?.description ?? null,
           exact: top
-            ? scoreProductMatch(ing.productName, top.description) === 100
+            ? scoreProductMatch(searchStr, top.description) === 100
               && top.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK'
             : false,
           suggestions,
