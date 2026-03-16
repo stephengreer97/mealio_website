@@ -11,14 +11,9 @@ const PRESET_PAGE_SIZE = 20;
 
 export async function GET(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
-  if (!token) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const decoded = await verifyAccessToken(token);
-  if (!decoded) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const decoded = token ? await verifyAccessToken(token) : null;
+  // Guest (unauthenticated) access is allowed for trending and new feeds.
+  // The "following" feed requires auth.
 
   const supabase = createServerSupabaseClient();
   const searchParams = request.nextUrl.searchParams;
@@ -30,6 +25,7 @@ export async function GET(request: NextRequest) {
 
   // ── Following feed ────────────────────────────────────────────────────────
   if (searchParams.get('followed') === 'true') {
+    if (!decoded) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const { data: follows } = await supabase
       .from('creator_follows')
       .select('creator_id')

@@ -151,16 +151,16 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
         </div>
       </div>
 
-      {/* Author */}
+      {/* Creator */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Author</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Creator</div>
         <div style={{ position: 'relative' }}>
           <div style={{ display: 'flex', gap: 4, marginBottom: filters.authors.length > 0 ? 6 : 0 }}>
             <input type="text" value={authorInput}
               onChange={e => { setAuthorInput(e.target.value); setShowAuthorSug(true); }}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addAuthor(); } if (e.key === 'Escape') setShowAuthorSug(false); }}
               onFocus={() => setShowAuthorSug(true)} onBlur={() => setTimeout(() => setShowAuthorSug(false), 150)}
-              placeholder="Type author name…" style={panelInputStyle} />
+              placeholder="Type creator name…" style={panelInputStyle} />
             <button type="button" onClick={addAuthor} disabled={!authorInput.trim()} style={addBtnStyle(!!authorInput.trim())}>+ Add</button>
           </div>
           {showAuthorSug && sugFiltered.length > 0 && (
@@ -578,7 +578,7 @@ function StoreModal({ meal, onSave, onClose, saving, error, recentStores }: Stor
   const [selectedStore, setSelectedStore] = useState('');
   const dragRef = useRef(false);
   const recentStoreObjects = recentStores.map(id => STORES.find(s => s.id === id)).filter(Boolean) as typeof STORES;
-  const otherStores = STORES.filter(s => !recentStores.includes(s.id));
+  const otherStores = STORES;
 
   return (
     <div
@@ -1003,13 +1003,30 @@ export default function DiscoverPage() {
   const verifyAuth = async () => {
     try {
       const accessToken = localStorage.getItem('accessToken');
-      if (!accessToken) { router.push('/'); return; }
+      if (!accessToken) {
+        // Guest mode: proceed without auth
+        setLoading(false);
+        fetch('/api/creators/featured')
+          .then(r => r.ok ? r.json() : { creators: [] })
+          .then(d => setFeaturedCreators(d.creators ?? []))
+          .catch(() => {});
+        return;
+      }
 
       const response = await fetch('/api/auth/verify', {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      if (!response.ok) { localStorage.clear(); router.push('/'); return; }
+      if (!response.ok) {
+        localStorage.clear();
+        // Invalid token — treat as guest
+        setLoading(false);
+        fetch('/api/creators/featured')
+          .then(r => r.ok ? r.json() : { creators: [] })
+          .then(d => setFeaturedCreators(d.creators ?? []))
+          .catch(() => {});
+        return;
+      }
 
       const data = await response.json();
       setUser(data.user);
@@ -1035,7 +1052,7 @@ export default function DiscoverPage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       }).then(r => r.ok ? r.json() : null).then(d => {
         if (!d?.meals) return;
-const map = new Map<string, string[]>();
+        const map = new Map<string, string[]>();
         for (const m of d.meals) {
           if (!m.preset_meal_id) continue;
           const storeLabel = STORES.find(s => s.id === m.store_id)?.label ?? m.store_id;
@@ -1053,7 +1070,7 @@ const map = new Map<string, string[]>();
       setLoading(false);
     } catch {
       localStorage.clear();
-      router.push('/');
+      setLoading(false);
     }
   };
 
@@ -1068,9 +1085,9 @@ const map = new Map<string, string[]>();
       let query = '';
       if (currentSection === 'new') query = '&sort=new';
       else if (currentSection === 'following') query = '&followed=true';
-      const res = await fetch(`/api/preset-meals?limit=${PAGE_SIZE}&offset=${offset}${query}`, {
-        headers: { Authorization: `Bearer ${currentToken}` },
-      });
+      const headers: Record<string, string> = {};
+      if (currentToken) headers['Authorization'] = `Bearer ${currentToken}`;
+      const res = await fetch(`/api/preset-meals?limit=${PAGE_SIZE}&offset=${offset}${query}`, { headers });
       if (!res.ok) throw new Error('Failed to load');
       const data = await res.json();
       const fetched: PresetMeal[] = data.presetMeals ?? [];
@@ -1089,15 +1106,15 @@ const map = new Map<string, string[]>();
   }, []);
 
   useEffect(() => {
-    if (!token) return;
-    fetchGenRef.current += 1;   // invalidate any in-progress fetch
-    fetchingRef.current = false; // allow the reset fetch to proceed immediately
+    if (loading) return; // wait until auth check completes
+    fetchGenRef.current += 1;
+    fetchingRef.current = false;
     sectionRef.current = section;
     offsetRef.current = 0;
     setMeals([]);
     setHasMore(true);
     fetchMeals(true, section, token);
-    if (section === 'following') {
+    if (section === 'following' && token) {
       setSelectedCreatorIds(new Set());
       fetch('/api/creators/following', { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.ok ? r.json() : { creators: [] })
@@ -1105,7 +1122,7 @@ const map = new Map<string, string[]>();
         .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section, token]);
+  }, [loading, section, token]);
 
   useEffect(() => {
     if (!sentinelRef.current || !hasMore || fetching) return;
@@ -1137,6 +1154,12 @@ const map = new Map<string, string[]>();
   const unsaved = meals.filter(m => !savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
   const saved   = meals.filter(m =>  savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
   const visible = [...unsaved, ...saved];
+
+  const handleAddMeal = (meal: PresetMeal) => {
+    if (!token) { router.push('/?tab=signup'); return; }
+    setSaveError('');
+    setAddingMeal(meal);
+  };
 
   const handleSave = async (storeId: string) => {
     if (!addingMeal || !storeId) return;
@@ -1242,10 +1265,10 @@ const map = new Map<string, string[]>();
                 <div className="p-3 border-b" style={{ borderColor: 'var(--border)' }}>
                   <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--text-3)' }}>Browse</p>
                   <div className="flex flex-col gap-0.5">
-                    {(['trending', 'new', 'following'] as const).map(s => (
+                    {(['trending', 'new', ...(token ? ['following'] : [])] as const).map(s => (
                       <button
                         key={s}
-                        onClick={() => { if (s !== section) { setSection(s); setSearch(''); } }}
+                        onClick={() => { if (s !== section) { setSection(s as typeof section); setSearch(''); } }}
                         className="w-full text-left px-3 py-2 text-sm font-semibold rounded-lg transition-all"
                         style={section === s
                           ? { background: 'var(--brand-light)', color: 'var(--brand)', border: 'none', cursor: 'pointer' }
@@ -1270,10 +1293,10 @@ const map = new Map<string, string[]>();
           <div className="flex flex-col sm:flex-row gap-3 mb-6">
             {/* Section tabs — hidden on desktop (moved to sidebar) */}
             <div className="lg:hidden flex gap-1 p-1 rounded-xl self-start" style={{ background: 'var(--surface)' }}>
-              {(['trending', 'new', 'following'] as const).map(s => (
+              {(['trending', 'new', ...(token ? ['following'] : [])] as const).map(s => (
                 <button
                   key={s}
-                  onClick={() => { if (s !== section) { setSection(s); setSearch(''); } }}
+                  onClick={() => { if (s !== section) { setSection(s as typeof section); setSearch(''); } }}
                   className="px-4 py-1.5 text-sm font-semibold rounded-lg transition-all"
                   style={section === s
                     ? { background: 'var(--surface-raised)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)', border: 'none', cursor: 'pointer' }
@@ -1406,7 +1429,7 @@ const map = new Map<string, string[]>();
                     <MealCard
                       meal={meal}
                       savedStores={savedMealStores.get(meal.id)}
-                      onAdd={() => { setSaveError(''); setAddingMeal(meal); }}
+                      onAdd={() => handleAddMeal(meal)}
                       onCreatorClick={id => setCreatorPopupId(id)}
                     />
                   </div>
@@ -1421,7 +1444,7 @@ const map = new Map<string, string[]>();
                       <MealCard
                         meal={meal}
                         savedStores={savedMealStores.get(meal.id)}
-                        onAdd={() => { setSaveError(''); setAddingMeal(meal); }}
+                        onAdd={() => handleAddMeal(meal)}
                         onCreatorClick={id => setCreatorPopupId(id)}
                       />
                     </div>
@@ -1433,7 +1456,7 @@ const map = new Map<string, string[]>();
                       <MealCard
                         meal={meal}
                         savedStores={savedMealStores.get(meal.id)}
-                        onAdd={() => { setSaveError(''); setAddingMeal(meal); }}
+                        onAdd={() => handleAddMeal(meal)}
                         onCreatorClick={id => setCreatorPopupId(id)}
                       />
                     </div>
@@ -1481,7 +1504,7 @@ const map = new Map<string, string[]>();
         <MealDetailModal
           meal={carouselMeal}
           savedStores={savedMealStores.get(carouselMeal.id)}
-          onAdd={() => { setSaveError(''); setAddingMeal(carouselMeal); setCarouselMeal(null); }}
+          onAdd={() => { handleAddMeal(carouselMeal!); setCarouselMeal(null); }}
           onClose={() => setCarouselMeal(null)}
           onCreatorClick={id => { setCarouselMeal(null); setCreatorPopupId(id); }}
         />
@@ -1492,7 +1515,7 @@ const map = new Map<string, string[]>();
           creatorId={creatorPopupId}
           token={token}
           onClose={() => setCreatorPopupId(null)}
-          onMealAdd={meal => { setSaveError(''); setAddingMeal(meal as any); setCreatorPopupId(null); }}
+          onMealAdd={meal => { handleAddMeal(meal as any); setCreatorPopupId(null); }}
         />
       )}
 

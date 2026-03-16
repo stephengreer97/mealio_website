@@ -55,9 +55,17 @@ export async function resolvePhotoUrl(
     return photoUrl;
   }
 
-  const contentType = imgRes.headers.get('content-type') ?? 'image/jpeg';
-  const arrayBuf = await imgRes.arrayBuffer();
-  const buffer = Buffer.from(arrayBuf);
+  let buffer: Buffer;
+  let contentType: string;
+  try {
+    contentType = imgRes.headers.get('content-type') ?? 'image/jpeg';
+    const arrayBuf = await imgRes.arrayBuffer();
+    buffer = Buffer.from(arrayBuf);
+  } catch (err) {
+    log({ event: 'PHOTO:UPLOAD', status: 'error', userId, detail: 'Pixabay body read failed', error: err });
+    return photoUrl;
+  }
+
   const hash = createHash('sha256').update(buffer).digest('hex');
   const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
 

@@ -50,8 +50,18 @@ export default function AppHeader() {
 
   useEffect(() => { setMobileOpen(false); }, [pathname]);
 
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  useEffect(() => {
+    setIsLoggedIn(!!localStorage.getItem('accessToken'));
+  }, []);
+
   const handleLogout = () => {
     localStorage.clear();
+    router.push('/');
+  };
+
+  const handleSignIn = () => {
     router.push('/');
   };
 
@@ -59,15 +69,15 @@ export default function AppHeader() {
 
   const mobileNavItems = [
     { label: 'Discover',         onClick: () => router.push('/discover'),  active: pathname === '/discover' },
-    { label: 'My Meals',         onClick: () => router.push('/my-meals'),  active: pathname === '/my-meals' },
+    ...(isLoggedIn ? [{ label: 'My Meals', onClick: () => router.push('/my-meals'), active: pathname === '/my-meals' }] : []),
     { label: 'Help',             onClick: () => router.push('/help'),      active: pathname === '/help' },
     { label: 'Privacy Policy',   onClick: () => router.push('/privacy'),   active: pathname === '/privacy' },
     { label: 'Terms of Service', onClick: () => router.push('/terms'),     active: pathname === '/terms' },
     { label: 'Contact',          onClick: () => { window.location.href = 'mailto:contact@mealio.co'; }, active: false },
     ...(isAdmin   ? [{ label: 'Admin',          onClick: () => router.push('/admin'),   active: pathname === '/admin' }] : []),
     ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator'), active: pathname.startsWith('/creator') }] : []),
-    { label: 'Manage Account',   onClick: () => router.push('/account'),   active: pathname === '/account' },
-    { label: 'Log Out',          onClick: handleLogout, active: false, danger: true },
+    ...(isLoggedIn ? [{ label: 'Manage Account', onClick: () => router.push('/account'), active: pathname === '/account' }] : []),
+    { label: isLoggedIn ? 'Log Out' : 'Sign In', onClick: isLoggedIn ? handleLogout : handleSignIn, active: false, danger: isLoggedIn },
   ] as { label: string; onClick: () => void; active: boolean; danger?: boolean }[];
 
   return (
@@ -89,7 +99,7 @@ export default function AppHeader() {
         {/* Desktop Nav — center */}
         <nav className="hidden sm:flex items-center gap-0.5">
           <NavButton label="Discover" active={isNavActive('/discover')} onClick={() => router.push('/discover')} />
-          <NavButton label="My Meals" active={isNavActive('/my-meals')} onClick={() => router.push('/my-meals')} />
+          {isLoggedIn && <NavButton label="My Meals" active={isNavActive('/my-meals')} onClick={() => router.push('/my-meals')} />}
 
           {isCreator && <CreatorNavButton active={pathname.startsWith('/creator')} onClick={() => router.push('/creator')} />}
           <DropdownMenu
@@ -104,19 +114,19 @@ export default function AppHeader() {
             ]}
           />
           {isAdmin   && <NavButton label="Admin"   active={pathname === '/admin'}           onClick={() => router.push('/admin')}   />}
-          <NavButton label="Account" active={isNavActive('/account')} onClick={() => router.push('/account')} />
+          {isLoggedIn && <NavButton label="Account" active={isNavActive('/account')} onClick={() => router.push('/account')} />}
         </nav>
 
-        {/* Right — Log Out (desktop) + Hamburger (mobile) */}
+        {/* Right — Log Out / Sign In (desktop) + Hamburger (mobile) */}
         <div className="flex-1 flex items-center justify-end">
           <button
-            onClick={handleLogout}
+            onClick={isLoggedIn ? handleLogout : handleSignIn}
             className="hidden sm:block px-4 py-2 text-sm font-medium rounded-lg transition-colors"
             style={{ color: 'rgba(255,255,255,0.75)', background: 'transparent', border: 'none', cursor: 'pointer' }}
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; }}
           >
-            Log Out
+            {isLoggedIn ? 'Log Out' : 'Sign In'}
           </button>
 
           {/* Mobile Hamburger */}

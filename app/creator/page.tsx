@@ -485,7 +485,7 @@ function EditPresetMealModal({
           {/* Story */}
           <div>
             <label style={modalLabelStyle}>Story <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
-            <textarea value={story} onChange={e => setStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…" style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+            <textarea value={story} onChange={e => setStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep" style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
           </div>
 
           {/* Measurements */}
@@ -994,7 +994,7 @@ export default function CreatorPortal() {
                     {creator?.photo_url ? (
                       <img src={creator.photo_url} alt={creator.display_name} className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
                     ) : (
-                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center text-3xl select-none">👤</div>
+                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
                     )}
                   </div>
 
@@ -1058,7 +1058,7 @@ export default function CreatorPortal() {
                     {profilePhotoPreview ? (
                       <img src={profilePhotoPreview} alt="" className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
                     ) : (
-                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center text-3xl select-none">👤</div>
+                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
                     )}
                     <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
@@ -1149,12 +1149,12 @@ export default function CreatorPortal() {
           {stats && (
             <div className="grid grid-cols-3 gap-3">
               {[
-                { label: 'Followers',         value: stats.followers.toLocaleString(),  icon: '👥' },
-                { label: 'Saves this quarter', value: stats.savesQtr.toLocaleString(),  icon: '📥' },
-                { label: 'Saves all time',    value: stats.savesAll.toLocaleString(),   icon: '⭐' },
+                { label: 'Followers',         value: stats.followers.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> },
+                { label: 'Saves this quarter', value: stats.savesQtr.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> },
+                { label: 'Saves all time',    value: stats.savesAll.toLocaleString(),   icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> },
               ].map(s => (
                 <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-center">
-                  <div className="text-2xl mb-1.5">{s.icon}</div>
+                  <div className="flex justify-center mb-1.5">{s.icon}</div>
                   <div className="text-2xl font-bold text-gray-900">{s.value}</div>
                   <div className="text-xs text-gray-400 mt-0.5 leading-tight">{s.label}</div>
                 </div>
@@ -1332,7 +1332,7 @@ export default function CreatorPortal() {
                     value={mealStory}
                     onChange={e => setMealStory(e.target.value)}
                     rows={3}
-                    placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+                    placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep"
                     className={`${pInputCls} resize-y font-sans`}
                   />
                 </div>

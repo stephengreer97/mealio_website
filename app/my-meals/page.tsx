@@ -152,7 +152,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
-  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null }>;
+  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null; size?: string | null }>;
   mealIds: string[];
   mealIngredients: MealIngredientQty[];
   mealNames: string[];
@@ -229,16 +229,16 @@ function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extra
         </div>
       </div>
 
-      {/* Author */}
+      {/* Creator */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Author</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 4 }}>Creator</div>
         <div style={{ position: 'relative' }}>
           <div style={{ display: 'flex', gap: 4, marginBottom: filters.authors.length > 0 ? 6 : 0 }}>
             <input type="text" value={authorInput}
               onChange={e => { setAuthorInput(e.target.value); setShowAuthorSug(true); }}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addAuthor(); } if (e.key === 'Escape') setShowAuthorSug(false); }}
               onFocus={() => setShowAuthorSug(true)} onBlur={() => setTimeout(() => setShowAuthorSug(false), 150)}
-              placeholder="Type author name…" className="focus:outline-none"
+              placeholder="Type creator name…" className="focus:outline-none"
               style={{ flex: 1, padding: '6px 8px', fontSize: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }} />
             <button type="button" onClick={addAuthor} disabled={!authorInput.trim()}
               style={{ padding: '6px 10px', fontSize: 11, fontWeight: 600, borderRadius: 8, background: authorInput.trim() ? 'var(--brand)' : 'var(--border)', color: authorInput.trim() ? '#fff' : 'var(--text-3)', border: 'none', cursor: authorInput.trim() ? 'pointer' : 'default' }}>+ Add</button>
@@ -740,7 +740,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Author (optional)</label>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Creator (optional)</label>
             <input
               type="text"
               value={author}
@@ -849,7 +849,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               value={story}
               onChange={e => setStory(e.target.value)}
               rows={3}
-              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+              placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
@@ -915,34 +915,25 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               </svg>
             </button>
             {productsOpen && (
-              <div className="mt-2 space-y-1.5">
-                {ingredients.filter(f => f.ingredientName.trim()).map((form, i) => {
-                  const effectiveQty = form.unit === 'Qty' ? (parseInt(form.measure) || 1) : form.qty;
-                  const searchLabel = form.searchTerm
-                    ? `${effectiveQty}x ${form.searchTerm}`
-                    : `${effectiveQty}x ${form.ingredientName}`;
+              <div className="mt-2 space-y-2">
+                {ingredients.map((form, i) => {
+                  if (!form.ingredientName.trim()) return null;
+                  // Find the real index in the original ingredients array
+                  const realIdx = ingredients.indexOf(form);
                   return (
-                    <div key={i} className="flex items-center gap-2">
-                      <span className="flex-1 text-xs" style={{ color: form.searchTerm ? 'var(--text-1)' : 'var(--text-3)' }}>
-                        {searchLabel}
-                      </span>
-                      {form.unit !== 'Qty' && (
-                        <div className="flex items-center gap-1 flex-shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => updateFormField(i, 'qty', Math.max(1, form.qty - 1))}
-                            className="w-5 h-5 rounded text-xs flex items-center justify-center"
-                            style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
-                          >−</button>
-                          <span className="text-xs w-4 text-center" style={{ color: 'var(--text-1)' }}>{form.qty}</span>
-                          <button
-                            type="button"
-                            onClick={() => updateFormField(i, 'qty', form.qty + 1)}
-                            className="w-5 h-5 rounded text-xs flex items-center justify-center"
-                            style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
-                          >+</button>
-                        </div>
-                      )}
+                    <div key={i} className="space-y-0.5">
+                      <p className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>{form.ingredientName}</p>
+                      <input
+                        type="text"
+                        value={form.searchTerm ?? ''}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, searchTerm: val || null } : ing));
+                        }}
+                        placeholder="e.g. Kroger Crushed Tomatoes, 14oz"
+                        className="w-full rounded-lg px-2 py-1.5 text-xs focus:outline-none"
+                        style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+                      />
                     </div>
                   );
                 })}
@@ -1171,7 +1162,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
                 </optgroup>
               )}
               <optgroup label={recentStores.length > 0 ? 'All Stores' : ''}>
-                {Object.entries(STORE_LABELS).filter(([id]) => !recentStores.includes(id)).map(([id, label]) => (
+                {Object.entries(STORE_LABELS).map(([id, label]) => (
                   <option key={id} value={id}>{label}</option>
                 ))}
               </optgroup>
@@ -1191,7 +1182,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Author (optional)</label>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Creator (optional)</label>
             <input
               type="text"
               value={author}
@@ -1297,7 +1288,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               value={story}
               onChange={e => setStory(e.target.value)}
               rows={3}
-              placeholder="e.g. Perfect for a summer BBQ, or the story behind this meal…"
+              placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
@@ -1561,34 +1552,39 @@ function MealDetailModal({
           )}
 
           {/* Products section */}
-          <div>
-            <button
-              type="button"
-              onClick={() => setProductsOpen(v => !v)}
-              className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide"
-              style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-            >
-              Products ({productIngredients.length})
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                {productsOpen ? <polyline points="18 15 12 9 6 15"/> : <polyline points="6 9 12 15 18 9"/>}
-              </svg>
-            </button>
-            {productsOpen && (
-              <div className="mt-2 space-y-1.5">
-                {productIngredients.map((ing, i) => {
-                  const label = ing.searchTerm ? ing.searchTerm : ingSearchTerm(ing);
-                  const displayLabel = ing.unit === 'qty' ? `${ing.productQty ?? ing.qty}x ${label}` : label;
-                  return (
-                    <div key={i} className="flex items-center">
-                      <span className="flex-1 text-xs" style={{ color: ing.searchTerm ? 'var(--text-1)' : 'var(--text-3)' }}>
-                        {displayLabel}
-                      </span>
-                    </div>
-                  );
-                })}
+          {(() => {
+            const productsWithTerm = productIngredients.filter(ing => ing.searchTerm);
+            if (productsWithTerm.length === 0) return null;
+            return (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setProductsOpen(v => !v)}
+                  className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide"
+                  style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                >
+                  Products ({productsWithTerm.length})
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    {productsOpen ? <polyline points="18 15 12 9 6 15"/> : <polyline points="6 9 12 15 18 9"/>}
+                  </svg>
+                </button>
+                {productsOpen && (
+                  <div className="mt-2 space-y-1.5">
+                    {productsWithTerm.map((ing, i) => {
+                      const displayLabel = ing.unit === 'qty' ? `${ing.productQty ?? ing.qty}x ${ing.searchTerm}` : ing.searchTerm!;
+                      return (
+                        <div key={i} className="flex items-center">
+                          <span className="flex-1 text-xs" style={{ color: 'var(--text-1)' }}>
+                            {displayLabel}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })()}
         </div>
 
         {/* Kroger result feedback */}
@@ -1909,7 +1905,7 @@ function KrogerCartFlow({
                       style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: storeColor }}
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-ml-t1" style={{ textDecoration: excluded ? 'line-through' : 'none' }}>{it.ingredientName}</p>
+                      <p className="text-sm text-ml-t1" style={{ textDecoration: excluded ? 'line-through' : 'none' }}>{it.searchTerm || it.ingredientName}</p>
                       <p className="text-xs text-ml-t3">{it.mealNames.join(', ')}</p>
                     </div>
                     <button onClick={() => updateQty(i, -1)} disabled={zeroed || excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
@@ -1989,7 +1985,7 @@ function KrogerCartFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.description}</span>
+                          <span>{s.size ? `${s.description}, ${s.size}` : s.description}</span>
                           {s.price != null && (
                             <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>${s.price.toFixed(2)}</span>
                           )}
@@ -2043,10 +2039,18 @@ function KrogerCartFlow({
                       {mealIngredients.map(mi => {
                         const qty = mealQtys[mi.mealId] ?? mi.qty;
                         const isHigh = qty > 2;
+                        const mealObj = meals.find(m => m.id === mi.mealId);
+                        const ingredientTooltip = mealObj
+                          ? mealObj.ingredients.map(rawIng => { const n = normIng(rawIng); return fmtMeasurement(n); }).join('\n')
+                          : '';
                         return (
                           <div key={mi.mealId}>
                             <div className="flex items-center gap-2">
-                              <span className="flex-1 text-sm truncate" style={{ color: 'var(--text-1)' }}>{mi.mealName}</span>
+                              <span
+                                className="flex-1 text-sm truncate"
+                                style={{ color: 'var(--text-1)', cursor: ingredientTooltip ? 'help' : 'default' }}
+                                title={ingredientTooltip || undefined}
+                              >{mi.mealName}</span>
                               <div className="flex items-center gap-1 flex-shrink-0">
                                 <button
                                   type="button"
@@ -2240,13 +2244,15 @@ function ChooseProductsFlow({
   const storeName = STORE_LABELS[storeId] ?? 'Kroger';
   const unchosenIngredients = meal.ingredients.map(normIng).filter(i => !i.searchTerm);
   const currentResult = searchResults[pickIdx];
-  const currentIngQty = productQtyMap.get(currentResult?.ingredientName ?? '') ?? 1;
+  const currentIngredient = unchosenIngredients.find(i => i.ingredientName === (currentResult?.ingredientName ?? ''));
+  const currentIngQty = productQtyMap.get(currentResult?.ingredientName ?? '') ?? (currentIngredient?.qty ?? 1);
 
   const adjustCurrentQty = (delta: number) => {
     if (!currentResult) return;
     setProductQtyMap(prev => {
       const next = new Map(prev);
-      next.set(currentResult.ingredientName, Math.max(1, (prev.get(currentResult.ingredientName) ?? 1) + delta));
+      const defaultQty = currentIngredient?.qty ?? 1;
+      next.set(currentResult.ingredientName, Math.max(1, (prev.get(currentResult.ingredientName) ?? defaultQty) + delta));
       return next;
     });
   };
@@ -2428,7 +2434,7 @@ function ChooseProductsFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.description}</span>
+                          <span>{s.size ? `${s.description}, ${s.size}` : s.description}</span>
                           {s.price != null && (
                             <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>${s.price.toFixed(2)}</span>
                           )}

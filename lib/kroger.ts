@@ -172,7 +172,7 @@ export async function krogerSearchProducts(
   locationId: string,
   limit = 5,
   _retry = 0
-): Promise<Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null }>> {
+): Promise<Array<{ upc: string; description: string; size: string | null; imageUrl: string | null; stockLevel: string | null; price: number | null; soldBy: string | null }>> {
   const truncatedTerm = term
     .replace(/[™®©]/g, '')   // strip trademark symbols — Kroger counts each as a word
     .trim()
@@ -211,8 +211,10 @@ export async function krogerSearchProducts(
       const imageUrl: string | null = featured?.sizes?.find((s: any) => s.size === 'medium')?.url ?? null;
       const stockLevel: string | null = p.items?.[0]?.inventory?.stockLevel ?? null;
       const itemPrice = p.items?.[0]?.price;
-      const price: number | null = itemPrice?.promo ?? itemPrice?.regular ?? null;
-      return { upc: p.upc ?? p.productId, description: p.description ?? term, imageUrl, stockLevel, price };
+      const soldBy: string | null = p.items?.[0]?.soldBy ?? null;
+      const price: number | null = soldBy === 'WEIGHT' ? null : (itemPrice?.promo ?? itemPrice?.regular ?? null);
+      const size: string | null = p.items?.[0]?.size ?? null;
+      return { upc: p.upc ?? p.productId, description: p.description ?? term, size, imageUrl, stockLevel, price, soldBy };
     });
 }
 

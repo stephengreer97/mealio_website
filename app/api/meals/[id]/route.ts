@@ -23,9 +23,14 @@ export async function PUT(
   const { id } = await params;
   const { name, ingredients, website, recipe, story, photoUrl, author, difficulty, tags, serves, storeId } = await request.json();
 
-  const resolvedPhotoUrl = photoUrl !== undefined
-    ? await resolvePhotoUrl(photoUrl, decoded.userId)
-    : undefined;
+  let resolvedPhotoUrl: string | null | undefined;
+  if (photoUrl !== undefined) {
+    try {
+      resolvedPhotoUrl = await resolvePhotoUrl(photoUrl, decoded.userId);
+    } catch {
+      resolvedPhotoUrl = photoUrl ?? null;
+    }
+  }
 
   const supabase = createServerSupabaseClient();
   const { data: meal, error } = await supabase

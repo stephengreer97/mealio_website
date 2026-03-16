@@ -36,11 +36,13 @@ export default function Home() {
   }, [otpResendCooldown]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
     const accessToken = localStorage.getItem('accessToken');
     if (accessToken) {
-      const params = new URLSearchParams(window.location.search);
       const redirect = params.get('redirect');
       router.push(redirect && redirect.startsWith('/') ? redirect : '/discover');
+    } else if (params.get('tab') === 'signup') {
+      setActiveTab('signup');
     }
   }, [router]);
 
@@ -479,10 +481,10 @@ export default function Home() {
 
       {/* Footer links */}
       <div className="text-center py-8 flex items-center justify-center gap-4 flex-wrap">
-        {['About', 'Help', 'Terms', 'Privacy Policy', 'Contact'].map((link, i) => (
+        {['Help', 'Terms', 'Privacy', 'Contact'].map((link, i) => (
           <a
             key={link}
-            href={link === 'Contact' ? 'mailto:contact@mealio.co' : `/${link.toLowerCase().replace(' ', '-')}`}
+            href={link === 'Contact' ? 'mailto:contact@mealio.co' : `/${link.toLowerCase()}`}
             className="text-xs transition-colors"
             style={{ color: 'var(--text-3)', textDecoration: 'none' }}
             onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
