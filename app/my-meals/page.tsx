@@ -1409,6 +1409,9 @@ function MealDetailModal({
   const [productIngredients, setProductIngredients] = useState<Ingredient[]>(
     meal.ingredients.map(normIng)
   );
+  useEffect(() => {
+    setProductIngredients(meal.ingredients.map(normIng));
+  }, [meal.ingredients]);
 
   const krogerLocationId = krogerLocations[meal.store_id]?.locationId ?? null;
 
@@ -2354,8 +2357,7 @@ function ChooseProductsFlow({
             <>
               <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
                 <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                  <p className="text-xs text-ml-t3 mb-0.5">Searching for</p>
-                  <p className="text-sm font-semibold text-ml-t1">{currentResult.ingredientName}</p>
+                  <p className="text-sm font-semibold text-ml-t1">{currentIngredient ? fmtMeasurement(currentIngredient) : currentResult.ingredientName}</p>
                   {customSearchTerm && (
                     <p className="text-xs mt-1" style={{ color: storeColor }}>Showing results for: "{customSearchTerm}"</p>
                   )}
