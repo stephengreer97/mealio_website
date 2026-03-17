@@ -1510,10 +1510,10 @@ export default function DiscoverPage() {
         />
       )}
 
-      {creatorPopupId && token && (
+      {creatorPopupId && (
         <CreatorPopup
           creatorId={creatorPopupId}
-          token={token}
+          token={token || undefined}
           onClose={() => setCreatorPopupId(null)}
           onMealAdd={meal => { handleAddMeal(meal as any); setCreatorPopupId(null); }}
         />

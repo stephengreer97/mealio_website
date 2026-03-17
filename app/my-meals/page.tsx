@@ -935,6 +935,22 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
             </button>
           </div>
 
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
+            <textarea
+              value={recipe}
+              onChange={e => setRecipe(e.target.value)}
+              rows={4}
+              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
+              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
+            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
+          </div>
+
           {/* Products section (collapsed by default) */}
           <div>
             <button
@@ -991,22 +1007,6 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
                 })}
               </div>
             )}
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
-            <textarea
-              value={recipe}
-              onChange={e => setRecipe(e.target.value)}
-              rows={4}
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
-            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
           </div>
 
           {error && <p className="text-xs" style={{ color: 'var(--brand)' }}>{error}</p>}
@@ -1615,35 +1615,34 @@ function MealDetailModal({
           )}
 
           {/* Products section */}
-          {(() => {
-            const productsWithTerm = productIngredients.filter(ing => ing.searchTerm);
-            if (productsWithTerm.length === 0) return null;
-            return (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setProductsOpen(v => !v)}
-                  className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide"
-                  style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                >
-                  Products ({productsWithTerm.length})
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    {productsOpen ? <polyline points="18 15 12 9 6 15"/> : <polyline points="6 9 12 15 18 9"/>}
-                  </svg>
-                </button>
-                {productsOpen && (
-                  <div className="mt-2">
-                    {productsWithTerm.map((ing, i) => (
-                      <div key={i} className="flex items-center justify-between" style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                        <span className="text-xs" style={{ color: 'var(--text-1)' }}>{ing.searchTerm}</span>
-                        <span className="text-xs flex-shrink-0" style={{ color: 'var(--text-3)' }}>×{ing.productQty ?? ing.qty}</span>
+          {productIngredients.length > 0 && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setProductsOpen(v => !v)}
+                className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide"
+                style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              >
+                Products ({productIngredients.length})
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  {productsOpen ? <polyline points="18 15 12 9 6 15"/> : <polyline points="6 9 12 15 18 9"/>}
+                </svg>
+              </button>
+              {productsOpen && (
+                <div className="mt-2">
+                  {productIngredients.map((ing, i) => (
+                    <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                      <p className="text-xs font-medium mb-0.5" style={{ color: 'var(--text-3)' }}>{ing.ingredientName ?? (ing as any).productName ?? ''}</p>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs" style={{ color: 'var(--text-1)' }}>{ing.searchTerm ?? ''}</span>
+                        {ing.searchTerm && <span className="text-xs flex-shrink-0" style={{ color: 'var(--text-3)' }}>×{ing.productQty ?? ing.qty}</span>}
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Kroger result feedback */}

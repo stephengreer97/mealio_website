@@ -36,7 +36,7 @@ export interface FullPresetMeal {
 
 interface Props {
   creatorId: string;
-  token: string;
+  token?: string;
   onClose: () => void;
   onMealAdd?: (meal: FullPresetMeal) => void;
 }
@@ -202,9 +202,9 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
 
     Promise.all([
       fetch(`/api/creators/${creatorId}`).then(r => r.json()),
-      fetch(`/api/creators/${creatorId}/follow`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }).then(r => r.json()),
+      token
+        ? fetch(`/api/creators/${creatorId}/follow`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+        : Promise.resolve({ following: false }),
     ])
       .then(([creatorData, followData]) => {
         if (cancelled) return;
@@ -224,6 +224,7 @@ export default function CreatorPopup({ creatorId, token, onClose, onMealAdd }: P
   }, [creatorId, token]);
 
   const toggleFollow = async () => {
+    if (!token) { window.location.href = '/'; return; }
     if (followLoading) return;
     setFollowLoading(true);
     const wasFollowing = following;
