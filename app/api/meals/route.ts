@@ -73,11 +73,7 @@ export async function POST(request: NextRequest) {
       );
     }
   }
-  // When saving from a preset meal, the photo is already resolved and working — use it directly.
-  // Only run resolvePhotoUrl for manually created meals where the user picked a Pixabay photo.
-  const resolvedPhotoUrl = presetMealId
-    ? (photoUrl ?? null)
-    : await resolvePhotoUrl(photoUrl, decoded.userId).catch(() => photoUrl ?? null);
+  const resolvedPhotoUrl = await resolvePhotoUrl(photoUrl, decoded.userId).catch(() => photoUrl ?? null);
 
   const { data: meal, error } = await supabase
     .from('meals')

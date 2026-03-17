@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { resolvePhotoUrl } from '@/lib/photos';
 import { log } from '@/lib/logger';
 
 async function getCreator(request: NextRequest) {
@@ -17,7 +18,8 @@ async function getCreator(request: NextRequest) {
     .eq('user_id', decoded.userId)
     .maybeSingle();
 
-  return creator ?? null;
+  if (!creator) return null;
+  return { creator, userId: decoded.userId };
 }
 
 // PUT /api/creator/meals/:id — edit own preset meal
@@ -26,10 +28,11 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const creator = await getCreator(request);
-  if (!creator) {
+  const result = await getCreator(request);
+  if (!result) {
     return NextResponse.json({ error: 'Creator account required' }, { status: 403 });
   }
+  const { creator, userId } = result;
 
   const supabase = createServerSupabaseClient();
 
@@ -60,7 +63,11 @@ export async function PUT(
   if (recipe !== undefined) updates.recipe = recipe?.trim() || null;
   if (source !== undefined) updates.source = normalizeUrl(source);
   if (story !== undefined) updates.story = story?.trim() || null;
-  if (photoUrl !== undefined) updates.photo_url = photoUrl || null;
+  if (photoUrl !== undefined) {
+    updates.photo_url = photoUrl
+      ? await resolvePhotoUrl(photoUrl, userId).catch(() => photoUrl)
+      : null;
+  }
   if (difficulty !== undefined) updates.difficulty = difficulty || null;
   if (serves !== undefined) updates.serves = serves || null;
   if (tags !== undefined) updates.tags = Array.isArray(tags) ? tags : [];
