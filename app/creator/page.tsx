@@ -1362,12 +1362,12 @@ export default function CreatorPortal() {
                           min={ing.unit === 'Qty' ? 1 : undefined}
                           onChange={e => updateIngredientForm(i, 'measure', e.target.value)}
                           placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
-                          className={`${pInputCls} w-16 text-center`}
+                          className={`${pInputCls} !w-16 text-center !px-1`}
                         />
                         <select
                           value={ing.unit}
                           onChange={e => updateIngredientForm(i, 'unit', e.target.value)}
-                          className={`${pInputCls} w-20`}
+                          className={`${pInputCls} !w-20`}
                         >
                           {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                         </select>
