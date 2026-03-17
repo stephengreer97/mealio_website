@@ -950,22 +950,40 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               <div className="mt-2 space-y-2">
                 {ingredients.map((form, i) => {
                   if (!form.ingredientName.trim()) return null;
-                  // Find the real index in the original ingredients array
                   const realIdx = ingredients.indexOf(form);
                   return (
                     <div key={i} className="space-y-0.5">
                       <p className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>{form.ingredientName}</p>
-                      <input
-                        type="text"
-                        value={form.searchTerm ?? ''}
-                        onChange={e => {
-                          const val = e.target.value;
-                          setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, searchTerm: val || null } : ing));
-                        }}
-                        placeholder=""
-                        className="w-full rounded-lg px-2 py-1.5 text-xs focus:outline-none"
-                        style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-                      />
+                      <div className="flex gap-1.5 items-center">
+                        <input
+                          type="text"
+                          value={form.searchTerm ?? ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, searchTerm: val || null } : ing));
+                          }}
+                          className="flex-1 rounded-lg px-2 py-1.5 text-xs focus:outline-none min-w-0"
+                          style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+                        />
+                        <input
+                          type="number"
+                          min={1}
+                          value={form.productQty ?? 1}
+                          onChange={e => {
+                            const qty = parseInt(e.target.value, 10);
+                            if (!isNaN(qty) && qty > 0) setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, productQty: qty } : ing));
+                          }}
+                          className="rounded-lg px-2 py-1.5 text-xs text-center focus:outline-none"
+                          style={{ width: 52, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, searchTerm: null } : ing))}
+                          className="flex-shrink-0 rounded-lg flex items-center justify-center text-xs transition-colors"
+                          style={{ width: 28, height: 28, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-3)', cursor: 'pointer' }}
+                          title="Remove product"
+                        >✕</button>
+                      </div>
                     </div>
                   );
                 })}
