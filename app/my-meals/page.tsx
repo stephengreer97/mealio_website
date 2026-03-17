@@ -980,7 +980,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
                         />
                         <button
                           type="button"
-                          onClick={() => setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, searchTerm: null } : ing))}
+                          onClick={() => setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, searchTerm: null, productQty: undefined } : ing))}
                           className="flex-shrink-0 rounded-lg flex items-center justify-center text-xs transition-colors"
                           style={{ width: 28, height: 28, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-3)', cursor: 'pointer' }}
                           title="Remove product"
