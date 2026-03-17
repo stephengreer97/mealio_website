@@ -923,7 +923,8 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
                   // Find the real index in the original ingredients array
                   const realIdx = ingredients.indexOf(form);
                   return (
-                    <div key={i}>
+                    <div key={i} className="space-y-0.5">
+                      <p className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>{form.ingredientName}</p>
                       <input
                         type="text"
                         value={form.searchTerm ?? ''}
