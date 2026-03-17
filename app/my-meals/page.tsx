@@ -34,6 +34,7 @@ interface IngredientForm {
   unit: string;
   searchTerm: string | null;
   qty: number;
+  productQty?: number;
 }
 
 const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp'];
@@ -67,6 +68,7 @@ function toFormIng(ing: Ingredient): IngredientForm {
     unit: ing.unit === 'qty' ? 'Qty' : ing.unit,
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
+    productQty: ing.productQty ?? ing.qty ?? 1,
   };
 }
 
@@ -88,7 +90,7 @@ function fromFormIng(form: IngredientForm): Ingredient {
     unit: form.unit,
     measure: form.measure.trim() || null,
     searchTerm: form.searchTerm ?? null,
-    productQty: 1,
+    productQty: form.productQty ?? 1,
   };
 }
 
