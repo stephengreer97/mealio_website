@@ -558,6 +558,31 @@ function compressImage(dataUrl: string, maxPx = 1200, quality = 0.82): Promise<s
   });
 }
 
+async function fetchAndUploadGeneratedPhoto(proxyUrl: string, token: string): Promise<string | null> {
+  try {
+    const res = await fetch(proxyUrl);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target?.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    const compressed = await compressImage(dataUrl);
+    const uploadRes = await fetch('/api/images/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ imageData: compressed }),
+    });
+    if (!uploadRes.ok) return null;
+    const data = await uploadRes.json();
+    return data.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalProps) {
   const [name, setName] = useState(meal.name);
   const [editStoreId, setEditStoreId] = useState(meal.store_id);
@@ -582,6 +607,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
   const [thumbs, setThumbs] = useState<string[]>([]);
   const [fulls, setFulls]   = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -624,15 +650,19 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
     }
   };
 
-  const selectSuggestion = (i: number) => {
+  const selectSuggestion = async (i: number) => {
     setPendingPhotoDataUrl(null);
     if (selectedIdx === i) {
       setSelectedIdx(null);
       setPhotoUrl(''); setPhotoPreview('');
     } else {
       setSelectedIdx(i);
-      const url = fulls[i] ?? thumbs[i];
-      setPhotoUrl(url); setPhotoPreview(url);
+      const proxyUrl = fulls[i] ?? thumbs[i];
+      setPhotoUrl(proxyUrl); setPhotoPreview(proxyUrl);
+      setUploadingPhoto(true);
+      const stored = await fetchAndUploadGeneratedPhoto(proxyUrl, accessToken);
+      if (stored) setPhotoUrl(stored);
+      setUploadingPhoto(false);
     }
   };
 
@@ -965,11 +995,11 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
         <div className="flex gap-3 px-6 py-4" style={{ borderTop: '1px solid var(--border)' }}>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || uploadingPhoto}
             className="flex-1 text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-50 transition-opacity"
             style={{ background: 'var(--brand)' }}
           >
-            {saving ? 'Saving…' : 'Save Changes'}
+            {uploadingPhoto ? 'Uploading photo…' : saving ? 'Saving…' : 'Save Changes'}
           </button>
           <button
             onClick={handleClose}
@@ -1022,6 +1052,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   const [thumbs, setThumbs] = useState<string[]>([]);
   const [fulls, setFulls] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const dragRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -1061,10 +1092,17 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     finally { setGenerating(false); }
   };
 
-  const selectSuggestion = (i: number) => {
+  const selectSuggestion = async (i: number) => {
     setPendingPhotoDataUrl(null);
     if (selectedIdx === i) { setSelectedIdx(null); setPhotoUrl(''); setPhotoPreview(''); }
-    else { const url = fulls[i] ?? thumbs[i]; setSelectedIdx(i); setPhotoUrl(url); setPhotoPreview(url); }
+    else {
+      const proxyUrl = fulls[i] ?? thumbs[i];
+      setSelectedIdx(i); setPhotoUrl(proxyUrl); setPhotoPreview(proxyUrl);
+      setUploadingPhoto(true);
+      const stored = await fetchAndUploadGeneratedPhoto(proxyUrl, accessToken);
+      if (stored) setPhotoUrl(stored);
+      setUploadingPhoto(false);
+    }
   };
 
   const uploadPendingPhoto = async (): Promise<string | null> => {
@@ -1362,11 +1400,11 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
         <div className="flex gap-3 px-6 py-4" style={{ borderTop: '1px solid var(--border)' }}>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || uploadingPhoto}
             className="flex-1 text-white text-sm font-semibold rounded-xl py-2.5 disabled:opacity-50 transition-opacity"
             style={{ background: 'var(--brand)' }}
           >
-            {saving ? 'Creating…' : 'Create Meal'}
+            {uploadingPhoto ? 'Uploading photo…' : saving ? 'Creating…' : 'Create Meal'}
           </button>
           <button
             onClick={handleClose}

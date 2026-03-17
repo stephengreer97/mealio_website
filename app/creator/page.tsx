@@ -236,6 +236,32 @@ async function uploadImageFile(file: File, token: string): Promise<string> {
   return data.url;
 }
 
+/** Fetches a generated photo via its proxy URL, compresses it, and uploads to permanent storage. */
+async function fetchAndUploadGeneratedPhoto(proxyUrl: string, token: string): Promise<string | null> {
+  try {
+    const res = await fetch(proxyUrl);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target?.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    const compressed = await compressImage(dataUrl);
+    const uploadRes = await fetch('/api/images/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ imageData: compressed }),
+    });
+    if (!uploadRes.ok) return null;
+    const data = await uploadRes.json();
+    return data.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Edit Modal ────────────────────────────────────────────────────────────────
 
 function EditPresetMealModal({
@@ -265,6 +291,7 @@ function EditPresetMealModal({
   const [thumbs, setThumbs]     = useState<string[]>([]);
   const [fulls, setFulls]       = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const token = () => localStorage.getItem('accessToken') ?? '';
@@ -322,7 +349,7 @@ function EditPresetMealModal({
     }
   };
 
-  const selectSuggestion = (i: number) => {
+  const selectSuggestion = async (i: number) => {
     setPendingPhotoDataUrl(null);
     if (selectedIdx === i) {
       setSelectedIdx(null);
@@ -330,9 +357,13 @@ function EditPresetMealModal({
       setPhotoPreview('');
     } else {
       setSelectedIdx(i);
-      const url = fulls[i] ?? thumbs[i];
-      setPhotoUrl(url);
-      setPhotoPreview(url);
+      const proxyUrl = fulls[i] ?? thumbs[i];
+      setPhotoPreview(proxyUrl);
+      setPhotoUrl(proxyUrl); // fallback if upload fails
+      setUploadingPhoto(true);
+      const stored = await fetchAndUploadGeneratedPhoto(proxyUrl, token());
+      if (stored) setPhotoUrl(stored);
+      setUploadingPhoto(false);
     }
   };
 
@@ -550,10 +581,10 @@ function EditPresetMealModal({
         <div style={{ padding: '16px 24px', borderTop: '1px solid #f0f0f0', display: 'flex', gap: '10px' }}>
           <button
             onClick={handleSave}
-            disabled={saving}
-            style={{ flex: 1, background: saving ? '#aaa' : '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '11px', fontSize: '14px', fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}
+            disabled={saving || uploadingPhoto}
+            style={{ flex: 1, background: (saving || uploadingPhoto) ? '#aaa' : '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '11px', fontSize: '14px', fontWeight: 600, cursor: (saving || uploadingPhoto) ? 'not-allowed' : 'pointer' }}
           >
-            {saving ? 'Saving…' : 'Save Changes'}
+            {uploadingPhoto ? 'Uploading photo…' : saving ? 'Saving…' : 'Save Changes'}
           </button>
           <button onClick={handleClose} style={{ padding: '11px 18px', border: '1px solid #e0e0e0', borderRadius: '8px', background: 'white', fontSize: '14px', cursor: 'pointer', color: '#666' }}>
             Cancel
@@ -908,10 +939,13 @@ export default function CreatorPortal() {
     setPublishing(true);
     try {
       const token = localStorage.getItem('accessToken');
-      let photoUrl: string | null = selectedIdx !== null ? (fulls[selectedIdx] ?? thumbs[selectedIdx]) : null;
+      let photoUrl: string | null = null;
 
       if (photoFile) {
         photoUrl = await uploadImageFile(photoFile, token!);
+      } else if (selectedIdx !== null) {
+        const proxyUrl = fulls[selectedIdx] ?? thumbs[selectedIdx];
+        photoUrl = await fetchAndUploadGeneratedPhoto(proxyUrl, token ?? '') ?? proxyUrl;
       }
 
       const res = await fetch('/api/creator/meals', {
