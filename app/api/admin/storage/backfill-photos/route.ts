@@ -8,18 +8,23 @@ export const maxDuration = 300;
 
 const PROXY_PATH = '/api/meals/pixabay-image';
 
-function isProxyUrl(url: string | null): boolean {
+/** Returns true for any Pixabay URL that resolvePhotoUrl can re-upload to Storage */
+function isPixabayUrl(url: string | null): boolean {
   if (!url) return false;
   try {
-    return new URL(url).pathname === PROXY_PATH;
+    const parsed = new URL(url);
+    if (parsed.pathname === PROXY_PATH) return true;
+    if (parsed.hostname === 'cdn.pixabay.com') return true;
+    if (parsed.hostname === 'pixabay.com') return true;
+    return false;
   } catch {
     return false;
   }
 }
 
 // POST /api/admin/storage/backfill-photos
-// Re-resolves expired Pixabay proxy URLs to permanent Supabase Storage URLs
-// for all rows in `meals` and `preset_meals`.
+// Re-resolves any Pixabay URL (proxy, cdn.pixabay.com, or pixabay.com direct) to
+// a permanent Supabase Storage URL for all rows in `meals` and `preset_meals`.
 export async function POST(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -32,8 +37,8 @@ export async function POST(request: NextRequest) {
     supabase.from('preset_meals').select('id, creator_id, photo_url').not('photo_url', 'is', null),
   ]);
 
-  const mealRows = (mealsRes.data ?? []).filter(r => isProxyUrl(r.photo_url));
-  const presetRows = (presetRes.data ?? []).filter(r => isProxyUrl(r.photo_url));
+  const mealRows = (mealsRes.data ?? []).filter(r => isPixabayUrl(r.photo_url));
+  const presetRows = (presetRes.data ?? []).filter(r => isPixabayUrl(r.photo_url));
   const total = mealRows.length + presetRows.length;
 
   let processed = 0;

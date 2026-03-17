@@ -15,22 +15,26 @@ export async function resolvePhotoUrl(
 ): Promise<string | null | undefined> {
   if (!photoUrl) return photoUrl;
 
-  // Detect our proxy URL: pathname must be /api/meals/pixabay-image
+  // Detect Pixabay URLs that need to be permanently stored
   let pixabayUrl: string | null = null;
   try {
     const parsed = new URL(photoUrl);
     if (parsed.pathname === PROXY_PATH) {
+      // Mealio proxy URL — extract the original Pixabay webformatURL
       const param = parsed.searchParams.get('url');
       if (param?.startsWith('https://pixabay.com/')) {
         pixabayUrl = param;
       }
+    } else if (parsed.hostname === 'cdn.pixabay.com' || parsed.hostname === 'pixabay.com') {
+      // Direct Pixabay CDN/get URL — hotlink-blocked, route through worker
+      pixabayUrl = photoUrl;
     }
   } catch {
     // base64 data URLs and other non-http strings land here — pass through
     return photoUrl;
   }
 
-  if (!pixabayUrl) return photoUrl; // already a resolved URL, pass through
+  if (!pixabayUrl) return photoUrl; // already a resolved URL (e.g. Supabase Storage), pass through
 
   const workerUrl    = (process.env.PIXABAY_WORKER_URL ?? '').replace(/\/$/, '');
   const workerSecret = process.env.PIXABAY_WORKER_SECRET ?? '';
