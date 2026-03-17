@@ -1574,17 +1574,13 @@ function MealDetailModal({
                   </svg>
                 </button>
                 {productsOpen && (
-                  <div className="mt-2 space-y-1.5">
-                    {productsWithTerm.map((ing, i) => {
-                      const displayLabel = `${ing.productQty ?? ing.qty}x ${ing.searchTerm}`;
-                      return (
-                        <div key={i} className="flex items-center">
-                          <span className="flex-1 text-xs" style={{ color: 'var(--text-1)' }}>
-                            {displayLabel}
-                          </span>
-                        </div>
-                      );
-                    })}
+                  <div className="mt-2">
+                    {productsWithTerm.map((ing, i) => (
+                      <div key={i} className="flex items-center justify-between" style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                        <span className="text-xs" style={{ color: 'var(--text-1)' }}>{ing.searchTerm}</span>
+                        <span className="text-xs flex-shrink-0" style={{ color: 'var(--text-3)' }}>×{ing.productQty ?? ing.qty}</span>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
