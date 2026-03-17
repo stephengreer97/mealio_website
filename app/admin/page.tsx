@@ -83,6 +83,8 @@ export default function AdminPage() {
   const [storageError, setStorageError] = useState('');
   const [backfillLoading, setBackfillLoading] = useState(false);
   const [backfillResult, setBackfillResult] = useState<{ processed: number; skipped: number; errors: number; total: number } | null>(null);
+  const [photoBackfillLoading, setPhotoBackfillLoading] = useState(false);
+  const [photoBackfillResult, setPhotoBackfillResult] = useState<{ total: number; processed: number; skipped: number; errors: number } | null>(null);
 
   useEffect(() => {
     verifyAdmin();
@@ -232,6 +234,18 @@ export default function AdminPage() {
     } else {
       setStorageError('Delete failed.');
     }
+  };
+
+  const runPhotoBackfill = async () => {
+    if (!confirm('This will re-download and permanently store all Pixabay proxy photos in meals and preset_meals. May take several minutes. Continue?')) return;
+    setPhotoBackfillLoading(true);
+    setPhotoBackfillResult(null);
+    const res = await fetch('/api/admin/storage/backfill-photos', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    setPhotoBackfillLoading(false);
+    if (res.ok) setPhotoBackfillResult(await res.json());
   };
 
   const runBackfill = async () => {
@@ -669,6 +683,30 @@ export default function AdminPage() {
               {storageDeleteResult && (
                 <div style={{ marginTop: '16px', padding: '14px 16px', background: '#e6f9ed', borderRadius: '8px', fontSize: '13px', color: '#1a7a3a', fontWeight: 600 }}>
                   Deleted {storageDeleteResult.deleted} file{storageDeleteResult.deleted !== 1 ? 's' : ''} (~{(storageDeleteResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB freed)
+                </div>
+              )}
+            </div>
+
+            {/* Photo URL Backfill */}
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
+              <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Backfill Proxy Photos</h2>
+              <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
+                Finds all meals and preset meals whose <code>photo_url</code> is still a Pixabay proxy URL (these expire ~24h after generation),
+                re-downloads each image, and saves it permanently to Supabase Storage. Run this once to fix missing photos.
+              </p>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <button
+                  onClick={runPhotoBackfill}
+                  disabled={photoBackfillLoading}
+                  style={{ background: '#7c3aed', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: photoBackfillLoading ? 'not-allowed' : 'pointer', opacity: photoBackfillLoading ? 0.7 : 1 }}
+                >
+                  {photoBackfillLoading ? 'Backfilling…' : 'Backfill Proxy Photos'}
+                </button>
+              </div>
+              {photoBackfillResult && (
+                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#f5f3ff', borderRadius: '8px', fontSize: '13px', color: '#5b21b6', fontWeight: 600 }}>
+                  Done — {photoBackfillResult.processed} resolved, {photoBackfillResult.skipped} skipped (already permanent or unchanged), {photoBackfillResult.errors} errors
+                  {' '}({photoBackfillResult.total} proxy URLs found)
                 </div>
               )}
             </div>
