@@ -94,10 +94,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const creator = await getCreator(request);
-  if (!creator) {
+  const result = await getCreator(request);
+  if (!result) {
     return NextResponse.json({ error: 'Creator account required' }, { status: 403 });
   }
+  const { creator } = result;
 
   const supabase = createServerSupabaseClient();
 
