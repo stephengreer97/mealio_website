@@ -1354,7 +1354,7 @@ export default function CreatorPortal() {
                           value={ing.ingredientName}
                           onChange={e => updateIngredientForm(i, 'ingredientName', e.target.value)}
                           placeholder="Ingredient name"
-                          className={`${pInputCls} flex-1`}
+                          className={`${pInputCls} flex-1 min-w-0`}
                         />
                         <input
                           type={ing.unit === 'Qty' ? 'number' : 'text'}
