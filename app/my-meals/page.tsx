@@ -931,7 +931,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
                           const val = e.target.value;
                           setIngredients(prev => prev.map((ing, idx) => idx === realIdx ? { ...ing, searchTerm: val || null } : ing));
                         }}
-                        placeholder="e.g. Kroger Crushed Tomatoes, 14oz"
+                        placeholder=""
                         className="w-full rounded-lg px-2 py-1.5 text-xs focus:outline-none"
                         style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                       />
