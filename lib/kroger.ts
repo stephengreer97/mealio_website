@@ -82,7 +82,7 @@ const CRITICAL_WORDS = new Set([
  * absent from the description, returns 0 — indicating a review is needed.
  */
 export function scoreProductMatch(searchTerm: string, description: string): number {
-  const normSearch = normalizeText(searchTerm);
+  const normSearch = normalizeText(searchTerm.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim());
   const normDesc   = normalizeText(description);
   if (normSearch === normDesc) return 100;
 
@@ -174,6 +174,7 @@ export async function krogerSearchProducts(
   _retry = 0
 ): Promise<Array<{ upc: string; description: string; size: string | null; averageWeightPerUnit: string | null; imageUrl: string | null; stockLevel: string | null; price: number | null; soldBy: string | null }>> {
   const truncatedTerm = term
+    .replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '')  // strip weight suffix e.g. ", avg 5.1 lbs"
     .replace(/[™®©]/g, '')   // strip trademark symbols — Kroger counts each as a word
     .trim()
     .split(/\s+/)
