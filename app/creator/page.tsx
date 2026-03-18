@@ -516,7 +516,7 @@ function EditPresetMealModal({
           {/* Story */}
           <div>
             <label style={modalLabelStyle}>Story <span style={{ fontWeight: 400, color: '#aaa' }}>(optional)</span></label>
-            <textarea value={story} onChange={e => setStory(e.target.value)} rows={3} placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep" style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
+            <textarea value={story} onChange={e => setStory(e.target.value)} rows={3} placeholder={"The story behind the meal or a simple one liner. e.g.\nPerfect for a summer BBQ\nGreat budget-friendly weeknight dinner\nHigh protein, low carb – great for meal prep"} style={{ ...modalInputStyle, resize: 'vertical', fontFamily: 'inherit' }} />
           </div>
 
           {/* Measurements */}
@@ -1366,7 +1366,7 @@ export default function CreatorPortal() {
                     value={mealStory}
                     onChange={e => setMealStory(e.target.value)}
                     rows={3}
-                    placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep"
+                    placeholder={"The story behind the meal or a simple one liner. e.g.\nPerfect for a summer BBQ\nGreat budget-friendly weeknight dinner\nHigh protein, low carb – great for meal prep"}
                     className={`${pInputCls} resize-y font-sans`}
                   />
                 </div>

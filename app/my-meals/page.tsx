@@ -883,7 +883,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               value={story}
               onChange={e => setStory(e.target.value)}
               rows={3}
-              placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep"
+              placeholder={"The story behind the meal or a simple one liner. e.g.\nPerfect for a summer BBQ\nGreat budget-friendly weeknight dinner\nHigh protein, low carb – great for meal prep"}
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
@@ -1348,7 +1348,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               value={story}
               onChange={e => setStory(e.target.value)}
               rows={3}
-              placeholder="e.g. Perfect for a summer BBQ… · Great budget-friendly weeknight dinner · High protein, low carb – great for meal prep"
+              placeholder={"The story behind the meal or a simple one liner. e.g.\nPerfect for a summer BBQ\nGreat budget-friendly weeknight dinner\nHigh protein, low carb – great for meal prep"}
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
