@@ -26,11 +26,13 @@ export interface FullPresetMeal {
   creator_id?: string | null;
   creator_name?: string | null;
   creator_social?: string | null;
-  ingredients: { productName: string; searchTerm?: string; quantity?: number }[];
+  ingredients: { ingredientName?: string; productName?: string; name?: string; searchTerm?: string; qty?: number; quantity?: number; unit?: string; measure?: string }[];
   source?: string | null;
+  story?: string | null;
   recipe?: string | null;
   photo_url?: string | null;
   difficulty?: number | null;
+  serves?: string | null;
   tags?: string[] | null;
 }
 
@@ -43,6 +45,17 @@ interface Props {
 
 function getInitials(name: string) {
   return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
+}
+
+function ingName(ing: FullPresetMeal['ingredients'][number]): string {
+  return ing.ingredientName ?? ing.productName ?? ing.name ?? '';
+}
+
+function fmtMeasurement(ing: FullPresetMeal['ingredients'][number]): string {
+  const n = ingName(ing);
+  const qty = ing.qty ?? ing.quantity ?? 1;
+  if (!ing.unit || ing.unit === 'qty') return `${n}, ${qty}`;
+  return `${n}, ${ing.measure ?? ''} ${ing.unit}`.replace(/\s+/g, ' ').trim();
 }
 
 function DifficultyDots({ level }: { level: number }) {
@@ -111,29 +124,50 @@ function MealDetailOverlay({
         {/* Body */}
         <div className="overflow-y-auto flex-1 p-5 space-y-4">
           {meal.photo_url && (
-            <img src={meal.photo_url} alt={meal.name} className="w-full rounded-xl object-cover" style={{ maxHeight: '220px' }} />
+            <div style={{ position: 'relative' }}>
+              <img src={meal.photo_url} alt={meal.name} className="w-full rounded-xl object-cover" style={{ maxHeight: '220px' }} />
+              {meal.tags && meal.tags.length > 0 && (
+                <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', maxWidth: '80%' }}>
+                  {meal.tags.map(tag => (
+                    <span key={tag} style={{ background: 'rgba(0,0,0,0.52)', borderRadius: '20px', padding: '3px 9px', fontSize: '11px', color: '#fff', fontWeight: 500 }}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
-          <div className="flex items-center gap-4 flex-wrap">
-            {meal.difficulty != null && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>Difficulty</span>
-                <DifficultyDots level={meal.difficulty} />
-              </div>
-            )}
-            {sourceHost && (
-              <a href={meal.source!} target="_blank" rel="noopener noreferrer"
-                className="text-xs flex items-center gap-1 hover:underline"
-                style={{ color: 'var(--text-3)' }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-                </svg>
-                {sourceHost}
-              </a>
-            )}
-          </div>
+          {(meal.difficulty != null || meal.serves || sourceHost) && (
+            <div className="flex items-center gap-4 flex-wrap">
+              {meal.difficulty != null && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>Difficulty</span>
+                  <DifficultyDots level={meal.difficulty} />
+                </div>
+              )}
+              {meal.serves && (
+                <div className="flex items-center gap-1.5">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-3)' }}>
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                  </svg>
+                  <span className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>{meal.serves}</span>
+                </div>
+              )}
+              {sourceHost && (
+                <a href={meal.source!} target="_blank" rel="noopener noreferrer"
+                  className="text-xs flex items-center gap-1 hover:underline"
+                  style={{ color: 'var(--text-3)' }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                  </svg>
+                  {sourceHost}
+                </a>
+              )}
+            </div>
+          )}
 
-          {meal.tags && meal.tags.length > 0 && (
+          {!meal.photo_url && meal.tags && meal.tags.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               {meal.tags.map(tag => (
                 <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
@@ -144,13 +178,17 @@ function MealDetailOverlay({
             </div>
           )}
 
+          {meal.story && (
+            <p className="text-sm italic leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.story}</p>
+          )}
+
           <div>
-            <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Ingredients</p>
+            <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>Measurements</p>
             <ul className="space-y-1.5">
               {meal.ingredients.map((ing, i) => (
-                <li key={i} className="flex items-center justify-between gap-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <span className="text-sm" style={{ color: 'var(--text-1)' }}>{ing.productName}</span>
-                  <span className="text-xs font-medium flex-shrink-0" style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono, monospace)' }}>×{ing.quantity ?? 1}</span>
+                <li key={i} className="flex items-start gap-2 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--brand)', flexShrink: 0, marginTop: 7 }} />
+                  <span className="text-sm" style={{ color: 'var(--text-1)' }}>{fmtMeasurement(ing)}</span>
                 </li>
               ))}
             </ul>
