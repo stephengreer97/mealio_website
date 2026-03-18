@@ -111,6 +111,16 @@ interface Meal {
   created_at?: string;
 }
 
+function formatWeightName(description: string, averageWeightPerUnit: string | null | undefined, size: string | null | undefined): string {
+  if (!averageWeightPerUnit) return description;
+  const numMatch = averageWeightPerUnit.match(/^([\d.]+)/);
+  if (!numMatch) return description;
+  const unitMatch = size?.match(/[a-zA-Z]+/);
+  const unit = unitMatch?.[0] ?? 'lb';
+  const unitLabel = unit === 'lb' ? 'lbs' : unit;
+  return `${description}, avg ${numMatch[1]} ${unitLabel}`;
+}
+
 function hasUnchosenProducts(meal: Meal): boolean {
   return meal.ingredients.some(raw => !normIng(raw).searchTerm);
 }
@@ -155,7 +165,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
-  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null; size?: string | null; soldBy?: string | null }>;
+  suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null; size?: string | null; soldBy?: string | null; averageWeightPerUnit?: string | null }>;
   mealIds: string[];
   mealIngredients: MealIngredientQty[];
   mealNames: string[];
@@ -1846,7 +1856,11 @@ function KrogerCartFlow({
     }
     const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentReview.suggestions;
     const s = displaySuggestions[selectedSuggIdx as number];
-    return s ? { upc: s.upc, name: s.description } : null;
+    if (!s) return null;
+    const name = s.soldBy === 'WEIGHT'
+      ? formatWeightName(s.description, s.averageWeightPerUnit, s.size)
+      : (s.size ? `${s.description}, ${s.size}` : s.description);
+    return { upc: s.upc, name };
   };
 
   const handleReviewDecision = async (action: 'skip' | 'add' | 'update') => {
@@ -2043,7 +2057,7 @@ function KrogerCartFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.soldBy === 'WEIGHT' ? s.description : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
+                          <span>{s.soldBy === 'WEIGHT' ? formatWeightName(s.description, s.averageWeightPerUnit, s.size) : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
                           {s.price != null && (
                             <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>
                               {s.soldBy === 'WEIGHT' && s.size ? `$${s.price.toFixed(2)} / ${s.size.replace(/(\d)([a-zA-Z])/, '$1 $2').toLowerCase()}` : `$${s.price.toFixed(2)}`}
@@ -2327,7 +2341,12 @@ function ChooseProductsFlow({
       }
       const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentResult?.suggestions ?? [];
       const s = displaySuggestions[selectedSuggIdx as number];
-      if (s && currentResult) newSelections.set(currentResult.ingredientName, { description: s.description, qty: currentIngQty });
+      if (s && currentResult) {
+        const desc = s.soldBy === 'WEIGHT'
+          ? formatWeightName(s.description, s.averageWeightPerUnit, s.size)
+          : (s.size ? `${s.description}, ${s.size}` : s.description);
+        newSelections.set(currentResult.ingredientName, { description: desc, qty: currentIngQty });
+      }
     }
 
     setSelections(newSelections);
@@ -2464,7 +2483,7 @@ function ChooseProductsFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.soldBy === 'WEIGHT' ? s.description : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
+                          <span>{s.soldBy === 'WEIGHT' ? formatWeightName(s.description, s.averageWeightPerUnit, s.size) : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
                           {s.price != null && (
                             <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>
                               {s.soldBy === 'WEIGHT' && s.size ? `$${s.price.toFixed(2)} / ${s.size.replace(/(\d)([a-zA-Z])/, '$1 $2').toLowerCase()}` : `$${s.price.toFixed(2)}`}
