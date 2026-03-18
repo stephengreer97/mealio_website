@@ -364,7 +364,7 @@ function FeaturedCreatorsCard({ creators, onCreatorClick }: { creators: Featured
                   <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff' }}>{initials}</span>
                 </div>
               )}
-              <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-2)', textAlign: 'center', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}>
+              <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-2)', textAlign: 'center', width: '100%', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', lineHeight: 1.3 }}>
                 {c.display_name}
               </span>
             </button>
