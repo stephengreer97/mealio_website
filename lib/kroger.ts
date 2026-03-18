@@ -81,8 +81,15 @@ const CRITICAL_WORDS = new Set([
  * If the search term contains critical words (organic, boneless, etc.) that are
  * absent from the description, returns 0 — indicating a review is needed.
  */
+export function stripMeasurementSuffix(term: string): string {
+  return term
+    .replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '')           // ", avg 5.1 lbs"
+    .replace(/\s+\d+(\.\d+)?\s*(oz|lb|lbs|g|kg|ml|l|fl\s*oz|count|ct|pk|pack|tbsp|tsp|cup|cups|gal|qt|pt|each|ea)\s*$/i, '') // " 2 lbs", " 3 tbsp"
+    .trim();
+}
+
 export function scoreProductMatch(searchTerm: string, description: string): number {
-  const normSearch = normalizeText(searchTerm.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim());
+  const normSearch = normalizeText(stripMeasurementSuffix(searchTerm));
   const normDesc   = normalizeText(description);
   if (normSearch === normDesc) return 100;
 

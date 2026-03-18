@@ -132,8 +132,10 @@ export async function POST(request: NextRequest) {
           suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
         }
 
-        // Pick the best match across all suggestions, not just the first
-        const scored = suggestions.map(s => ({ s, score: scoreProductMatch(searchStr, s.description) }));
+        // Pick the best match across all suggestions, not just the first.
+        // Always score against the plain ingredient name (base), not the search string,
+        // so measure/unit appended to the query don't poison the word-match percentage.
+        const scored = suggestions.map(s => ({ s, score: scoreProductMatch(base, s.description) }));
         const exactMatch = scored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
         const top = exactMatch?.s ?? suggestions[0] ?? null;
         return {
