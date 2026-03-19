@@ -112,9 +112,10 @@ interface Meal {
 }
 
 function formatWeightName(description: string, averageWeightPerUnit: string | null | undefined, size: string | null | undefined): string {
-  if (!averageWeightPerUnit) return description;
+  const fallback = size && !description.includes(size) ? `${description}, ${size}` : description;
+  if (!averageWeightPerUnit) return fallback;
   const numMatch = averageWeightPerUnit.match(/^([\d.]+)/);
-  if (!numMatch) return description;
+  if (!numMatch) return fallback;
   const unitMatch = size?.match(/[a-zA-Z]+/);
   const unit = unitMatch?.[0] ?? 'lb';
   const unitLabel = unit === 'lb' ? 'lbs' : unit;
@@ -1859,7 +1860,7 @@ function KrogerCartFlow({
     if (!s) return null;
     const name = s.soldBy === 'WEIGHT'
       ? formatWeightName(s.description, s.averageWeightPerUnit, s.size)
-      : (s.size ? `${s.description}, ${s.size}` : s.description);
+      : (s.size && !s.description.includes(s.size) ? `${s.description}, ${s.size}` : s.description);
     return { upc: s.upc, name };
   };
 
@@ -2057,7 +2058,7 @@ function KrogerCartFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.soldBy === 'WEIGHT' ? formatWeightName(s.description, s.averageWeightPerUnit, s.size) : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
+                          <span>{s.soldBy === 'WEIGHT' ? formatWeightName(s.description, s.averageWeightPerUnit, s.size) : (s.size && !s.description.includes(s.size) ? `${s.description}, ${s.size}` : s.description)}</span>
                           {s.price != null && (
                             <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>
                               {s.soldBy === 'WEIGHT' && s.size ? `$${s.price.toFixed(2)} / ${s.size.replace(/(\d)([a-zA-Z])/, '$1 $2').toLowerCase()}` : `$${s.price.toFixed(2)}`}
@@ -2344,7 +2345,7 @@ function ChooseProductsFlow({
       if (s && currentResult) {
         const desc = s.soldBy === 'WEIGHT'
           ? formatWeightName(s.description, s.averageWeightPerUnit, s.size)
-          : (s.size ? `${s.description}, ${s.size}` : s.description);
+          : (s.size && !s.description.includes(s.size) ? `${s.description}, ${s.size}` : s.description);
         newSelections.set(currentResult.ingredientName, { description: desc, qty: currentIngQty });
       }
     }
@@ -2483,7 +2484,7 @@ function ChooseProductsFlow({
                         }}
                       >
                         <span className="flex items-start justify-between gap-3">
-                          <span>{s.soldBy === 'WEIGHT' ? formatWeightName(s.description, s.averageWeightPerUnit, s.size) : (s.size ? `${s.description}, ${s.size}` : s.description)}</span>
+                          <span>{s.soldBy === 'WEIGHT' ? formatWeightName(s.description, s.averageWeightPerUnit, s.size) : (s.size && !s.description.includes(s.size) ? `${s.description}, ${s.size}` : s.description)}</span>
                           {s.price != null && (
                             <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--text-2)' }}>
                               {s.soldBy === 'WEIGHT' && s.size ? `$${s.price.toFixed(2)} / ${s.size.replace(/(\d)([a-zA-Z])/, '$1 $2').toLowerCase()}` : `$${s.price.toFixed(2)}`}
