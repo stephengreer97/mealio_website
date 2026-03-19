@@ -134,7 +134,8 @@ export async function POST(request: NextRequest) {
         const exactMatch = scored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
         const top = exactMatch?.s ?? suggestions[0] ?? null;
 
-        console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(base));
+        const scoreBase = base.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim();
+        console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(scoreBase));
         console.log('[Kroger:match] suggestions:', scored.map(({ s, score }) => `${score} — ${s.description}`).join(' | ') || '(none)');
         console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
 
