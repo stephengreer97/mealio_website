@@ -601,6 +601,9 @@ async function fetchAndUploadGeneratedPhoto(proxyUrl: string, token: string): Pr
 function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalProps) {
   const [name, setName] = useState(meal.name);
   const [editStoreId, setEditStoreId] = useState(meal.store_id);
+  const [recentStores, setRecentStores] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('mealio_recent_stores') || '[]'); } catch { return []; }
+  });
   const [author, setAuthor] = useState(meal.author ?? '');
   const [serves, setServes] = useState(meal.serves ?? '');
   const [difficulty, setDifficulty] = useState<number | null>(meal.difficulty ?? null);
@@ -732,6 +735,10 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Failed to save.'); return; }
+      if (editStoreId) {
+        const updatedRecent = [editStoreId, ...recentStores.filter(id => id !== editStoreId)].slice(0, 3);
+        try { localStorage.setItem('mealio_recent_stores', JSON.stringify(updatedRecent)); setRecentStores(updatedRecent); } catch { /* ignore */ }
+      }
       onSave(data.meal);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
@@ -768,9 +775,18 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             >
-              {Object.entries(STORE_LABELS).map(([id, label]) => (
-                <option key={id} value={id}>{label}</option>
-              ))}
+              {recentStores.length > 0 && (
+                <optgroup label="Recent">
+                  {recentStores.filter(id => STORE_LABELS[id]).map(id => (
+                    <option key={id} value={id}>{STORE_LABELS[id]}</option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label={recentStores.length > 0 ? 'All Stores' : ''}>
+                {Object.entries(STORE_LABELS).sort(([, a], [, b]) => a.localeCompare(b)).map(([id, label]) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
+              </optgroup>
             </select>
           </div>
 
@@ -1235,7 +1251,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
                 </optgroup>
               )}
               <optgroup label={recentStores.length > 0 ? 'All Stores' : ''}>
-                {Object.entries(STORE_LABELS).map(([id, label]) => (
+                {Object.entries(STORE_LABELS).sort(([, a], [, b]) => a.localeCompare(b)).map(([id, label]) => (
                   <option key={id} value={id}>{label}</option>
                 ))}
               </optgroup>
