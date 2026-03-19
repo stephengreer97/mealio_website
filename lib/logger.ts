@@ -28,6 +28,8 @@ export type EventType =
   | 'AUTH:2FA_SENT'
   | 'AUTH:2FA_VERIFY'
   | 'AUTH:2FA_RESEND'
+  | 'AUTH:OAUTH_GOOGLE'
+  | 'AUTH:OAUTH_APPLE'
   // ── Meals ─────────────────────────────────────────────────────────────────
   | 'MEAL:GET'
   | 'MEAL:GET_DELETED'
