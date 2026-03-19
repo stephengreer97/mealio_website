@@ -171,6 +171,8 @@ interface KrogerSearchResult {
   mealIngredients: MealIngredientQty[];
   mealNames: string[];
   ingredientName: string;
+  unit: string;
+  measure: string | null;
 }
 
 const ALL_TAGS = [
@@ -1779,7 +1781,7 @@ function KrogerCartFlow({
   onClose: () => void;
   onMealUpdated: (updated: Meal) => void;
 }) {
-  type Step = 'qty' | 'searching' | 'review' | 'adding' | 'done';
+  type Step = 'qty' | 'searching' | 'searchResult' | 'review' | 'adding' | 'done';
   const [step, setStep] = useState<Step>('qty');
   const [error, setError] = useState('');
 
@@ -1853,7 +1855,7 @@ function KrogerCartFlow({
 
       const results: KrogerSearchResult[] = data.results.map((r: any) => {
         const src = items.find(c => c.ingredientName.toLowerCase().trim() === r.term.toLowerCase().trim());
-        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [], mealIngredients: src?.mealIngredients ?? [], ingredientName: src?.ingredientName ?? r.term, searchTerm: src?.searchTerm ?? null };
+        return { ...r, suggestions: r.suggestions ?? [], mealIds: src?.mealIds ?? [], mealNames: src?.mealNames ?? [], mealIngredients: src?.mealIngredients ?? [], ingredientName: src?.ingredientName ?? r.term, searchTerm: src?.searchTerm ?? null, unit: src?.unit ?? 'qty', measure: src?.measure ?? null };
       });
       setSearchResults(results);
 
@@ -1862,7 +1864,7 @@ function KrogerCartFlow({
         await doAddToCart(results.filter(r => r.upc).map(r => ({ upc: r.upc!, quantity: r.quantity, description: r.description ?? '' })));
       } else {
         setReviewIdx(0);
-        setStep('review');
+        setStep('searchResult');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
@@ -1984,6 +1986,7 @@ function KrogerCartFlow({
           <h2 className="text-base font-bold text-ml-t1">
             {step === 'qty' && 'Review Ingredients'}
             {step === 'searching' && 'Finding Products…'}
+            {step === 'searchResult' && 'Items Not Added'}
             {step === 'review' && `Review Unmatched Ingredients (${reviewIdx + 1} of ${reviewQueue.length})`}
             {step === 'adding' && 'Adding to Cart…'}
             {step === 'done' && 'Done!'}
@@ -2052,6 +2055,50 @@ function KrogerCartFlow({
           </div>
         )}
 
+        {/* Step 2b – Search result summary before review */}
+        {step === 'searchResult' && (() => {
+          const autoAdded = searchResults.filter(r => r.exact && r.upc);
+          const needsReview = searchResults.filter(r => !r.exact);
+          return (
+            <>
+              <div className="flex-1 px-5 py-6 overflow-y-auto flex flex-col items-center text-center gap-4">
+                <div className="text-5xl">⚠️</div>
+                <div>
+                  <p className="text-base font-bold text-ml-t1 mb-1">
+                    {needsReview.length} item{needsReview.length !== 1 ? 's' : ''} could not be added to cart
+                  </p>
+                  <p className="text-sm text-ml-t2">
+                    This may be because the item is out of stock or the store no longer carries it.
+                  </p>
+                </div>
+                {autoAdded.length > 0 && (
+                  <p className="text-sm text-ml-t3">
+                    {autoAdded.length} item{autoAdded.length !== 1 ? 's' : ''} matched and will be added automatically.
+                  </p>
+                )}
+                <div className="w-full rounded-xl overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                  {needsReview.map((r, i) => (
+                    <div key={i} className="px-4 py-3 text-left" style={{ borderBottom: i < needsReview.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                      <p className="text-sm font-medium text-ml-t1">{r.searchTerm || r.ingredientName}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+                <button
+                  onClick={() => setStep('review')}
+                  className="w-full text-white text-sm font-semibold rounded-xl py-2.5"
+                  style={{ background: storeColor }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                >
+                  Review {needsReview.length} Item{needsReview.length !== 1 ? 's' : ''} →
+                </button>
+              </div>
+            </>
+          );
+        })()}
+
         {/* Step 3 – Review non-exact matches */}
         {step === 'review' && currentReview && (() => {
           const displaySuggestions = customSuggestions.length > 0 ? customSuggestions : currentReview.suggestions;
@@ -2071,6 +2118,13 @@ function KrogerCartFlow({
                   {currentReview.mealNames.length > 0 && (
                     <p className="text-xs text-ml-t3 mt-0.5">from: {currentReview.mealNames.join(', ')}</p>
                   )}
+                  {(() => {
+                    const { unit, measure, ingredientName, quantity } = currentReview;
+                    const hint = unit === 'qty'
+                      ? `${currentReview.mealNames[0] ?? 'Meal'} calls for ${quantity} ${ingredientName}`
+                      : `${currentReview.mealNames[0] ?? 'Meal'} calls for ${measure ?? quantity} ${unit} of ${ingredientName}`;
+                    return <p className="text-xs mt-1.5" style={{ color: '#b91c1c', opacity: 0.85 }}>{hint}</p>;
+                  })()}
                   {customSearchTerm && (
                     <p className="text-xs mt-1" style={{ color: storeColor }}>Showing results for: "{customSearchTerm}"</p>
                   )}
