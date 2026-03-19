@@ -152,7 +152,7 @@ export async function POST(request: NextRequest) {
           upc: top?.upc ?? null,
           description: top?.description ?? null,
           exact: !!exactMatch,
-          suggestions: sortedScored.map(({ s }) => s),
+          suggestions: sortedScored.map(({ s }) => s).filter(s => s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK'),
         };
       })
     );
