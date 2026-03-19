@@ -127,16 +127,22 @@ export async function POST(request: NextRequest) {
           suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
         }
 
-        // Pick the best match across all suggestions, not just the first.
-        // Always score against the plain ingredient name (base), not the search string,
-        // so measure/unit appended to the query don't poison the word-match percentage.
-        const scored = suggestions.map(s => ({ s, score: scoreProductMatch(base, s.description) }));
+        // Score against the chosen product name (searchTerm), falling back to ingredient name.
+        // Also try matching against description + size to catch weight items like
+        // "Flat Whole Beef Brisket" + "avg 5.1 lbs" → "Flat Whole Beef Brisket, avg 5.1 lbs".
+        const scoreTarget = ing.searchTerm ?? base;
+        const scored = suggestions.map(s => {
+          const primary = scoreProductMatch(scoreTarget, s.description);
+          if (primary === 100) return { s, score: 100 };
+          const withSize = s.size ? scoreProductMatch(scoreTarget, `${s.description}, ${s.size}`) : 0;
+          return { s, score: Math.max(primary, withSize) };
+        });
         const exactMatch = scored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
         const top = exactMatch?.s ?? suggestions[0] ?? null;
 
-        const scoreBase = base.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim();
-        console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(scoreBase));
-        console.log('[Kroger:match] suggestions:', scored.map(({ s, score }) => `${score} — ${s.description}`).join(' | ') || '(none)');
+        const strippedTarget = scoreTarget.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim();
+        console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(strippedTarget));
+        console.log('[Kroger:match] suggestions:', scored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
         console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
 
         return {
