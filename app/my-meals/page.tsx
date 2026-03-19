@@ -612,7 +612,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
   const [ingredients, setIngredients] = useState<IngredientForm[]>(
     meal.ingredients.map(i => toFormIng(normIng(i)))
   );
-  const [productsOpen, setProductsOpen] = useState(false);
+  const [productsOpen, setProductsOpen] = useState(true);
   const [saving, setSaving] = useState(false);
   const dragRef = useRef(false);
   const [error, setError] = useState('');
