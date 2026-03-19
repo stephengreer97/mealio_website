@@ -2120,7 +2120,7 @@ function KrogerCartFlow({
                   <img
                     src={displaySuggestions[hoveredSugg.idx].imageUrl!}
                     alt=""
-                    style={{ width: 120, height: 120, objectFit: 'contain', display: 'block' }}
+                    style={{ width: 180, height: 180, objectFit: 'contain', display: 'block' }}
                   />
                 </div>
               )}
@@ -2501,7 +2501,7 @@ function ChooseProductsFlow({
 
               {hoveredSugg && displaySuggestions[hoveredSugg.idx]?.imageUrl && (
                 <div style={{ position: 'fixed', left: hoveredSugg.rect.right + 10, top: hoveredSugg.rect.top, zIndex: 200, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 12, padding: 8, boxShadow: '0 4px 20px rgba(0,0,0,0.15)', pointerEvents: 'none' }}>
-                  <img src={displaySuggestions[hoveredSugg.idx].imageUrl!} alt="" style={{ width: 120, height: 120, objectFit: 'contain', display: 'block' }} />
+                  <img src={displaySuggestions[hoveredSugg.idx].imageUrl!} alt="" style={{ width: 180, height: 180, objectFit: 'contain', display: 'block' }} />
                 </div>
               )}
 
