@@ -1679,7 +1679,7 @@ function MealDetailModal({
                 <li
                   key={i}
                   className="text-sm"
-                  style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px', color: ing.searchTerm ? '#3b82f6' : 'var(--text-1)', cursor: ing.searchTerm ? 'help' : 'default' }}
+                  style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px', color: 'var(--text-1)', cursor: ing.searchTerm ? 'help' : 'default' }}
                   title={ing.searchTerm ? `${ing.productQty ?? ing.qty}x ${ing.searchTerm}` : undefined}
                 >
                   {fmtMeasurement(ing)}
