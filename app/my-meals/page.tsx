@@ -2517,7 +2517,7 @@ function ChooseProductsFlow({
                         className="w-7 h-7 rounded flex items-center justify-center text-sm disabled:opacity-30"
                         style={{ border: '1px solid var(--border)', background: 'var(--surface-raised)', color: 'var(--text-2)' }}
                       >−</button>
-                      <span className="text-sm font-semibold w-5 text-center" style={{ color: 'var(--text-1)' }}>{currentIngQty}</span>
+                      <span className="text-sm font-semibold w-5 text-center" style={{ color: currentIngQty === 0 ? '#ef4444' : 'var(--text-1)' }}>{currentIngQty}</span>
                       <button
                         type="button"
                         onClick={() => adjustCurrentQty(1)}
@@ -2534,7 +2534,7 @@ function ChooseProductsFlow({
                 </div>
                 <button
                   onClick={() => handleNext(false)}
-                  disabled={!canPick || customSearching}
+                  disabled={!canPick || customSearching || currentIngQty === 0}
                   className="w-full text-sm font-semibold rounded-xl py-2.5 text-white disabled:opacity-40"
                   style={{ background: storeColor }}
                   onMouseEnter={e => { if (canPick) (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
