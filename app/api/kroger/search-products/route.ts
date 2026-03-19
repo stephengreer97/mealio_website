@@ -119,14 +119,9 @@ export async function POST(request: NextRequest) {
             suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
           }
         } else if (usesMeasurement) {
-          // Try with measure + unit first
-          searchStr = buildSearchTerm(base, ing.measure ?? null, unit);
+          // Search with just the ingredient name (no measure/unit)
+          searchStr = base.split(' ').slice(0, 8).join(' ');
           suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
-          // Fall back to base name if no results
-          if (suggestions.length === 0) {
-            searchStr = base.split(' ').slice(0, 8).join(' ');
-            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
-          }
         } else {
           searchStr = base.split(' ').slice(0, 8).join(' ');
           suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
@@ -138,6 +133,11 @@ export async function POST(request: NextRequest) {
         const scored = suggestions.map(s => ({ s, score: scoreProductMatch(base, s.description) }));
         const exactMatch = scored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
         const top = exactMatch?.s ?? suggestions[0] ?? null;
+
+        console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(base));
+        console.log('[Kroger:match] suggestions:', scored.map(({ s, score }) => `${score} — ${s.description}`).join(' | ') || '(none)');
+        console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
+
         return {
           term: base, // always echo ingredientName back for client matching
           quantity: ing.quantity ?? 1,
