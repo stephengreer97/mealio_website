@@ -1821,6 +1821,7 @@ function KrogerCartFlow({
   const [customSuggestions, setCustomSuggestions] = useState<KrogerSearchResult['suggestions']>([]);
   const [customSearchTerm, setCustomSearchTerm] = useState('');
   const shouldShowSuggestionsRef = useRef(false);
+  const [reviewQty, setReviewQty] = useState(1);
 
   // Per-review-item meal quantities: reviewIdx → mealId → qty
   const [reviewMealQtys, setReviewMealQtys] = useState<Record<number, Record<string, number>>>({});
@@ -1835,7 +1836,7 @@ function KrogerCartFlow({
     return init;
   }
 
-  function getReviewTotalQty(): number {
+  function reviewQty: number {
     return Object.values(getReviewMealQtys()).reduce((s, q) => s + q, 0);
   }
 
@@ -1852,6 +1853,7 @@ function KrogerCartFlow({
     setCustomText('');
     setCustomSuggestions([]);
     setCustomSearchTerm('');
+    setReviewQty(searchResults.filter(r => !r.exact)[reviewIdx]?.quantity ?? 1);
   }, [reviewIdx]);
 
   const handleStartSearch = async () => {
@@ -1928,7 +1930,7 @@ function KrogerCartFlow({
       const resolved = await resolveCurrentSelection();
       if (shouldShowSuggestionsRef.current) return; // custom search showed new suggestions — stay on this item
       if (resolved?.upc) {
-        newPicked.push({ upc: resolved.upc, quantity: getReviewTotalQty(), description: resolved.name });
+        newPicked.push({ upc: resolved.upc, quantity: reviewQty, description: resolved.name });
       }
       if (action === 'update' && resolved?.name) {
         for (const mealId of currentReview.mealIds) {
@@ -1937,7 +1939,7 @@ function KrogerCartFlow({
           const updatedIngredients = meal.ingredients.map(ing => {
             const ni = normIng(ing);
             if (ni.ingredientName.toLowerCase().trim() === currentReview.ingredientName.toLowerCase().trim()) {
-              return { ...ing, searchTerm: resolved.name, productQty: getReviewTotalQty() };
+              return { ...ing, searchTerm: resolved.name, productQty: reviewQty };
             }
             return ing;
           });
@@ -2235,6 +2237,23 @@ function KrogerCartFlow({
               )}
 
               <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
+                {/* Qty adjuster */}
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-ml-t2 font-medium">Quantity</span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setReviewQty(q => Math.max(1, q - 1))}
+                      className="w-7 h-7 rounded text-sm flex items-center justify-center"
+                      style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
+                    >−</button>
+                    <span className="text-sm font-semibold text-ml-t1 w-5 text-center">{reviewQty}</span>
+                    <button
+                      onClick={() => setReviewQty(q => q + 1)}
+                      className="w-7 h-7 rounded text-sm flex items-center justify-center"
+                      style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}
+                    >+</button>
+                  </div>
+                </div>
                 <button
                   onClick={() => handleReviewDecision('update')}
                   disabled={!canAdd || isProcessing}
