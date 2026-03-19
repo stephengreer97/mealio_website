@@ -1836,10 +1836,6 @@ function KrogerCartFlow({
     return init;
   }
 
-  function reviewQty: number {
-    return Object.values(getReviewMealQtys()).reduce((s, q) => s + q, 0);
-  }
-
   function adjustReviewMealQty(mealId: string, delta: number) {
     setReviewMealQtys(prev => {
       const cur = prev[reviewIdx] ?? getReviewMealQtys();
