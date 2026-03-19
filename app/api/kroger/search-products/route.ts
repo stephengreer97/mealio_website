@@ -137,12 +137,13 @@ export async function POST(request: NextRequest) {
           const withSize = s.size ? scoreProductMatch(scoreTarget, `${s.description}, ${s.size}`) : 0;
           return { s, score: Math.max(primary, withSize) };
         });
-        const exactMatch = scored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
-        const top = exactMatch?.s ?? suggestions[0] ?? null;
+        const sortedScored = [...scored].sort((a, b) => b.score - a.score);
+        const exactMatch = sortedScored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
+        const top = exactMatch?.s ?? sortedScored[0]?.s ?? null;
 
         const strippedTarget = scoreTarget.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim();
         console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(strippedTarget));
-        console.log('[Kroger:match] suggestions:', scored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
+        console.log('[Kroger:match] suggestions:', sortedScored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
         console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
 
         return {
@@ -151,7 +152,7 @@ export async function POST(request: NextRequest) {
           upc: top?.upc ?? null,
           description: top?.description ?? null,
           exact: !!exactMatch,
-          suggestions,
+          suggestions: sortedScored.map(({ s }) => s),
         };
       })
     );
