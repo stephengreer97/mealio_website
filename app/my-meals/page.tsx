@@ -1520,8 +1520,58 @@ function MealDetailModal({
       onMouseDown={e => { dragRef.current = e.target !== e.currentTarget; }}
       onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
     >
+      {/* Kroger cart result screen — renders in place of the meal detail card */}
+      {krogerResultVisible && krogerResult && (
+        <div
+          className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col items-center p-8"
+          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh', overflowY: 'auto' }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="text-5xl mb-5">{krogerResult.notFound.length === 0 ? '✅' : '⚠️'}</div>
+          <h3 className="text-xl font-bold mb-3 text-center" style={{ color: 'var(--text-1)' }}>
+            {krogerResult.notFound.length === 0
+              ? 'Added to cart!'
+              : `${krogerResult.added.length} of ${krogerResult.added.length + krogerResult.notFound.length} items added`}
+          </h3>
+          <p className="text-sm text-center mb-5 leading-relaxed" style={{ color: 'var(--text-2)' }}>
+            {krogerResult.notFound.length === 0
+              ? `${krogerResult.added.length} item${krogerResult.added.length !== 1 ? 's' : ''} ${krogerResult.added.length === 1 ? 'was' : 'were'} successfully added to your Kroger cart.`
+              : `${krogerResult.notFound.length} item${krogerResult.notFound.length !== 1 ? 's' : ''} could not be added to cart. This may be because the item is out of stock or the store no longer carries it.`}
+          </p>
+          {krogerResult.notFound.length > 0 && (
+            <div className="w-full rounded-xl mb-5" style={{ border: '1px solid var(--border)' }}>
+              {krogerResult.notFound.map((name, i) => {
+                const ing = productIngredients.find(p => (p.ingredientName ?? (p as any).productName ?? '') === name);
+                let hint = '';
+                if (ing) {
+                  if (!ing.unit || ing.unit === 'qty') {
+                    hint = `${meal.name} calls for ${ing.qty ?? 1} ${ing.ingredientName}`;
+                  } else {
+                    const parts = [ing.measure, ing.unit].filter(Boolean).join(' ');
+                    hint = `${meal.name} calls for ${parts} of ${ing.ingredientName}`;
+                  }
+                }
+                return (
+                  <div key={i} className="px-4 py-3" style={{ borderBottom: i < krogerResult.notFound.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                    <p className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>{name}</p>
+                    {hint && <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>{hint}</p>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <button
+            onClick={() => setKrogerResultVisible(false)}
+            className="w-full py-3 rounded-xl text-sm font-semibold text-white"
+            style={{ background: 'var(--brand)' }}
+          >
+            OK
+          </button>
+        </div>
+      )}
+
       <div
-        className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col relative"
+        className={`w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col${krogerResultVisible && krogerResult ? ' hidden' : ''}`}
         style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh' }}
         onClick={e => e.stopPropagation()}
       >
@@ -1658,39 +1708,6 @@ function MealDetailModal({
           )}
         </div>
 
-        {/* Kroger cart result modal */}
-        {krogerResultVisible && krogerResult && (
-          <div
-            className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 rounded-t-2xl sm:rounded-2xl"
-            style={{ background: 'var(--surface-raised)' }}
-          >
-            <div className="text-4xl mb-4">{krogerResult.notFound.length === 0 ? '✅' : '⚠️'}</div>
-            <h3 className="text-lg font-bold mb-2 text-center" style={{ color: 'var(--text-1)' }}>
-              {krogerResult.notFound.length === 0
-                ? 'Added to cart!'
-                : `${krogerResult.added.length} of ${krogerResult.added.length + krogerResult.notFound.length} items added`}
-            </h3>
-            <p className="text-sm text-center mb-2" style={{ color: 'var(--text-2)' }}>
-              {krogerResult.notFound.length === 0
-                ? `${krogerResult.added.length} item${krogerResult.added.length !== 1 ? 's' : ''} ${krogerResult.added.length === 1 ? 'was' : 'were'} successfully added to your Kroger cart.`
-                : `${krogerResult.notFound.length} item${krogerResult.notFound.length !== 1 ? 's' : ''} could not be added to cart. This may be because the item is out of stock or the store no longer carries it.`}
-            </p>
-            {krogerResult.notFound.length > 0 && (
-              <div className="w-full rounded-xl p-3 mb-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                {krogerResult.notFound.map((name, i) => (
-                  <p key={i} className="text-xs py-1" style={{ color: 'var(--text-2)', borderBottom: i < krogerResult.notFound.length - 1 ? '1px solid var(--border)' : 'none' }}>{name}</p>
-                ))}
-              </div>
-            )}
-            <button
-              onClick={() => setKrogerResultVisible(false)}
-              className="w-full py-3 rounded-xl text-sm font-semibold text-white"
-              style={{ background: 'var(--brand)' }}
-            >
-              OK
-            </button>
-          </div>
-        )}
 
         {/* Footer */}
         <div className="p-4 flex items-center gap-2 flex-wrap" style={{ borderTop: '1px solid var(--border)' }}>
