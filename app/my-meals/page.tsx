@@ -2537,8 +2537,8 @@ function ChooseProductsFlow({
                   disabled={!canPick || customSearching || currentIngQty === 0}
                   className="w-full text-sm font-semibold rounded-xl py-2.5 text-white disabled:opacity-40"
                   style={{ background: storeColor }}
-                  onMouseEnter={e => { if (canPick) (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+                  onMouseEnter={e => { if (canPick && currentIngQty > 0) (e.currentTarget as HTMLElement).style.opacity = '0.85'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.opacity = ''; }}
                 >
                   {customSearching ? 'Searching…' : isLast ? 'Save Products' : 'Choose & Next →'}
                 </button>
