@@ -1474,6 +1474,7 @@ function MealDetailModal({
   const dragRef = useRef(false);
   const [krogerLoading, setKrogerLoading] = useState(false);
   const [krogerResult, setKrogerResult] = useState<{ added: string[]; notFound: string[] } | null>(null);
+  const [krogerResultVisible, setKrogerResultVisible] = useState(false);
   const [productsOpen, setProductsOpen] = useState(false);
   const [productIngredients, setProductIngredients] = useState<Ingredient[]>(
     meal.ingredients.map(normIng)
@@ -1501,6 +1502,7 @@ function MealDetailModal({
       const data = await res.json();
       if (res.ok) {
         setKrogerResult({ added: data.added ?? [], notFound: data.notFound ?? [] });
+        setKrogerResultVisible(true);
       } else {
         alert(data.error || 'Failed to add to Kroger cart.');
       }
@@ -1519,7 +1521,7 @@ function MealDetailModal({
       onClick={e => { if (e.target !== e.currentTarget || dragRef.current) return; onClose(); }}
     >
       <div
-        className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col"
+        className="w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl flex flex-col relative"
         style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh' }}
         onClick={e => e.stopPropagation()}
       >
@@ -1656,17 +1658,37 @@ function MealDetailModal({
           )}
         </div>
 
-        {/* Kroger result feedback */}
-        {krogerResult && (
-          <div className="px-5 pb-3">
-            <div className="rounded-xl p-3 text-xs" style={{ background: krogerResult.added.length > 0 ? '#f0fdf4' : 'var(--brand-light)', border: `1px solid ${krogerResult.added.length > 0 ? '#bbf7d0' : 'var(--brand-border)'}` }}>
-              {krogerResult.added.length > 0 && (
-                <p style={{ color: '#14532d' }}>{krogerResult.added.length} item{krogerResult.added.length !== 1 ? 's' : ''} added to your Kroger cart.</p>
-              )}
-              {krogerResult.notFound.length > 0 && (
-                <p style={{ color: '#9f1239', marginTop: krogerResult.added.length > 0 ? '4px' : 0 }}>Not found: {krogerResult.notFound.join(', ')}</p>
-              )}
-            </div>
+        {/* Kroger cart result modal */}
+        {krogerResultVisible && krogerResult && (
+          <div
+            className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 rounded-t-2xl sm:rounded-2xl"
+            style={{ background: 'var(--surface-raised)' }}
+          >
+            <div className="text-4xl mb-4">{krogerResult.notFound.length === 0 ? '✅' : '⚠️'}</div>
+            <h3 className="text-lg font-bold mb-2 text-center" style={{ color: 'var(--text-1)' }}>
+              {krogerResult.notFound.length === 0
+                ? 'Added to cart!'
+                : `${krogerResult.added.length} of ${krogerResult.added.length + krogerResult.notFound.length} items added`}
+            </h3>
+            <p className="text-sm text-center mb-2" style={{ color: 'var(--text-2)' }}>
+              {krogerResult.notFound.length === 0
+                ? `${krogerResult.added.length} item${krogerResult.added.length !== 1 ? 's' : ''} ${krogerResult.added.length === 1 ? 'was' : 'were'} successfully added to your Kroger cart.`
+                : `${krogerResult.notFound.length} item${krogerResult.notFound.length !== 1 ? 's' : ''} could not be added to cart. This may be because the item is out of stock or the store no longer carries it.`}
+            </p>
+            {krogerResult.notFound.length > 0 && (
+              <div className="w-full rounded-xl p-3 mb-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                {krogerResult.notFound.map((name, i) => (
+                  <p key={i} className="text-xs py-1" style={{ color: 'var(--text-2)', borderBottom: i < krogerResult.notFound.length - 1 ? '1px solid var(--border)' : 'none' }}>{name}</p>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => setKrogerResultVisible(false)}
+              className="w-full py-3 rounded-xl text-sm font-semibold text-white"
+              style={{ background: 'var(--brand)' }}
+            >
+              OK
+            </button>
           </div>
         )}
 
