@@ -109,28 +109,28 @@ export async function POST(request: NextRequest) {
         if (ing.searchTerm) {
           // User already picked a product — search with their chosen term
           searchStr = ing.searchTerm;
-          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
+          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
           // Repeat once in case of a transient empty response
           if (suggestions.length === 0) {
-            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
+            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
           }
           // Retry 1: fall back to ingredientName + measure/unit (if non-qty)
           if (suggestions.length === 0 && unit !== 'qty') {
             searchStr = buildSearchTerm(base, ing.measure ?? null, unit);
-            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
+            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
           }
           // Retry 2: fall back to bare ingredientName
           if (suggestions.length === 0) {
             searchStr = base.split(' ').slice(0, 8).join(' ');
-            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
+            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
           }
         } else if (usesMeasurement) {
           // Search with just the ingredient name (no measure/unit)
           searchStr = base.split(' ').slice(0, 8).join(' ');
-          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
+          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
         } else {
           searchStr = base.split(' ').slice(0, 8).join(' ');
-          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10);
+          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
         }
 
         // Score against the chosen product name (searchTerm), falling back to ingredient name.

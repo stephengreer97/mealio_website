@@ -172,7 +172,8 @@ export async function krogerSearchProducts(
   term: string,
   locationId: string,
   limit = 5,
-  _retry = 0
+  _retry = 0,
+  debug = false
 ): Promise<Array<{ upc: string; description: string; size: string | null; averageWeightPerUnit: string | null; imageUrl: string | null; stockLevel: string | null; price: number | null; soldBy: string | null }>> {
   const truncatedTerm = term
     .replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '')  // strip weight suffix e.g. ", avg 5.1 lbs"
@@ -192,12 +193,13 @@ export async function krogerSearchProducts(
   });
   if (!res.ok) return [];
   const data = await res.json();
+  if (debug) console.log('[Kroger:raw] term=%s response=%s', truncatedTerm, JSON.stringify(data, null, 2));
   const products: any[] = data.data ?? [];
 
   // Retry once if empty — Kroger occasionally returns nothing on the first call
   if (products.length === 0 && _retry === 0) {
     await new Promise(r => setTimeout(r, 400));
-    return krogerSearchProducts(userAccessToken, term, locationId, limit, 1);
+    return krogerSearchProducts(userAccessToken, term, locationId, limit, 1, debug);
   }
 
   return products
