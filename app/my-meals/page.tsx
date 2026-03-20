@@ -2135,10 +2135,13 @@ function KrogerCartFlow({
                 {/* What was searched */}
                 <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                   {currentReview.reason === 'out_of_stock' && (
-                    <p className="text-xs font-medium mb-2" style={{ color: '#b45309' }}>⚠ This item is currently out of stock</p>
+                    <p className="text-xs font-medium mb-2" style={{ color: '#b45309' }}>⚠ Out of stock at this store</p>
                   )}
                   {currentReview.reason === 'no_results' && (
                     <p className="text-xs font-medium mb-2" style={{ color: 'var(--text-3)' }}>No products found for this search</p>
+                  )}
+                  {(!currentReview.reason || currentReview.reason === 'low_confidence') && (
+                    <p className="text-xs font-medium mb-2" style={{ color: 'var(--text-3)' }}>No exact match found</p>
                   )}
                   <p className="text-xs text-ml-t3 mb-0.5">You searched for</p>
                   <p className="text-sm font-semibold text-ml-t1">{currentReview.searchTerm || currentReview.term}</p>
