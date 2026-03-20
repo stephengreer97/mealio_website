@@ -85,6 +85,7 @@ export async function POST(request: NextRequest) {
   const results: Array<{
     term: string; quantity: number;
     upc: string | null; description: string | null; exact: boolean;
+    reason: 'matched' | 'out_of_stock' | 'no_results' | 'low_confidence';
     suggestions: Array<{ upc: string; description: string }>;
   }> = [];
 
@@ -139,6 +140,7 @@ export async function POST(request: NextRequest) {
         });
         const sortedScored = [...scored].sort((a, b) => b.score - a.score);
         const exactMatch = sortedScored.find(({ s, score }) => score === 100 && s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
+        const outOfStockExact = !exactMatch && sortedScored.find(({ s, score }) => score === 100 && s.stockLevel === 'TEMPORARILY_OUT_OF_STOCK');
         const top = exactMatch?.s ?? sortedScored[0]?.s ?? null;
 
         const strippedTarget = scoreTarget.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim();
@@ -146,13 +148,20 @@ export async function POST(request: NextRequest) {
         console.log('[Kroger:match] suggestions:', sortedScored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
         console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
 
+        const filteredSuggestions = sortedScored.map(({ s }) => s).filter(s => s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
+        const reason = exactMatch ? 'matched'
+          : outOfStockExact ? 'out_of_stock'
+          : filteredSuggestions.length === 0 ? 'no_results'
+          : 'low_confidence';
+
         return {
-          term: base, // always echo ingredientName back for client matching
+          term: base,
           quantity: ing.quantity ?? 1,
           upc: top?.upc ?? null,
           description: top?.description ?? null,
           exact: !!exactMatch,
-          suggestions: sortedScored.map(({ s }) => s).filter(s => s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK'),
+          reason,
+          suggestions: filteredSuggestions,
         };
       })
     );

@@ -166,6 +166,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
+  reason?: 'matched' | 'out_of_stock' | 'no_results' | 'low_confidence';
   suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null; size?: string | null; soldBy?: string | null; averageWeightPerUnit?: string | null }>;
   mealIds: string[];
   mealIngredients: MealIngredientQty[];
@@ -2133,6 +2134,12 @@ function KrogerCartFlow({
               <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
                 {/* What was searched */}
                 <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                  {currentReview.reason === 'out_of_stock' && (
+                    <p className="text-xs font-medium mb-2" style={{ color: '#b45309' }}>⚠ This item is currently out of stock</p>
+                  )}
+                  {currentReview.reason === 'no_results' && (
+                    <p className="text-xs font-medium mb-2" style={{ color: 'var(--text-3)' }}>No products found for this search</p>
+                  )}
                   <p className="text-xs text-ml-t3 mb-0.5">You searched for</p>
                   <p className="text-sm font-semibold text-ml-t1">{currentReview.searchTerm || currentReview.term}</p>
                   {currentReview.mealNames.length > 0 && (
