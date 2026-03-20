@@ -7,6 +7,11 @@ import { SignJWT } from 'jose';
 const JWT_SECRET = () => new TextEncoder().encode(process.env.JWT_SECRET || '');
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://mealio.co';
 
+// Apple sends a form_post to this endpoint — use 303 so redirects always become GET
+function redirect303(url: string) {
+  return NextResponse.redirect(url, { status: 303 });
+}
+
 // Apple sends a form_post to this endpoint
 export async function POST(request: NextRequest) {
   const ip = request.headers.get('x-forwarded-for') || 'unknown';
@@ -20,11 +25,11 @@ export async function POST(request: NextRequest) {
     const errorParam = formData.get('error') as string | null;
 
     if (errorParam) {
-      return NextResponse.redirect(`${APP_URL}/signin?error=oauth_cancelled`);
+      return redirect303(`${APP_URL}/signin?error=oauth_cancelled`);
     }
 
     if (!code || !idToken) {
-      return NextResponse.redirect(`${APP_URL}/signin?error=oauth_failed`);
+      return redirect303(`${APP_URL}/signin?error=oauth_failed`);
     }
 
     let redirectTo = '/discover';
@@ -45,7 +50,7 @@ export async function POST(request: NextRequest) {
     const claims = await verifyAppleIdentityToken(idToken);
     if (!claims) {
       log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, reason: 'identityToken verification failed' });
-      return NextResponse.redirect(`${APP_URL}/signin?error=oauth_failed`);
+      return redirect303(`${APP_URL}/signin?error=oauth_failed`);
     }
 
     // Exchange code for tokens (required to get refresh_token, optional but good practice)
@@ -69,7 +74,7 @@ export async function POST(request: NextRequest) {
     const email = claims.email || appleUser?.email;
     if (!email) {
       log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, reason: 'no email from Apple' });
-      return NextResponse.redirect(`${APP_URL}/signin?error=apple_no_email`);
+      return redirect303(`${APP_URL}/signin?error=apple_no_email`);
     }
 
     const { userId, email: resolvedEmail, tier, isAdmin } = await upsertSocialUser({
@@ -94,7 +99,7 @@ export async function POST(request: NextRequest) {
     callbackUrl.searchParams.set('user', Buffer.from(JSON.stringify({ id: userId, email: resolvedEmail, tier, isAdmin })).toString('base64url'));
     callbackUrl.searchParams.set('redirect', redirectTo);
 
-    const response = NextResponse.redirect(callbackUrl.toString());
+    const response = redirect303(callbackUrl.toString());
     response.cookies.set('mealio_session', sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -105,6 +110,6 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (error) {
     log({ event: 'AUTH:OAUTH_APPLE', status: 'error', ip, error });
-    return NextResponse.redirect(`${APP_URL}/signin?error=oauth_failed`);
+    return redirect303(`${APP_URL}/signin?error=oauth_failed`);
   }
 }
