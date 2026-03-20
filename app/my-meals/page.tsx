@@ -1983,8 +1983,14 @@ function KrogerCartFlow({
     setStep('done');
   };
 
-  const updateQty = (i: number, delta: number) =>
-    setItems(prev => prev.map((it, idx) => idx === i ? { ...it, productQty: Math.max(0, it.productQty + delta) } : it));
+  const updateMealQty = (i: number, mIdx: number, delta: number) =>
+    setItems(prev => prev.map((it, idx) => {
+      if (idx !== i) return it;
+      const newMealIngredients = it.mealIngredients.map((mi, midx) =>
+        midx === mIdx ? { ...mi, qty: Math.max(0, mi.qty + delta) } : mi
+      );
+      return { ...it, mealIngredients: newMealIngredients, productQty: newMealIngredients.reduce((s, mi) => s + mi.qty, 0) };
+    }));
 
   const toggleChecked = (i: number) =>
     setCheckedItems(prev => prev.map((c, idx) => idx === i ? !c : c));
@@ -2026,30 +2032,32 @@ function KrogerCartFlow({
               </div>
               {items.map((it, i) => {
                 const checked = checkedItems[i] ?? true;
-                const zeroed = it.productQty === 0;
                 const excluded = !checked;
                 return (
-                  <div key={i} className="flex items-center gap-2 py-2" style={{ borderBottom: '1px solid var(--border)', opacity: excluded ? 0.45 : 1 }}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleChecked(i)}
-                      className="flex-shrink-0"
-                      style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: storeColor }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-ml-t1" style={{ textDecoration: excluded ? 'line-through' : 'none' }}>{it.searchTerm || it.ingredientName}</p>
-                      {it.mealIngredients.map((mi, mIdx) => {
-                        const isQty = it.unit.toLowerCase() === 'qty';
-                        const measurement = isQty ? `${mi.qty} qty` : `${it.measure} ${it.unit}`;
-                        return (
-                          <p key={mIdx} className="text-xs text-ml-t3">{mi.mealName} • {measurement}</p>
-                        );
-                      })}
+                  <div key={i} className="py-2" style={{ borderBottom: '1px solid var(--border)', opacity: excluded ? 0.45 : 1 }}>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleChecked(i)}
+                        className="flex-shrink-0"
+                        style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: storeColor }}
+                      />
+                      <p className="text-sm text-ml-t1 flex-1" style={{ textDecoration: excluded ? 'line-through' : 'none' }}>{it.searchTerm || it.ingredientName}</p>
                     </div>
-                    <button onClick={() => updateQty(i, -1)} disabled={zeroed || excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
-                    <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.productQty}</span>
-                    <button onClick={() => updateQty(i, 1)} disabled={excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
+                    {it.mealIngredients.map((mi, mIdx) => {
+                      const isQty = it.unit.toLowerCase() === 'qty';
+                      const measurement = isQty ? null : `${it.measure ?? ''} ${it.unit}`.trim();
+                      const label = measurement ? `${mi.mealName} • ${measurement}` : mi.mealName;
+                      return (
+                        <div key={mIdx} className="flex items-center gap-2 mt-1 pl-6">
+                          <p className="text-xs text-ml-t3 flex-1">{label}</p>
+                          <button onClick={() => updateMealQty(i, mIdx, -1)} disabled={mi.qty === 0 || excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
+                          <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{mi.qty}</span>
+                          <button onClick={() => updateMealQty(i, mIdx, 1)} disabled={excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>+</button>
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
