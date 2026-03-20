@@ -9,6 +9,7 @@ import {
   scoreProductMatch,
 } from '@/lib/kroger';
 import { log } from '@/lib/logger';
+import { getFlag } from '@/lib/flags';
 
 export const dynamic = 'force-dynamic';
 
@@ -144,9 +145,11 @@ export async function POST(request: NextRequest) {
         const top = exactMatch?.s ?? sortedScored[0]?.s ?? null;
 
         const strippedTarget = scoreTarget.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim();
-        console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(strippedTarget));
-        console.log('[Kroger:match] suggestions:', sortedScored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
-        console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
+        if (await getFlag('debug_mode')) {
+          console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(strippedTarget));
+          console.log('[Kroger:match] suggestions:', sortedScored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
+          console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
+        }
 
         const filteredSuggestions = sortedScored.map(({ s }) => s).filter(s => s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
         const reason: 'matched' | 'out_of_stock' | 'no_results' | 'low_confidence' = exactMatch ? 'matched'
