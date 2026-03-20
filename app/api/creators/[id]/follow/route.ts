@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { log } from '@/lib/logger';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -42,7 +43,11 @@ export async function POST(
     .from('creator_follows')
     .upsert({ user_id: decoded.userId, creator_id: id }, { onConflict: 'user_id,creator_id' });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    log({ event: 'CREATOR:FOLLOW', status: 'error', userId: decoded.userId, detail: `creator=${id}`, error });
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  log({ event: 'CREATOR:FOLLOW', status: 'success', userId: decoded.userId, detail: `creator=${id} action=follow` });
   return NextResponse.json({ following: true });
 }
 
@@ -62,6 +67,10 @@ export async function DELETE(
     .eq('user_id', decoded.userId)
     .eq('creator_id', id);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    log({ event: 'CREATOR:FOLLOW', status: 'error', userId: decoded.userId, detail: `creator=${id}`, error });
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  log({ event: 'CREATOR:FOLLOW', status: 'success', userId: decoded.userId, detail: `creator=${id} action=unfollow` });
   return NextResponse.json({ following: false });
 }

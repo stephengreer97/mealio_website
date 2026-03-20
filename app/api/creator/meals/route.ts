@@ -70,5 +70,6 @@ export async function POST(request: NextRequest) {
   }
 
   revalidateTag('trending-meals', 'max');
+  log({ event: 'CREATOR:MEAL_CREATE', status: 'success', userId: creator.id, detail: `id=${meal.id} name="${meal.name}"` });
   return NextResponse.json({ meal }, { status: 201 });
 }

@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing?.url) {
+    log({ event: 'IMAGE:UPLOAD', status: 'success', userId: decoded.userId, reason: 'dedup', detail: existing.url.split('/').pop() });
     return NextResponse.json({ url: existing.url }, { status: 200 });
   }
 
@@ -70,5 +71,6 @@ export async function POST(request: NextRequest) {
   // Record hash (upsert handles race conditions gracefully)
   await supabase.from('photo_hashes').upsert({ hash, url: publicUrl }, { onConflict: 'hash', ignoreDuplicates: true });
 
+  log({ event: 'IMAGE:UPLOAD', status: 'success', userId: decoded.userId, detail: path });
   return NextResponse.json({ url: publicUrl }, { status: 201 });
 }

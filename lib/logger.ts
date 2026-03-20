@@ -38,6 +38,7 @@ export type EventType =
   | 'MEAL:DELETE'
   | 'MEAL:DELETE_PERMANENT'
   | 'MEAL:RESTORE'
+  | 'MEAL:SAVE_PRESET'
   // ── Images ────────────────────────────────────────────────────────────────
   | 'IMAGE:UPLOAD'
   | 'PHOTO:GENERATE'
@@ -49,6 +50,8 @@ export type EventType =
   | 'CREATOR:MEAL_CREATE'
   | 'CREATOR:MEAL_UPDATE'
   | 'CREATOR:MEAL_DELETE'
+  | 'CREATOR:PROFILE_UPDATE'
+  | 'CREATOR:FOLLOW'
   // ── Payments ──────────────────────────────────────────────────────────────
   | 'PAYMENT:CHECKOUT'
   | 'PAYMENT:WEBHOOK'
@@ -58,6 +61,15 @@ export type EventType =
   | 'KROGER:DISCONNECT'
   | 'KROGER:SEARCH_PRODUCTS'
   | 'KROGER:ADD_TO_CART'
+  | 'KROGER:SET_LOCATION'
+  // ── Admin ─────────────────────────────────────────────────────────────────
+  | 'ADMIN:APPLICATION_REVIEW'
+  | 'ADMIN:MEAL_DELETE'
+  | 'ADMIN:BROADCAST'
+  // ── Account ───────────────────────────────────────────────────────────────
+  | 'ACCOUNT:CHANGE_PASSWORD'
+  // ── Client ────────────────────────────────────────────────────────────────
+  | 'CLIENT:ERROR'
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL';

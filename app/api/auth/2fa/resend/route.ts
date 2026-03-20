@@ -14,6 +14,7 @@ export async function POST(request: NextRequest) {
 
     const decoded = await verifyTwoFactorToken(twoFactorToken);
     if (!decoded) {
+      log({ event: 'AUTH:2FA_RESEND', status: 'failed', ip, reason: 'invalid_token' });
       return NextResponse.json({ error: 'Session expired. Please log in again.' }, { status: 401 });
     }
 
@@ -32,6 +33,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (recent) {
+      log({ event: 'AUTH:2FA_RESEND', status: 'failed', userId, ip, reason: 'rate_limited' });
       return NextResponse.json({ error: 'Please wait before requesting a new code.' }, { status: 429 });
     }
 

@@ -85,6 +85,7 @@ export async function PUT(
   }
 
   revalidateTag('trending-meals', 'max');
+  log({ event: 'CREATOR:MEAL_UPDATE', status: 'success', userId: creator.id, detail: id });
   return NextResponse.json({ meal });
 }
 
@@ -114,5 +115,6 @@ export async function DELETE(
   }
 
   revalidateTag('trending-meals', 'max');
+  log({ event: 'CREATOR:MEAL_DELETE', status: 'success', userId: creator.id, detail: id });
   return NextResponse.json({ ok: true });
 }

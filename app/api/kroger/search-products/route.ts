@@ -45,6 +45,8 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const ingredients: Array<{ productName: string; searchTerm?: string | null; unit?: string; measure?: string | null; quantity?: number }> = body?.ingredients ?? [];
   const requestedLocationId: string | undefined = body?.locationId;
+  const storeId: string | undefined = body?.storeId;
+  const mealNames: string[] = body?.mealNames ?? [];
 
   if (!ingredients.length) {
     return NextResponse.json({ error: 'No ingredients provided' }, { status: 400 });
@@ -81,6 +83,8 @@ export async function POST(request: NextRequest) {
     log({ event: 'KROGER:SEARCH_PRODUCTS', status: 'error', userId: decoded.userId, reason: 'token_error', error: String(err) });
     return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });
   }
+
+  const debugMode = await getFlag('debug_mode');
 
   const BATCH = 10;
   const results: Array<{
@@ -145,7 +149,8 @@ export async function POST(request: NextRequest) {
         const top = exactMatch?.s ?? sortedScored[0]?.s ?? null;
 
         const strippedTarget = scoreTarget.replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '').trim();
-        if (await getFlag('debug_mode')) {
+        console.log(`[Kroger] "${searchStr}" → ${suggestions.map(s => s.description).join(' | ') || '(no results)'}`);
+        if (debugMode) {
           console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(strippedTarget));
           console.log('[Kroger:match] suggestions:', sortedScored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
           console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
@@ -175,7 +180,8 @@ export async function POST(request: NextRequest) {
     event: 'KROGER:SEARCH_PRODUCTS',
     status: 'success',
     userId: decoded.userId,
-    detail: `found=${results.filter(r => r.upc).length} total=${results.length}`,
+    email: decoded.email,
+    detail: `found=${results.filter(r => r.upc).length} total=${results.length} store=${storeId ?? locationId} meals=${mealNames.join(', ') || '(unknown)'}`,
   });
 
   return NextResponse.json({ results });

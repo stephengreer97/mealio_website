@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +33,10 @@ export async function POST(request: NextRequest) {
     .update({ kroger_locations: updated })
     .eq('id', decoded.userId);
 
-  if (error) return NextResponse.json({ error: 'Failed to save location' }, { status: 500 });
+  if (error) {
+    log({ event: 'KROGER:SET_LOCATION', status: 'error', userId: decoded.userId, error });
+    return NextResponse.json({ error: 'Failed to save location' }, { status: 500 });
+  }
+  log({ event: 'KROGER:SET_LOCATION', status: 'success', userId: decoded.userId, detail: `store=${storeId} location=${locationId} name="${locationName ?? ''}"` });
   return NextResponse.json({ success: true, locationId, locationName, storeId });
 }

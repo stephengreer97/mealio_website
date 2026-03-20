@@ -33,6 +33,7 @@ export async function GET(request: NextRequest) {
   if (!profile?.stripe_customer_id) {
     // User has no Stripe subscription yet (e.g. manually granted tier or legacy LS subscriber).
     // Send them to pricing to set up a Stripe subscription.
+    log({ event: 'PAYMENT:PORTAL', status: 'pending', userId: decoded.userId, email: decoded.email, reason: 'no_stripe_customer' });
     return NextResponse.json({ portalUrl: `${APP_URL}/pricing` });
   }
 
@@ -41,6 +42,7 @@ export async function GET(request: NextRequest) {
       customer: profile.stripe_customer_id,
       return_url: `${APP_URL}/discover`,
     });
+    log({ event: 'PAYMENT:PORTAL', status: 'success', userId: decoded.userId, email: decoded.email });
     return NextResponse.json({ portalUrl: session.url });
   } catch (err) {
     log({ event: 'PAYMENT:PORTAL', status: 'error', userId: decoded.userId, reason: String(err) });

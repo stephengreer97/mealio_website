@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { getCachedTrendingMeals } from '@/lib/trending-cache';
+import { log } from '@/lib/logger';
 
 const HANDLE_RE = /^[a-z0-9_-]{3,30}$/;
 const RESERVED_HANDLES = new Set([
@@ -64,7 +65,11 @@ export async function PATCH(request: NextRequest) {
     .update(updates)
     .eq('user_id', decoded.userId);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    log({ event: 'CREATOR:PROFILE_UPDATE', status: 'error', userId: decoded.userId, email: decoded.email, error });
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  log({ event: 'CREATOR:PROFILE_UPDATE', status: 'success', userId: decoded.userId, email: decoded.email, detail: Object.keys(updates).join(',') });
   return NextResponse.json({ ok: true });
 }
 

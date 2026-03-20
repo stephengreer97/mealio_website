@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
+import { log } from '@/lib/logger';
 
 // GET /api/admin/meals — list all preset meals with trending score
 export async function GET(request: NextRequest) {
@@ -39,8 +40,10 @@ export async function DELETE(request: NextRequest) {
   const { error } = await supabase.from('preset_meals').delete().eq('id', id);
 
   if (error) {
+    log({ event: 'ADMIN:MEAL_DELETE', status: 'error', userId: admin.userId, email: admin.email, detail: id, error });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  log({ event: 'ADMIN:MEAL_DELETE', status: 'success', userId: admin.userId, email: admin.email, detail: id });
   return NextResponse.json({ ok: true });
 }

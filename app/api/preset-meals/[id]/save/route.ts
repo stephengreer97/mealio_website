@@ -33,5 +33,6 @@ export async function POST(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  log({ event: 'MEAL:SAVE_PRESET', status: 'success', userId: decoded.userId, detail: id });
   return NextResponse.json({ ok: true });
 }

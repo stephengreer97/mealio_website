@@ -64,6 +64,7 @@ export async function PUT(
     return NextResponse.json({ error: 'Meal not found' }, { status: 404 });
   }
 
+  log({ event: 'MEAL:UPDATE', status: 'success', userId: decoded.userId, detail: `id=${id} name="${meal.name}"` });
   return NextResponse.json({ meal });
 }
 

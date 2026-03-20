@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { sendCreatorApprovedEmail, sendCreatorRejectedEmail } from '@/lib/email';
+import { log } from '@/lib/logger';
 
 // GET /api/admin/applications — list all creator applications
 export async function GET(request: NextRequest) {
@@ -64,11 +65,15 @@ export async function PATCH(request: NextRequest) {
       .update({ status: 'rejected' })
       .eq('id', id);
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      log({ event: 'ADMIN:APPLICATION_REVIEW', status: 'error', userId: admin.userId, email: admin.email, error });
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
     const applicantEmail = (app.user_profiles as unknown as { email: string } | null)?.email;
     if (applicantEmail) await sendCreatorRejectedEmail(applicantEmail, app.display_name).catch(() => {});
 
+    log({ event: 'ADMIN:APPLICATION_REVIEW', status: 'success', userId: admin.userId, email: admin.email, detail: `action=reject applicant=${applicantEmail ?? app.user_id} name=${app.display_name}` });
     return NextResponse.json({ ok: true });
   }
 
@@ -78,7 +83,10 @@ export async function PATCH(request: NextRequest) {
     .update({ status: 'approved' })
     .eq('id', id);
 
-  if (statusError) return NextResponse.json({ error: statusError.message }, { status: 500 });
+  if (statusError) {
+    log({ event: 'ADMIN:APPLICATION_REVIEW', status: 'error', userId: admin.userId, email: admin.email, error: statusError });
+    return NextResponse.json({ error: statusError.message }, { status: 500 });
+  }
 
   // Check if creator row already exists (idempotent)
   const { data: existing } = await supabase
@@ -94,7 +102,10 @@ export async function PATCH(request: NextRequest) {
       ...(app.photo_url ? { photo_url: app.photo_url } : {}),
     });
 
-    if (creatorError) return NextResponse.json({ error: creatorError.message }, { status: 500 });
+    if (creatorError) {
+      log({ event: 'ADMIN:APPLICATION_REVIEW', status: 'error', userId: admin.userId, email: admin.email, error: creatorError });
+      return NextResponse.json({ error: creatorError.message }, { status: 500 });
+    }
 
     // Comp Full Access for approved creators
     await supabase
@@ -107,5 +118,6 @@ export async function PATCH(request: NextRequest) {
   const applicantEmail = (app.user_profiles as unknown as { email: string } | null)?.email;
   if (applicantEmail) await sendCreatorApprovedEmail(applicantEmail, app.display_name).catch(() => {});
 
+  log({ event: 'ADMIN:APPLICATION_REVIEW', status: 'success', userId: admin.userId, email: admin.email, detail: `action=approve applicant=${applicantEmail ?? app.user_id} name=${app.display_name}` });
   return NextResponse.json({ ok: true });
 }

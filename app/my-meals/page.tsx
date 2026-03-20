@@ -1863,6 +1863,8 @@ function KrogerCartFlow({
         body: JSON.stringify({
           ingredients: items.filter((it, i) => checkedItems[i] && it.productQty > 0).map(i => ({ productName: i.ingredientName, searchTerm: i.searchTerm, unit: i.unit, measure: i.measure, quantity: i.productQty })),
           locationId,
+          storeId,
+          mealNames: [...new Set(items.flatMap(it => it.mealNames))],
         }),
       });
       const data = await res.json();
