@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
         console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
 
         const filteredSuggestions = sortedScored.map(({ s }) => s).filter(s => s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
-        const reason = exactMatch ? 'matched'
+        const reason: 'matched' | 'out_of_stock' | 'no_results' | 'low_confidence' = exactMatch ? 'matched'
           : outOfStockExact ? 'out_of_stock'
           : filteredSuggestions.length === 0 ? 'no_results'
           : 'low_confidence';
