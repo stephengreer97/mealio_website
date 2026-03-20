@@ -3285,62 +3285,62 @@ export default function MyMealsPage() {
 
       <div className="max-w-7xl mx-auto px-6 py-10 w-full flex-1">
 
-        {/* Page header */}
-        <div className="mb-8 flex items-end justify-between gap-4">
-          <div>
-            <h1 className="text-5xl font-bold text-ml-t1 leading-tight">
+        <div className="lg:flex lg:gap-8 lg:items-start">
+
+          {/* Left column: heading + sidebar */}
+          <div className="w-full lg:w-64 flex-shrink-0">
+            <h1 className="text-5xl font-bold text-ml-t1 leading-tight mb-6">
               Your saved<br />
               <span style={{ borderBottom: '4px solid var(--brand)', paddingBottom: '3px' }}>meals.</span>
             </h1>
-          </div>
-          <div className="flex items-center gap-3 flex-shrink-0">
-            <h2 className="text-lg font-bold text-ml-t1">My Meals</h2>
-            {!mealsLoading && (
-              <span className="text-xs text-ml-t3">{meals.length} meal{meals.length !== 1 ? 's' : ''}</span>
-            )}
-            <button
-              onClick={() => setShowCreateModal(true)}
-              className="px-3 py-1.5 text-xs font-semibold rounded-lg text-white transition-opacity hover:opacity-90"
-              style={{ background: 'var(--brand)' }}
-            >
-              + Add Meal
-            </button>
-          </div>
-        </div>
 
-        <div className="lg:flex lg:gap-8 lg:items-start">
-
-          {/* Desktop sidebar */}
-          {!mealsLoading && meals.length > 0 && (() => {
-            const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
-            const authorSuggestions = [...new Set(meals.map(m => m.author).filter((a): a is string => Boolean(a)))];
-            return (
-              <aside className="hidden lg:block w-64 flex-shrink-0 sticky top-6">
-                <div className="rounded-xl overflow-hidden" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
-                  {/* Owner filter */}
-                  <div className="p-3 border-b" style={{ borderColor: 'var(--border)' }}>
-                    <div className="flex gap-1 p-1 rounded-lg" style={{ background: 'var(--surface)' }}>
-                      {(['all', 'mine'] as const).map(v => (
-                        <button key={v} type="button" onClick={() => setOwnerFilter(v)}
-                          className="flex-1 py-1.5 text-xs font-semibold rounded-md transition-all"
-                          style={ownerFilter === v
-                            ? { background: 'var(--surface-raised)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)', border: 'none', cursor: 'pointer' }
-                            : { background: 'transparent', color: 'var(--text-2)', border: 'none', cursor: 'pointer' }}>
-                          {v === 'all' ? 'All' : 'Created By Me'}
-                        </button>
-                      ))}
+            {/* Desktop sidebar */}
+            {!mealsLoading && meals.length > 0 && (() => {
+              const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
+              const authorSuggestions = [...new Set(meals.map(m => m.author).filter((a): a is string => Boolean(a)))];
+              return (
+                <aside className="hidden lg:block sticky top-6">
+                  <div className="rounded-xl overflow-hidden" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+                    {/* Owner filter */}
+                    <div className="p-3 border-b" style={{ borderColor: 'var(--border)' }}>
+                      <div className="flex gap-1 p-1 rounded-lg" style={{ background: 'var(--surface)' }}>
+                        {(['all', 'mine'] as const).map(v => (
+                          <button key={v} type="button" onClick={() => setOwnerFilter(v)}
+                            className="flex-1 py-1.5 text-xs font-semibold rounded-md transition-all"
+                            style={ownerFilter === v
+                              ? { background: 'var(--surface-raised)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)', border: 'none', cursor: 'pointer' }
+                              : { background: 'transparent', color: 'var(--text-2)', border: 'none', cursor: 'pointer' }}>
+                            {v === 'all' ? 'All' : 'Created By Me'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      <FilterPanel filters={filters} onChange={setFilters} onClose={() => {}} authorSuggestions={authorSuggestions} extraTags={customMealTags} inline />
                     </div>
                   </div>
-                  <div className="p-4">
-                    <FilterPanel filters={filters} onChange={setFilters} onClose={() => {}} authorSuggestions={authorSuggestions} extraTags={customMealTags} inline />
-                  </div>
-                </div>
-              </aside>
-            );
-          })()}
+                </aside>
+              );
+            })()}
+          </div>
 
         {/* My Meals */}
         <div className="flex-1 min-w-0 rounded-xl p-8 mb-6" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-ml-t1">My Meals</h2>
+            <div className="flex items-center gap-3">
+              {!mealsLoading && (
+                <span className="text-xs text-ml-t3">{meals.length} meal{meals.length !== 1 ? 's' : ''}</span>
+              )}
+              <button
+                onClick={() => setShowCreateModal(true)}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg text-white transition-opacity hover:opacity-90"
+                style={{ background: 'var(--brand)' }}
+              >
+                + Add Meal
+              </button>
+            </div>
+          </div>
 
           {/* Store pills */}
           {!mealsLoading && meals.length > 0 && (() => {
