@@ -1822,7 +1822,6 @@ function KrogerCartFlow({
   const [customSearchTerm, setCustomSearchTerm] = useState('');
   const shouldShowSuggestionsRef = useRef(false);
   const [reviewQty, setReviewQty] = useState(1);
-  const [qtyTooltip, setQtyTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
 
   // Per-review-item meal quantities: reviewIdx → mealId → qty
   const [reviewMealQtys, setReviewMealQtys] = useState<Record<number, Record<string, number>>>({});
@@ -2036,26 +2035,13 @@ function KrogerCartFlow({
                     />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-ml-t1" style={{ textDecoration: excluded ? 'line-through' : 'none' }}>{it.searchTerm || it.ingredientName}</p>
-                      <p className="text-xs text-ml-t3">
-                        {it.mealIngredients.map((mi, mIdx) => {
-                          const isQty = it.unit.toLowerCase() === 'qty';
-                          const tipText = isQty
-                            ? `calls for ${mi.qty} ${it.ingredientName}`
-                            : `calls for ${it.measure} ${it.unit} of ${it.ingredientName}`;
-                          return (
-                            <span
-                              key={mIdx}
-                              style={{ cursor: 'default' }}
-                              onMouseEnter={e => {
-                                setQtyTooltip({ text: tipText, x: e.clientX, y: e.clientY });
-                              }}
-                              onMouseLeave={() => setQtyTooltip(null)}
-                            >
-                              {mi.mealName}{mIdx < it.mealIngredients.length - 1 ? ', ' : ''}
-                            </span>
-                          );
-                        })}
-                      </p>
+                      {it.mealIngredients.map((mi, mIdx) => {
+                        const isQty = it.unit.toLowerCase() === 'qty';
+                        const measurement = isQty ? `${mi.qty} qty` : `${it.measure} ${it.unit}`;
+                        return (
+                          <p key={mIdx} className="text-xs text-ml-t3">{mi.mealName} • {measurement}</p>
+                        );
+                      })}
                     </div>
                     <button onClick={() => updateQty(i, -1)} disabled={zeroed || excluded} className="w-6 h-6 rounded text-xs flex items-center justify-center flex-shrink-0 disabled:opacity-30" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>−</button>
                     <span className="w-4 text-center text-xs text-ml-t2 flex-shrink-0">{it.productQty}</span>
@@ -2370,27 +2356,6 @@ function KrogerCartFlow({
         )}
 
       </div>
-      {qtyTooltip && (
-        <div
-          style={{
-            position: 'fixed',
-            left: qtyTooltip.x + 12,
-            top: qtyTooltip.y - 10,
-            background: 'var(--surface-raised)',
-            border: '1px solid var(--border)',
-            borderRadius: '6px',
-            padding: '4px 8px',
-            fontSize: '12px',
-            color: 'var(--text-1)',
-            zIndex: 9999,
-            pointerEvents: 'none',
-            whiteSpace: 'nowrap',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
-          }}
-        >
-          {qtyTooltip.text}
-        </div>
-      )}
     </div>
   );
 }
