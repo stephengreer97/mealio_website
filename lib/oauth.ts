@@ -43,7 +43,7 @@ const APPLE_JWKS = createRemoteJWKSet(
   new URL('https://appleid.apple.com/auth/keys')
 );
 
-export async function verifyAppleIdentityToken(identityToken: string): Promise<{
+export async function verifyAppleIdentityToken(identityToken: string, audience?: string): Promise<{
   sub: string;
   email: string | undefined;
   email_verified: boolean;
@@ -51,7 +51,7 @@ export async function verifyAppleIdentityToken(identityToken: string): Promise<{
   try {
     const { payload } = await jwtVerify(identityToken, APPLE_JWKS, {
       issuer: 'https://appleid.apple.com',
-      audience: process.env.APPLE_BUNDLE_ID || process.env.APPLE_SERVICE_ID,
+      audience: audience ?? process.env.APPLE_SERVICE_ID ?? process.env.APPLE_BUNDLE_ID,
     });
 
     return {

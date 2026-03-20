@@ -29,7 +29,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (!code || !idToken) {
-      return redirect303(`${APP_URL}/signin?error=oauth_failed`);
+      log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, reason: `missing_params code=${!!code} idToken=${!!idToken}` });
+      return redirect303(`${APP_URL}/signin?error=oauth_missing_params`);
     }
 
     let redirectTo = '/discover';
@@ -47,7 +48,7 @@ export async function POST(request: NextRequest) {
     } catch {}
 
     // Verify the identity token
-    const claims = await verifyAppleIdentityToken(idToken);
+    const claims = await verifyAppleIdentityToken(idToken, process.env.APPLE_SERVICE_ID);
     if (!claims) {
       log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, reason: 'identityToken verification failed' });
       return redirect303(`${APP_URL}/signin?error=oauth_failed`);

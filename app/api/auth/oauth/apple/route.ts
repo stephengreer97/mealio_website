@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'identityToken required' }, { status: 400 });
     }
 
-    const claims = await verifyAppleIdentityToken(identityToken);
+    const claims = await verifyAppleIdentityToken(identityToken, process.env.APPLE_BUNDLE_ID ?? process.env.APPLE_SERVICE_ID);
     if (!claims) {
       log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, ua, reason: 'invalid identityToken' });
       return NextResponse.json({ error: 'Invalid Apple token' }, { status: 401 });
