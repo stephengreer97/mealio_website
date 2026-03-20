@@ -2674,7 +2674,7 @@ function ChooseProductsFlow({
               <div className="px-5 py-4 flex flex-col gap-2" style={{ borderTop: '1px solid var(--border)' }}>
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                    <span className="text-sm text-ml-t2">Qty to add to cart</span>
+                    <span className="text-sm" style={{ color: currentIngQty === 0 ? '#ef4444' : 'var(--text-2)' }}>Qty to add to cart</span>
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
