@@ -1879,6 +1879,7 @@ function KrogerCartFlow({
         await doAddToCart(results.filter(r => r.upc).map(r => ({ upc: r.upc!, quantity: r.quantity, description: r.description ?? '' })));
       } else {
         setReviewIdx(0);
+        setReviewQty(needsReview[0]?.quantity ?? 1);
         setStep('searchResult');
       }
     } catch (err) {
