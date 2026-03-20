@@ -23,19 +23,19 @@ export default function AppFooter() {
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-3)' }}>Product</p>
             <nav className="flex flex-col gap-2">
-              <Link href="/discover" className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
+              <Link href="/discover" prefetch={false} className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               >Discover Meals</Link>
-              <Link href="/pricing" className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
+              <Link href="/pricing" prefetch={false} className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               >Pricing</Link>
-              <Link href="/help" className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
+              <Link href="/help" prefetch={false} className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               >Help & FAQ</Link>
-              <Link href="/creator/apply" className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
+              <Link href="/creator/apply" prefetch={false} className="text-sm transition-colors" style={{ color: 'var(--text-2)', textDecoration: 'none' }}
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               >Become a Creator</Link>
@@ -49,11 +49,11 @@ export default function AppFooter() {
             © {new Date().getFullYear()} Mealio. All rights reserved.
           </p>
           <nav className="flex items-center gap-5">
-            <Link href="/privacy" className="text-xs transition-colors" style={{ color: 'var(--text-3)', textDecoration: 'none' }}
+            <Link href="/privacy" prefetch={false} className="text-xs transition-colors" style={{ color: 'var(--text-3)', textDecoration: 'none' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
             >Privacy</Link>
-            <Link href="/terms" className="text-xs transition-colors" style={{ color: 'var(--text-3)', textDecoration: 'none' }}
+            <Link href="/terms" prefetch={false} className="text-xs transition-colors" style={{ color: 'var(--text-3)', textDecoration: 'none' }}
               onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-2)'}
               onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-3)'}
             >Terms</Link>
