@@ -3293,15 +3293,19 @@ export default function MyMealsPage() {
               <span style={{ borderBottom: '4px solid var(--brand)', paddingBottom: '3px' }}>meals.</span>
             </h1>
           </div>
-          <button
-            onClick={() => router.push('/discover')}
-            className="flex-shrink-0 flex items-center gap-2 text-sm font-medium text-ml-t2 hover:text-ml-t1 transition-colors"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="15 18 9 12 15 6"/>
-            </svg>
-            Discover
-          </button>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <h2 className="text-lg font-bold text-ml-t1">My Meals</h2>
+            {!mealsLoading && (
+              <span className="text-xs text-ml-t3">{meals.length} meal{meals.length !== 1 ? 's' : ''}</span>
+            )}
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg text-white transition-opacity hover:opacity-90"
+              style={{ background: 'var(--brand)' }}
+            >
+              + Add Meal
+            </button>
+          </div>
         </div>
 
         <div className="lg:flex lg:gap-8 lg:items-start">
@@ -3337,21 +3341,6 @@ export default function MyMealsPage() {
 
         {/* My Meals */}
         <div className="flex-1 min-w-0 rounded-xl p-8 mb-6" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-ml-t1">My Meals</h2>
-            <div className="flex items-center gap-3">
-              {!mealsLoading && (
-                <span className="text-xs text-ml-t3">{meals.length} meal{meals.length !== 1 ? 's' : ''}</span>
-              )}
-              <button
-                onClick={() => setShowCreateModal(true)}
-                className="px-3 py-1.5 text-xs font-semibold rounded-lg text-white transition-opacity hover:opacity-90"
-                style={{ background: 'var(--brand)' }}
-              >
-                + Add Meal
-              </button>
-            </div>
-          </div>
 
           {/* Store pills */}
           {!mealsLoading && meals.length > 0 && (() => {
