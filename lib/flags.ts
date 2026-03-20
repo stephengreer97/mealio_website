@@ -16,8 +16,10 @@ export async function getFlag(key: string, defaultValue = false): Promise<boolea
   try {
     const cfg = await getEdgeConfig();
     if (!cfg) return defaultValue;
-    const value = await cfg.get<boolean>(key);
-    return value ?? defaultValue;
+    const value = await cfg.get<boolean | string>(key);
+    if (value === null || value === undefined) return defaultValue;
+    if (typeof value === 'string') return value.toLowerCase() === 'true';
+    return value;
   } catch {
     return defaultValue;
   }
