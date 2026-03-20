@@ -2040,15 +2040,14 @@ function KrogerCartFlow({
                         {it.mealIngredients.map((mi, mIdx) => {
                           const isQty = it.unit.toLowerCase() === 'qty';
                           const tipText = isQty
-                            ? `${mi.mealName} calls for ${mi.qty} ${it.ingredientName}`
-                            : `${mi.mealName} calls for ${it.measure} ${it.unit} of ${it.ingredientName}`;
+                            ? `calls for ${mi.qty} ${it.ingredientName}`
+                            : `calls for ${it.measure} ${it.unit} of ${it.ingredientName}`;
                           return (
                             <span
                               key={mIdx}
                               style={{ cursor: 'default' }}
                               onMouseEnter={e => {
-                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                setQtyTooltip({ text: tipText, x: rect.left, y: rect.top });
+                                setQtyTooltip({ text: tipText, x: e.clientX, y: e.clientY });
                               }}
                               onMouseLeave={() => setQtyTooltip(null)}
                             >
@@ -2375,8 +2374,8 @@ function KrogerCartFlow({
         <div
           style={{
             position: 'fixed',
-            left: qtyTooltip.x,
-            top: qtyTooltip.y - 38,
+            left: qtyTooltip.x + 12,
+            top: qtyTooltip.y - 10,
             background: 'var(--surface-raised)',
             border: '1px solid var(--border)',
             borderRadius: '6px',
