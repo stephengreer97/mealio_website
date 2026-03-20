@@ -192,7 +192,6 @@ export async function krogerSearchProducts(
   });
   if (!res.ok) return [];
   const data = await res.json();
-  console.log('[Kroger:search] term (sent):', truncatedTerm, 'raw response:', JSON.stringify(data, null, 2));
   const products: any[] = data.data ?? [];
 
   // Retry once if empty — Kroger occasionally returns nothing on the first call
