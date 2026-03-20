@@ -2016,6 +2016,9 @@ function KrogerCartFlow({
         {step === 'qty' && (
           <>
             <div className="overflow-y-auto flex-1 px-5 py-4 space-y-1">
+              <p className="text-xs text-ml-t2 mb-3 px-3 py-2 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                All items are checked by default. Uncheck any ingredients you already have at home.
+              </p>
               <div className="flex items-center justify-between mb-3">
                 <button onClick={toggleAll} className="text-xs font-medium" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}>
                   {allChecked ? 'Uncheck all' : 'Check all'}
