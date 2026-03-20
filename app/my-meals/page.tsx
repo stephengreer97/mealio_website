@@ -2133,28 +2133,25 @@ function KrogerCartFlow({
             <>
               <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
                 {/* What was searched */}
+                {currentReview.reason === 'out_of_stock' && (
+                  <p className="text-xs font-medium" style={{ color: '#b45309' }}>⚠ Out of stock at this store</p>
+                )}
+                {currentReview.reason === 'no_results' && (
+                  <p className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>No products found for this search</p>
+                )}
+                {(!currentReview.reason || currentReview.reason === 'low_confidence') && (
+                  <p className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>No exact match found</p>
+                )}
                 <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                  {currentReview.reason === 'out_of_stock' && (
-                    <p className="text-xs font-medium mb-2" style={{ color: '#b45309' }}>⚠ Out of stock at this store</p>
-                  )}
-                  {currentReview.reason === 'no_results' && (
-                    <p className="text-xs font-medium mb-2" style={{ color: 'var(--text-3)' }}>No products found for this search</p>
-                  )}
-                  {(!currentReview.reason || currentReview.reason === 'low_confidence') && (
-                    <p className="text-xs font-medium mb-2" style={{ color: 'var(--text-3)' }}>No exact match found</p>
-                  )}
                   <p className="text-xs text-ml-t3 mb-0.5">You searched for</p>
                   <p className="text-sm font-semibold text-ml-t1">{currentReview.searchTerm || currentReview.term}</p>
-                  {currentReview.mealNames.length > 0 && (
-                    <p className="text-xs text-ml-t3 mt-0.5">from: {currentReview.mealNames.join(', ')}</p>
-                  )}
-                  {(() => {
-                    const { unit, measure, ingredientName, quantity } = currentReview;
-                    const hint = unit === 'qty'
-                      ? `${currentReview.mealNames[0] ?? 'Meal'} calls for ${quantity} ${ingredientName}`
-                      : `${currentReview.mealNames[0] ?? 'Meal'} calls for ${measure ?? quantity} ${unit} of ${ingredientName}`;
-                    return <p className="text-xs mt-1.5" style={{ color: '#b91c1c', opacity: 0.85 }}>{hint}</p>;
-                  })()}
+                  {currentReview.mealIngredients.map((mi, mIdx) => {
+                    const isQty = currentReview.unit === 'qty';
+                    const measurement = isQty ? `${mi.qty} qty` : `${currentReview.measure} ${currentReview.unit}`;
+                    return (
+                      <p key={mIdx} className="text-xs text-ml-t3 mt-0.5">{mi.mealName} • {measurement}</p>
+                    );
+                  })}
                   {customSearchTerm && (
                     <p className="text-xs mt-1" style={{ color: storeColor }}>Showing results for: "{customSearchTerm}"</p>
                   )}
