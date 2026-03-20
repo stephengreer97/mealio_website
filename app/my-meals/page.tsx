@@ -1766,7 +1766,7 @@ function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
   for (const meal of meals) {
     for (const rawIng of meal.ingredients) {
       const ing = normIng(rawIng);
-      const key = ing.ingredientName.toLowerCase().trim();
+      const key = `${ing.ingredientName.toLowerCase().trim()}::${(ing.searchTerm ?? '').toLowerCase().trim()}`;
       if (!key) continue;
       const ingQty = ing.productQty ?? 1;
       if (map.has(key)) {
