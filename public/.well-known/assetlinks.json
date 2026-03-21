@@ -4,7 +4,7 @@
     "target": {
       "namespace": "android_app",
       "package_name": "co.mealio.app",
-      "sha256_cert_fingerprints": ["REPLACE_WITH_YOUR_APP_SIGNING_CERT_SHA256"]
+      "sha256_cert_fingerprints": ["89:09:4B:09:D0:DD:7C:B3:6D:C0:14:78:58:70:92:B0:42:11:AA:65:00:4D:C7:FE:51:27:DE:7C:33:4C:B7:2E"]
     }
   }
 ]
