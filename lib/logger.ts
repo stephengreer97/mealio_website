@@ -56,6 +56,7 @@ export type EventType =
   | 'PAYMENT:CHECKOUT'
   | 'PAYMENT:WEBHOOK'
   | 'PAYMENT:PORTAL'
+  | 'PAYMENT:RC_WEBHOOK'
   // ── Kroger ────────────────────────────────────────────────────────────────
   | 'KROGER:CALLBACK'
   | 'KROGER:DISCONNECT'
