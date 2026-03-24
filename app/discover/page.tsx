@@ -1234,7 +1234,7 @@ export default function DiscoverPage() {
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto px-6 py-10 w-full flex-1">
+      <div className="max-w-7xl mx-auto px-6 pt-6 pb-10 w-full flex-1">
 
         {/* Discover Section */}
         <div className="mb-10">
