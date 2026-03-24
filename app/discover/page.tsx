@@ -1153,7 +1153,7 @@ export default function DiscoverPage() {
     section !== 'following' || selectedCreatorIds.size === 0 || (!!m.creator_id && selectedCreatorIds.has(m.creator_id));
   const unsaved = meals.filter(m => !savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
   const saved   = meals.filter(m =>  savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
-  const visible = [...unsaved, ...saved];
+  const visible = unsaved;
 
   const handleAddMeal = (meal: PresetMeal) => {
     if (!token) { router.push('/signin?tab=signup'); return; }
@@ -1410,7 +1410,7 @@ export default function DiscoverPage() {
                 Try again
               </button>
             </div>
-          ) : visible.length === 0 && !fetching ? (
+          ) : visible.length === 0 && saved.length === 0 && !fetching ? (
             <div className="text-center py-16">
               <p className="text-sm" style={{ color: 'var(--text-3)' }}>
                 {section === 'following' && meals.length === 0
@@ -1472,6 +1472,42 @@ export default function DiscoverPage() {
                   <p className="text-xs" style={{ color: 'var(--text-3)' }}>You&apos;ve seen all recipes.</p>
                 )}
               </div>
+
+              {/* Already saved — static section below infinite scroll */}
+              {saved.length > 0 && (
+                <>
+                  <div className="flex items-center gap-3 my-2">
+                    <div className="flex-1 h-px" style={{ background: 'var(--border)' }} />
+                    <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-3)' }}>Already Saved ({saved.length})</span>
+                    <div className="flex-1 h-px" style={{ background: 'var(--border)' }} />
+                  </div>
+                  {/* Mobile */}
+                  <div className="flex flex-col gap-3 sm:hidden">
+                    {saved.map(meal => (
+                      <div key={meal.id}>
+                        <MealCard meal={meal} savedStores={savedMealStores.get(meal.id)} onAdd={() => handleAddMeal(meal)} onCreatorClick={id => setCreatorPopupId(id)} />
+                      </div>
+                    ))}
+                  </div>
+                  {/* Desktop two-column */}
+                  <div className="hidden sm:flex gap-3 items-start">
+                    <div className="flex-1 min-w-0 flex flex-col gap-3">
+                      {saved.filter((_, i) => i % 2 === 0).map(meal => (
+                        <div key={meal.id}>
+                          <MealCard meal={meal} savedStores={savedMealStores.get(meal.id)} onAdd={() => handleAddMeal(meal)} onCreatorClick={id => setCreatorPopupId(id)} />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex-1 min-w-0 flex flex-col gap-3">
+                      {saved.filter((_, i) => i % 2 !== 0).map(meal => (
+                        <div key={meal.id}>
+                          <MealCard meal={meal} savedStores={savedMealStores.get(meal.id)} onAdd={() => handleAddMeal(meal)} onCreatorClick={id => setCreatorPopupId(id)} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </>
           )}
 
