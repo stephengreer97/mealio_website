@@ -119,7 +119,6 @@ export default function SharedMealPage() {
       .then(data => {
         if (data?.meal) {
           setMeal({ ...data.meal, ingredients: (data.meal.ingredients ?? []).map(normIng) });
-          setSelectedStore('');
         }
       })
       .catch(() => setNotFound(true))
@@ -175,7 +174,11 @@ export default function SharedMealPage() {
         const updated = [selectedStore, ...recentStores.filter(id => id !== selectedStore)].slice(0, 3);
         localStorage.setItem('mealio_recent_stores', JSON.stringify(updated));
       } catch { /* ignore */ }
-      router.push(`/my-meals?store=${encodeURIComponent(selectedStore)}&meal=${encodeURIComponent(data.meal.id)}`);
+      const mealId = data.meal?.id;
+      const dest = mealId
+        ? `/my-meals?store=${encodeURIComponent(selectedStore)}&meal=${encodeURIComponent(mealId)}`
+        : '/my-meals';
+      window.location.href = dest;
     } catch {
       setSaveError('Something went wrong. Please try again.');
     } finally {
