@@ -2963,6 +2963,7 @@ export default function MyMealsPage() {
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
   const [selectedMealIds, setSelectedMealIds] = useState<Set<string>>(new Set());
   const [openMealId, setOpenMealId] = useState<string | null>(null);
+  const [savedToast, setSavedToast] = useState(false);
   const [showKrogerFlow, setShowKrogerFlow] = useState(false);
   const [showKrogerStorePicker, setShowKrogerStorePicker] = useState(false);
   const [krogerConnecting, setKrogerConnecting] = useState(false);
@@ -2992,10 +2993,15 @@ export default function MyMealsPage() {
       const params = new URLSearchParams(window.location.search);
       const storeParam = params.get('store');
       const mealParam = params.get('meal');
-      if (storeParam || mealParam) {
+      const savedParam = params.get('saved');
+      if (storeParam || mealParam || savedParam) {
         window.history.replaceState({}, '', '/my-meals');
         if (storeParam) setSelectedStore(storeParam);
         if (mealParam) setOpenMealId(mealParam);
+        if (savedParam === '1') {
+          setSavedToast(true);
+          setTimeout(() => setSavedToast(false), 3000);
+        }
       }
 
       // Handle Kroger OAuth callback redirect
@@ -3299,6 +3305,17 @@ export default function MyMealsPage() {
     <div className="min-h-screen bg-ml-bg flex flex-col">
 
       <AppHeader />
+
+      {/* Saved toast */}
+      {savedToast && (
+        <div
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg pointer-events-none"
+          style={{ animation: 'fadeInDown 0.2s ease' }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Meal saved to your meals
+        </div>
+      )}
 
       {/* Upgrade nudge */}
       {!isPro && (

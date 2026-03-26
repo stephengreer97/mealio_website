@@ -176,8 +176,8 @@ export default function SharedMealPage() {
       } catch { /* ignore */ }
       const mealId = data.meal?.id;
       const dest = mealId
-        ? `/my-meals?store=${encodeURIComponent(selectedStore)}&meal=${encodeURIComponent(mealId)}`
-        : '/my-meals';
+        ? `/my-meals?store=${encodeURIComponent(selectedStore)}&meal=${encodeURIComponent(mealId)}&saved=1`
+        : '/my-meals?saved=1';
       window.location.href = dest;
     } catch {
       setSaveError('Something went wrong. Please try again.');
