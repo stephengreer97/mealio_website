@@ -1227,7 +1227,7 @@ export default function DiscoverPage() {
       <AppHeader />
 
       {/* Upgrade nudge */}
-      {user && user.tier !== 'paid' && (
+      {user && user.tier !== 'paid' && savedMealStores.size >= 3 && (
         <div className="w-full py-2.5 px-4 text-center text-sm" style={{ background: 'var(--brand-light)', borderBottom: '1px solid var(--brand-border)', color: 'var(--brand)' }}>
           <span className="font-medium">Free plan: </span>limited to 3 saved meals.{' '}
           <a href="/pricing" className="underline font-semibold hover:opacity-80 transition-opacity">Upgrade to Full Access →</a>

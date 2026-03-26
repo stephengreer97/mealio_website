@@ -161,7 +161,6 @@ export default function PricingPage() {
               {[
                 'Up to 3 saved meals',
                 'Add meals to cart automatically',
-                'HEB, Walmart & Kroger support',
                 'Preset meal library',
               ].map(f => (
                 <li key={f} className="flex items-start gap-2.5 text-sm" style={{ color: 'var(--text-2)' }}>
@@ -210,7 +209,6 @@ export default function PricingPage() {
               {[
                 'Unlimited saved meals',
                 'Add meals to cart automatically',
-                'HEB, Walmart & Kroger support',
                 'Preset meal library',
                 'Priority support',
               ].map(f => (
