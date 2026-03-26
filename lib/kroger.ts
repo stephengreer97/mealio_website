@@ -204,8 +204,8 @@ export async function krogerSearchProducts(
 
   return products
     .filter(p => {
-      const f = p.fulfillment;
-      if (!f) return true; // fulfillment not returned by this endpoint — don't filter
+      const f = p.items?.[0]?.fulfillment;
+      if (!f) return false;
       return f.inStore || f.delivery || f.curbside;
     })
     .map(p => {
