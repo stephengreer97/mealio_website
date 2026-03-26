@@ -186,6 +186,7 @@ export async function krogerSearchProducts(
     'filter.term': truncatedTerm,
     'filter.locationId': locationId,
     'filter.limit': String(Math.min(limit, 10)),
+    'filter.fulfillment': 'ais,csp,delivery',
   });
   const res = await fetch(`${KROGER_BASE}/products?${params}`, {
     headers: { Authorization: `Bearer ${userAccessToken}`, Accept: 'application/json' },
