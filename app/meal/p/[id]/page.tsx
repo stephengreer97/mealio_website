@@ -103,7 +103,6 @@ export default function SharedPresetMealPage() {
   const [selectedStore, setSelectedStore] = useState('');
   const [recentStores, setRecentStores] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [tierLimitReached, setTierLimitReached] = useState(false);
 
@@ -186,11 +185,15 @@ export default function SharedPresetMealPage() {
         return;
       }
 
-      setSaved(true);
       try {
         const updated = [selectedStore, ...recentStores.filter(id => id !== selectedStore)].slice(0, 3);
         localStorage.setItem('mealio_recent_stores', JSON.stringify(updated));
       } catch { /* ignore */ }
+      const mealId = data.meal?.id;
+      const dest = mealId
+        ? `/my-meals?store=${encodeURIComponent(selectedStore)}&meal=${encodeURIComponent(mealId)}`
+        : '/my-meals';
+      window.location.href = dest;
     } catch {
       setSaveError('Something went wrong. Please try again.');
     } finally {
@@ -317,13 +320,7 @@ export default function SharedPresetMealPage() {
           )}
 
           {/* Save section */}
-          {saved ? (
-            <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
-              <p className="text-sm font-semibold text-green-700 mb-1">✓ Saved to your meals!</p>
-              <p className="text-xs text-green-600">Open the Mealio extension to add it to your cart.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
+          <div className="space-y-3">
               {/* Store picker */}
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1">Select your grocery store</label>
@@ -377,7 +374,6 @@ export default function SharedPresetMealPage() {
                 </p>
               )}
             </div>
-          )}
 
         </div>
       </div>
