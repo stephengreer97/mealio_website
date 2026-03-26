@@ -63,6 +63,15 @@ export async function POST(
     }
   }
 
+  // Strip store-specific product data from ingredients — only keep generic fields
+  const ingredients = (sharedMeal.ingredients ?? []).map((ing: any) => ({
+    ingredientName: ing.ingredientName ?? ing.productName ?? ing.product_name ?? ing.name ?? '',
+    qty: ing.qty ?? ing.quantity ?? 1,
+    unit: ing.unit ?? 'qty',
+    ...(ing.measure != null ? { measure: ing.measure } : {}),
+    ...(ing.searchTerm != null ? { searchTerm: ing.searchTerm } : {}),
+  }));
+
   // Insert as a new meal for this user
   const { data: meal, error: insertError } = await supabase
     .from('meals')
@@ -70,7 +79,7 @@ export async function POST(
       user_id: decoded.userId,
       name: sharedMeal.name,
       store_id: storeId,
-      ingredients: sharedMeal.ingredients,
+      ingredients,
       created_at: new Date().toISOString(),
       ...(sharedMeal.author      ? { author: sharedMeal.author }           : {}),
       ...(sharedMeal.difficulty  ? { difficulty: sharedMeal.difficulty }   : {}),
