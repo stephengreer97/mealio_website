@@ -49,6 +49,9 @@ export const metadata: Metadata = {
     title:           'Mealio',
   },
   formatDetection: { telephone: false },
+  other: {
+    'apple-itunes-app': 'app-id=6761012560',
+  },
 }
 
 export default function RootLayout({
