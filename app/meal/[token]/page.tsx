@@ -312,8 +312,7 @@ export default function SharedMealPage() {
           {/* Save section */}
           {saved ? (
             <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
-              <p className="text-sm font-semibold text-green-700 mb-1">✓ Saved to your meals!</p>
-              <p className="text-xs text-green-600">Open the Mealio extension to add it to your cart.</p>
+              <p className="text-sm font-semibold text-green-700">✓ Saved to your meals!</p>
             </div>
           ) : (
             <div className="space-y-3">
