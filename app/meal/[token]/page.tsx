@@ -102,7 +102,6 @@ export default function SharedMealPage() {
   const [selectedStore, setSelectedStore] = useState('');
   const [recentStores, setRecentStores] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [tierLimitReached, setTierLimitReached] = useState(false);
 
@@ -172,11 +171,11 @@ export default function SharedMealPage() {
         return;
       }
 
-      setSaved(true);
       try {
         const updated = [selectedStore, ...recentStores.filter(id => id !== selectedStore)].slice(0, 3);
         localStorage.setItem('mealio_recent_stores', JSON.stringify(updated));
       } catch { /* ignore */ }
+      router.push(`/my-meals?store=${encodeURIComponent(selectedStore)}&meal=${encodeURIComponent(data.meal.id)}`);
     } catch {
       setSaveError('Something went wrong. Please try again.');
     } finally {
@@ -310,12 +309,7 @@ export default function SharedMealPage() {
           )}
 
           {/* Save section */}
-          {saved ? (
-            <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
-              <p className="text-sm font-semibold text-green-700">✓ Saved to your meals!</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
+          <div className="space-y-3">
               {/* Store picker */}
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1">Select your grocery store</label>
@@ -374,7 +368,6 @@ export default function SharedMealPage() {
                 </p>
               )}
             </div>
-          )}
 
         </div>
       </div>

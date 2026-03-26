@@ -2748,6 +2748,7 @@ function ChooseProductsFlow({
 function DashboardMealCard({
   meal, isPro, isCreator, creatorChecked, copiedMealId,
   krogerConnected, krogerLocations,
+  initialDetailOpen,
   selectMode, selected, onToggleSelect,
   onEdit, onDelete, onShare, onRemovePhoto, onCreatorClick, accessToken,
   onChooseProducts,
@@ -2759,6 +2760,7 @@ function DashboardMealCard({
   copiedMealId: string | null;
   krogerConnected: boolean;
   krogerLocations: Record<string, { locationId: string; locationName: string }>;
+  initialDetailOpen?: boolean;
   selectMode?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
@@ -2770,7 +2772,7 @@ function DashboardMealCard({
   accessToken: string;
   onChooseProducts?: () => void;
 }) {
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(initialDetailOpen ?? false);
 
   const websiteHost = meal.website ? (() => {
     try { return new URL(meal.website).hostname.replace('www.', ''); } catch { return meal.website; }
@@ -2960,6 +2962,7 @@ export default function MyMealsPage() {
   // Store pill filter + multi-select for Kroger cart
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
   const [selectedMealIds, setSelectedMealIds] = useState<Set<string>>(new Set());
+  const [openMealId, setOpenMealId] = useState<string | null>(null);
   const [showKrogerFlow, setShowKrogerFlow] = useState(false);
   const [showKrogerStorePicker, setShowKrogerStorePicker] = useState(false);
   const [krogerConnecting, setKrogerConnecting] = useState(false);
@@ -2985,8 +2988,17 @@ export default function MyMealsPage() {
       const accessToken = localStorage.getItem('accessToken');
       if (!accessToken) { router.push('/signin'); return; }
 
-      // Handle Kroger OAuth callback redirect
+      // Handle deep-link params (e.g. from shared meal save redirect)
       const params = new URLSearchParams(window.location.search);
+      const storeParam = params.get('store');
+      const mealParam = params.get('meal');
+      if (storeParam || mealParam) {
+        window.history.replaceState({}, '', '/my-meals');
+        if (storeParam) setSelectedStore(storeParam);
+        if (mealParam) setOpenMealId(mealParam);
+      }
+
+      // Handle Kroger OAuth callback redirect
       const krogerParam = params.get('kroger');
       if (krogerParam) {
         window.history.replaceState({}, '', '/my-meals');
@@ -3509,6 +3521,7 @@ export default function MyMealsPage() {
                       copiedMealId={copiedMealId}
                       krogerConnected={krogerConnected}
                       krogerLocations={krogerLocations}
+                      initialDetailOpen={meal.id === openMealId}
                       selectMode={isKrogerSelectMode}
                       selected={selectedMealIds.has(meal.id)}
                       onToggleSelect={() => setSelectedMealIds(prev => {
