@@ -3309,7 +3309,7 @@ export default function MyMealsPage() {
       {/* Saved toast */}
       {savedToast && (
         <div
-          className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg pointer-events-none"
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg pointer-events-none"
           style={{ animation: 'fadeInDown 0.2s ease' }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
