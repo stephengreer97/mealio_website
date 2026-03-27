@@ -19,9 +19,15 @@ export async function verifyGoogleIdToken(idToken: string): Promise<{
     const clientId = process.env.GOOGLE_CLIENT_ID;
     if (!clientId) throw new Error('GOOGLE_CLIENT_ID not configured');
 
+    const validAudiences = [
+      clientId,
+      process.env.GOOGLE_IOS_CLIENT_ID,
+      process.env.GOOGLE_ANDROID_CLIENT_ID,
+    ].filter(Boolean) as string[];
+
     const { payload } = await jwtVerify(idToken, GOOGLE_JWKS, {
       issuer: ['https://accounts.google.com', 'accounts.google.com'],
-      audience: clientId,
+      audience: validAudiences,
     });
 
     return {
