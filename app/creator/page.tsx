@@ -1378,7 +1378,7 @@ export default function CreatorPortal() {
                     Name each ingredient as it would appear in a grocery store search — specific enough to find the right product, but generic enough to work across stores.
                     <div className="mt-1.5 space-x-3">
                       <span><span className="text-green-600 font-semibold">✓</span> &quot;Chicken Stock&quot; · &quot;Garlic&quot; · &quot;Rotisserie Chicken&quot;</span>
-                      <span><span className="text-red-500 font-semibold">✗</span> &quot;Costco Bananas&quot; · &quot;Fresh Herbs&quot;</span>
+                      <span><span className="text-red-500 font-semibold">✗</span> &quot;Walmart Bananas&quot; · &quot;Fresh Herbs&quot;</span>
                     </div>
                   </div>
                   <div className="space-y-2 mb-2">

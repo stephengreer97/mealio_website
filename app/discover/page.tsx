@@ -24,7 +24,6 @@ const STORES = [
   { id: 'carrs',         label: 'Carrs' },
   { id: 'central_market',label: 'Central Market' },
   { id: 'city_market',   label: 'City Market' },
-  { id: 'costco',        label: 'Costco' },
   { id: 'dillons',       label: 'Dillons' },
   { id: 'fred_meyer',    label: 'Fred Meyer' },
   { id: 'frys',          label: "Fry's Food" },
@@ -48,6 +47,7 @@ const STORES = [
   { id: 'smiths',        label: "Smith's Food & Drug" },
   { id: 'star_market',   label: 'Star Market' },
   { id: 'tom_thumb',     label: 'Tom Thumb' },
+  { id: 'united',        label: 'United Supermarkets' },
   { id: 'vons',          label: 'Vons' },
   { id: 'walmart',       label: 'Walmart' },
   { id: 'wegmans',       label: 'Wegmans' },
@@ -1130,7 +1130,7 @@ export default function DiscoverPage() {
       if (entries[0].isIntersecting && !fetchingRef.current) {
         fetchMeals(false, sectionRef.current, token);
       }
-    }, { threshold: 0.1 });
+    }, { threshold: 0.1, rootMargin: '0px 0px 400px 0px' });
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
   }, [hasMore, fetching, fetchMeals, token]);
@@ -1474,7 +1474,7 @@ export default function DiscoverPage() {
               </div>
 
               {/* Already saved — static section below infinite scroll */}
-              {saved.length > 0 && (
+              {!hasMore && saved.length > 0 && (
                 <>
                   <div className="flex items-center gap-3 my-2">
                     <div className="flex-1 h-px" style={{ background: 'var(--border)' }} />

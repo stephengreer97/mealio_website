@@ -128,7 +128,6 @@ export default function HelpPage() {
                 ['Kroger', 'kroger.com'],
                 ['ALDI', 'aldi.us'],
                 ['Central Market', 'centralmarket.com'],
-                ['Costco', 'costco.com'],
                 ['Albertsons', 'albertsons.com'],
                 ['Amazon Fresh', 'amazon.com'],
                 ['Safeway', 'safeway.com'],
@@ -158,6 +157,7 @@ export default function HelpPage() {
                 ['Metro Market', 'metromarket.net'],
                 ['Pay-Less', 'pay-less.com'],
                 ['Harris Teeter', 'harristeeter.com'],
+                ['United Supermarkets', 'unitedsupermarkets.com'],
                 ['Wegmans', 'wegmans.com'],
               ].map(([name, domain]) => (
                 <div key={domain} style={{ fontSize: '13px', color: '#555', padding: '3px 0' }}>
@@ -439,7 +439,7 @@ export default function HelpPage() {
               },
               {
                 q: 'Which grocery stores does Mealio support?',
-                a: 'Mealio supports 36 stores including H-E-B, Walmart, Kroger, Albertsons, Safeway, Costco, Amazon Fresh, ALDI, and many more. See the full list in the Using the Extension section above.',
+                a: 'Mealio supports 36 stores including H-E-B, Walmart, Kroger, Albertsons, Safeway, Amazon Fresh, ALDI, and many more. See the full list in the Using the Extension section above.',
               },
               {
                 q: 'Do my meals sync across devices?',

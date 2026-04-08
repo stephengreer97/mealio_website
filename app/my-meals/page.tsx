@@ -449,7 +449,6 @@ const STORE_LABELS: Record<string, string> = {
   kroger:        'Kroger',
   aldi:          'ALDI',
   central_market:'Central Market',
-  costco:        'Costco',
   albertsons:    'Albertsons',
   amazon:        'Amazon Fresh',
   safeway:       'Safeway',
@@ -479,6 +478,7 @@ const STORE_LABELS: Record<string, string> = {
   metro_market:  'Metro Market',
   pay_less:      'Pay-Less',
   harris_teeter: 'Harris Teeter',
+  united:        'United Supermarkets',
   wegmans:       'Wegmans',
 };
 
@@ -506,7 +506,6 @@ const STORE_COLORS: Record<string, string> = {
   kroger:        '#0E51A1',
   aldi:          '#02205F',
   central_market:'#005732',
-  costco:        '#E31936',
   albertsons:    '#009ee5',
   amazon:        '#78BD21',
   safeway:       '#E5161E',
@@ -536,6 +535,7 @@ const STORE_COLORS: Record<string, string> = {
   metro_market:  '#63463E',
   pay_less:      '#D8232A',
   harris_teeter: '#A32036',
+  united:        '#003087',
   wegmans:       '#000000',
 };
 
@@ -713,6 +713,9 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
 
   const handleSave = async () => {
     if (!name.trim()) { setError('Meal name is required.'); return; }
+    const validIngs = ingredients.filter(i => i.ingredientName.trim());
+    const ingNames = validIngs.map(i => i.ingredientName.trim().toLowerCase());
+    if (new Set(ingNames).size !== ingNames.length) { setError('Two or more ingredients have the same name. Please make each name unique.'); return; }
     setSaving(true);
     setError('');
     try {
@@ -1184,6 +1187,8 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     if (!storeId) { setError('Please select a store.'); return; }
     const validIngredients = ingredients.filter(i => i.ingredientName.trim()).map(fromFormIng);
     if (validIngredients.length === 0) { setError('Add at least one ingredient.'); return; }
+    const ingKeys = validIngredients.map(i => i.ingredientName.toLowerCase());
+    if (new Set(ingKeys).size !== ingKeys.length) { setError('Two or more ingredients have the same name. Please make each name unique.'); return; }
     if (serves.trim() && !/^\d+(-\d+)?$/.test(serves.trim())) { setError('Serves must be a number or range (e.g. 4 or 2-4).'); return; }
     setSaving(true); setError('');
     try {
