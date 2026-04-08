@@ -6,9 +6,9 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: '*',
-        allow:    ['/', '/help', '/pricing', '/about', '/privacy', '/terms', '/meal/'],
+        allow: '/',
         disallow: [
-          '/discover',
+          '/my-meals',
           '/account',
           '/creator',
           '/admin',
