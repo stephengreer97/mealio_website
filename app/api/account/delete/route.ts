@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
-import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { verifyAccessToken, checkTokenRevoked, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
 export async function DELETE(request: NextRequest) {
@@ -18,6 +18,9 @@ export async function DELETE(request: NextRequest) {
 
     const { userId, email } = decoded;
     const supabase = createServerSupabaseClient();
+    if (await checkTokenRevoked(supabase, decoded.userId, decoded.issuedAt)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
     // Delete user data in order (foreign-key safe)
     await supabase.from('creator_follows').delete().or(`follower_id.eq.${userId},creator_id.eq.${userId}`);

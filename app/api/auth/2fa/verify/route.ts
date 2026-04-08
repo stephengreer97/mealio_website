@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
-import { createAccessToken, verifyTwoFactorToken, hashToken } from '@/lib/tokens';
+import { createAccessToken, createSessionToken, verifyTwoFactorToken, hashToken } from '@/lib/tokens';
 import { hashOtp } from '@/lib/otp';
 import { randomBytes } from 'crypto';
-import { SignJWT } from 'jose';
 import { log } from '@/lib/logger';
 
 const MAX_ATTEMPTS = 5;
@@ -80,12 +79,7 @@ export async function POST(request: NextRequest) {
     await supabase.from('user_profiles').update({ last_login_at: new Date().toISOString() }).eq('id', userId);
 
     // Session cookie (same as normal login)
-    const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || '');
-    const sessionToken = await new SignJWT({ sub: userId, email, type: 'session' })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setIssuedAt()
-      .setExpirationTime('90d')
-      .sign(JWT_SECRET);
+    const sessionToken = await createSessionToken(userId, email);
 
     const response = NextResponse.json({
       success: true,

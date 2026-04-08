@@ -126,10 +126,10 @@ export default function SignIn() {
         return;
       }
 
-      if (!response.ok && data.requiresVerification) {
+      if (data.requiresVerification) {
         setNeedsVerification(true);
         setResendCooldown(60);
-        setError(data.error || 'Email not verified');
+        setError('Please verify your email before logging in.');
         return;
       }
 

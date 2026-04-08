@@ -12,9 +12,19 @@ export async function requireAdmin(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data } = await supabase
     .from('user_profiles')
-    .select('is_admin')
+    .select('is_admin, tokens_invalidated_at')
     .eq('id', decoded.userId)
     .single();
 
-  return data?.is_admin ? decoded : null;
+  if (!data?.is_admin) return null;
+
+  // Reject if token was issued before the user logged out
+  if (
+    data.tokens_invalidated_at &&
+    decoded.issuedAt * 1000 < new Date(data.tokens_invalidated_at).getTime()
+  ) {
+    return null;
+  }
+
+  return decoded;
 }

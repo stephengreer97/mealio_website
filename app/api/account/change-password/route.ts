@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient, createAnonSupabaseClient } from '@/lib/supabase';
-import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { verifyAccessToken, checkTokenRevoked, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
@@ -14,6 +14,11 @@ export async function POST(request: NextRequest) {
     const decoded = await verifyAccessToken(token);
     if (!decoded) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+    }
+
+    const supabase = createServerSupabaseClient();
+    if (await checkTokenRevoked(supabase, decoded.userId, decoded.issuedAt)) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { userId, email } = decoded;
@@ -38,7 +43,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Update the password using the admin client
-    const supabase = createServerSupabaseClient();
     const { error: updateError } = await supabase.auth.admin.updateUserById(userId, {
       password: newPassword,
     });

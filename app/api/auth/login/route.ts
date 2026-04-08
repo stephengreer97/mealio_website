@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient, createAnonSupabaseClient } from '@/lib/supabase';
-import { createAccessToken, createTwoFactorToken, hashToken } from '@/lib/tokens';
+import { createAccessToken, createSessionToken, createTwoFactorToken, hashToken } from '@/lib/tokens';
 import { generateOtp, hashOtp } from '@/lib/otp';
 import { sendOtpEmail } from '@/lib/email';
-import { SignJWT } from 'jose';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
@@ -32,10 +31,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (!authData.user.email_confirmed_at) {
-      log({ event: 'AUTH:LOGIN', status: 'failed', email, ip, reason: 'email not verified' });
+      log({ event: 'AUTH:LOGIN', status: 'pending', email, ip, reason: 'email not verified' });
       return NextResponse.json(
-        { error: 'Please verify your email before logging in.', requiresVerification: true, email },
-        { status: 403 }
+        { requiresVerification: true, email },
       );
     }
 
@@ -73,9 +71,7 @@ export async function POST(request: NextRequest) {
           const accessToken = await createAccessToken(userId, email);
           await supabase.from('user_profiles').update({ last_login_at: new Date().toISOString() }).eq('id', userId);
           const tier = profile?.subscription_tier ?? 'free';
-          const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || '');
-          const sessionToken = await new SignJWT({ sub: userId, email, type: 'session' })
-            .setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('90d').sign(JWT_SECRET);
+          const sessionToken = await createSessionToken(userId, email);
           const response = NextResponse.json({ success: true, user: { id: userId, email, tier, isAdmin }, accessToken });
           response.cookies.set('mealio_session', sessionToken, {
             httpOnly: true, secure: process.env.NODE_ENV === 'production',
@@ -116,16 +112,7 @@ export async function POST(request: NextRequest) {
     const tier = profile?.subscription_tier ?? 'free';
 
     // Create session token for cookie (90 days)
-    const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || '');
-    const sessionToken = await new SignJWT({
-      sub: userId,
-      email,
-      type: 'session'
-    })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setIssuedAt()
-      .setExpirationTime('90d')
-      .sign(JWT_SECRET);
+    const sessionToken = await createSessionToken(userId, email);
 
     const response = NextResponse.json({
       success: true,
