@@ -6,14 +6,15 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
+const MAX_IMAGE_BYTES = 40 * 1024 * 1024; // 40 MB
+
+// SVG intentionally excluded — it can contain embedded scripts (XSS risk).
 const EXT_MAP: Record<string, string> = {
-  'image/jpeg':  'jpg',
-  'image/png':   'png',
-  'image/gif':   'gif',
-  'image/webp':  'webp',
-  'image/svg+xml': 'svg',
-  'image/bmp':   'bmp',
-  'image/avif':  'avif',
+  'image/jpeg': 'jpg',
+  'image/png':  'png',
+  'image/gif':  'gif',
+  'image/webp': 'webp',
+  'image/avif': 'avif',
 };
 
 export async function POST(request: NextRequest) {
@@ -34,10 +35,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid image data URL' }, { status: 400 });
   }
   const mimeType = match[1];
+  if (!EXT_MAP[mimeType]) {
+    return NextResponse.json({ error: 'Unsupported image type' }, { status: 415 });
+  }
   const base64Data = match[2];
-  const ext = EXT_MAP[mimeType] ?? 'jpg';
+  const ext = EXT_MAP[mimeType];
 
   const buffer = Buffer.from(base64Data, 'base64');
+  if (buffer.length > MAX_IMAGE_BYTES) {
+    return NextResponse.json({ error: 'Image too large (max 40 MB)' }, { status: 413 });
+  }
   const hash = createHash('sha256').update(buffer).digest('hex');
 
   const supabase = createServerSupabaseClient();
