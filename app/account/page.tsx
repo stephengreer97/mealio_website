@@ -41,7 +41,6 @@ const STORE_LABELS: Record<string, string> = {
   walmart:        'Walmart',
   kroger:         'Kroger',
   aldi:           'ALDI',
-  central_market: 'Central Market',
   ralphs:         'Ralphs',
   fred_meyer:     'Fred Meyer',
   king_soopers:   'King Soopers',

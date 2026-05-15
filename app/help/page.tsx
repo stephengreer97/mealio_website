@@ -127,7 +127,6 @@ export default function HelpPage() {
                 ['Walmart', 'walmart.com'],
                 ['Kroger', 'kroger.com'],
                 ['ALDI', 'aldi.us'],
-                ['Central Market', 'centralmarket.com'],
                 ['Albertsons', 'albertsons.com'],
                 ['Amazon Fresh', 'amazon.com'],
                 ['Safeway', 'safeway.com'],

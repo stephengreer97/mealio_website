@@ -11,7 +11,6 @@ const STORES = [
   { id: 'bakers',        label: "Baker's" },
   { id: 'balduccis',     label: "Balducci's" },
   { id: 'carrs',         label: 'Carrs' },
-  { id: 'central_market',label: 'Central Market' },
   { id: 'city_market',   label: 'City Market' },
   { id: 'dillons',       label: 'Dillons' },
   { id: 'fred_meyer',    label: 'Fred Meyer' },
@@ -62,7 +61,7 @@ function normIng(raw: any): Ingredient {
 
 function fmtMeasurement(ing: Ingredient): string {
   if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
-  return `${ing.ingredientName}, ${ing.measure ?? ''} ${ing.unit}`;
+  return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
 }
 
 interface SharedMeal {

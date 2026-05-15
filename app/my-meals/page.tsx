@@ -52,7 +52,7 @@ function normIng(raw: any): Ingredient {
 
 function fmtMeasurement(ing: Ingredient): string {
   if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
-  return `${ing.ingredientName}, ${ing.measure ?? ''} ${ing.unit}`;
+  return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
 }
 
 function ingSearchTerm(ing: Ingredient): string {
@@ -448,7 +448,6 @@ const STORE_LABELS: Record<string, string> = {
   walmart:       'Walmart',
   kroger:        'Kroger',
   aldi:          'ALDI',
-  central_market:'Central Market',
   albertsons:    'Albertsons',
   amazon:        'Amazon Fresh',
   safeway:       'Safeway',
@@ -505,7 +504,6 @@ const STORE_COLORS: Record<string, string> = {
   walmart:       '#0053E2',
   kroger:        '#0E51A1',
   aldi:          '#02205F',
-  central_market:'#005732',
   albertsons:    '#009ee5',
   amazon:        '#78BD21',
   safeway:       '#E5161E',

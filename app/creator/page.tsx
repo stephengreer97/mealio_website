@@ -73,7 +73,7 @@ function normIng(raw: any): Ingredient {
 
 function fmtMeasurement(ing: Ingredient): string {
   if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
-  return `${ing.ingredientName}, ${ing.measure ?? ''} ${ing.unit}`;
+  return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
 }
 
 function toFormIng(ing: Ingredient): IngredientForm {
