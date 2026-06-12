@@ -25,11 +25,11 @@ export async function POST(request: NextRequest) {
 
     const { userId, email } = decoded;
 
-    // Look up current tier so the extension's user object stays up to date
+    // Look up current tier + admin status so clients stay up to date
     const supabase = createServerSupabaseClient();
     const { data: profile } = await supabase
       .from('user_profiles')
-      .select('subscription_tier')
+      .select('subscription_tier, is_admin')
       .eq('id', userId)
       .single();
 
@@ -43,6 +43,7 @@ export async function POST(request: NextRequest) {
         id: userId,
         email,
         tier: profile?.subscription_tier ?? 'free',
+        isAdmin: profile?.is_admin ?? false,
       },
     });
   } catch (error) {

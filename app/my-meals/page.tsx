@@ -6,6 +6,7 @@ const CHROME_EXT_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnh
 const FIREFOX_EXT_URL = 'https://addons.mozilla.org/en-US/firefox/addon/mealio/';
 const EDGE_EXT_URL    = 'https://microsoftedge.microsoft.com/addons/detail/odmgaejgoagcjbimmdpecimocekjiobi';
 import { useRouter } from 'next/navigation';
+import { AlertCircle, CheckCircle2, ShoppingCart } from 'lucide-react';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import CreatorPopup from '@/components/CreatorPopup';
@@ -1549,7 +1550,11 @@ function MealDetailModal({
           style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', maxHeight: '90vh', overflowY: 'auto' }}
           onClick={e => e.stopPropagation()}
         >
-          <div className="text-5xl mb-5">{krogerResult.notFound.length === 0 ? '✅' : '⚠️'}</div>
+          <div className="mb-5 flex justify-center">
+            {krogerResult.notFound.length === 0
+              ? <CheckCircle2 size={56} color="#22c55e" strokeWidth={2} />
+              : <AlertCircle size={56} color="#f59e0b" strokeWidth={2} />}
+          </div>
           <h3 className="text-xl font-bold mb-3 text-center" style={{ color: 'var(--text-1)' }}>
             {krogerResult.notFound.length === 0
               ? 'Added to cart!'
@@ -2091,7 +2096,7 @@ function KrogerCartFlow({
           return (
             <>
               <div className="flex-1 px-5 py-6 overflow-y-auto flex flex-col items-center text-center gap-4">
-                <div className="text-5xl">⚠️</div>
+                <AlertCircle size={56} color="#f59e0b" strokeWidth={2} />
                 <div>
                   <p className="text-base font-bold text-ml-t1 mb-1">
                     {needsReview.length} item{needsReview.length !== 1 ? 's' : ''} could not be added to cart
@@ -2338,10 +2343,12 @@ function KrogerCartFlow({
           <>
             <div className="px-6 pt-6 pb-3 text-center flex-shrink-0">
               {cartError
-                ? <><div className="text-4xl mb-2">⚠️</div><p className="text-base font-bold text-red-500">Failed to add items to cart.</p><p className="text-sm text-ml-t3">Kroger returned an error. Please try again or add items manually.</p></>
+                ? <><div className="mb-3 flex justify-center"><AlertCircle size={48} color="#ef4444" strokeWidth={2} /></div><p className="text-base font-bold text-red-500">Failed to add items to cart.</p><p className="text-sm text-ml-t3">Kroger returned an error. Please try again or add items manually.</p></>
                 : totalAdded > 0
-                  ? <><div className="text-4xl mb-2">🛒</div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your {storeName} cart!</p></>
-                  : <><div className="text-4xl mb-2">😔</div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
+                  /* TODO: drop a Lottie celebration animation here. The cart icon is the
+                     static placeholder until the designer-approved animation lands. */
+                  ? <><div className="mb-3 flex justify-center"><ShoppingCart size={48} color="#22c55e" strokeWidth={2} /></div><p className="text-base font-bold text-ml-t1">{totalAdded} item{totalAdded !== 1 ? 's' : ''} added to your {storeName} cart!</p></>
+                  : <><div className="mb-3 flex justify-center"><AlertCircle size={48} color="#9ca3af" strokeWidth={2} /></div><p className="text-base font-bold text-ml-t1">No items were added.</p><p className="text-sm text-ml-t3">No matching products were found or all were skipped.</p></>
               }
             </div>
             {addedItems.length > 0 && (
@@ -2730,10 +2737,10 @@ function ChooseProductsFlow({
           <>
             <div className="px-6 pt-6 pb-3 text-center flex-shrink-0">
               {error
-                ? <><div className="text-4xl mb-2">⚠️</div><p className="text-base font-bold text-red-500">Failed to save.</p><p className="text-sm text-ml-t3">{error}</p></>
+                ? <><div className="mb-3 flex justify-center"><AlertCircle size={48} color="#ef4444" strokeWidth={2} /></div><p className="text-base font-bold text-red-500">Failed to save.</p><p className="text-sm text-ml-t3">{error}</p></>
                 : savedCount > 0
-                  ? <><div className="text-4xl mb-2">✅</div><p className="text-base font-bold text-ml-t1">Products chosen!</p><p className="text-sm text-ml-t3">{savedCount} of {unchosenIngredients.length} ingredient{unchosenIngredients.length !== 1 ? 's' : ''} linked to a {storeName} product.</p></>
-                  : <><div className="text-4xl mb-2">👋</div><p className="text-base font-bold text-ml-t1">No products chosen.</p><p className="text-sm text-ml-t3">You can choose products at any time from the meal card.</p></>
+                  ? <><div className="mb-3 flex justify-center"><CheckCircle2 size={48} color="#22c55e" strokeWidth={2} /></div><p className="text-base font-bold text-ml-t1">Products chosen!</p><p className="text-sm text-ml-t3">{savedCount} of {unchosenIngredients.length} ingredient{unchosenIngredients.length !== 1 ? 's' : ''} linked to a {storeName} product.</p></>
+                  : <><div className="mb-3 flex justify-center"><AlertCircle size={48} color="#9ca3af" strokeWidth={2} /></div><p className="text-base font-bold text-ml-t1">No products chosen.</p><p className="text-sm text-ml-t3">You can choose products at any time from the meal card.</p></>
               }
             </div>
             <div className="flex-1" />

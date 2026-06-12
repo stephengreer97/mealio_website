@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { CheckCircle2 } from 'lucide-react';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 
@@ -128,7 +129,9 @@ export default function CreatorApply() {
         <h1 style={{ margin: '0 0 24px', fontSize: '22px', fontWeight: 700, color: '#111' }}>Become a Creator Partner</h1>
         {submitted ? (
           <div style={{ background: 'white', borderRadius: '12px', padding: '40px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
-            <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎉</div>
+            <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'center' }}>
+              <CheckCircle2 size={56} color="#22c55e" strokeWidth={2} />
+            </div>
             <h2 style={{ margin: '0 0 12px', color: '#222' }}>Application Submitted!</h2>
             <p style={{ color: '#666', margin: '0 0 24px', lineHeight: 1.6 }}>
               Thanks for applying! We'll review your application and reach out with next steps.
