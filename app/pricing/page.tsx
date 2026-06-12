@@ -6,8 +6,8 @@ import { useRouter } from 'next/navigation';
 const MONTHLY_PRICE_ID = process.env.NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID ?? '';
 const ANNUAL_PRICE_ID  = process.env.NEXT_PUBLIC_STRIPE_ANNUAL_PRICE_ID  ?? '';
 
-const MONTHLY_PRICE = process.env.NEXT_PUBLIC_LS_MONTHLY_PRICE ?? '3.49';
-const ANNUAL_PRICE  = process.env.NEXT_PUBLIC_LS_ANNUAL_PRICE  ?? '29.99';
+const MONTHLY_PRICE = process.env.NEXT_PUBLIC_LS_MONTHLY_PRICE ?? '4.99';
+const ANNUAL_PRICE  = process.env.NEXT_PUBLIC_LS_ANNUAL_PRICE  ?? '49.99';
 
 interface AuthUser {
   id: string;

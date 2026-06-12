@@ -281,7 +281,7 @@ export default function HelpPage() {
                 },
                 {
                   name: 'Full Access',
-                  price: '$3.49/mo or $29.99/yr',
+                  price: '$4.99/mo or $49.99/yr',
                   features: ['Unlimited saved meals', 'Full cart automation', 'Access to Discover', 'All supported stores', 'Shareable meal links', 'Priority support'],
                   highlight: true,
                 },
@@ -306,7 +306,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>Upgrading to Full Access</h3>
             <p style={p}>
-              Go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Upgrade to Full Access</strong>. You will be taken to the checkout page. Both monthly and annual plans are available — the annual plan works out to about $2.50/month — billed as $29.99/year.
+              Go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Upgrade to Full Access</strong>. You will be taken to the checkout page. Both monthly and annual plans are available — the annual plan works out to about $4.17/month — billed as $49.99/year.
             </p>
 
             <h3 style={h3}>Managing or cancelling your subscription</h3>
@@ -434,7 +434,7 @@ export default function HelpPage() {
             {[
               {
                 q: 'Is Mealio free to use?',
-                a: 'Yes. The free plan lets you save up to 3 meals per grocery store and includes full cart automation and access to Discover. The Full Access plan ($3.49/month or $29.99/year) removes the meal limit and adds shareable meal links.',
+                a: 'Yes. The free plan lets you save up to 3 meals per grocery store and includes full cart automation and access to Discover. The Full Access plan ($4.99/month or $49.99/year) removes the meal limit and adds shareable meal links.',
               },
               {
                 q: 'Which grocery stores does Mealio support?',

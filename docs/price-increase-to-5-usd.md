@@ -1,9 +1,27 @@
-# How-To: Raise Full Access to $5/month everywhere
+# How-To: Raise Full Access to $4.99/month everywhere
 
-Status: PLAN ONLY. Nothing has been changed. Two decisions are needed from
-Stephen before execution (marked DECISION below). Everything else is
-mechanical and Claude can execute it, except the store-dashboard steps that
-require account owner access (marked YOU).
+Status: IN EXECUTION (decisions made 2026-06-12).
+- DECIDED: $4.99/mo, $49.99/yr, NO grandfathering needed — there are zero
+  subscribers, which simplifies everything below: existing store products
+  can simply be REPRICED (no new products, no Apple consent flow, no
+  RevenueCat offering changes).
+- DONE (Claude): help + pricing page copy updated to $4.99 / $49.99 on the
+  tests/api-route-tests branch (deploys when the PR merges).
+- REMAINING (Stephen, ~5 min total):
+  1. Stripe dashboard → the Full Access product → add two new prices,
+     $4.99/mo and $49.99/yr (old prices can be archived; no subscribers).
+  2. Vercel → mealio project → env vars: set
+     NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID / NEXT_PUBLIC_STRIPE_ANNUAL_PRICE_ID
+     to the new price IDs, NEXT_PUBLIC_LS_MONTHLY_PRICE=4.99,
+     NEXT_PUBLIC_LS_ANNUAL_PRICE=49.99, then redeploy.
+     (Alternative: run `! npx vercel login` in the Claude session and
+     Claude does this step plus future deploys.)
+  3. App Store Connect → reprice the existing subscription products to
+     $4.99/mo and $49.99/yr. With zero subscribers there is no consent
+     flow. RevenueCat picks the new prices up automatically.
+
+The original full plan (kept for reference, superseded where it discusses
+grandfathering and new store products):
 
 Current state (verified in code 2026-06-12): $3.49/mo and $29.99/yr via
 Stripe on web; RevenueCat (`full_access` entitlement) wired in the mobile
