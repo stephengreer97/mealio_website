@@ -33,10 +33,6 @@ export default function SocialCallbackPage() {
       localStorage.setItem('accessToken', token);
       localStorage.setItem('user', JSON.stringify(user));
 
-      window.dispatchEvent(new CustomEvent('mealio:authChange', {
-        detail: { accessToken: token, user },
-      }));
-
       router.replace(redirect.startsWith('/') ? redirect : '/discover');
     } catch {
       router.replace('/signin');

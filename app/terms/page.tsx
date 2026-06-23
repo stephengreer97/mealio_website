@@ -22,7 +22,7 @@ export default function TermsPage() {
         </div>
 
         <p>
-          Please read these Terms and Conditions ("Terms") carefully before using the Mealio platform, including the Mealio browser extension, website located at mealio.co, and any related services (collectively, the "Service") operated by Mealio ("we," "us," or "our").
+          Please read these Terms and Conditions ("Terms") carefully before using the Mealio platform, including the website located at mealio.co, the Mealio mobile application, and any related services (collectively, the "Service") operated by Mealio ("we," "us," or "our").
         </p>
         <p>
           By accessing or using the Service, you agree to be bound by these Terms. If you do not agree to any part of these Terms, you may not use the Service.
@@ -33,7 +33,7 @@ export default function TermsPage() {
         {/* 1 */}
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginBottom: '12px' }}>1. Description of Service</h2>
         <p>
-          Mealio is a grocery automation platform that allows users to save meal recipes and automatically add associated ingredients to online grocery store shopping carts. The Service operates as a browser extension and accompanying web application.
+          Mealio is a grocery automation platform that allows users to save meal recipes and automatically add associated ingredients to online grocery store shopping carts. The Service operates as a web application and an accompanying mobile application.
         </p>
 
         {/* 2 */}
@@ -97,7 +97,7 @@ export default function TermsPage() {
         {/* 5 */}
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>5. Intellectual Property</h2>
         <p>
-          The Mealio name, logo, extension, website design, and all software comprising the Service are the exclusive property of Mealio and are protected by applicable intellectual property laws. You may not copy, modify, distribute, or create derivative works of any part of the Service without our express written permission.
+          The Mealio name, logo, website and application design, and all software comprising the Service are the exclusive property of Mealio and are protected by applicable intellectual property laws. You may not copy, modify, distribute, or create derivative works of any part of the Service without our express written permission.
         </p>
         <p>
           You retain ownership of any personal meal data, recipes, and content you create within the Service. By using the Service, you grant us a limited license to store and process your content solely for the purpose of providing the Service to you.

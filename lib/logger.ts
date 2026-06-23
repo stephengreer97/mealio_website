@@ -16,9 +16,8 @@ export type EventType =
   | 'AUTH:LOGIN'
   | 'AUTH:LOGOUT'
   | 'AUTH:REGISTER'
-  | 'AUTH:POLL'             // extension polling check-extension-session
   | 'AUTH:REFRESH'          // refresh token rotation
-  | 'AUTH:RENEW'            // access token renewal (extension keep-alive)
+  | 'AUTH:RENEW'            // access token renewal (mobile keep-alive)
   | 'AUTH:VERIFY'           // verify endpoint (token validation)
   | 'AUTH:VERIFY_EMAIL'     // email verification link click
   | 'AUTH:RESEND'           // resend verification email
@@ -84,7 +83,7 @@ export interface LogData {
   email?:   string;
   userId?:  string;
   ip?:      string;
-  /** Abbreviated user-agent string, e.g. "Chrome/122" or "Mealio-Extension/1.0" */
+  /** Abbreviated user-agent string, e.g. "Chrome/122" or "Mealio-App/1.0" */
   ua?:      string;
   /** Short human-readable reason for a failure or contextual label for an event */
   reason?:  string;
@@ -105,7 +104,7 @@ function maskEmail(email: string): string {
 /** Shorten a raw User-Agent string to the most useful identifier. */
 export function abbreviateUa(ua: string | null | undefined): string | undefined {
   if (!ua) return undefined;
-  // Extension or custom client
+  // Mealio app or other custom client
   const ext = ua.match(/Mealio[^\s]*/i);
   if (ext) return ext[0];
   const edg = ua.match(/Edg\/([\d]+)/);

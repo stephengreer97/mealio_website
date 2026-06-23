@@ -5,7 +5,7 @@ import { log } from '@/lib/logger';
 
 /**
  * POST /api/auth/renew
- * Called by the extension on every open to reset the 90-day access token clock.
+ * Called by the mobile app on launch to reset the 90-day access token clock.
  * Accepts the current (still-valid) access token, returns a fresh 90-day one.
  */
 export async function POST(request: NextRequest) {

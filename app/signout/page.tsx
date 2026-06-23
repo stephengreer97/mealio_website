@@ -15,8 +15,7 @@ export default function SignOutPage() {
 
     const refreshToken = localStorage.getItem('refreshToken');
 
-    // Revoke the refresh token server-side and clear the session cookie so
-    // the browser extension detects the logout on its next session check.
+    // Revoke the refresh token server-side and clear the session cookie.
     fetch('/api/auth/logout', {
       method: 'POST',
       credentials: 'include',
