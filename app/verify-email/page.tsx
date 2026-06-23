@@ -68,13 +68,6 @@ export default function VerifyEmailPage() {
         localStorage.setItem('refreshToken', data.refreshToken);
         localStorage.setItem('user', JSON.stringify(data.user));
 
-        // Notify the extension content script so it can forward the tokens
-        // to the background service worker immediately, without waiting for a
-        // full page refresh (which would re-run content-mealio-web.js).
-        window.dispatchEvent(new CustomEvent('mealio:authChange', {
-          detail: { accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user },
-        }));
-
         setStatus('success');
 
         // Try to open the mobile app with the token. If the app is not installed

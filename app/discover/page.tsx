@@ -931,9 +931,6 @@ function MealCard({
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
-const CHROME_EXT_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
-const FIREFOX_EXT_URL = 'https://addons.mozilla.org/en-US/firefox/addon/mealio/';
-
 function getInitials(name: string) {
   return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
 }
@@ -943,12 +940,6 @@ export default function DiscoverPage() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [isCreator, setIsCreator] = useState(false);
-  const [isFirefox, setIsFirefox] = useState(false);
-
-  useEffect(() => {
-    setIsFirefox(navigator.userAgent.includes('Firefox'));
-  }, []);
-
   const [token, setToken] = useState('');
   const [section, setSection] = useState<'trending' | 'new' | 'following'>('trending');
   const [creatorPopupId, setCreatorPopupId] = useState<string | null>(null);

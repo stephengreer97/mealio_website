@@ -82,22 +82,6 @@ export default function SignIn() {
     return '/discover';
   };
 
-  const notifyExtension = (authData: any) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chromeExt = (globalThis as any).chrome;
-    if (chromeExt && chromeExt.runtime && chromeExt.runtime.sendMessage) {
-      try {
-        const extensionId = localStorage.getItem('mealioExtensionId') ||
-                           process.env.NEXT_PUBLIC_EXTENSION_ID ||
-                           'YOUR_EXTENSION_ID_HERE';
-        if (extensionId === 'YOUR_EXTENSION_ID_HERE') return;
-        chromeExt.runtime.sendMessage(extensionId, { action: 'loginSuccess', data: authData }, (response: any) => {
-          if (chromeExt.runtime.lastError) console.log('Extension not responding:', chromeExt.runtime.lastError.message);
-        });
-      } catch {}
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -145,10 +129,6 @@ export default function SignIn() {
       localStorage.setItem('accessToken', data.accessToken);
       localStorage.setItem('refreshToken', data.refreshToken);
       localStorage.setItem('user', JSON.stringify(data.user));
-      notifyExtension(data);
-      window.dispatchEvent(new CustomEvent('mealio:authChange', {
-        detail: { accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user },
-      }));
       navigating = true;
       router.push(getPostLoginRedirect());
     } catch (err: any) {
@@ -175,10 +155,6 @@ export default function SignIn() {
       localStorage.setItem('accessToken', data.accessToken);
       localStorage.setItem('refreshToken', data.refreshToken);
       localStorage.setItem('user', JSON.stringify(data.user));
-      notifyExtension(data);
-      window.dispatchEvent(new CustomEvent('mealio:authChange', {
-        detail: { accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user },
-      }));
       navigating = true;
       router.push(getPostLoginRedirect());
     } catch {

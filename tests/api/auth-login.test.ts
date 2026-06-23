@@ -53,7 +53,7 @@ describe('POST /api/auth/login', () => {
     expect(body.requiresVerification).toBe(true);
   });
 
-  it('normal login issues an access token and the extension session cookie', async () => {
+  it('normal login issues an access token and the session cookie', async () => {
     signInWithPassword.mockResolvedValue(CONFIRMED_USER);
     fakeDb.queue('user_profiles', { data: { subscription_tier: 'full', is_admin: false } });
     fakeDb.queue('creators', { data: null }); // not a creator → no 2FA

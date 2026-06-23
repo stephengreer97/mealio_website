@@ -5,7 +5,7 @@ import { log } from '@/lib/logger';
 /**
  * GET /api/auth/session-status
  * Validates the access token sent in the Authorization header.
- * Used by the extension to confirm the token is still good.
+ * Lightweight token health check for authenticated clients.
  */
 export async function GET(request: NextRequest) {
   try {

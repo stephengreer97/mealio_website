@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
       accessToken,
     });
 
-    // Set HTTP-only cookie for extension polling
+    // Set HTTP-only session cookie (revoked by /api/auth/logout)
     response.cookies.set('mealio_session', sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',

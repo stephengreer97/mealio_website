@@ -22,7 +22,7 @@ export default function PrivacyPage() {
         </div>
 
         <p>
-          Mealio ("we," "us," or "our") operates the Mealio browser extension and the website located at mealio.co (collectively, the "Service"). This Privacy Policy explains how we collect, use, disclose, and protect information about you when you use our Service. By using the Service, you agree to the collection and use of information in accordance with this policy.
+          Mealio ("we," "us," or "our") operates the website located at mealio.co and the Mealio mobile application (collectively, the "Service"). This Privacy Policy explains how we collect, use, disclose, and protect information about you when you use our Service. By using the Service, you agree to the collection and use of information in accordance with this policy.
         </p>
         <p>
           If you have questions about this policy, contact us at <a href="mailto:contact@mealio.co" style={{ color: '#dd0031' }}>contact@mealio.co</a>.
@@ -50,8 +50,8 @@ export default function PrivacyPage() {
 
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>1.3 Information from Third Parties</h3>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Payment processors:</strong> If you subscribe to a paid plan, payment is processed by our third-party payment provider (Lemon Squeezy). We receive a customer identifier and subscription status but do not store your full payment card details.</li>
-          <li style={{ marginBottom: '6px' }}><strong>Grocery platforms:</strong> The extension interacts with grocery store websites on your behalf to add items to your cart. We do not store your grocery account credentials. Any data exchanged with grocery platforms is used solely to complete the cart action you initiate.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Payment processors:</strong> If you subscribe to a paid plan, payment is processed by our third-party payment provider (Stripe). We receive a customer identifier and subscription status but do not store your full payment card details.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Grocery platforms:</strong> Mealio interacts with grocery store websites on your behalf to add items to your cart. We do not store your grocery account credentials. Any data exchanged with grocery platforms is used solely to complete the cart action you initiate.</li>
         </ul>
 
         {/* 2 */}
@@ -76,7 +76,7 @@ export default function PrivacyPage() {
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>3. How We Share Your Information</h2>
         <p>We may share your information in the following limited circumstances:</p>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Service providers:</strong> We share information with third-party vendors who help us operate the Service, including our database host (Supabase), payment processor (Lemon Squeezy), email delivery provider (Resend), and payout provider (Tremendous). These providers are contractually obligated to protect your information and may only use it to provide services to us.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Service providers:</strong> We share information with third-party vendors who help us operate the Service, including our database host (Supabase), payment processor (Stripe), email delivery provider (Resend), and payout provider (Tremendous). These providers are contractually obligated to protect your information and may only use it to provide services to us.</li>
           <li style={{ marginBottom: '6px' }}><strong>Legal requirements:</strong> We may disclose your information if required to do so by law, court order, or valid governmental request, or to protect the rights, property, or safety of Mealio, our users, or the public.</li>
           <li style={{ marginBottom: '6px' }}><strong>Business transfers:</strong> If Mealio is involved in a merger, acquisition, or sale of assets, your information may be transferred as part of that transaction. We will notify you via email and/or a prominent notice on the Service before your information becomes subject to a different privacy policy.</li>
           <li style={{ marginBottom: '6px' }}><strong>With your consent:</strong> We may share your information for any other purpose with your explicit consent.</li>
@@ -106,19 +106,16 @@ export default function PrivacyPage() {
         </p>
 
         {/* 6 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>6. Browser Extension Permissions</h2>
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>6. Grocery Store Access</h2>
         <p>
-          The Mealio browser extension requests certain permissions to function. Here is what each permission is used for:
+          To add ingredients to your cart, Mealio interacts with grocery store websites on your behalf. How this works depends on where you shop:
         </p>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Storage:</strong> To save your authentication tokens and meal data locally in Chrome's secure storage on your device.</li>
-          <li style={{ marginBottom: '6px' }}><strong>Active Tab:</strong> To detect which grocery store website you are currently viewing so the extension can display relevant meals and initiate cart filling.</li>
-          <li style={{ marginBottom: '6px' }}><strong>Tabs:</strong> To open the Mealio login page when you choose to sign in, and to communicate between the extension's side panel and the active grocery store tab.</li>
-          <li style={{ marginBottom: '6px' }}><strong>Scripting / Content scripts:</strong> To interact with supported grocery store web pages for the sole purpose of automating cart additions on your behalf. Content scripts read product names and button elements on the page to locate items — this data is used only locally to complete the action you initiate and is never transmitted to our servers.</li>
-          <li style={{ marginBottom: '6px' }}><strong>Side Panel:</strong> To display the Mealio meal manager in Chrome's built-in side panel alongside the grocery store website.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Kroger and its banners (web):</strong> You authorize Mealio through Kroger's own sign-in. Mealio uses that authorization solely to search products and add items to your cart. We never receive your Kroger password.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Other stores (mobile app):</strong> The Mealio app opens the store's website in a secure in-app browser where you log in directly with the retailer. Mealio reads product names and page elements only to locate items and complete the cart additions you initiate. This data is used locally to perform the action and is never transmitted to our servers.</li>
         </ul>
         <p style={{ marginTop: '12px' }}>
-          The extension does not monitor your general browsing history, track websites unrelated to the Service, read or store the contents of grocery pages beyond what is necessary to fill your cart, or transmit your grocery account credentials to our servers.
+          Mealio does not monitor your general browsing activity, track websites unrelated to the Service, read or store the contents of grocery pages beyond what is necessary to fill your cart, or transmit your grocery account credentials to our servers.
         </p>
 
         {/* 7 */}
@@ -150,7 +147,7 @@ export default function PrivacyPage() {
         {/* 10 */}
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>10. Cookies and Local Storage</h2>
         <p>
-          We use HTTP-only cookies to maintain your authenticated session on the website. These cookies are strictly necessary for the Service to function and cannot be disabled without logging out. We do not use advertising cookies or third-party tracking cookies. The browser extension uses Chrome's <code style={{ background: '#f5f5f5', padding: '1px 5px', borderRadius: '3px' }}>chrome.storage.local</code> API to store your authentication tokens locally on your device.
+          We use HTTP-only cookies to maintain your authenticated session on the website. These cookies are strictly necessary for the Service to function and cannot be disabled without logging out. We do not use advertising cookies or third-party tracking cookies. The mobile application stores your authentication tokens in the device's secure storage (such as the iOS Keychain).
         </p>
 
         {/* 11 */}

@@ -2,9 +2,6 @@
 
 import { useEffect, useState, useRef } from 'react';
 
-const CHROME_EXT_URL  = 'https://chromewebstore.google.com/detail/mealio/eccnnnhkdpigfgbmnnmhppmligjhfpne';
-const FIREFOX_EXT_URL = 'https://addons.mozilla.org/en-US/firefox/addon/mealio/';
-const EDGE_EXT_URL    = 'https://microsoftedge.microsoft.com/addons/detail/odmgaejgoagcjbimmdpecimocekjiobi';
 import { useRouter } from 'next/navigation';
 import { AlertCircle, CheckCircle2, ShoppingCart } from 'lucide-react';
 import AppHeader from '@/components/AppHeader';
@@ -2960,15 +2957,6 @@ export default function MyMealsPage() {
   const [krogerConnected, setKrogerConnected] = useState(false);
   const [krogerLocations, setKrogerLocations] = useState<Record<string, { locationId: string; locationName: string }>>({});
 
-  // Browser detection for extension link
-  const [extUrl, setExtUrl] = useState(CHROME_EXT_URL);
-  const [extLabel, setExtLabel] = useState('Add to Chrome');
-  useEffect(() => {
-    const ua = navigator.userAgent;
-    if (ua.includes('Firefox/')) { setExtUrl(FIREFOX_EXT_URL); setExtLabel('Add to Firefox'); }
-    else if (ua.includes('Edg/')) { setExtUrl(EDGE_EXT_URL); setExtLabel('Add to Edge'); }
-  }, []);
-
   // Store pill filter + multi-select for Kroger cart
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
   const [selectedMealIds, setSelectedMealIds] = useState<Set<string>>(new Set());
@@ -3284,21 +3272,15 @@ export default function MyMealsPage() {
     await handleChooseProducts(first);
   };
 
-  const notifyExtension = () => {
-    window.dispatchEvent(new CustomEvent('mealio:mealsChanged'));
-  };
-
   const handleEditSaved = (updated: Meal) => {
     setMeals(prev => prev.map(m => (m.id === updated.id ? updated : m)));
     setEditingMeal(null);
     if (updated.store_id) setSelectedStore(updated.store_id);
-    notifyExtension();
   };
 
   const handleMealCreated = (meal: Meal) => {
     setMeals(prev => [...prev, meal]);
     setShowCreateModal(false);
-    notifyExtension();
   };
 
   if (loading) {
@@ -3431,23 +3413,12 @@ export default function MyMealsPage() {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>
-                  {STORE_LABELS[selectedStore] ?? 'This store'} doesn&apos;t currently support cart integration without the web extension
+                  {STORE_LABELS[selectedStore] ?? 'This store'} cart integration is available in the Mealio mobile app
                 </p>
                 <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
-                  Get the Mealio browser extension on desktop to add meal ingredients directly to your cart. Stay tuned for updates.
+                  Get the Mealio app to add meal ingredients directly to your cart on the go. More stores coming to the web soon.
                 </p>
               </div>
-              <a
-                href={extUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
-                style={{ background: 'var(--brand)', color: '#fff', textDecoration: 'none' }}
-                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'}
-                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
-              >
-                {extLabel}
-              </a>
             </div>
           )}
 
@@ -3517,7 +3488,7 @@ export default function MyMealsPage() {
           ) : meals.length === 0 ? (
             <div className="text-center py-10">
               <p className="text-sm text-ml-t3 mb-1">No meals saved yet.</p>
-              <p className="text-xs text-ml-t3 opacity-60">Use the web extension to record your first meal.</p>
+              <p className="text-xs text-ml-t3 opacity-60">Save your first meal to get started.</p>
             </div>
           ) : (
             (() => {

@@ -465,7 +465,7 @@ export default function AccountPage() {
           </SectionCard>
 
           {/* Kroger */}
-          <SectionCard title="Kroger Brands Integration" subtitle="Connect your Kroger account to add meal ingredients directly to your cart — no extension needed.">
+          <SectionCard title="Kroger Brands Integration" subtitle="Connect your Kroger account to add meal ingredients directly to your cart on the web.">
             {krogerMsg && (
               <div className="px-4 py-3 rounded-xl text-sm mb-4" style={{
                 background: krogerMsg.startsWith('Kroger account connected') || krogerMsg.startsWith('Store saved')
