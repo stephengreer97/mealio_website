@@ -21,6 +21,14 @@ const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
   { id: 'united', label: 'United Supermarkets' }, { id: 'wegmans', label: 'Wegmans' },
 ];
 
+interface Broadcast {
+  id: string;
+  message: string;
+  stores: string[];
+  forceShow: boolean;
+  createdAt: string;
+}
+
 interface Application {
   id: string;
   display_name: string;
@@ -89,10 +97,12 @@ export default function AdminPage() {
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const [broadcastMessage, setBroadcastMessage] = useState('');
-  const [broadcastStores, setBroadcastStores] = useState<string[]>([]);
-  const [broadcastSaving, setBroadcastSaving] = useState(false);
-  const [broadcastStatus, setBroadcastStatus] = useState('');
+  const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
+  const [bcMessage, setBcMessage] = useState('');
+  const [bcStores, setBcStores] = useState<string[]>([]);
+  const [bcForceShow, setBcForceShow] = useState(false);
+  const [bcSaving, setBcSaving] = useState(false);
+  const [bcStatus, setBcStatus] = useState('');
 
   const [storageLoading, setStorageLoading] = useState(false);
   const [storageDryRunResult, setStorageDryRunResult] = useState<{ orphanCount: number; estimatedBytes: number; paths: string[] } | null>(null);
@@ -165,28 +175,45 @@ export default function AdminPage() {
     setTab(t);
     if (t === 'meals' && meals.length === 0) loadMeals();
     if (t === 'stats' && !stats) loadStats();
-    if (t === 'broadcast') loadBroadcast();
+    if (t === 'broadcast') loadBroadcasts();
   };
 
-  const loadBroadcast = async () => {
+  const loadBroadcasts = async () => {
     const res = await fetch('/api/broadcast');
     if (res.ok) {
       const data = await res.json();
-      setBroadcastMessage(data.message ?? '');
-      setBroadcastStores(Array.isArray(data.stores) ? data.stores : []);
+      setBroadcasts(Array.isArray(data.broadcasts) ? data.broadcasts : []);
     }
   };
 
-  const saveBroadcast = async () => {
-    setBroadcastSaving(true);
-    setBroadcastStatus('');
+  const addBroadcast = async () => {
+    if (!bcMessage.trim()) { setBcStatus('Message required.'); return; }
+    setBcSaving(true);
+    setBcStatus('');
     const res = await fetch('/api/admin/broadcast', {
-      method: 'PATCH',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-      body: JSON.stringify({ message: broadcastMessage, stores: broadcastStores }),
+      body: JSON.stringify({ message: bcMessage, stores: bcStores, forceShow: bcForceShow }),
     });
-    setBroadcastSaving(false);
-    setBroadcastStatus(res.ok ? 'Saved.' : 'Failed to save.');
+    setBcSaving(false);
+    if (res.ok) {
+      setBcMessage('');
+      setBcStores([]);
+      setBcForceShow(false);
+      setBcStatus('Added.');
+      loadBroadcasts();
+    } else {
+      setBcStatus('Failed to add.');
+    }
+  };
+
+  const removeBroadcast = async (id: string) => {
+    const res = await fetch('/api/admin/broadcast', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) setBroadcasts((prev) => prev.filter((b) => b.id !== id));
   };
 
   const handleApplication = async (id: string, action: 'approve' | 'reject') => {
@@ -758,68 +785,83 @@ export default function AdminPage() {
         {/* Broadcast Tab */}
         {tab === 'broadcast' && (
           <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
-            <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Broadcast Message</h2>
+            <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Broadcast Messages</h2>
             <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
-              If set, this message is shown as a banner in the mobile app. Clear the field and save to remove it.
+              Active broadcasts show as banners in the mobile app. You can run several at once (e.g. different stores).
             </p>
+
+            {broadcasts.length === 0 ? (
+              <p style={{ fontSize: '13px', color: '#aaa', margin: '0 0 24px' }}>No active broadcasts.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '28px' }}>
+                {broadcasts.map((b) => {
+                  const labels = b.stores.length
+                    ? b.stores.map((id) => BROADCAST_STORE_OPTIONS.find((o) => o.id === id)?.label ?? id).join(', ')
+                    : 'Everyone';
+                  return (
+                    <div key={b.id} style={{ border: '1px solid #eee', borderRadius: '8px', padding: '12px 14px', display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '14px', color: '#222', marginBottom: '4px' }}>{b.message}</div>
+                        <div style={{ fontSize: '12px', color: '#888' }}>
+                          {labels}{b.forceShow ? ' · shows every launch' : ''}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => removeBroadcast(b.id)}
+                        style={{ background: 'none', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '6px 12px', fontSize: '12px', color: '#dd0031', cursor: 'pointer', flexShrink: 0 }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <h3 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: 600, color: '#444', borderTop: '1px solid #f0f0f0', paddingTop: '20px' }}>New broadcast</h3>
             <textarea
-              value={broadcastMessage}
-              onChange={e => { setBroadcastMessage(e.target.value); setBroadcastStatus(''); }}
-              placeholder="Enter a message to broadcast… (leave empty to clear)"
-              rows={4}
+              value={bcMessage}
+              onChange={e => { setBcMessage(e.target.value); setBcStatus(''); }}
+              placeholder="Enter a message to broadcast…"
+              rows={3}
               style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px 12px', fontSize: '14px', fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
             />
-            <div style={{ marginTop: '18px' }}>
+            <div style={{ marginTop: '16px' }}>
               <div style={{ fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '4px' }}>Target stores (optional)</div>
               <p style={{ margin: '0 0 10px', fontSize: '12px', color: '#888' }}>
-                Leave all unchecked to show to everyone. Otherwise, only users with a saved meal at a selected store will see the message.
+                Leave all unchecked to show to everyone. Otherwise, only users with a saved meal at a selected store will see it.
               </p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px 12px' }}>
                 {BROADCAST_STORE_OPTIONS.map((s) => {
-                  const checked = broadcastStores.includes(s.id);
+                  const checked = bcStores.includes(s.id);
                   return (
                     <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#333', cursor: 'pointer' }}>
                       <input
                         type="checkbox"
                         checked={checked}
-                        onChange={() => {
-                          setBroadcastStatus('');
-                          setBroadcastStores((prev) => (checked ? prev.filter((x) => x !== s.id) : [...prev, s.id]));
-                        }}
+                        onChange={() => { setBcStatus(''); setBcStores((prev) => (checked ? prev.filter((x) => x !== s.id) : [...prev, s.id])); }}
                       />
                       {s.label}
                     </label>
                   );
                 })}
               </div>
-              {broadcastStores.length > 0 && (
-                <button
-                  onClick={() => { setBroadcastStores([]); setBroadcastStatus(''); }}
-                  style={{ marginTop: '10px', background: 'none', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '6px 12px', fontSize: '12px', color: '#666', cursor: 'pointer' }}
-                >
-                  Clear store selection
-                </button>
-              )}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '16px', fontSize: '13px', color: '#333', cursor: 'pointer' }}>
+              <input type="checkbox" checked={bcForceShow} onChange={() => { setBcStatus(''); setBcForceShow((v) => !v); }} />
+              Show on every launch (ignore dismissal)
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '16px' }}>
               <button
-                onClick={saveBroadcast}
-                disabled={broadcastSaving}
-                style={{ background: '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: broadcastSaving ? 'not-allowed' : 'pointer', opacity: broadcastSaving ? 0.7 : 1 }}
+                onClick={addBroadcast}
+                disabled={bcSaving}
+                style={{ background: '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: bcSaving ? 'not-allowed' : 'pointer', opacity: bcSaving ? 0.7 : 1 }}
               >
-                {broadcastSaving ? 'Saving…' : 'Save'}
+                {bcSaving ? 'Adding…' : 'Add broadcast'}
               </button>
-              {broadcastMessage && (
-                <button
-                  onClick={() => { setBroadcastMessage(''); setBroadcastStatus(''); }}
-                  style={{ background: 'none', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '8px 16px', fontSize: '14px', color: '#666', cursor: 'pointer' }}
-                >
-                  Clear
-                </button>
-              )}
-              {broadcastStatus && (
-                <span style={{ fontSize: '13px', color: broadcastStatus === 'Saved.' ? '#16a34a' : '#dd0031' }}>
-                  {broadcastStatus}
+              {bcStatus && (
+                <span style={{ fontSize: '13px', color: bcStatus === 'Added.' ? '#16a34a' : '#dd0031' }}>
+                  {bcStatus}
                 </span>
               )}
             </div>

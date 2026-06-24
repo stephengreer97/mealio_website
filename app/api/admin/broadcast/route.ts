@@ -1,34 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
+import { readBroadcasts, writeBroadcasts, type Broadcast } from '@/lib/broadcasts';
 
-// PATCH /api/admin/broadcast — admin only. Set or clear the broadcast message and
-// its optional store targeting. An empty/absent `stores` list = show to everyone.
-export async function PATCH(request: NextRequest) {
+// POST /api/admin/broadcast — admin only. Add a broadcast.
+export async function POST(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-  const { message, stores } = await request.json();
-  const supabase = createServerSupabaseClient();
+  const { message, stores, forceShow } = await request.json();
+  const trimmed = (message ?? '').trim();
+  if (!trimmed) return NextResponse.json({ error: 'Message required' }, { status: 400 });
 
-  const trimmed = message?.trim() || null;
   const storeList = Array.isArray(stores) ? stores.filter((s: unknown) => typeof s === 'string') : [];
-  // Only persist targeting when there is actually a message + selected stores, so a
-  // stale filter can't linger after the message is cleared.
-  const storesValue = trimmed && storeList.length > 0 ? JSON.stringify(storeList) : null;
+  const broadcast: Broadcast = {
+    id: crypto.randomUUID(),
+    message: trimmed,
+    stores: storeList,
+    forceShow: !!forceShow,
+    createdAt: new Date().toISOString(),
+  };
 
-  await supabase.from('app_settings').upsert([
-    { key: 'broadcast_message', value: trimmed },
-    { key: 'broadcast_stores', value: storesValue },
-  ]);
+  const list = await readBroadcasts();
+  list.push(broadcast);
+  await writeBroadcasts(list);
 
   log({
     event: 'ADMIN:BROADCAST',
     status: 'success',
     userId: admin.userId,
     email: admin.email,
-    detail: trimmed ? `set="${trimmed.slice(0, 50)}" stores=${storeList.length || 'all'}` : 'cleared',
+    detail: `add="${trimmed.slice(0, 50)}" stores=${storeList.length || 'all'} force=${!!forceShow}`,
   });
+  return NextResponse.json({ ok: true, broadcast });
+}
+
+// DELETE /api/admin/broadcast — admin only. Remove a broadcast by id.
+export async function DELETE(request: NextRequest) {
+  const admin = await requireAdmin(request);
+  if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+
+  const { id } = await request.json();
+  if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
+
+  const list = await readBroadcasts();
+  await writeBroadcasts(list.filter((b) => b.id !== id));
+
+  log({ event: 'ADMIN:BROADCAST', status: 'success', userId: admin.userId, email: admin.email, detail: `remove id=${id}` });
   return NextResponse.json({ ok: true });
 }
