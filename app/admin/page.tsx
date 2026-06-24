@@ -5,6 +5,22 @@ import { useRouter } from 'next/navigation';
 
 type Tab = 'applications' | 'meals' | 'stats' | 'broadcast' | 'storage';
 
+// Store options for broadcast targeting (id → label).
+const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
+  { id: 'heb', label: 'H-E-B' }, { id: 'walmart', label: 'Walmart' }, { id: 'kroger', label: 'Kroger' },
+  { id: 'aldi', label: 'ALDI' }, { id: 'albertsons', label: 'Albertsons' }, { id: 'amazon', label: 'Amazon Fresh' },
+  { id: 'safeway', label: 'Safeway' }, { id: 'vons', label: 'Vons' }, { id: 'jewel_osco', label: 'Jewel-Osco' },
+  { id: 'shaws', label: "Shaw's" }, { id: 'acme', label: 'Acme Markets' }, { id: 'tom_thumb', label: 'Tom Thumb' },
+  { id: 'randalls', label: 'Randalls' }, { id: 'pavilions', label: 'Pavilions' }, { id: 'star_market', label: 'Star Market' },
+  { id: 'haggen', label: 'Haggen' }, { id: 'carrs', label: 'Carrs' }, { id: 'kings', label: 'Kings Food Markets' },
+  { id: 'balduccis', label: "Balducci's" }, { id: 'ralphs', label: 'Ralphs' }, { id: 'fred_meyer', label: 'Fred Meyer' },
+  { id: 'king_soopers', label: 'King Soopers' }, { id: 'smiths', label: "Smith's Food & Drug" }, { id: 'frys', label: "Fry's Food" },
+  { id: 'qfc', label: 'QFC' }, { id: 'city_market', label: 'City Market' }, { id: 'dillons', label: 'Dillons' },
+  { id: 'bakers', label: "Baker's" }, { id: 'marianos', label: "Mariano's" }, { id: 'pick_n_save', label: "Pick 'n Save" },
+  { id: 'metro_market', label: 'Metro Market' }, { id: 'pay_less', label: 'Pay-Less' }, { id: 'harris_teeter', label: 'Harris Teeter' },
+  { id: 'united', label: 'United Supermarkets' }, { id: 'wegmans', label: 'Wegmans' },
+];
+
 interface Application {
   id: string;
   display_name: string;
@@ -74,6 +90,7 @@ export default function AdminPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const [broadcastMessage, setBroadcastMessage] = useState('');
+  const [broadcastStores, setBroadcastStores] = useState<string[]>([]);
   const [broadcastSaving, setBroadcastSaving] = useState(false);
   const [broadcastStatus, setBroadcastStatus] = useState('');
 
@@ -156,6 +173,7 @@ export default function AdminPage() {
     if (res.ok) {
       const data = await res.json();
       setBroadcastMessage(data.message ?? '');
+      setBroadcastStores(Array.isArray(data.stores) ? data.stores : []);
     }
   };
 
@@ -165,7 +183,7 @@ export default function AdminPage() {
     const res = await fetch('/api/admin/broadcast', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-      body: JSON.stringify({ message: broadcastMessage }),
+      body: JSON.stringify({ message: broadcastMessage, stores: broadcastStores }),
     });
     setBroadcastSaving(false);
     setBroadcastStatus(res.ok ? 'Saved.' : 'Failed to save.');
@@ -740,9 +758,9 @@ export default function AdminPage() {
         {/* Broadcast Tab */}
         {tab === 'broadcast' && (
           <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
-            <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Extension Broadcast Message</h2>
+            <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Broadcast Message</h2>
             <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
-              If set, this message is shown at the top of the extension for all users. Clear the field and save to remove it.
+              If set, this message is shown as a banner in the mobile app. Clear the field and save to remove it.
             </p>
             <textarea
               value={broadcastMessage}
@@ -751,6 +769,38 @@ export default function AdminPage() {
               rows={4}
               style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '10px 12px', fontSize: '14px', fontFamily: 'inherit', resize: 'vertical', outline: 'none' }}
             />
+            <div style={{ marginTop: '18px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '4px' }}>Target stores (optional)</div>
+              <p style={{ margin: '0 0 10px', fontSize: '12px', color: '#888' }}>
+                Leave all unchecked to show to everyone. Otherwise, only users with a saved meal at a selected store will see the message.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px 12px' }}>
+                {BROADCAST_STORE_OPTIONS.map((s) => {
+                  const checked = broadcastStores.includes(s.id);
+                  return (
+                    <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#333', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setBroadcastStatus('');
+                          setBroadcastStores((prev) => (checked ? prev.filter((x) => x !== s.id) : [...prev, s.id]));
+                        }}
+                      />
+                      {s.label}
+                    </label>
+                  );
+                })}
+              </div>
+              {broadcastStores.length > 0 && (
+                <button
+                  onClick={() => { setBroadcastStores([]); setBroadcastStatus(''); }}
+                  style={{ marginTop: '10px', background: 'none', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '6px 12px', fontSize: '12px', color: '#666', cursor: 'pointer' }}
+                >
+                  Clear store selection
+                </button>
+              )}
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '12px' }}>
               <button
                 onClick={saveBroadcast}
