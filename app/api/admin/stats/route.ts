@@ -103,11 +103,13 @@ export async function GET(request: NextRequest) {
     .select('saved_at, preset_meals!preset_meal_id!inner ( creator_id, creators!creator_id ( id, display_name ) )')
     .not('preset_meals.creator_id', 'is', null);
 
-  type CreatorEntry = { name: string; qtrSaves: number; alltimeSaves: number };
+  // Profit-share leaderboard is based entirely on a rolling 12-month (365-day) window of creator saves.
+  const annualStartMs = Date.now() - 365 * 24 * 60 * 60 * 1000;
+
+  type CreatorEntry = { name: string; annualSaves: number };
   const creatorMap: Record<string, CreatorEntry> = {};
 
-  let totalCreatorQtrSaves     = 0;
-  let totalCreatorAlltimeSaves = 0;
+  let totalCreatorAnnualSaves = 0;
 
   for (const row of (allCreatorSaves ?? [])) {
     const meal = (row as {
@@ -116,41 +118,27 @@ export async function GET(request: NextRequest) {
     }).preset_meals;
     if (!meal?.creators) continue;
 
-    const { id: creatorId, display_name: creatorName } = meal.creators;
     const savedAtMs = new Date((row as { saved_at: string }).saved_at).getTime();
-    const inSelectedQtr = savedAtMs >= qtrStartMs && savedAtMs < qtrEndMs;
+    if (savedAtMs < annualStartMs) continue; // only the rolling 12-month window counts
 
+    const { id: creatorId, display_name: creatorName } = meal.creators;
     if (!creatorMap[creatorId]) {
-      creatorMap[creatorId] = { name: creatorName, qtrSaves: 0, alltimeSaves: 0 };
+      creatorMap[creatorId] = { name: creatorName, annualSaves: 0 };
     }
 
-    creatorMap[creatorId].alltimeSaves++;
-    totalCreatorAlltimeSaves++;
-
-    if (inSelectedQtr) {
-      creatorMap[creatorId].qtrSaves++;
-      totalCreatorQtrSaves++;
-    }
+    creatorMap[creatorId].annualSaves++;
+    totalCreatorAnnualSaves++;
   }
 
   const creators = Object.values(creatorMap).map(c => ({
-    name:         c.name,
-    qtrSaves:     c.qtrSaves,
-    alltimeSaves: c.alltimeSaves,
-    qtrPct:       totalCreatorQtrSaves     > 0 ? parseFloat((c.qtrSaves     / totalCreatorQtrSaves     * 100).toFixed(1)) : 0,
-    alltimePct:   totalCreatorAlltimeSaves  > 0 ? parseFloat((c.alltimeSaves / totalCreatorAlltimeSaves  * 100).toFixed(1)) : 0,
-    combinedSharePct: 0,
+    name:        c.name,
+    annualSaves: c.annualSaves,
+    sharePercent: totalCreatorAnnualSaves > 0
+      ? parseFloat((c.annualSaves / totalCreatorAnnualSaves * 100).toFixed(1))
+      : 0,
   }));
 
-  for (const c of creators) {
-    c.combinedSharePct = parseFloat(((c.qtrPct * 0.5) + (c.alltimePct * 0.5)).toFixed(1));
-  }
-
-  const leaderboard        = [...creators].sort((a, b) => b.combinedSharePct - a.combinedSharePct);
-  const leaderboardQtr     = [...creators].sort((a, b) => b.qtrSaves - a.qtrSaves)
-    .map(c => ({ name: c.name, saves: c.qtrSaves, pct: c.qtrPct }));
-  const leaderboardAlltime = [...creators].sort((a, b) => b.alltimeSaves - a.alltimeSaves)
-    .map(c => ({ name: c.name, saves: c.alltimeSaves, pct: c.alltimePct }));
+  const leaderboard = [...creators].sort((a, b) => b.annualSaves - a.annualSaves);
 
   return NextResponse.json({
     isCurrent,
@@ -160,8 +148,7 @@ export async function GET(request: NextRequest) {
       saves30d:                saves30d.count  ?? null,
       savesQtr:                savesQtr.count  ?? 0,
       savesAll:                savesAll.count  ?? null,
-      totalCreatorQtrSaves,
-      totalCreatorAlltimeSaves: isCurrent ? totalCreatorAlltimeSaves : null,
+      totalCreatorAnnualSaves,
       signups30d:              isCurrent ? (signups30d.count ?? 0)  : null,
       signupsQtr:              signupsQtr.count ?? 0,
       signupsAll:              isCurrent ? (signupsAll.count ?? 0)  : null,
@@ -175,8 +162,7 @@ export async function GET(request: NextRequest) {
       netNewPaidQtr:           subsStartedQtr  - subsCancelledQtr,
       netNewPaidAll:           isCurrent ? subsStartedAll   - subsCancelledAll   : null,
     },
-    leaderboard:        isCurrent ? leaderboard        : null,
-    leaderboardQtr,
-    leaderboardAlltime: isCurrent ? leaderboardAlltime : null,
+    // Rolling 12-month leaderboard is window-relative, not quarter-relative — always returned.
+    leaderboard,
   });
 }

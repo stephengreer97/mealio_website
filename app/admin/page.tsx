@@ -58,8 +58,7 @@ interface Stats {
     saves30d: number | null;
     savesQtr: number;
     savesAll: number | null;
-    totalCreatorQtrSaves: number;
-    totalCreatorAlltimeSaves: number | null;
+    totalCreatorAnnualSaves: number;
     signups30d: number | null;
     signupsQtr: number;
     signupsAll: number | null;
@@ -75,14 +74,9 @@ interface Stats {
   };
   leaderboard: {
     name: string;
-    qtrSaves: number;
-    alltimeSaves: number;
-    qtrPct: number;
-    alltimePct: number;
-    combinedSharePct: number;
-  }[] | null;
-  leaderboardQtr: { name: string; saves: number; pct: number }[];
-  leaderboardAlltime: { name: string; saves: number; pct: number }[] | null;
+    annualSaves: number;
+    sharePercent: number;
+  }[];
 }
 
 export default function AdminPage() {
@@ -494,16 +488,11 @@ export default function AdminPage() {
                         </div>
                       ))}
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '24px' }}>
-                      {[
-                        { label: `Creator saves (${stats.quarterLabel})`, value: stats.totals.totalCreatorQtrSaves },
-                        { label: 'Creator saves (all time)',               value: stats.totals.totalCreatorAlltimeSaves ?? 0 },
-                      ].map(s => (
-                        <div key={s.label} style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
-                          <div style={{ fontSize: '32px', fontWeight: 700, color: '#555' }}>{s.value.toLocaleString()}</div>
-                          <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>{s.label}</div>
-                        </div>
-                      ))}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '16px', marginBottom: '24px' }}>
+                      <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '32px', fontWeight: 700, color: '#555' }}>{stats.totals.totalCreatorAnnualSaves.toLocaleString()}</div>
+                        <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Creator saves (last 12 months)</div>
+                      </div>
                     </div>
 
                     {/* User signups — current quarter view */}
@@ -539,16 +528,11 @@ export default function AdminPage() {
                   </>
                 ) : (
                   <>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '24px' }}>
-                    {[
-                      { label: `Meals (${stats.quarterLabel})`,         value: stats.totals.savesQtr,              highlight: true },
-                      { label: `Creator saves (${stats.quarterLabel})`, value: stats.totals.totalCreatorQtrSaves,  highlight: false },
-                    ].map(s => (
-                      <div key={s.label} style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
-                        <div style={{ fontSize: '32px', fontWeight: 700, color: s.highlight ? '#dd0031' : '#555' }}>{s.value.toLocaleString()}</div>
-                        <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>{s.label}</div>
-                      </div>
-                    ))}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '16px', marginBottom: '24px' }}>
+                    <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '32px', fontWeight: 700, color: '#dd0031' }}>{stats.totals.savesQtr.toLocaleString()}</div>
+                      <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Meals ({stats.quarterLabel})</div>
+                    </div>
                   </div>
 
                   {/* User signups — historical quarter view */}
@@ -574,105 +558,36 @@ export default function AdminPage() {
                   </>
                 )}
 
-                {/* Combined leaderboard — current quarter only */}
-                {stats.isCurrent && stats.leaderboard && (
-                  <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden', marginBottom: '24px' }}>
-                    <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
-                      <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#222' }}>Combined Leaderboard</h2>
-                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>50% quarterly + 50% all-time — sorted by combined share</p>
-                    </div>
-                    {stats.leaderboard.length === 0 ? (
-                      <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves yet.</p>
-                    ) : (
-                      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
-                        <thead>
-                          <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
-                            {['#', 'Creator', 'Qtr Saves', 'Qtr %', 'All-time Saves', 'All-time %', 'Combined Share'].map(h => (
-                              <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 600, color: '#555' }}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {stats.leaderboard.map((c, i) => (
-                            <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                              <td style={{ padding: '12px 16px', color: '#aaa', fontWeight: 600 }}>{i + 1}</td>
-                              <td style={{ padding: '12px 16px', fontWeight: 500 }}>{c.name}</td>
-                              <td style={{ padding: '12px 16px', color: '#555' }}>{c.qtrSaves.toLocaleString()}</td>
-                              <td style={{ padding: '12px 16px', color: '#555' }}>{c.qtrPct.toFixed(1)}%</td>
-                              <td style={{ padding: '12px 16px', color: '#555' }}>{c.alltimeSaves.toLocaleString()}</td>
-                              <td style={{ padding: '12px 16px', color: '#555' }}>{c.alltimePct.toFixed(1)}%</td>
-                              <td style={{ padding: '12px 16px', fontWeight: 700, color: '#dd0031' }}>{c.combinedSharePct.toFixed(1)}%</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table></div>
-                    )}
-                  </div>
-                )}
-
-                {/* Quarterly leaderboard */}
+                {/* Profit-share leaderboard — rolling 12-month window (window-relative, shown for any quarter view) */}
                 <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden', marginBottom: '24px' }}>
                   <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
-                    <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#222' }}>{stats.quarterLabel} Leaderboard</h2>
-                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>Creator saves during {stats.quarterLabel}</p>
+                    <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#222' }}>Profit-Share Leaderboard</h2>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>Creator saves over the rolling last 12 months — sorted by share of pool</p>
                   </div>
-                  {stats.leaderboardQtr.length === 0 ? (
-                    <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves this quarter.</p>
+                  {stats.leaderboard.length === 0 ? (
+                    <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves in the last 12 months.</p>
                   ) : (
                     <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
                       <thead>
                         <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
-                          {['#', 'Creator', `Saves (${stats.quarterLabel})`, 'Share of qtr'].map(h => (
+                          {['#', 'Creator', 'Saves (last 12 mo)', 'Share'].map(h => (
                             <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 600, color: '#555' }}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {stats.leaderboardQtr.map((c, i) => (
+                        {stats.leaderboard.map((c, i) => (
                           <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
                             <td style={{ padding: '12px 16px', color: '#aaa', fontWeight: 600 }}>{i + 1}</td>
                             <td style={{ padding: '12px 16px', fontWeight: 500 }}>{c.name}</td>
-                            <td style={{ padding: '12px 16px', color: '#555' }}>{c.saves.toLocaleString()}</td>
-                            <td style={{ padding: '12px 16px', color: '#555' }}>{c.pct.toFixed(1)}%</td>
+                            <td style={{ padding: '12px 16px', color: '#555' }}>{c.annualSaves.toLocaleString()}</td>
+                            <td style={{ padding: '12px 16px', fontWeight: 700, color: '#dd0031' }}>{c.sharePercent.toFixed(1)}%</td>
                           </tr>
                         ))}
                       </tbody>
                     </table></div>
                   )}
                 </div>
-
-                {/* All-time leaderboard — current quarter only */}
-                {stats.isCurrent && stats.leaderboardAlltime && (
-                  <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
-                    <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
-                      <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#222' }}>All-time Leaderboard</h2>
-                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>Total saves since creator joined</p>
-                    </div>
-                    {stats.leaderboardAlltime.length === 0 ? (
-                      <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves yet.</p>
-                    ) : (
-                      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
-                        <thead>
-                          <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
-                            {['#', 'Creator', 'Saves (all time)', 'All-time %'].map(h => (
-                              <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 600, color: '#555' }}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {stats.leaderboardAlltime.map((c, i) => (
-                            <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                              <td style={{ padding: '12px 16px', color: '#aaa', fontWeight: 600 }}>{i + 1}</td>
-                              <td style={{ padding: '12px 16px', fontWeight: 500 }}>{c.name}</td>
-                              <td style={{ padding: '12px 16px', color: '#555' }}>{c.saves.toLocaleString()}</td>
-                              <td style={{ padding: '12px 16px', color: '#555' }}>{c.pct.toFixed(1)}%</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table></div>
-                    )}
-                  </div>
-                )}
               </>
             )}
           </>
