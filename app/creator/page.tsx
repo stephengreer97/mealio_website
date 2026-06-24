@@ -32,13 +32,11 @@ interface CreatorMeal {
 
 interface Stats {
   followers: number;
-  savesQtr: number;
+  savesAnnual: number;
   savesAll: number;
-  totalCreatorQtrSaves: number;
-  totalCreatorAlltimeSaves: number;
-  qtrPct: number;
-  alltimePct: number;
-  combinedSharePct: number;
+  totalCreatorAnnualSaves: number;
+  annualPct: number;
+  sharePercent: number;
 }
 
 interface Ingredient {
@@ -1007,9 +1005,7 @@ export default function CreatorPortal() {
     );
   }
 
-  const qtrComponent     = stats ? (stats.qtrPct     * 0.5).toFixed(1) : '0.0';
-  const alltimeComponent = stats ? (stats.alltimePct * 0.5).toFixed(1) : '0.0';
-  const combinedShare    = stats ? (parseFloat(qtrComponent) + parseFloat(alltimeComponent)).toFixed(1) : '0.0';
+  const annualShare = stats ? stats.sharePercent.toFixed(1) : '0.0';
 
   return (
     <>
@@ -1184,7 +1180,7 @@ export default function CreatorPortal() {
             <div className="grid grid-cols-3 gap-3">
               {[
                 { label: 'Followers',         value: stats.followers.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> },
-                { label: 'Saves this quarter', value: stats.savesQtr.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> },
+                { label: 'Saves (last 12 mo)', value: stats.savesAnnual.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> },
                 { label: 'Saves all time',    value: stats.savesAll.toLocaleString(),   icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> },
               ].map(s => (
                 <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-center">
@@ -1206,7 +1202,7 @@ export default function CreatorPortal() {
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-semibold text-gray-800">How earnings work</span>
                   <span className="text-xs bg-red-50 text-red-600 font-semibold px-2 py-0.5 rounded-full">
-                    Your share: {combinedShare}%
+                    Your share: {annualShare}%
                   </span>
                 </div>
                 <svg
@@ -1220,14 +1216,13 @@ export default function CreatorPortal() {
               {showEarnings && (
                 <div className="px-5 pb-5 border-t border-gray-50">
                   <p className="mt-4 text-sm text-gray-500 leading-relaxed">
-                    Each quarter, 1/3 of subscription profit goes to the creator pool. Your share is split evenly between two factors:
+                    Each quarter, 1/3 of subscription profit goes to the creator pool. Your share is based entirely on your meal saves over the last 12 months as a percentage of all creator meal saves over the same rolling window:
                   </p>
                   <div className="mt-3 bg-orange-50 border border-orange-100 rounded-xl p-4 font-mono text-xs leading-7 text-gray-600">
                     <div className="text-xs font-sans font-bold text-gray-300 mb-2 tracking-widest uppercase">Example</div>
-                    <div>Quarterly saves: 485 of 16,420 → 2.95% × 50% = <strong>1.48%</strong></div>
-                    <div>All-time saves: &nbsp;3,896 of 67,741 → 5.75% × 50% = <strong>2.88%</strong></div>
+                    <div>Saves (last 12 months): 1,940 of 44,500</div>
                     <div className="border-t border-orange-200 mt-3 pt-3">
-                      Combined share: <strong className="text-red-600">4.36%</strong> of the creator pool
+                      Your share: <strong className="text-red-600">4.36%</strong> of the creator pool
                     </div>
                   </div>
                   <p className="mt-3 text-xs text-gray-400">Payouts above $25 are issued at quarter end via Tremendous.</p>

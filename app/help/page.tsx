@@ -352,11 +352,10 @@ export default function HelpPage() {
 
             <h3 style={h3}>How profit share is calculated</h3>
             <p style={p}>
-              Each quarter, one-third of Mealio's subscription profit is distributed to active Creator Partners. Your share is determined by two equally weighted factors:
+              Each quarter, one-third of Mealio's subscription profit is distributed to active Creator Partners. Your share is based entirely on a single rolling 12-month factor:
             </p>
             <ul style={ul}>
-              <li style={li}><strong>Quarterly saves (50%)</strong> — your meals saved this quarter as a percentage of all creator meal saves this quarter</li>
-              <li style={li}><strong>All-time saves (50%)</strong> — your total meal saves as a percentage of all creator meal saves of all time</li>
+              <li style={li}><strong>Saves over the last 12 months</strong> — your meals saved in the last 365 days as a percentage of all creator meal saves over the same rolling 12-month window</li>
             </ul>
             <p style={p}>
               Your Creator Portal shows these numbers in real time, including the exact formula breakdown. Payouts are issued quarterly via Tremendous for amounts above $25. Recipients choose their preferred payout method (bank transfer, PayPal, Venmo, gift cards, etc.) when claiming.
@@ -441,7 +440,7 @@ export default function HelpPage() {
               },
               {
                 q: 'I\'m a food creator. How much can I earn?',
-                a: 'Earnings depend on how often your meals are saved relative to other creators. One-third of Mealio\'s quarterly subscription profit is split among all Creator Partners based on their share of saves. Your Creator Portal shows your current percentage and a breakdown of the calculation. Payouts are issued quarterly for amounts above $25.',
+                a: 'Earnings depend on how often your meals are saved relative to other creators over the last 12 months. One-third of Mealio\'s quarterly subscription profit is split among all Creator Partners based on each creator\'s share of meal saves in the rolling 12-month window. Your Creator Portal shows your current percentage and a breakdown of the calculation. Payouts are issued quarterly for amounts above $25.',
               },
               {
                 q: 'Can I publish meals as a creator and still use Mealio as a regular user?',

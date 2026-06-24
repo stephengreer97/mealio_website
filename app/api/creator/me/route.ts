@@ -130,8 +130,8 @@ export async function GET(request: NextRequest) {
 
   const mealIds = (myMealsRaw ?? []).map((m: { id: string }) => m.id);
 
-  const now = new Date();
-  const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1).toISOString();
+  // Rolling 12-month (annual) window — profit share is based entirely on saves in the last 365 days.
+  const annualStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
   const safeMealIds = mealIds.length > 0 ? mealIds : ['00000000-0000-0000-0000-000000000000'];
@@ -139,14 +139,14 @@ export async function GET(request: NextRequest) {
   // Creator's own saves (aggregate + per-meal)
   const [
     { count: saves30d },
-    { count: savesQtr },
+    { count: savesAnnual },
     { count: savesAll },
     { data: perMealSavesRaw },
   ] = await Promise.all([
     supabase.from('preset_meal_saves').select('id', { count: 'exact', head: true })
       .in('preset_meal_id', safeMealIds).gte('saved_at', thirtyDaysAgo),
     supabase.from('preset_meal_saves').select('id', { count: 'exact', head: true })
-      .in('preset_meal_id', safeMealIds).gte('saved_at', quarterStart),
+      .in('preset_meal_id', safeMealIds).gte('saved_at', annualStart),
     supabase.from('preset_meal_saves').select('id', { count: 'exact', head: true })
       .in('preset_meal_id', safeMealIds),
     supabase.from('preset_meal_saves').select('preset_meal_id')
@@ -166,45 +166,38 @@ export async function GET(request: NextRequest) {
     saves_all: perMealSavesMap.get(m.id) ?? 0,
   })).sort((a, b) => b.trending_score - a.trending_score);
 
-  // Platform totals for creator meals only (denominator for revenue share) + follower count
+  // Platform total for creator meals in the rolling 12-month window (denominator for revenue share) + follower count
   const [
-    { count: totalCreatorQtrSaves },
-    { count: totalCreatorAlltimeSaves },
+    { count: totalCreatorAnnualSaves },
     { count: followerCount },
   ] = await Promise.all([
     supabase.from('preset_meal_saves')
       .select('id, preset_meals!preset_meal_id!inner(creator_id)', { count: 'exact', head: true })
-      .gte('saved_at', quarterStart)
-      .not('preset_meals.creator_id', 'is', null),
-    supabase.from('preset_meal_saves')
-      .select('id, preset_meals!preset_meal_id!inner(creator_id)', { count: 'exact', head: true })
+      .gte('saved_at', annualStart)
       .not('preset_meals.creator_id', 'is', null),
     supabase.from('creator_follows')
       .select('id', { count: 'exact', head: true })
       .eq('creator_id', creator.id),
   ]);
 
-  const creatorQtrSaves = savesQtr ?? 0;
+  const creatorAnnualSaves = savesAnnual ?? 0;
   const creatorAlltimeSaves = savesAll ?? 0;
-  const totalQtr = totalCreatorQtrSaves ?? 0;
-  const totalAll = totalCreatorAlltimeSaves ?? 0;
+  const totalAnnual = totalCreatorAnnualSaves ?? 0;
 
-  const qtrPct     = totalQtr > 0 ? (creatorQtrSaves    / totalQtr * 100) : 0;
-  const alltimePct = totalAll > 0 ? (creatorAlltimeSaves / totalAll * 100) : 0;
-  const combinedSharePct = (qtrPct * 0.5) + (alltimePct * 0.5);
+  // Profit share = creator's saves in the last 365 days ÷ all creators' saves in the last 365 days.
+  const annualPct = totalAnnual > 0 ? (creatorAnnualSaves / totalAnnual * 100) : 0;
+  const sharePercent = annualPct;
 
   return NextResponse.json({
     creator,
     meals: myMeals,
     stats: {
-      followers:               followerCount ?? 0,
-      savesQtr:                creatorQtrSaves,
-      savesAll:                creatorAlltimeSaves,
-      totalCreatorQtrSaves:    totalQtr,
-      totalCreatorAlltimeSaves: totalAll,
-      qtrPct,
-      alltimePct,
-      combinedSharePct,
+      followers:                followerCount ?? 0,
+      savesAnnual:              creatorAnnualSaves,
+      savesAll:                 creatorAlltimeSaves,
+      totalCreatorAnnualSaves:  totalAnnual,
+      annualPct,
+      sharePercent,
     },
   });
 }
