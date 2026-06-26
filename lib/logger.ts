@@ -71,6 +71,7 @@ export type EventType =
   | 'ACCOUNT:DELETE'
   // ── Client ────────────────────────────────────────────────────────────────
   | 'CLIENT:ERROR'
+  | 'BUG_REPORT'
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL';
