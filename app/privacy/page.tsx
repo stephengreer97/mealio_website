@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 };
 
 export default function PrivacyPage() {
-  const effective = 'February 22, 2026';
+  const effective = 'June 26, 2026';
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
@@ -39,6 +39,7 @@ export default function PrivacyPage() {
           <li style={{ marginBottom: '6px' }}><strong>Creator application:</strong> If you apply to the Creator Partner Program, we collect your display name, phone number (optional), and social media or website links you choose to provide.</li>
           <li style={{ marginBottom: '6px' }}><strong>Meal and recipe data:</strong> Meal names, ingredients, recipes, photos, and associated store information that you save or publish through the Service.</li>
           <li style={{ marginBottom: '6px' }}><strong>Support communications:</strong> Any information you provide when contacting us at contact@mealio.co.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Bug reports:</strong> When you submit a bug report through the app or website, we collect the description you write and the diagnostic information described in Section 1.2. Submitting a report is optional and entirely your choice.</li>
         </ul>
 
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>1.2 Information Collected Automatically</h3>
@@ -46,6 +47,7 @@ export default function PrivacyPage() {
           <li style={{ marginBottom: '6px' }}><strong>Authentication data:</strong> Session tokens, refresh tokens, and device identifiers used to keep you logged in securely.</li>
           <li style={{ marginBottom: '6px' }}><strong>Log data:</strong> IP addresses, user agent strings, and timestamps associated with authentication events (login, logout, token refresh). These are used for security monitoring and abuse prevention.</li>
           <li style={{ marginBottom: '6px' }}><strong>Usage data:</strong> Information about how you interact with the Service, including which meals you save and which grocery stores you use. This data is used to calculate creator profit share and improve the Service.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Diagnostic logs (bug reports):</strong> The mobile app keeps a short, temporary record of recent activity in memory on your device. This record is <strong>never stored permanently and never transmitted to us unless you choose to submit a bug report.</strong> If you do, the recent diagnostic logs are attached to your report and emailed to our support address. To help us reproduce the problem, these logs may include the meals and grocery items involved in a cart action, the store used, and basic device and app information (app version, operating system, and the screen you were on). Before the logs leave your device we automatically remove sensitive values — including your password, login/session tokens, and email address. The logs are used solely to investigate and fix the issue you report.</li>
         </ul>
 
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>1.3 Information from Third Parties</h3>
