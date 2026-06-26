@@ -94,6 +94,48 @@ export async function sendCreatorApplicationEmail(applicantName: string, applica
   });
 }
 
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+  ));
+}
+
+/**
+ * Bug report from the app/web Help section → contact@mealio.co. The redacted
+ * session logs (already stripped of secrets + PII client-side) ride along as a
+ * .txt attachment so the inbox stays readable.
+ */
+export async function sendBugReportEmail(opts: {
+  description: string;
+  context?: Record<string, unknown>;
+  logs?: string;
+  source: 'app' | 'web';
+}) {
+  const { description, context = {}, logs, source } = opts;
+  const ctxRows = Object.entries(context)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => `<tr><td style="padding:6px 0;color:#999;width:120px;">${escapeHtml(k)}</td><td style="padding:6px 0;color:#222;">${escapeHtml(String(v))}</td></tr>`)
+    .join('');
+
+  await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to: 'contact@mealio.co',
+    subject: `Bug report (${source}): ${description.slice(0, 60)}${description.length > 60 ? '…' : ''}`,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px;">
+        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Bug report (${source})</h2>
+        <p style="white-space: pre-wrap; color: #222; font-size: 14px; line-height: 1.5; background:#f7f7f7; border-radius:8px; padding:14px; margin:0 0 20px;">${escapeHtml(description)}</p>
+        ${ctxRows ? `<table style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:16px;">${ctxRows}</table>` : ''}
+        <p style="color:#999; font-size:12px; margin:0;">${logs ? 'Redacted session logs are attached (session-logs.txt).' : 'No session logs were attached.'}</p>
+      </div>
+    `,
+    attachments: logs
+      ? [{ filename: 'session-logs.txt', content: Buffer.from(logs, 'utf8').toString('base64') }]
+      : undefined,
+  });
+}
+
 export async function sendOtpEmail(to: string, code: string) {
   await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',

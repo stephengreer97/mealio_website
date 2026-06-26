@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
+import BugReportForm from '@/components/BugReportForm';
 
 export const metadata: Metadata = {
   title: 'Help',
@@ -456,6 +457,15 @@ export default function HelpPage() {
                 <p style={{ margin: 0, fontSize: '14px', color: '#555', lineHeight: 1.65 }}>{item.a}</p>
               </div>
             ))}
+          </section>
+
+          {/* Report a bug */}
+          <section style={{ marginTop: '48px' }}>
+            <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#222', margin: '0 0 8px' }}>Report a bug</h2>
+            <p style={{ margin: '0 0 16px', color: '#666', fontSize: '14px' }}>
+              Found something broken? Tell us what happened and we'll take a look.
+            </p>
+            <BugReportForm />
           </section>
 
           {/* Footer contact */}
