@@ -65,10 +65,12 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
         </ol>
 
         <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">Tips for more saves</h3>
-        <ul style="color: #666; font-size: 14px; line-height: 2; margin: 0 0 24px; padding-left: 20px;">
-          <li>Use clear, specific ingredient names (e.g. "boneless chicken thighs" not "chicken")</li>
-          <li>Tag your meals accurately — users filter by tags</li>
-          <li>Share your creator profile link with your audience</li>
+        <ul style="color: #666; font-size: 14px; line-height: 1.9; margin: 0 0 24px; padding-left: 20px;">
+          <li><strong>Publish regularly.</strong> This is the single biggest lever. The Discover feed favors fresh meals, and consistent posting keeps you in front of savers — a steady weekly cadence far outperforms a one-time dump.</li>
+          <li><strong>Great photo on every meal.</strong> Bright, top-down shots of real food get saved the most.</li>
+          <li><strong>Use specific ingredient names</strong> — "boneless chicken thighs," not "chicken."</li>
+          <li><strong>Tag accurately</strong> — savers filter by tags, so good tags get you found.</li>
+          <li><strong>Share your profile link.</strong> Put your Mealio creator link in your Instagram/TikTok bio and posts to send your audience straight to your meals.</li>
         </ul>
 
         <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 24px;">Go to Creator Portal</a>
