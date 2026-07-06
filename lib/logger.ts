@@ -72,6 +72,13 @@ export type EventType =
   // ── Client ────────────────────────────────────────────────────────────────
   | 'CLIENT:ERROR'
   | 'BUG_REPORT'
+  // ── Email (marketing / lifecycle) ──────────────────────────────────────────
+  | 'EMAIL:MARKETING_SENT'
+  | 'EMAIL:SUPPRESSED'
+  | 'EMAIL:UNSUBSCRIBE'
+  | 'EMAIL:WEBHOOK'
+  // ── Cron ──────────────────────────────────────────────────────────────────
+  | 'CRON:DAILY'
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL';
