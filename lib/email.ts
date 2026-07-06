@@ -2,6 +2,29 @@ import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+/**
+ * Shared shell for marketing / lifecycle emails. Adds the Mealio header and a
+ * CAN-SPAM-compliant footer (one-click unsubscribe + physical mailing address).
+ * All marketing sends must go through this via lib/marketing-email.ts — the
+ * transactional emails below (OTP, creator status, bug report) intentionally
+ * do NOT use it.
+ */
+export function marketingEmailLayout(bodyHtml: string, unsubscribeUrl: string): string {
+  const mailingAddress = process.env.MEALIO_MAILING_ADDRESS ?? '';
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+      <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+      ${bodyHtml}
+      <hr style="border: none; border-top: 1px solid #eee; margin: 32px 0 16px;" />
+      <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 0;">
+        You're receiving this because you have a Mealio account.
+        <a href="${unsubscribeUrl}" style="color: #999; text-decoration: underline;">Unsubscribe</a> from marketing emails.
+      </p>
+      ${mailingAddress ? `<p style="color: #bbb; font-size: 11px; margin: 8px 0 0;">${mailingAddress}</p>` : ''}
+    </div>
+  `;
+}
+
 export async function sendCreatorAppliedEmail(to: string, displayName: string) {
   await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
