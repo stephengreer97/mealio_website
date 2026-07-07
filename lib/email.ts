@@ -13,7 +13,7 @@ export function marketingEmailLayout(bodyHtml: string, unsubscribeUrl: string): 
   const mailingAddress = process.env.MEALIO_MAILING_ADDRESS ?? '';
   return `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
-      <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+      <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
       ${bodyHtml}
       <hr style="border: none; border-top: 1px solid #eee; margin: 32px 0 16px;" />
       <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 0;">
@@ -32,7 +32,7 @@ export async function sendCreatorAppliedEmail(to: string, displayName: string) {
     subject: 'We received your creator application',
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
-        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Thanks for applying, ${displayName}!</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">We've received your creator application and our team will review it shortly. You'll get an email as soon as a decision is made.</p>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">In the meantime, feel free to explore Mealio and save meals to your account.</p>
@@ -50,7 +50,7 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
     subject: "You're approved — start publishing on Mealio!",
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
-        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">You're in, ${displayName}! 🎉</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">Your creator application has been approved. You can now publish meals to the Mealio Discover feed and earn profit based on how often your meals are saved.</p>
 
@@ -88,7 +88,7 @@ export async function sendCreatorRejectedEmail(to: string, displayName: string) 
     subject: 'An update on your Mealio creator application',
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
-        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${displayName},</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">Thank you for your interest in becoming a Mealio Creator Partner. After reviewing your application, we're not able to move forward at this time.</p>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">We encourage you to keep growing your audience and feel free to re-apply in the future. In the meantime, you can continue saving and discovering meals on Mealio.</p>
@@ -106,7 +106,7 @@ export async function sendCreatorApplicationEmail(applicantName: string, applica
     subject: `New creator application: ${applicantName}`,
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
-        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">New Creator Application</h2>
         <p style="color: #666; font-size: 14px; margin: 0 0 24px;">Someone has applied to become a creator.</p>
         <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 24px;">
@@ -148,7 +148,7 @@ export async function sendBugReportEmail(opts: {
     subject: `Bug report (${source}): ${description.slice(0, 60)}${description.length > 60 ? '…' : ''}`,
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px;">
-        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Bug report (${source})</h2>
         <p style="white-space: pre-wrap; color: #222; font-size: 14px; line-height: 1.5; background:#f7f7f7; border-radius:8px; padding:14px; margin:0 0 20px;">${escapeHtml(description)}</p>
         ${ctxRows ? `<table style="width:100%; border-collapse:collapse; font-size:13px; margin-bottom:16px;">${ctxRows}</table>` : ''}
@@ -168,7 +168,7 @@ export async function sendOtpEmail(to: string, code: string) {
     subject: 'Your Mealio login code',
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 420px; margin: 0 auto; padding: 32px 24px;">
-        <div style="color: #dd0031; font-size: 28px; font-weight: 800; margin-bottom: 24px;">Mealio</div>
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Your login code</h2>
         <p style="color: #666; font-size: 14px; margin: 0 0 24px;">Enter this code to complete sign-in. It expires in 10 minutes.</p>
         <div style="background: #f5f5f5; border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 24px;">
