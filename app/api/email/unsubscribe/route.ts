@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     <title>Mealio — Unsubscribe</title></head>
     <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#faf7f5;margin:0;padding:48px 16px;">
       <div style="max-width:440px;margin:0 auto;background:#fff;border-radius:16px;padding:32px 24px;text-align:center;box-shadow:0 2px 16px rgba(0,0,0,0.05);">
-        <div style="color:#dd0031;font-size:28px;font-weight:800;margin-bottom:16px;">Mealio</div>
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display:block;margin:0 auto 16px;border:0;" />
         <p style="color:#444;font-size:15px;line-height:1.6;margin:0;">${message}</p>
       </div>
     </body></html>`;
