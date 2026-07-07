@@ -67,9 +67,11 @@ export async function sendMarketingEmail(input: MarketingEmailInput): Promise<Ma
   if (!profile) return { status: 'skipped', reason: 'no_profile' };
 
   if (profile.marketing_opt_out) {
-    // Log the suppression so the dashboard shows why nothing sent.
+    // Log the suppression so the dashboard shows why nothing sent. Do NOT write
+    // dedup_key here — a suppressed row must not permanently block a future send
+    // if the user later opts back in.
     await supabase.from('email_sends').insert({
-      user_id: userId, email: to, type, dedup_key: dedupKey ?? null, status: 'suppressed',
+      user_id: userId, email: to, type, dedup_key: null, status: 'suppressed',
     });
     log({ event: 'EMAIL:SUPPRESSED', status: 'pending', userId, detail: type, reason: 'opted out' });
     return { status: 'skipped', reason: 'opted_out' };
@@ -99,8 +101,10 @@ export async function sendMarketingEmail(input: MarketingEmailInput): Promise<Ma
     log({ event: 'EMAIL:MARKETING_SENT', status: 'success', userId, detail: type });
     return { status: 'sent', messageId: data?.id ?? null };
   } catch (err: any) {
+    // No dedup_key on error rows — the send never went out, so a retry must not
+    // be permanently blocked.
     await supabase.from('email_sends').insert({
-      user_id: userId, email: to, type, dedup_key: dedupKey ?? null,
+      user_id: userId, email: to, type, dedup_key: null,
       status: 'error', error: err.message,
     });
     log({ event: 'EMAIL:MARKETING_SENT', status: 'error', userId, detail: type, reason: err.message });

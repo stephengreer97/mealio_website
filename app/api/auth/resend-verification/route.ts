@@ -21,9 +21,12 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // Never surface the raw Supabase error to the client — it can reveal whether
+    // an address exists / is already verified (account enumeration). Log the
+    // detail server-side and always return a neutral success, like forgot-password.
     if (error) {
       log({ event: 'AUTH:RESEND', status: 'failed', email, ip, reason: error.message });
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json({ success: true });
     }
 
     log({ event: 'AUTH:RESEND', status: 'success', email, ip });

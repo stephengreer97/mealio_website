@@ -29,7 +29,7 @@ export async function POST(
     );
 
   if (error) {
-    log({ event: 'MEAL:CREATE', status: 'error', userId: decoded.userId, detail: id, error });
+    log({ event: 'MEAL:SAVE_PRESET', status: 'error', userId: decoded.userId, detail: id, error });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

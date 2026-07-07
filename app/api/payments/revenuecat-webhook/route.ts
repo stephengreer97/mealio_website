@@ -20,14 +20,17 @@ const LAPSED_EVENTS = new Set([
 ]);
 
 export async function POST(request: NextRequest) {
-  // Verify shared secret
+  // Verify shared secret — fail CLOSED if it isn't configured so we never grant
+  // paid access on an unauthenticated request.
   const secret = process.env.REVENUECAT_WEBHOOK_SECRET;
-  if (secret) {
-    const auth = request.headers.get('authorization') ?? '';
-    if (auth !== `Bearer ${secret}`) {
-      log({ event: 'PAYMENT:RC_WEBHOOK', status: 'failed', reason: 'invalid auth' });
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!secret) {
+    log({ event: 'PAYMENT:RC_WEBHOOK', status: 'error', reason: 'REVENUECAT_WEBHOOK_SECRET not configured' });
+    return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
+  }
+  const auth = request.headers.get('authorization') ?? '';
+  if (auth !== `Bearer ${secret}`) {
+    log({ event: 'PAYMENT:RC_WEBHOOK', status: 'failed', reason: 'invalid auth' });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let body: any;

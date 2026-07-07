@@ -53,7 +53,7 @@ export async function PUT(
     .eq('id', id)
     .eq('user_id', decoded.userId) // user can only update their own meals
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     log({ event: 'MEAL:UPDATE', status: 'error', userId: decoded.userId, detail: id, error });
@@ -85,28 +85,38 @@ export async function DELETE(
   const supabase = createServerSupabaseClient();
 
   if (permanent) {
-    const { error } = await supabase
+    const { data: deleted, error } = await supabase
       .from('meals')
       .delete()
       .eq('id', id)
-      .eq('user_id', decoded.userId);
+      .eq('user_id', decoded.userId)
+      .select('id');
 
     if (error) {
       log({ event: 'MEAL:DELETE_PERMANENT', status: 'error', userId: decoded.userId, detail: id, error });
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    if (!deleted || deleted.length === 0) {
+      return NextResponse.json({ error: 'Meal not found' }, { status: 404 });
+    }
+
     log({ event: 'MEAL:DELETE_PERMANENT', status: 'success', userId: decoded.userId, detail: id });
   } else {
-    const { error } = await supabase
+    const { data: updated, error } = await supabase
       .from('meals')
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq('id', id)
-      .eq('user_id', decoded.userId);
+      .eq('user_id', decoded.userId)
+      .select('id');
 
     if (error) {
       log({ event: 'MEAL:DELETE', status: 'error', userId: decoded.userId, detail: id, error });
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    if (!updated || updated.length === 0) {
+      return NextResponse.json({ error: 'Meal not found' }, { status: 404 });
     }
 
     log({ event: 'MEAL:DELETE', status: 'success', userId: decoded.userId, detail: id });

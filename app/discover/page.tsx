@@ -957,6 +957,7 @@ export default function DiscoverPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [savedMealStores, setSavedMealStores] = useState<Map<string, string[]>>(new Map());
+  const [activeMealCount, setActiveMealCount] = useState(0); // user's true active meal count (all meals, not just Discover-saved presets)
   const [recentStores, setRecentStores] = useState<string[]>([]);
 
   useEffect(() => {
@@ -1042,6 +1043,7 @@ export default function DiscoverPage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       }).then(r => r.ok ? r.json() : null).then(d => {
         if (!d?.meals) return;
+        setActiveMealCount(d.meals.length);
         const map = new Map<string, string[]>();
         for (const m of d.meals) {
           if (!m.preset_meal_id) continue;
@@ -1217,7 +1219,7 @@ export default function DiscoverPage() {
       <AppHeader />
 
       {/* Upgrade nudge */}
-      {user && user.tier !== 'paid' && savedMealStores.size >= 3 && (
+      {user && user.tier !== 'paid' && activeMealCount >= 3 && (
         <div className="w-full py-2.5 px-4 text-center text-sm" style={{ background: 'var(--brand-light)', borderBottom: '1px solid var(--brand-border)', color: 'var(--brand)' }}>
           <span className="font-medium">Free plan: </span>limited to 3 saved meals.{' '}
           <a href="/pricing" className="underline font-semibold hover:opacity-80 transition-opacity">Upgrade to Full Access →</a>

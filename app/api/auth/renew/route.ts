@@ -25,13 +25,23 @@ export async function POST(request: NextRequest) {
 
     const { userId, email } = decoded;
 
-    // Look up current tier + admin status so clients stay up to date
+    // Look up current tier + admin status so clients stay up to date, plus
+    // tokens_invalidated_at to reject tokens issued before the user logged out
+    // (so post-logout tokens can't be renewed indefinitely) — one query.
     const supabase = createServerSupabaseClient();
     const { data: profile } = await supabase
       .from('user_profiles')
-      .select('subscription_tier, is_admin')
+      .select('subscription_tier, is_admin, tokens_invalidated_at')
       .eq('id', userId)
       .single();
+
+    if (
+      profile?.tokens_invalidated_at &&
+      decoded.issuedAt * 1000 < new Date(profile.tokens_invalidated_at).getTime()
+    ) {
+      log({ event: 'AUTH:RENEW', status: 'failed', ip, reason: 'token revoked' });
+      return NextResponse.json({ error: 'Invalid or expired token' }, { status: 401 });
+    }
 
     const accessToken = await createAccessToken(userId, email);
 

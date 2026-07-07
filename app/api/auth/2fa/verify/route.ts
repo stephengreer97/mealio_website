@@ -46,6 +46,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Increment attempt count before verifying (prevents timing-based enumeration)
+    // TODO(security): this read-then-write increment is not atomic — concurrent
+    // requests can share the same `otp.attempts` snapshot and bypass MAX_ATTEMPTS.
+    // Replace with an atomic DB increment (e.g. a Postgres RPC
+    // `increment_otp_attempts(otp_id) RETURNS int` that does
+    // `UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts`)
+    // once a migration can be added. Left as-is here to avoid a schema change.
     await supabase.from('otp_codes').update({ attempts: otp.attempts + 1 }).eq('id', otp.id);
 
     if (hashOtp(String(code)) !== otp.code_hash) {

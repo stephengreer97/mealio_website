@@ -12,12 +12,15 @@ export const dynamic = 'force-dynamic';
 // physical-address gate handled there), so nothing sends until
 // MEALIO_MAILING_ADDRESS is set to a real address.
 export async function GET(request: NextRequest) {
+  // Fail CLOSED if the cron secret isn't configured — never run unauthenticated.
   const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = request.headers.get('authorization') ?? '';
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!secret) {
+    log({ event: 'CRON:DAILY', status: 'error', reason: 'CRON_SECRET not configured' });
+    return NextResponse.json({ error: 'Cron not configured' }, { status: 500 });
+  }
+  const auth = request.headers.get('authorization') ?? '';
+  if (auth !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const results = { creatorReminders: 0, userUpsell: 0 };

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
@@ -44,6 +45,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  revalidateTag('trending-meals', 'max');
   log({ event: 'ADMIN:MEAL_DELETE', status: 'success', userId: admin.userId, email: admin.email, detail: id });
   return NextResponse.json({ ok: true });
 }

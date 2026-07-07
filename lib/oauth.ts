@@ -98,6 +98,9 @@ interface SocialUserParams {
   provider: 'google' | 'apple';
   providerId: string;
   email: string;
+  /** Whether the provider asserts this email is verified. Required so we never
+   * auto-link a provider to an existing account on an unverified email. */
+  emailVerified: boolean;
   firstName?: string;
   lastName?: string;
 }
@@ -110,6 +113,7 @@ export async function upsertSocialUser({
   provider,
   providerId,
   email,
+  emailVerified,
   firstName,
   lastName,
 }: SocialUserParams): Promise<{ userId: string; email: string; tier: string; isAdmin: boolean }> {
@@ -144,6 +148,13 @@ export async function upsertSocialUser({
     .maybeSingle();
 
   if (byEmail) {
+    // Refuse to auto-link a provider to an existing account unless the provider
+    // has verified ownership of the email. Otherwise an attacker who controls a
+    // provider account with an unverified email matching a victim's could take
+    // over that victim's Mealio account.
+    if (!emailVerified) {
+      throw new Error('unverified_email_link_blocked');
+    }
     await supabase
       .from('user_profiles')
       .update({ [idColumn]: providerId, last_login_at: new Date().toISOString() })
