@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { log } from '@/lib/logger';
+import { runCreatorReminders, runUserUpsellDrip } from '@/lib/email-campaigns';
 
 export const dynamic = 'force-dynamic';
 
@@ -7,10 +8,9 @@ export const dynamic = 'force-dynamic';
 // within Vercel Hobby's cron limits (see vercel.json). Vercel injects
 // `Authorization: Bearer <CRON_SECRET>` on scheduled invocations.
 //
-// M0: scaffold only. M2 fills in the two passes:
-//   - creator publish-reminders (idle creators)
-//   - user upsell drip (free users, N days after signup)
-// Both go through sendMarketingEmail() (suppression + dedup handled there).
+// Both passes route through sendMarketingEmail() (suppression + dedup + the
+// physical-address gate handled there), so nothing sends until
+// MEALIO_MAILING_ADDRESS is set to a real address.
 export async function GET(request: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (secret) {
@@ -20,10 +20,19 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const results = {
-    creatorReminders: 0, // M2: await runCreatorReminders()
-    userUpsell: 0,       // M2: await runUserUpsellDrip()
-  };
+  const results = { creatorReminders: 0, userUpsell: 0 };
+
+  // Isolate the passes so one failing doesn't drop the other.
+  try {
+    results.creatorReminders = await runCreatorReminders();
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'creatorReminders', reason: err.message });
+  }
+  try {
+    results.userUpsell = await runUserUpsellDrip();
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'userUpsell', reason: err.message });
+  }
 
   log({ event: 'CRON:DAILY', status: 'success', detail: JSON.stringify(results) });
   return NextResponse.json({ ok: true, ...results });
