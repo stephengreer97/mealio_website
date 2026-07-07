@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-type Tab = 'applications' | 'meals' | 'stats' | 'broadcast' | 'storage';
+type Tab = 'applications' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
@@ -79,6 +79,26 @@ interface Stats {
   }[];
 }
 
+interface EmailCampaign {
+  type: string;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  bounced: number;
+  complained: number;
+  suppressed: number;
+  error: number;
+  openRate: number;
+  clickRate: number;
+}
+
+interface EmailStats {
+  campaigns: EmailCampaign[];
+  totals: { totalSent: number; unsubscribes: number };
+  recent: { email: string; type: string; status: string; sent_at: string; opened_at: string | null; clicked_at: string | null }[];
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -88,6 +108,8 @@ export default function AdminPage() {
   const [meals, setMeals] = useState<Meal[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<AvailableQuarter | null>(null);
+  const [emailStats, setEmailStats] = useState<EmailStats | null>(null);
+  const [emailSearch, setEmailSearch] = useState('');
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -165,11 +187,20 @@ export default function AdminPage() {
     }
   };
 
+  const loadEmailStats = async (search?: string) => {
+    const params = search ? `?email=${encodeURIComponent(search)}` : '';
+    const res = await fetch(`/api/admin/email-stats${params}`, {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    if (res.ok) setEmailStats(await res.json());
+  };
+
   const switchTab = (t: Tab) => {
     setTab(t);
     if (t === 'meals' && meals.length === 0) loadMeals();
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
+    if (t === 'email' && !emailStats) loadEmailStats();
   };
 
   const loadBroadcasts = async () => {
@@ -338,6 +369,7 @@ export default function AdminPage() {
         <button style={tabStyle('stats')} onClick={() => switchTab('stats')}>Stats</button>
         <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
         <button style={tabStyle('storage')} onClick={() => switchTab('storage')}>Storage</button>
+        <button style={tabStyle('email')} onClick={() => switchTab('email')}>Email</button>
       </div>
 
       <div style={{ maxWidth: '1000px', margin: '32px auto', padding: '0 20px' }}>
@@ -594,6 +626,94 @@ export default function AdminPage() {
         )}
 
         {/* Storage Tab */}
+        {tab === 'email' && (
+          <>
+            {!emailStats ? (
+              <p style={{ textAlign: 'center', color: '#888', padding: '32px' }}>Loading…</p>
+            ) : (
+              <>
+                {/* Totals */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '24px' }}>
+                  <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '32px', fontWeight: 700, color: '#dd0031' }}>{emailStats.totals.totalSent.toLocaleString()}</div>
+                    <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Emails sent</div>
+                  </div>
+                  <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '32px', fontWeight: 700, color: '#555' }}>{emailStats.totals.unsubscribes.toLocaleString()}</div>
+                    <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Unsubscribed</div>
+                  </div>
+                </div>
+
+                {/* Campaigns */}
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#555', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Campaigns</div>
+                <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden', marginBottom: '32px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ background: '#faf7f5', color: '#888' }}>
+                        {['Campaign', 'Sent', 'Delivered', 'Open %', 'Click %', 'Bounced', 'Complaints'].map((h, i) => (
+                          <th key={h} style={{ padding: '10px 12px', fontWeight: 600, textAlign: i === 0 ? 'left' : 'right' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {emailStats.campaigns.length === 0 ? (
+                        <tr><td colSpan={7} style={{ padding: '20px', textAlign: 'center', color: '#aaa' }}>No emails sent yet.</td></tr>
+                      ) : emailStats.campaigns.map(c => (
+                        <tr key={c.type} style={{ borderTop: '1px solid #f0eae6' }}>
+                          <td style={{ padding: '10px 12px', fontWeight: 600, color: '#333' }}>{c.type}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right' }}>{c.sent}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right' }}>{c.delivered}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right' }}>{c.openRate}%</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right' }}>{c.clickRate}%</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', color: c.bounced ? '#dd0031' : '#333' }}>{c.bounced}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', color: c.complained ? '#dd0031' : '#333' }}>{c.complained}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Recent log */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#555', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Recent sends</div>
+                  <input
+                    value={emailSearch}
+                    onChange={e => setEmailSearch(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') loadEmailStats(emailSearch); }}
+                    placeholder="Search email…"
+                    style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '13px' }}
+                  />
+                </div>
+                <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ background: '#faf7f5', color: '#888', textAlign: 'left' }}>
+                        {['Email', 'Campaign', 'Status', 'Sent', 'Opened', 'Clicked'].map(h => (
+                          <th key={h} style={{ padding: '10px 12px', fontWeight: 600 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {emailStats.recent.length === 0 ? (
+                        <tr><td colSpan={6} style={{ padding: '20px', textAlign: 'center', color: '#aaa' }}>No sends match.</td></tr>
+                      ) : emailStats.recent.map((r, i) => (
+                        <tr key={i} style={{ borderTop: '1px solid #f0eae6' }}>
+                          <td style={{ padding: '10px 12px', color: '#333' }}>{r.email}</td>
+                          <td style={{ padding: '10px 12px', color: '#666' }}>{r.type}</td>
+                          <td style={{ padding: '10px 12px', color: '#666' }}>{r.status}</td>
+                          <td style={{ padding: '10px 12px', color: '#999' }}>{new Date(r.sent_at).toLocaleDateString()}</td>
+                          <td style={{ padding: '10px 12px' }}>{r.opened_at ? '✓' : ''}</td>
+                          <td style={{ padding: '10px 12px' }}>{r.clicked_at ? '✓' : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
         {tab === 'storage' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
