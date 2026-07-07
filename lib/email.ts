@@ -67,6 +67,7 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
         <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">Tips for more saves</h3>
         <ul style="color: #666; font-size: 14px; line-height: 1.9; margin: 0 0 24px; padding-left: 20px;">
           <li><strong>Publish regularly.</strong> This is the single biggest lever. The Discover feed favors fresh meals, and consistent posting keeps you in front of savers — a steady weekly cadence far outperforms a one-time dump.</li>
+          <li><strong>Get featured.</strong> Our most consistent creators get featured on Discover, putting their meals in front of even more savers — so keep posting.</li>
           <li><strong>Great photo on every meal.</strong> Bright, top-down shots of real food get saved the most.</li>
           <li><strong>Use specific ingredient names</strong> — "boneless chicken thighs," not "chicken."</li>
           <li><strong>Tag accurately</strong> — savers filter by tags, so good tags get you found.</li>
