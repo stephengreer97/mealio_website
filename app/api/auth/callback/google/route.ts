@@ -22,13 +22,23 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${APP_URL}/signin?error=oauth_failed`);
   }
 
+  // CSRF: the state nonce echoed by Google must match the httpOnly cookie set at
+  // auth start. Reject the login otherwise.
+  const stateCookie = request.cookies.get('mealio_oauth_state')?.value;
   let redirectTo = '/discover';
+  let stateNonce: string | undefined;
   try {
     if (stateParam) {
       const decoded = JSON.parse(Buffer.from(stateParam, 'base64url').toString());
       if (decoded.redirect?.startsWith('/')) redirectTo = decoded.redirect;
+      stateNonce = decoded.nonce;
     }
   } catch {}
+
+  if (!stateCookie || !stateNonce || stateCookie !== stateNonce) {
+    log({ event: 'AUTH:OAUTH_GOOGLE', status: 'failed', ip, reason: 'invalid state (csrf)' });
+    return NextResponse.redirect(`${APP_URL}/signin?error=oauth_failed`);
+  }
 
   try {
     // Exchange code for tokens
@@ -60,6 +70,7 @@ export async function GET(request: NextRequest) {
       provider: 'google',
       providerId: claims.sub,
       email: claims.email,
+      emailVerified: claims.email_verified,
       firstName: claims.given_name,
       lastName: claims.family_name,
     });
@@ -73,9 +84,11 @@ export async function GET(request: NextRequest) {
 
     log({ event: 'AUTH:OAUTH_GOOGLE', status: 'success', email, userId, ip });
 
-    // Redirect to client page that stores the token in localStorage
+    // Redirect to client page that stores the token in localStorage. The access
+    // token is delivered via a short-lived, path-scoped handoff cookie instead
+    // of the URL query string so it can't leak via browser history / Referer /
+    // server access logs.
     const callbackUrl = new URL(`${APP_URL}/auth/social-callback`);
-    callbackUrl.searchParams.set('token', accessToken);
     callbackUrl.searchParams.set('user', Buffer.from(JSON.stringify({ id: userId, email, tier, isAdmin })).toString('base64url'));
     callbackUrl.searchParams.set('redirect', redirectTo);
 
@@ -87,6 +100,16 @@ export async function GET(request: NextRequest) {
       maxAge: 60 * 60 * 24 * 90,
       path: '/',
     });
+    // JS-readable so social-callback can move it into localStorage, then delete it.
+    response.cookies.set('mealio_oauth_token', accessToken, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 120,
+      path: '/auth/social-callback',
+    });
+    // Clear the CSRF state cookie now that it has been validated.
+    response.cookies.set('mealio_oauth_state', '', { path: '/', maxAge: 0 });
     return response;
   } catch (error) {
     log({ event: 'AUTH:OAUTH_GOOGLE', status: 'error', ip, error });

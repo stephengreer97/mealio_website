@@ -3,6 +3,7 @@ import { verifyAppleIdentityToken, upsertSocialUser } from '@/lib/oauth';
 import { createAccessToken } from '@/lib/tokens';
 import { log, abbreviateUa } from '@/lib/logger';
 import { SignJWT } from 'jose';
+import { randomBytes } from 'crypto';
 
 const JWT_SECRET = () => new TextEncoder().encode(process.env.JWT_SECRET || '');
 
@@ -16,7 +17,11 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const redirect = searchParams.get('redirect') || '/discover';
 
-  const state = Buffer.from(JSON.stringify({ redirect })).toString('base64url');
+  // CSRF: bind this auth attempt to a nonce cookie, echoed via state. Apple posts
+  // the callback cross-site (form_post), so the cookie must be SameSite=None to be
+  // sent back on that request.
+  const nonce = randomBytes(16).toString('hex');
+  const state = Buffer.from(JSON.stringify({ redirect, nonce })).toString('base64url');
   const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL || 'https://mealio.co'}/api/auth/callback/apple`;
 
   const params = new URLSearchParams({
@@ -28,7 +33,15 @@ export async function GET(request: NextRequest) {
     state,
   });
 
-  return NextResponse.redirect(`https://appleid.apple.com/auth/authorize?${params}`);
+  const response = NextResponse.redirect(`https://appleid.apple.com/auth/authorize?${params}`);
+  response.cookies.set('mealio_oauth_state', nonce, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none',
+    maxAge: 600,
+    path: '/',
+  });
+  return response;
 }
 
 // POST — mobile: verify identityToken sent from expo-apple-authentication
@@ -58,6 +71,7 @@ export async function POST(request: NextRequest) {
       provider: 'apple',
       providerId: claims.sub,
       email,
+      emailVerified: claims.email_verified,
       firstName: user?.name?.firstName,
       lastName: user?.name?.lastName,
     });

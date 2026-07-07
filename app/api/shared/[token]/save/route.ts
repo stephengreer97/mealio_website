@@ -52,9 +52,11 @@ export async function POST(
     const { count } = await supabase
       .from('meals')
       .select('*', { count: 'exact', head: true })
-      .eq('user_id', decoded.userId);
+      .eq('user_id', decoded.userId)
+      .eq('is_active', true);
 
     if ((count ?? 0) >= 3) {
+      // TODO: use a dedicated event (e.g. MEAL:SAVE_SHARED) once added to logger's EventType
       log({ event: 'MEAL:CREATE', status: 'failed', userId: decoded.userId, reason: 'tier limit reached (shared save)' });
       return NextResponse.json(
         { error: 'Free plan is limited to 3 meals. Upgrade to Full Access to add more.', tierLimitReached: true },

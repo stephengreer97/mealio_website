@@ -33,6 +33,17 @@ export async function POST(request: NextRequest) {
   const { priceId } = body;
   if (!priceId) return NextResponse.json({ error: 'priceId is required — check NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID / NEXT_PUBLIC_STRIPE_ANNUAL_PRICE_ID env vars' }, { status: 400 });
 
+  // Allow-list the price: only our configured monthly/annual plans may be used,
+  // otherwise a client could subscribe to an arbitrary Stripe price.
+  const allowedPriceIds = [
+    process.env.NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID,
+    process.env.NEXT_PUBLIC_STRIPE_ANNUAL_PRICE_ID,
+  ].filter(Boolean);
+  if (!allowedPriceIds.includes(priceId)) {
+    log({ event: 'PAYMENT:CHECKOUT', status: 'failed', userId: decoded.userId, reason: 'invalid priceId' });
+    return NextResponse.json({ error: 'Invalid priceId' }, { status: 400 });
+  }
+
   const supabase = createServerSupabaseClient();
   const { data: profile } = await supabase
     .from('user_profiles')

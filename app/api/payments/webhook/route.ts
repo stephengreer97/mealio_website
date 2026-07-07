@@ -50,6 +50,11 @@ export async function POST(request: NextRequest) {
         break;
       }
 
+      // TODO(idempotency): Stripe retries deliver the same event.id more than
+      // once, double-counting this row. Add a `stripe_event_id text unique`
+      // column to subscription_events (migration), then switch this to
+      // `.upsert({ user_id: userId, event: 'started', stripe_event_id: event.id },
+      // { onConflict: 'stripe_event_id', ignoreDuplicates: true })`.
       const { error: insertErr } = await supabase.from('subscription_events').insert({ user_id: userId, event: 'started' });
       if (insertErr) {
         log({ event: 'PAYMENT:WEBHOOK', status: 'error', userId, reason: insertErr.message, detail: 'subscription_events insert failed' });
@@ -103,6 +108,9 @@ export async function POST(request: NextRequest) {
         subscription_ends_at: endsAt,
       }).eq('id', dbUserId);
 
+      // TODO(idempotency): same as the 'started' insert above — dedupe on a
+      // unique stripe_event_id once the migration lands, so Stripe retries don't
+      // double-count 'cancelled' events.
       await supabase.from('subscription_events').insert({ user_id: dbUserId, event: 'cancelled' });
       log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: 'subscription.deleted→free' });
       break;

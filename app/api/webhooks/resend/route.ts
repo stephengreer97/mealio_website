@@ -36,19 +36,23 @@ const STATUS_BY_EVENT: Record<string, string> = {
 export async function POST(request: NextRequest) {
   const body = await request.text();
 
+  // Fail CLOSED if the signing secret isn't configured — never accept unsigned
+  // webhook payloads (they can mark addresses opted-out / mutate email_sends).
   const secret = process.env.RESEND_WEBHOOK_SECRET;
-  if (secret) {
-    const ok = verifySvix(
-      secret,
-      request.headers.get('svix-id') ?? '',
-      request.headers.get('svix-timestamp') ?? '',
-      request.headers.get('svix-signature') ?? '',
-      body,
-    );
-    if (!ok) {
-      log({ event: 'EMAIL:WEBHOOK', status: 'failed', reason: 'invalid signature' });
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!secret) {
+    log({ event: 'EMAIL:WEBHOOK', status: 'error', reason: 'RESEND_WEBHOOK_SECRET not configured' });
+    return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
+  }
+  const ok = verifySvix(
+    secret,
+    request.headers.get('svix-id') ?? '',
+    request.headers.get('svix-timestamp') ?? '',
+    request.headers.get('svix-signature') ?? '',
+    body,
+  );
+  if (!ok) {
+    log({ event: 'EMAIL:WEBHOOK', status: 'failed', reason: 'invalid signature' });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   let payload: any;

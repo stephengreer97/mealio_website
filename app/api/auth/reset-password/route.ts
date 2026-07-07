@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase';
-import { decodeJwt } from 'jose';
+import { createServerSupabaseClient, createAnonSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
@@ -18,16 +17,16 @@ export async function POST(request: NextRequest) {
     const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const supabase = createServerSupabaseClient();
 
-    // Decode the Supabase JWT to extract the user UUID
-    let userId: string;
-    try {
-      const payload = decodeJwt(supabaseAccessToken);
-      userId = payload.sub as string;
-      if (!userId) throw new Error('missing sub');
-    } catch {
-      log({ event: 'AUTH:RESET_PASSWORD', status: 'failed', ip, reason: 'malformed token' });
+    // Validate the Supabase recovery token's signature + expiry server-side via
+    // GoTrue (getUser verifies the JWT), then trust its `sub`. Never derive the
+    // target user from an unverified token — that would allow account takeover.
+    const { data: userData, error: verifyError } = await createAnonSupabaseClient()
+      .auth.getUser(supabaseAccessToken);
+    if (verifyError || !userData?.user?.id) {
+      log({ event: 'AUTH:RESET_PASSWORD', status: 'failed', ip, reason: 'invalid or expired token' });
       return NextResponse.json({ error: 'Invalid or expired reset link' }, { status: 401 });
     }
+    const userId = userData.user.id;
 
     // Update password via admin API (correct usage: UUID, not JWT)
     const { error } = await supabase.auth.admin.updateUserById(userId, {

@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data: meals, error } = await supabase
     .from('meals')
-    .select('*, creator_id')
+    .select('*')
     .eq('user_id', decoded.userId)
     .eq('is_active', true)
     .order('created_at', { ascending: false });

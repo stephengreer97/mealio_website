@@ -33,13 +33,22 @@ export async function POST(request: NextRequest) {
       return redirect303(`${APP_URL}/signin?error=oauth_missing_params`);
     }
 
+    // CSRF: the state nonce Apple echoes must match the cookie set at auth start.
+    const stateCookie = request.cookies.get('mealio_oauth_state')?.value;
     let redirectTo = '/discover';
+    let stateNonce: string | undefined;
     try {
       if (stateParam) {
         const decoded = JSON.parse(Buffer.from(stateParam, 'base64url').toString());
         if (decoded.redirect?.startsWith('/')) redirectTo = decoded.redirect;
+        stateNonce = decoded.nonce;
       }
     } catch {}
+
+    if (!stateCookie || !stateNonce || stateCookie !== stateNonce) {
+      log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, reason: 'invalid state (csrf)' });
+      return redirect303(`${APP_URL}/signin?error=oauth_failed`);
+    }
 
     // Parse Apple user object (name only provided on first authorization)
     let appleUser: { name?: { firstName?: string; lastName?: string }; email?: string } | null = null;
@@ -82,6 +91,7 @@ export async function POST(request: NextRequest) {
       provider: 'apple',
       providerId: claims.sub,
       email,
+      emailVerified: claims.email_verified,
       firstName: appleUser?.name?.firstName,
       lastName: appleUser?.name?.lastName,
     });
@@ -95,8 +105,9 @@ export async function POST(request: NextRequest) {
 
     log({ event: 'AUTH:OAUTH_APPLE', status: 'success', email: resolvedEmail, userId, ip });
 
+    // Deliver the access token via a short-lived, path-scoped handoff cookie
+    // instead of the URL query string (avoids history / Referer / log leakage).
     const callbackUrl = new URL(`${APP_URL}/auth/social-callback`);
-    callbackUrl.searchParams.set('token', accessToken);
     callbackUrl.searchParams.set('user', Buffer.from(JSON.stringify({ id: userId, email: resolvedEmail, tier, isAdmin })).toString('base64url'));
     callbackUrl.searchParams.set('redirect', redirectTo);
 
@@ -108,6 +119,16 @@ export async function POST(request: NextRequest) {
       maxAge: 60 * 60 * 24 * 90,
       path: '/',
     });
+    // JS-readable so social-callback can move it into localStorage, then delete it.
+    response.cookies.set('mealio_oauth_token', accessToken, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 120,
+      path: '/auth/social-callback',
+    });
+    // Clear the CSRF state cookie now that it has been validated.
+    response.cookies.set('mealio_oauth_state', '', { path: '/', maxAge: 0 });
     return response;
   } catch (error) {
     log({ event: 'AUTH:OAUTH_APPLE', status: 'error', ip, error });

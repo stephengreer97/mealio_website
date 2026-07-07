@@ -28,7 +28,7 @@ export async function POST(
     .eq('id', id)
     .eq('user_id', decoded.userId)
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     log({ event: 'MEAL:RESTORE', status: 'error', userId: decoded.userId, detail: id, error });

@@ -3,6 +3,7 @@ import { verifyGoogleIdToken, upsertSocialUser } from '@/lib/oauth';
 import { createAccessToken } from '@/lib/tokens';
 import { log, abbreviateUa } from '@/lib/logger';
 import { SignJWT } from 'jose';
+import { randomBytes } from 'crypto';
 
 const JWT_SECRET = () => new TextEncoder().encode(process.env.JWT_SECRET || '');
 
@@ -16,7 +17,9 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const redirect = searchParams.get('redirect') || '/discover';
 
-  const state = Buffer.from(JSON.stringify({ redirect })).toString('base64url');
+  // CSRF: bind this auth attempt to an httpOnly nonce cookie, echoed via state.
+  const nonce = randomBytes(16).toString('hex');
+  const state = Buffer.from(JSON.stringify({ redirect, nonce })).toString('base64url');
   const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL || 'https://mealio.co'}/api/auth/callback/google`;
 
   const params = new URLSearchParams({
@@ -29,7 +32,15 @@ export async function GET(request: NextRequest) {
     prompt: 'select_account',
   });
 
-  return NextResponse.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+  const response = NextResponse.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+  response.cookies.set('mealio_oauth_state', nonce, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 600,
+    path: '/',
+  });
+  return response;
 }
 
 // POST — mobile: verify id_token sent from expo-auth-session
@@ -53,6 +64,7 @@ export async function POST(request: NextRequest) {
       provider: 'google',
       providerId: claims.sub,
       email: claims.email,
+      emailVerified: claims.email_verified,
       firstName: claims.given_name,
       lastName: claims.family_name,
     });

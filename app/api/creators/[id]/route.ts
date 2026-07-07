@@ -14,6 +14,7 @@ export async function GET(
       .from('creators')
       .select('id, display_name, bio, social_handle, photo_url, approved_at')
       .eq('id', id)
+      .not('approved_at', 'is', null)
       .single(),
 
     supabase

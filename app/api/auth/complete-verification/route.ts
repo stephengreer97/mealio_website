@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { createAccessToken } from '@/lib/tokens';
-import { SignJWT, decodeJwt } from 'jose';
+import { SignJWT } from 'jose';
 import { log } from '@/lib/logger';
 
 // Called by /verify-email page after Supabase redirects there with a session
@@ -18,27 +18,15 @@ export async function POST(request: NextRequest) {
     const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const supabase = createServerSupabaseClient();
 
-    // Step 1: Decode the Supabase JWT to extract the user UUID.
-    // decodeJwt validates structure but not signature — that's fine because step 2
-    // re-fetches the user from Supabase using the service role key, so we never
-    // trust the token payload alone.
-    let supabaseUserId: string;
-    try {
-      const payload = decodeJwt(supabaseAccessToken);
-      supabaseUserId = payload.sub as string;
-      if (!supabaseUserId) throw new Error('missing sub');
-    } catch {
-      log({ event: 'AUTH:VERIFY_EMAIL', status: 'failed', ip, reason: 'malformed token' });
-      return NextResponse.json({ error: 'Invalid or expired verification link' }, { status: 401 });
-    }
-
-    // Step 2: Fetch the user from Supabase by UUID using the admin API.
-    // admin.getUserById() expects a UUID (correct usage), and uses the service role
-    // key to bypass RLS — completely server-side, no client auth header issues.
-    const { data: userData, error: userError } = await supabase.auth.admin.getUserById(supabaseUserId);
+    // Validate the Supabase access token's signature + expiry server-side via
+    // GoTrue (getUser verifies the JWT and returns the authenticated user). We
+    // must NOT trust an unverified token payload — a forged token with an
+    // arbitrary `sub` would otherwise let an attacker mint a 90-day session for
+    // any account.
+    const { data: userData, error: userError } = await supabase.auth.getUser(supabaseAccessToken);
 
     if (userError || !userData.user) {
-      log({ event: 'AUTH:VERIFY_EMAIL', status: 'failed', ip, reason: 'user not found' });
+      log({ event: 'AUTH:VERIFY_EMAIL', status: 'failed', ip, reason: 'invalid or expired token' });
       return NextResponse.json({ error: 'Invalid or expired verification link' }, { status: 401 });
     }
 

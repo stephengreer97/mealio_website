@@ -8,7 +8,17 @@ export default function SocialCallbackPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const token = params.get('token');
+    // The access token is delivered via a short-lived, JS-readable cookie
+    // (mealio_oauth_token) instead of the URL to avoid history/Referer/log leaks.
+    const cookieToken = document.cookie
+      .split('; ')
+      .find((c) => c.startsWith('mealio_oauth_token='))
+      ?.split('=')[1];
+    const token = cookieToken ? decodeURIComponent(cookieToken) : params.get('token');
+    // Consume the handoff cookie immediately.
+    if (cookieToken) {
+      document.cookie = 'mealio_oauth_token=; Max-Age=0; path=/auth/social-callback';
+    }
     const userEncoded = params.get('user');
     const redirect = params.get('redirect') || '/discover';
     const error = params.get('error');

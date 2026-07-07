@@ -3309,8 +3309,8 @@ export default function MyMealsPage() {
         </div>
       )}
 
-      {/* Upgrade nudge */}
-      {!isPro && (
+      {/* Upgrade nudge — gate on the user's true active meal count (matches discover) */}
+      {!isPro && meals.length >= 3 && (
         <div className="w-full py-2.5 px-4 text-center text-sm" style={{ background: 'var(--brand-light)', borderBottom: '1px solid #fecdd3', color: 'var(--brand)' }}>
           <span className="font-medium">Free plan: </span>limited to 3 saved meals.{' '}
           <a href="/pricing" className="underline font-semibold hover:opacity-80 transition-opacity">Upgrade to Full Access →</a>
