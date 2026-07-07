@@ -351,6 +351,11 @@ export default function HelpPage() {
               Once published, the meal is immediately visible in Discover for all users.
             </p>
 
+            <h3 style={h3}>Getting featured on Discover</h3>
+            <p style={p}>
+              Publish consistently. Our most active creators get featured on Discover, putting their meals in front of more savers. Staying regular is the best way to keep your work in the spotlight.
+            </p>
+
             <h3 style={h3}>How profit share is calculated</h3>
             <p style={p}>
               Each quarter, one-third of Mealio's subscription profit is distributed to active Creator Partners. Your share is based entirely on a single rolling 12-month factor:
