@@ -41,21 +41,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Code expired. Please log in again.' }, { status: 401 });
     }
 
-    if (otp.attempts >= MAX_ATTEMPTS) {
+    // Atomically increment the attempt count before verifying (also prevents
+    // timing-based enumeration). A single UPDATE ... RETURNING via the
+    // increment_otp_attempts RPC means concurrent requests can't share a stale
+    // snapshot and bypass MAX_ATTEMPTS.
+    const { data: attemptsAfter, error: incError } = await supabase.rpc('increment_otp_attempts', { otp_id: otp.id });
+    if (incError || typeof attemptsAfter !== 'number') {
+      log({ event: 'AUTH:2FA_VERIFY', status: 'error', userId, ip, reason: incError?.message ?? 'attempt increment failed' });
+      return NextResponse.json({ error: 'Something went wrong. Please log in again.' }, { status: 500 });
+    }
+    if (attemptsAfter > MAX_ATTEMPTS) {
       return NextResponse.json({ error: 'Too many attempts. Please log in again.' }, { status: 429 });
     }
 
-    // Increment attempt count before verifying (prevents timing-based enumeration)
-    // TODO(security): this read-then-write increment is not atomic — concurrent
-    // requests can share the same `otp.attempts` snapshot and bypass MAX_ATTEMPTS.
-    // Replace with an atomic DB increment (e.g. a Postgres RPC
-    // `increment_otp_attempts(otp_id) RETURNS int` that does
-    // `UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts`)
-    // once a migration can be added. Left as-is here to avoid a schema change.
-    await supabase.from('otp_codes').update({ attempts: otp.attempts + 1 }).eq('id', otp.id);
-
     if (hashOtp(String(code)) !== otp.code_hash) {
-      const remaining = MAX_ATTEMPTS - otp.attempts - 1;
+      const remaining = Math.max(0, MAX_ATTEMPTS - attemptsAfter);
       log({ event: 'AUTH:2FA_VERIFY', status: 'failed', userId, ip, reason: 'wrong code' });
       return NextResponse.json(
         { error: `Incorrect code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.` },
