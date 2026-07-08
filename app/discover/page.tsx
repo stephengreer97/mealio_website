@@ -943,19 +943,48 @@ function getInitials(name: string) {
 
 // Full-width hero band + a scrollable row of category quick-filter chips.
 // Replaces the auto-scrolling TrendingCarousel at the top of Discover.
-function DiscoverHero({ selectedTags, onToggleTag }: { selectedTags: string[]; onToggleTag: (tag: string) => void }) {
+function DiscoverHero({ selectedTags, onToggleTag, photos }: { selectedTags: string[]; onToggleTag: (tag: string) => void; photos: string[] }) {
+  const fan = photos.slice(0, 3);
+  const slots = [
+    { left: 0, right: 'auto', top: 20, width: 170, height: 170, transform: 'rotate(-8deg)', zIndex: 1 },
+    { left: 80, right: 'auto', top: 0, width: 180, height: 180, transform: 'rotate(0deg)', zIndex: 2 },
+    { left: 'auto', right: 0, top: 20, width: 170, height: 170, transform: 'rotate(8deg)', zIndex: 1 },
+  ];
   return (
     <div className="mb-6">
       <div
-        className="rounded-2xl px-6 py-8 md:px-10 md:py-12 overflow-hidden"
-        style={{ background: 'linear-gradient(120deg, var(--brand) 0%, #a30022 100%)' }}
+        className="relative rounded-2xl overflow-hidden px-6 py-8 md:px-10 md:py-12"
+        style={{ background: 'radial-gradient(130% 150% at 82% 10%, #ff3b5c 0%, var(--brand) 46%, #9c0020 100%)' }}
       >
-        <h1 className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
-          Discover meals. We&apos;ll fill the cart.
-        </h1>
-        <p className="mt-2 md:mt-3 text-sm md:text-lg max-w-2xl" style={{ color: 'rgba(255,255,255,0.85)' }}>
-          Browse meals from Mealio creators and add every ingredient to your grocery cart in a couple of taps.
-        </p>
+        {/* warm glow accent for depth */}
+        <div
+          className="hidden md:block absolute pointer-events-none"
+          style={{ width: 360, height: 360, right: -40, top: -120, borderRadius: '50%', background: 'radial-gradient(circle, rgba(255,190,130,0.4) 0%, rgba(255,190,130,0) 70%)' }}
+        />
+        <div className="relative flex items-center justify-between gap-8">
+          <div className="max-w-2xl">
+            <h1 className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
+              Discover meals. We&apos;ll fill the cart.
+            </h1>
+            <p className="mt-2 md:mt-3 text-sm md:text-lg" style={{ color: 'rgba(255,255,255,0.9)' }}>
+              Browse meals from Mealio creators and add every ingredient to your grocery cart in a couple of taps.
+            </p>
+          </div>
+          {fan.length > 0 && (
+            <div className="hidden lg:block relative flex-shrink-0" style={{ width: 340, height: 210 }}>
+              {fan.map((src, i) => (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={i}
+                  src={src}
+                  alt=""
+                  className="absolute object-cover"
+                  style={{ ...slots[i], borderRadius: 16, border: '4px solid #fff', boxShadow: '0 12px 30px rgba(0,0,0,0.3)' }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex gap-2 overflow-x-auto mt-4 pb-1" style={{ scrollbarWidth: 'none' }}>
@@ -1278,6 +1307,7 @@ export default function DiscoverPage() {
           <DiscoverHero
             selectedTags={filters.tags}
             onToggleTag={(tag) => setFilters(f => ({ ...f, tags: f.tags.includes(tag) ? f.tags.filter(t => t !== tag) : [...f.tags, tag] }))}
+            photos={meals.filter(m => m.photo_url).slice(0, 3).map(m => m.photo_url!)}
           />
 
           {isCreator && (
