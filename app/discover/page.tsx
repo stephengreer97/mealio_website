@@ -72,6 +72,12 @@ const ALL_TAGS = [
   'Quick Cleanup', 'Leftovers Good',
 ];
 
+// Curated subset of ALL_TAGS surfaced as quick-filter chips under the Discover hero.
+const CATEGORY_CHIPS = [
+  'Under 30 Min', 'One Pot', 'Meal Prep', 'Budget Friendly', 'Family Friendly',
+  'Healthy', 'High Protein', 'Vegetarian', 'Chicken', 'Pasta', 'Dinner', 'Comfort Food',
+];
+
 interface MealFilters {
   authors: string[];
   tags: string[];
@@ -935,6 +941,45 @@ function getInitials(name: string) {
   return name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
 }
 
+// Full-width hero band + a scrollable row of category quick-filter chips.
+// Replaces the auto-scrolling TrendingCarousel at the top of Discover.
+function DiscoverHero({ selectedTags, onToggleTag }: { selectedTags: string[]; onToggleTag: (tag: string) => void }) {
+  return (
+    <div className="mb-6">
+      <div
+        className="rounded-2xl px-6 py-8 md:px-10 md:py-12 overflow-hidden"
+        style={{ background: 'linear-gradient(120deg, var(--brand) 0%, #a30022 100%)' }}
+      >
+        <h1 className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
+          Discover meals. We&apos;ll fill the cart.
+        </h1>
+        <p className="mt-2 md:mt-3 text-sm md:text-lg max-w-2xl" style={{ color: 'rgba(255,255,255,0.85)' }}>
+          Browse meals from Mealio creators and add every ingredient to your grocery cart in a couple of taps.
+        </p>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto mt-4 pb-1" style={{ scrollbarWidth: 'none' }}>
+        {CATEGORY_CHIPS.map(tag => {
+          const sel = selectedTags.includes(tag);
+          return (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => onToggleTag(tag)}
+              className="whitespace-nowrap px-4 py-2 rounded-full text-sm font-semibold transition-all flex-shrink-0"
+              style={sel
+                ? { background: 'var(--brand)', color: '#fff', border: '1px solid var(--brand)', cursor: 'pointer' }
+                : { background: 'var(--surface-raised)', color: 'var(--text-2)', border: '1px solid var(--border)', cursor: 'pointer' }}
+            >
+              {tag}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function DiscoverPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -1230,7 +1275,10 @@ export default function DiscoverPage() {
 
         {/* Discover Section */}
         <div className="mb-10">
-          <TrendingCarousel meals={meals} onMealClick={setCarouselMeal} />
+          <DiscoverHero
+            selectedTags={filters.tags}
+            onToggleTag={(tag) => setFilters(f => ({ ...f, tags: f.tags.includes(tag) ? f.tags.filter(t => t !== tag) : [...f.tags, tag] }))}
+          />
 
           {isCreator && (
             <div className="flex items-center justify-between gap-4 my-4 px-4 py-3 rounded-xl" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)' }}>
