@@ -59,6 +59,17 @@ export default function PricingPage() {
     } finally { setCheckoutLoading(false); }
   };
 
+  const handleBack = () => {
+    // router.back() is a no-op when /pricing is the first history entry (opened
+    // directly, from an external/shared link, or in an in-app browser). Fall
+    // back to a real page so the button always does something.
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push(user ? '/discover' : '/');
+    }
+  };
+
   const isFullAccess = user?.tier === 'paid';
   const checkoutReady = !!(billing === 'monthly' ? MONTHLY_PRICE_ID : ANNUAL_PRICE_ID);
 
@@ -68,7 +79,7 @@ export default function PricingPage() {
       <header style={{ background: 'var(--surface-raised)', borderBottom: '1px solid var(--border)' }}>
         <div className="max-w-5xl mx-auto px-5 py-4 flex justify-between items-center">
           <button
-            onClick={() => router.back()}
+            onClick={handleBack}
             className="text-sm transition-colors flex items-center gap-1.5"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-2)' }}
             onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'var(--text-1)'}
