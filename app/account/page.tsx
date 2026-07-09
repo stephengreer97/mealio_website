@@ -105,6 +105,10 @@ export default function AccountPage() {
   const [krogerSavingLocation, setKrogerSavingLocation] = useState(false);
   const [krogerMsg, setKrogerMsg] = useState('');
 
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
   useEffect(() => {
     verifyAuth();
     // Show feedback from Kroger OAuth redirect
@@ -344,6 +348,27 @@ export default function AccountPage() {
   };
 
   const handleLogout = () => { localStorage.clear(); router.push('/discover'); };
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'Delete Account') return;
+    setDeleteLoading(true);
+    try {
+      const token = localStorage.getItem('accessToken');
+      const res = await fetch('/api/account/delete', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Could not delete account.');
+      }
+      localStorage.clear();
+      router.push('/');
+    } catch (e: any) {
+      alert(e.message || 'Could not delete account. Please try again.');
+      setDeleteLoading(false);
+    }
+  };
 
   const openManageSubscription = async () => {
     setPortalLoading(true);
@@ -770,6 +795,59 @@ export default function AccountPage() {
           Are you a food creator?{' '}
           <a href="/creator/apply" className="underline" style={{ color: 'var(--text-2)' }}>Apply to become a Creator Partner</a>
         </p>
+
+        <div className="mt-10 rounded-2xl p-5" style={{ border: '1px solid var(--brand-border)', background: 'var(--surface)' }}>
+          <h2 className="text-base font-bold mb-1" style={{ color: 'var(--brand)' }}>Delete Account</h2>
+          <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>
+            Permanently delete your account, saved meals, and follows. If you&apos;re a creator, your published meals are taken down from Discover. This is immediate and cannot be undone.
+          </p>
+          {!showDeleteConfirm ? (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="text-sm font-medium px-4 py-2 rounded-xl"
+              style={{ background: 'transparent', border: '1.5px solid var(--brand)', color: 'var(--brand)', cursor: 'pointer' }}
+            >
+              Delete Account
+            </button>
+          ) : (
+            <div style={{ maxWidth: 380 }}>
+              <label className="text-sm block mb-2" style={{ color: 'var(--text-2)' }}>
+                Type <strong style={{ color: 'var(--text-1)' }}>Delete Account</strong> to confirm:
+              </label>
+              <input
+                value={deleteConfirmText}
+                onChange={e => setDeleteConfirmText(e.target.value)}
+                placeholder="Delete Account"
+                autoFocus
+                style={inputStyle}
+              />
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={handleDeleteAccount}
+                  disabled={deleteConfirmText !== 'Delete Account' || deleteLoading}
+                  className="text-sm font-semibold px-4 py-2 rounded-xl"
+                  style={{
+                    background: deleteConfirmText === 'Delete Account' ? 'var(--brand)' : 'var(--surface)',
+                    color: deleteConfirmText === 'Delete Account' ? '#fff' : 'var(--text-3)',
+                    border: 'none',
+                    cursor: deleteConfirmText === 'Delete Account' && !deleteLoading ? 'pointer' : 'not-allowed',
+                    opacity: deleteLoading ? 0.7 : 1,
+                  }}
+                >
+                  {deleteLoading ? 'Deleting…' : 'Permanently Delete'}
+                </button>
+                <button
+                  onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(''); }}
+                  disabled={deleteLoading}
+                  className="text-sm font-medium px-4 py-2 rounded-xl"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
       <AppFooter />
     </div>

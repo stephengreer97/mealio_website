@@ -217,7 +217,7 @@ export default function SignIn() {
                 className="w-4 h-4 rounded"
                 style={{ accentColor: 'var(--brand)' }}
               />
-              <span className="text-sm" style={{ color: 'var(--text-2)' }}>Remember this device for 30 days</span>
+              <span className="text-sm" style={{ color: 'var(--text-2)' }}>Remember this device for 90 days</span>
             </label>
             {error && (
               <div className="px-4 py-3 rounded-xl text-sm" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)', color: '#9f1239' }}>

@@ -22,7 +22,7 @@ export default function PrivacyPage() {
         </div>
 
         <p>
-          Mealio ("we," "us," or "our") operates the website located at mealio.co and the Mealio mobile application (collectively, the "Service"). This Privacy Policy explains how we collect, use, disclose, and protect information about you when you use our Service. By using the Service, you agree to the collection and use of information in accordance with this policy.
+          Mealio LLC ("Mealio," "we," "us," or "our") operates the website located at mealio.co and the Mealio mobile application (collectively, the "Service"). This Privacy Policy explains how we collect, use, disclose, and protect information about you when you use our Service. By using the Service, you agree to the collection and use of information in accordance with this policy.
         </p>
         <p>
           If you have questions about this policy, contact us at <a href="mailto:contact@mealio.co" style={{ color: '#dd0031' }}>contact@mealio.co</a>.
@@ -52,7 +52,7 @@ export default function PrivacyPage() {
 
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>1.3 Information from Third Parties</h3>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Payment processors:</strong> If you subscribe to a paid plan, payment is processed by our third-party payment provider (Stripe). We receive a customer identifier and subscription status but do not store your full payment card details.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Payment processors:</strong> If you subscribe to a paid plan, payment is processed by our third-party payment providers. Subscriptions purchased on the web are processed by Stripe; subscriptions purchased in the mobile app are processed by the Apple App Store or Google Play and managed on our behalf by RevenueCat. We receive a customer identifier and subscription status but do not store your full payment card details.</li>
           <li style={{ marginBottom: '6px' }}><strong>Grocery platforms:</strong> Mealio interacts with grocery store websites on your behalf to add items to your cart. We do not store your grocery account credentials. Any data exchanged with grocery platforms is used solely to complete the cart action you initiate.</li>
         </ul>
 
@@ -78,7 +78,7 @@ export default function PrivacyPage() {
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>3. How We Share Your Information</h2>
         <p>We may share your information in the following limited circumstances:</p>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Service providers:</strong> We share information with third-party vendors who help us operate the Service, including our database host (Supabase), payment processor (Stripe), email delivery provider (Resend), and payout provider (Tremendous). These providers are contractually obligated to protect your information and may only use it to provide services to us.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Service providers:</strong> We share information with third-party vendors who help us operate the Service, including our database host (Supabase), payment processors (Stripe, and the Apple App Store and Google Play for in-app purchases), subscription-management provider (RevenueCat), email delivery provider (Resend), and payout provider (Tremendous). These providers are contractually obligated to protect your information and may only use it to provide services to us.</li>
           <li style={{ marginBottom: '6px' }}><strong>Legal requirements:</strong> We may disclose your information if required to do so by law, court order, or valid governmental request, or to protect the rights, property, or safety of Mealio, our users, or the public.</li>
           <li style={{ marginBottom: '6px' }}><strong>Business transfers:</strong> If Mealio is involved in a merger, acquisition, or sale of assets, your information may be transferred as part of that transaction. We will notify you via email and/or a prominent notice on the Service before your information becomes subject to a different privacy policy.</li>
           <li style={{ marginBottom: '6px' }}><strong>With your consent:</strong> We may share your information for any other purpose with your explicit consent.</li>
@@ -149,7 +149,7 @@ export default function PrivacyPage() {
         {/* 10 */}
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>10. Cookies and Local Storage</h2>
         <p>
-          We use HTTP-only cookies to maintain your authenticated session on the website. These cookies are strictly necessary for the Service to function and cannot be disabled without logging out. We do not use advertising cookies or third-party tracking cookies. The mobile application stores your authentication tokens in the device's secure storage (such as the iOS Keychain).
+          We use HTTP-only cookies to maintain your authenticated session on the website. These cookies are strictly necessary for the Service to function and cannot be disabled without logging out. We do not use advertising cookies or third-party tracking cookies. The mobile application stores your authentication tokens in the device's secure storage (the iOS Keychain on iOS, or the Android Keystore on Android).
         </p>
 
         {/* 11 */}
@@ -164,7 +164,9 @@ export default function PrivacyPage() {
           If you have questions, concerns, or requests relating to this Privacy Policy, please contact us at:
         </p>
         <p style={{ marginTop: '8px' }}>
-          <strong>Mealio</strong><br />
+          <strong>Mealio LLC</strong><br />
+          1800 Heatherglen Ln<br />
+          Austin, TX 78758<br />
           <a href="mailto:contact@mealio.co" style={{ color: '#dd0031' }}>contact@mealio.co</a>
         </p>
 

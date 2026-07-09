@@ -96,7 +96,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>Two-factor authentication (creators and admins)</h3>
             <p style={p}>
-              If your account has creator or admin status, you will be asked to enter a 6-digit code sent to your email each time you log in from a new device. Enter the code within 10 minutes. You can check the <strong>Remember this device for 30 days</strong> box to skip this step on trusted devices.
+              If your account has creator or admin status, you will be asked to enter a 6-digit code sent to your email each time you log in from a new device. Enter the code within 10 minutes. You can check the <strong>Remember this device for 90 days</strong> box to skip this step on trusted devices.
             </p>
             <p style={p}>
               If you don't receive the code within a minute, check your spam folder or use the <strong>Resend code</strong> link. A new code can be requested once every 60 seconds.
@@ -138,7 +138,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>Getting the app</h3>
             <p style={p}>
-              Download Mealio for iOS from the App Store and sign in with your Mealio account. Your saved meals and subscription carry over automatically — they are stored on Mealio's servers, not on any single device.
+              Download Mealio for iOS from the App Store and sign in with your Mealio account. An Android version is coming soon to Google Play. Your saved meals and subscription carry over automatically — they are stored on Mealio's servers, not on any single device.
             </p>
 
             <h3 style={h3}>Choosing a store</h3>
@@ -166,7 +166,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>Saving and editing meals</h3>
             <p style={p}>
-              Save preset meals from Discover, or create your own with a name and a list of ingredients. Tap a meal to expand it and edit its ingredients. Free accounts can save up to <strong>3 meals per store</strong>; Full Access removes the limit.
+              Save preset meals from Discover, or create your own with a name and a list of ingredients. Tap a meal to expand it and edit its ingredients. Free accounts can save up to <strong>3 meals total</strong> across all stores; Full Access removes the limit.
             </p>
           </section>
 
@@ -220,11 +220,12 @@ export default function HelpPage() {
 
             <h3 style={h3}>Trending vs. New</h3>
             <p style={p}>
-              Discover has two sub-tabs:
+              Discover has three sub-tabs:
             </p>
             <ul style={ul}>
               <li style={li}><strong>Trending</strong> — meals ranked by a score weighted toward recent saves (last 30 days count most)</li>
               <li style={li}><strong>New</strong> — meals sorted by publish date, newest first</li>
+              <li style={li}><strong>Following</strong> — meals from the creators you follow, newest first</li>
             </ul>
 
             <h3 style={h3}>Searching Discover</h3>
@@ -261,7 +262,10 @@ export default function HelpPage() {
 
             <h3 style={h3}>Deleting your account</h3>
             <p style={p}>
-              Account deletion is handled by request. Email <a href="mailto:contact@mealio.co" style={a}>contact@mealio.co</a> from the address associated with your account. We will delete your data within 30 days per our Privacy Policy.
+              You can delete your account yourself at any time. On the website, go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Delete Account</strong>; in the mobile app, open the <strong>Account</strong> tab and tap <strong>Delete Account</strong>. To confirm, you'll be asked to type <strong>Delete Account</strong>.
+            </p>
+            <p style={p}>
+              Deletion is immediate and permanent. Your profile, saved meals, follows, and login are removed, and if you're a creator your published meals are taken down from Discover. This cannot be undone. Records we're required to keep for legal or financial compliance, and anonymized usage logs that no longer identify you, may be retained as described in our <a href="/privacy" style={a}>Privacy Policy</a>.
             </p>
           </section>
 
@@ -276,7 +280,7 @@ export default function HelpPage() {
                 {
                   name: 'Free',
                   price: '$0',
-                  features: ['Up to 3 saved meals per store', 'Full cart automation', 'Access to Discover', 'All supported stores'],
+                  features: ['Up to 3 saved meals total', 'Full cart automation', 'Access to Discover', 'All supported stores'],
                 },
                 {
                   name: 'Full Access',
@@ -327,7 +331,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>What is the Creator Program?</h3>
             <p style={p}>
-              The Mealio Creator Program allows approved food creators to publish meals to the Discover tab, which is visible to all Mealio users. Popular meals earn a share of quarterly subscription profit.
+              The Mealio Creator Program allows approved food creators to publish meals to the Discover tab, which is visible to all Mealio users. Popular meals earn a share of Mealio's subscription revenue, half of which is paid out to creators every quarter.
             </p>
 
             <h3 style={h3}>How to apply</h3>
@@ -358,7 +362,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>How profit share is calculated</h3>
             <p style={p}>
-              Each quarter, one-third of Mealio's subscription profit is distributed to active Creator Partners. Your share is based entirely on a single rolling 12-month factor:
+              Each quarter, 50% of Mealio's subscription revenue is distributed to active Creator Partners. Your share is based entirely on a single rolling 12-month factor:
             </p>
             <ul style={ul}>
               <li style={li}><strong>Saves over the last 12 months</strong> — your meals saved in the last 365 days as a percentage of all creator meal saves over the same rolling 12-month window</li>
@@ -418,7 +422,7 @@ export default function HelpPage() {
             {[
               {
                 q: 'Is Mealio free to use?',
-                a: 'Yes. The free plan lets you save up to 3 meals per grocery store and includes full cart automation and access to Discover. The Full Access plan ($4.99/month or $49.99/year) removes the meal limit and adds shareable meal links.',
+                a: 'Yes. The free plan lets you save up to 3 meals total (across all stores) and includes full cart automation and access to Discover. The Full Access plan ($4.99/month or $49.99/year) removes the meal limit and adds shareable meal links.',
               },
               {
                 q: 'Which grocery stores does Mealio support?',
@@ -446,7 +450,7 @@ export default function HelpPage() {
               },
               {
                 q: 'I\'m a food creator. How much can I earn?',
-                a: 'Earnings depend on how often your meals are saved relative to other creators over the last 12 months. One-third of Mealio\'s quarterly subscription profit is split among all Creator Partners based on each creator\'s share of meal saves in the rolling 12-month window. Your Creator Portal shows your current percentage and a breakdown of the calculation. Payouts are issued quarterly for amounts above $25.',
+                a: 'Earnings depend on how often your meals are saved relative to other creators over the last 12 months. 50% of Mealio\'s quarterly subscription revenue is split among all Creator Partners based on each creator\'s share of meal saves in the rolling 12-month window. Your Creator Portal shows your current percentage and a breakdown of the calculation. Payouts are issued quarterly for amounts above $25.',
               },
               {
                 q: 'Can I publish meals as a creator and still use Mealio as a regular user?',

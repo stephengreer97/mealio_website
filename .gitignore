@@ -56,3 +56,6 @@ Thumbs.db
 # Package manager locks (keep only one — uncomment your preferred)
 # yarn.lock
 # pnpm-lock.yaml
+
+# supabase CLI temp state
+supabase/.temp/
