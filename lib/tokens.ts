@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from 'jose';
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import { createServerSupabaseClient } from '@/lib/supabase';
 
 function getJwtSecret(): Uint8Array {
@@ -110,40 +110,6 @@ export async function verifySessionToken(token: string): Promise<{ userId: strin
     return {
       userId: payload.sub as string,
       email: payload.email as string,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function createRefreshToken(userId: string) {
-  const randomToken = randomBytes(32).toString('hex');
-  const token = await new SignJWT({
-    sub: userId,
-    token: randomToken,
-    type: 'refresh'
-  })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setIssuedAt()
-    .setExpirationTime('90d')
-    .sign(getJwtSecret());
-
-  const tokenHash = hashToken(randomToken);
-
-  return {
-    token,
-    tokenHash,
-    expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
-  };
-}
-
-export async function verifyRefreshToken(token: string) {
-  try {
-    const { payload } = await jwtVerify(token, getJwtSecret());
-    if (payload.type !== 'refresh') throw new Error('Invalid token type');
-    return {
-      userId: payload.sub as string,
-      token: payload.token as string
     };
   } catch {
     return null;

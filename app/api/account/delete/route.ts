@@ -49,7 +49,6 @@ export async function DELETE(request: NextRequest) {
     await supabase.from('creator_follows').delete().eq('follower_id', userId);
     await supabase.from('creator_applications').delete().eq('user_id', userId);
     await supabase.from('meals').delete().eq('user_id', userId);
-    await supabase.from('refresh_tokens').delete().eq('user_id', userId);
     await supabase.from('remembered_devices').delete().eq('user_id', userId);
     await supabase.from('otp_codes').delete().eq('user_id', userId);
     await supabase.from('user_profiles').delete().eq('id', userId);

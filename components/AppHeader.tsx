@@ -56,6 +56,21 @@ export default function AppHeader() {
     setIsLoggedIn(!!localStorage.getItem('accessToken'));
   }, []);
 
+  // Slide the web session on load: swap the current token for a fresh 90-day one
+  // so active web users are never force-logged-out at expiry (mobile already does
+  // this on launch). A revoked/expired token just fails silently and is left as-is.
+  useEffect(() => {
+    const token = localStorage.getItem('accessToken');
+    if (!token) return;
+    fetch('/api/auth/renew', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (data?.accessToken) localStorage.setItem('accessToken', data.accessToken);
+        if (data?.user) localStorage.setItem('user', JSON.stringify(data.user));
+      })
+      .catch(() => {});
+  }, []);
+
   const handleLogout = () => {
     localStorage.clear();
     window.location.href = '/discover';

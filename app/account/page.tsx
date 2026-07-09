@@ -209,6 +209,9 @@ export default function AccountPage() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to change password');
+      // Password change revokes all prior sessions; keep this device signed in
+      // with the fresh token the server returned.
+      if (data.accessToken) localStorage.setItem('accessToken', data.accessToken);
       setPasswordSuccess('Password changed successfully!');
       setCurrentPassword('');
       setNewPassword('');
@@ -348,6 +351,15 @@ export default function AccountPage() {
   };
 
   const handleLogout = () => { localStorage.clear(); router.push('/discover'); };
+
+  const handleLogoutAll = async () => {
+    try {
+      const token = localStorage.getItem('accessToken');
+      await fetch('/api/auth/logout-all', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    } catch {}
+    localStorage.clear();
+    router.push('/signin');
+  };
 
   const handleDeleteAccount = async () => {
     if (deleteConfirmText !== 'Delete Account') return;
@@ -796,7 +808,21 @@ export default function AccountPage() {
           <a href="/creator/apply" className="underline" style={{ color: 'var(--text-2)' }}>Apply to become a Creator Partner</a>
         </p>
 
-        <div className="mt-10 rounded-2xl p-5" style={{ border: '1px solid var(--brand-border)', background: 'var(--surface)' }}>
+        <div className="mt-10 flex items-center justify-between gap-4 rounded-2xl p-5" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
+          <div>
+            <div className="text-base font-bold" style={{ color: 'var(--text-1)' }}>Log out of all devices</div>
+            <div className="text-sm" style={{ color: 'var(--text-2)' }}>Sign out everywhere and require a fresh login on every device (also happens automatically when you change your password).</div>
+          </div>
+          <button
+            onClick={handleLogoutAll}
+            className="text-sm font-medium px-4 py-2 rounded-xl whitespace-nowrap"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)', cursor: 'pointer' }}
+          >
+            Log out everywhere
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-2xl p-5" style={{ border: '1px solid var(--brand-border)', background: 'var(--surface)' }}>
           <h2 className="text-base font-bold mb-1" style={{ color: 'var(--brand)' }}>Delete Account</h2>
           <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>
             Permanently delete your account, saved meals, and follows. If you&apos;re a creator, your published meals are taken down from Discover. This is immediate and cannot be undone.

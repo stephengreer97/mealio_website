@@ -44,7 +44,7 @@ export default function PrivacyPage() {
 
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>1.2 Information Collected Automatically</h3>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Authentication data:</strong> Session tokens, refresh tokens, and device identifiers used to keep you logged in securely.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Authentication data:</strong> Session tokens and device identifiers used to keep you logged in securely.</li>
           <li style={{ marginBottom: '6px' }}><strong>Log data:</strong> IP addresses, user agent strings, and timestamps associated with authentication events (login, logout, token refresh). These are used for security monitoring and abuse prevention.</li>
           <li style={{ marginBottom: '6px' }}><strong>Usage data:</strong> Information about how you interact with the Service, including which meals you save and which grocery stores you use. This data is used to calculate creator profit share and improve the Service.</li>
           <li style={{ marginBottom: '6px' }}><strong>Diagnostic logs (bug reports):</strong> The mobile app keeps a short, temporary record of recent activity in memory on your device. This record is <strong>never stored permanently and never transmitted to us unless you choose to submit a bug report.</strong> If you do, the recent diagnostic logs are attached to your report and emailed to our support address. To help us reproduce the problem, these logs may include the meals and grocery items involved in a cart action, the store used, and basic device and app information (app version, operating system, and the screen you were on). Before the logs leave your device we automatically remove sensitive values — including your password, login/session tokens, and email address. The logs are used solely to investigate and fix the issue you report.</li>
@@ -98,7 +98,7 @@ export default function PrivacyPage() {
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
           <li style={{ marginBottom: '6px' }}>Passwords are hashed and never stored in plain text;</li>
           <li style={{ marginBottom: '6px' }}>Authentication tokens are signed with a secret key and expire automatically;</li>
-          <li style={{ marginBottom: '6px' }}>Refresh tokens are stored as SHA-256 hashes in the database;</li>
+          <li style={{ marginBottom: '6px' }}>One-time login codes and device-trust tokens are stored as SHA-256 hashes;</li>
           <li style={{ marginBottom: '6px' }}>Session cookies are HTTP-only and not accessible by JavaScript;</li>
           <li style={{ marginBottom: '6px' }}>All data in transit is encrypted using TLS/HTTPS;</li>
           <li style={{ marginBottom: '6px' }}>Database access is controlled via row-level security policies.</li>
