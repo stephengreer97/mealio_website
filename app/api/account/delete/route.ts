@@ -22,36 +22,57 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Delete user data in a foreign-key-safe order.
-    // 1) Creator content first: find the creator row, drop its published meals
-    //    and any follows pointing at it, then the creator row — so nothing
-    //    references the profile once it's removed.
+    // Delete user data in a foreign-key-safe order. Several tables carry NOT NULL
+    // FKs to user_profiles (or to a creator's preset_meals), so their rows must be
+    // removed before the profile — otherwise the profile delete and then the auth
+    // user delete fail on the constraint (surfacing as a 500).
+
+    // 1) Creator content first.
     const { data: creator } = await supabase
       .from('creators')
       .select('id')
       .eq('user_id', userId)
       .maybeSingle();
     if (creator?.id) {
+      // preset_meal_saves.preset_meal_id is NOT NULL, so clear saves of this
+      // creator's meals before deleting the meals.
+      const { data: authoredMeals } = await supabase
+        .from('preset_meals')
+        .select('id')
+        .eq('creator_id', creator.id);
+      const mealIds = (authoredMeals ?? []).map((m) => m.id);
+      if (mealIds.length) {
+        await supabase.from('preset_meal_saves').delete().in('preset_meal_id', mealIds);
+      }
       await supabase.from('preset_meals').delete().eq('creator_id', creator.id);
       await supabase.from('creator_follows').delete().eq('creator_id', creator.id);
       await supabase.from('creators').delete().eq('id', creator.id);
     }
 
-    // 2) Anonymize the marketing/lifecycle send log instead of deleting it: keep
-    //    the rows for aggregate reporting but scrub the PII and detach them from
-    //    the profile we're about to remove (null user_id keeps the delete FK-safe).
-    await supabase
-      .from('email_sends')
-      .update({ email: '[deleted]', user_id: null })
-      .eq('user_id', userId);
-
-    // 3) Everything else keyed to the user.
-    await supabase.from('creator_follows').delete().eq('follower_id', userId);
+    // 2) The user's own rows with NOT NULL FKs to user_profiles (creator_follows
+    //    follows by user_id, not follower_id).
+    await supabase.from('preset_meal_saves').delete().eq('user_id', userId);
+    await supabase.from('creator_follows').delete().eq('user_id', userId);
     await supabase.from('creator_applications').delete().eq('user_id', userId);
+    await supabase.from('subscription_events').delete().eq('user_id', userId);
     await supabase.from('meals').delete().eq('user_id', userId);
     await supabase.from('remembered_devices').delete().eq('user_id', userId);
     await supabase.from('otp_codes').delete().eq('user_id', userId);
-    await supabase.from('user_profiles').delete().eq('id', userId);
+
+    // 3) Anonymize the marketing/lifecycle send log (user_id is nullable): keep the
+    //    rows for aggregate reporting but scrub the PII and detach the profile.
+    await supabase.from('email_sends').update({ email: '[deleted]', user_id: null }).eq('user_id', userId);
+
+    // 4) Detach any preset meals still authored by this user (nullable author_id).
+    await supabase.from('preset_meals').update({ author_id: null }).eq('author_id', userId);
+
+    // 5) The profile itself — check the error so any remaining FK surfaces as a
+    //    clear log line instead of a generic failure at deleteUser.
+    const { error: profileError } = await supabase.from('user_profiles').delete().eq('id', userId);
+    if (profileError) {
+      log({ event: 'ACCOUNT:DELETE', status: 'error', userId, email, ip, error: profileError });
+      return NextResponse.json({ error: 'Failed to delete account. Please try again.' }, { status: 500 });
+    }
 
     // Delete the Supabase Auth account (also removes from auth.users)
     const { error: deleteError } = await supabase.auth.admin.deleteUser(userId);
