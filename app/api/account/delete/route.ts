@@ -22,12 +22,33 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Delete user data in order (foreign-key safe)
-    await supabase.from('creator_follows').delete().or(`follower_id.eq.${userId},creator_id.eq.${userId}`);
+    // Delete user data in a foreign-key-safe order.
+    // 1) Creator content first: find the creator row, drop its published meals
+    //    and any follows pointing at it, then the creator row — so nothing
+    //    references the profile once it's removed.
+    const { data: creator } = await supabase
+      .from('creators')
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (creator?.id) {
+      await supabase.from('preset_meals').delete().eq('creator_id', creator.id);
+      await supabase.from('creator_follows').delete().eq('creator_id', creator.id);
+      await supabase.from('creators').delete().eq('id', creator.id);
+    }
+
+    // 2) Anonymize the marketing/lifecycle send log instead of deleting it: keep
+    //    the rows for aggregate reporting but scrub the PII and detach them from
+    //    the profile we're about to remove (null user_id keeps the delete FK-safe).
+    await supabase
+      .from('email_sends')
+      .update({ email: '[deleted]', user_id: null })
+      .eq('user_id', userId);
+
+    // 3) Everything else keyed to the user.
+    await supabase.from('creator_follows').delete().eq('follower_id', userId);
     await supabase.from('creator_applications').delete().eq('user_id', userId);
     await supabase.from('meals').delete().eq('user_id', userId);
-    // Remove auth-related rows so nothing is left orphaned after the account goes.
-    await supabase.from('refresh_tokens').delete().eq('user_id', userId);
     await supabase.from('remembered_devices').delete().eq('user_id', userId);
     await supabase.from('otp_codes').delete().eq('user_id', userId);
     await supabase.from('user_profiles').delete().eq('id', userId);

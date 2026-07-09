@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient, createAnonSupabaseClient } from '@/lib/supabase';
+import { clearRevocationCache } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
@@ -37,6 +38,13 @@ export async function POST(request: NextRequest) {
       log({ event: 'AUTH:RESET_PASSWORD', status: 'failed', ip, userId, reason: error.message });
       return NextResponse.json({ error: 'Failed to reset password. The link may have expired.' }, { status: 400 });
     }
+
+    // A reset revokes every prior session; the user signs in with the new password.
+    await supabase
+      .from('user_profiles')
+      .update({ tokens_invalidated_at: new Date().toISOString() })
+      .eq('id', userId);
+    clearRevocationCache(userId);
 
     log({ event: 'AUTH:RESET_PASSWORD', status: 'success', ip, userId });
     return NextResponse.json({ success: true });
