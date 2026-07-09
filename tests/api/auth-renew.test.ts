@@ -9,10 +9,10 @@ vi.mock('@/lib/supabase', async () =>
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
 import { POST } from '@/app/api/auth/renew/route';
-import { createAccessToken, verifyAccessToken, createSessionToken } from '@/lib/tokens';
+import { createAccessToken, verifyAccessToken, createSessionToken, clearRevocationCache } from '@/lib/tokens';
 
 describe('POST /api/auth/renew', () => {
-  beforeEach(() => fakeDb.reset());
+  beforeEach(() => { fakeDb.reset(); clearRevocationCache(); });
 
   it('401 without an Authorization header', async () => {
     const res = await POST(jsonRequest('/api/auth/renew'));
@@ -32,6 +32,9 @@ describe('POST /api/auth/renew', () => {
 
   it('returns a fresh access token plus current tier and admin flag', async () => {
     const token = await createAccessToken('user-1', 'a@b.test');
+    // Two user_profiles reads now: the revocation check inside verifyAccessToken,
+    // then the renew route's own tier/admin lookup.
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'full', is_admin: true } });
     fakeDb.queue('user_profiles', { data: { subscription_tier: 'full', is_admin: true } });
 
     const res = await POST(jsonRequest('/api/auth/renew', { token }));

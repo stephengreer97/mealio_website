@@ -36,8 +36,9 @@ export async function createAccessToken(userId: string, email: string) {
 const revocationCache = new Map<string, { invalidatedAt: number | null; expires: number }>();
 const REVOCATION_TTL_MS = 30_000;
 
-export function clearRevocationCache(userId: string) {
-  revocationCache.delete(userId);
+export function clearRevocationCache(userId?: string) {
+  if (userId) revocationCache.delete(userId);
+  else revocationCache.clear();
 }
 
 async function getInvalidatedAt(userId: string): Promise<number | null> {
