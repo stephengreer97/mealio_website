@@ -15,6 +15,7 @@ export type EventType =
   // ── Auth ──────────────────────────────────────────────────────────────────
   | 'AUTH:LOGIN'
   | 'AUTH:LOGOUT'
+  | 'AUTH:LOGOUT_ALL'
   | 'AUTH:REGISTER'
   | 'AUTH:REFRESH'          // refresh token rotation
   | 'AUTH:RENEW'            // access token renewal (mobile keep-alive)

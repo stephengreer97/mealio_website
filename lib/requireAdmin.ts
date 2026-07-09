@@ -1,30 +1,22 @@
 import { NextRequest } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
-import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { requireAuth } from '@/lib/requireAuth';
 
+/**
+ * Admin guard. Builds on requireAuth (which verifies the token and enforces
+ * revocation), then checks the is_admin flag. Returns the authed user or null.
+ */
 export async function requireAdmin(request: NextRequest) {
-  const token = extractTokenFromHeader(request.headers.get('authorization'));
-  if (!token) return null;
-
-  const decoded = await verifyAccessToken(token);
-  if (!decoded) return null;
+  const user = await requireAuth(request);
+  if (!user) return null;
 
   const supabase = createServerSupabaseClient();
   const { data } = await supabase
     .from('user_profiles')
-    .select('is_admin, tokens_invalidated_at')
-    .eq('id', decoded.userId)
+    .select('is_admin')
+    .eq('id', user.userId)
     .single();
 
   if (!data?.is_admin) return null;
-
-  // Reject if token was issued before the user logged out
-  if (
-    data.tokens_invalidated_at &&
-    decoded.issuedAt * 1000 < new Date(data.tokens_invalidated_at).getTime()
-  ) {
-    return null;
-  }
-
-  return decoded;
+  return user;
 }

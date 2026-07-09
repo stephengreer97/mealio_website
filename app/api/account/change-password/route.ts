@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient, createAnonSupabaseClient } from '@/lib/supabase';
-import { verifyAccessToken, checkTokenRevoked, extractTokenFromHeader } from '@/lib/tokens';
+import { verifyAccessToken, checkTokenRevoked, extractTokenFromHeader, createAccessToken, clearRevocationCache } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
@@ -52,8 +52,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to update password. Please try again.' }, { status: 500 });
     }
 
+    // Revoke every prior session (other devices), then hand the current client a
+    // fresh token so the user who just changed their password stays signed in
+    // here. The 2s backdate avoids the new token's second-resolution iat landing
+    // just before the invalidation instant.
+    const accessToken = await createAccessToken(userId, email);
+    await supabase
+      .from('user_profiles')
+      .update({ tokens_invalidated_at: new Date(Date.now() - 2000).toISOString() })
+      .eq('id', userId);
+    clearRevocationCache(userId);
+
     log({ event: 'ACCOUNT:CHANGE_PASSWORD', status: 'success', userId, email, ip });
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, accessToken });
   } catch (error) {
     log({ event: 'ACCOUNT:CHANGE_PASSWORD', status: 'error', ip, error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

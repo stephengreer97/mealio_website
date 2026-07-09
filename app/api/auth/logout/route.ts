@@ -1,41 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase';
-import { verifySessionToken, extractTokenFromHeader, verifyAccessToken } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
+/**
+ * Local logout: clears the web session cookie. The client also discards its
+ * stored access token. This does NOT revoke tokens on the user's other devices —
+ * that is intentional (logging out on the web shouldn't sign you out on your
+ * phone). Use /api/auth/logout-all to revoke every device, and note that a
+ * password change also revokes all prior sessions.
+ */
 export async function POST(request: NextRequest) {
   const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
-
-  // Identify the user from session cookie or Bearer token so we can revoke their tokens.
-  let userId: string | null = null;
-  try {
-    const sessionCookie = request.cookies.get('mealio_session');
-    if (sessionCookie) {
-      const session = await verifySessionToken(sessionCookie.value);
-      userId = session?.userId ?? null;
-    }
-    if (!userId) {
-      const bearer = extractTokenFromHeader(request.headers.get('authorization'));
-      if (bearer) {
-        const decoded = await verifyAccessToken(bearer);
-        userId = decoded?.userId ?? null;
-      }
-    }
-  } catch {
-    // Token unreadable — still clear the cookie below
-  }
-
-  if (userId) {
-    try {
-      const supabase = createServerSupabaseClient();
-      await supabase
-        .from('user_profiles')
-        .update({ tokens_invalidated_at: new Date().toISOString() })
-        .eq('id', userId);
-    } catch {
-      // Non-fatal — cookie will still be cleared
-    }
-  }
 
   const response = NextResponse.json({ success: true });
   response.cookies.set('mealio_session', '', {
@@ -46,6 +20,6 @@ export async function POST(request: NextRequest) {
     path: '/',
   });
 
-  log({ event: 'AUTH:LOGOUT', status: 'success', ip, userId: userId ?? 'unknown' });
+  log({ event: 'AUTH:LOGOUT', status: 'success', ip });
   return response;
 }

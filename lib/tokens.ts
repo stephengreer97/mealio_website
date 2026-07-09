@@ -1,5 +1,6 @@
 import { SignJWT, jwtVerify } from 'jose';
 import { createHash, randomBytes } from 'crypto';
+import { createServerSupabaseClient } from '@/lib/supabase';
 
 function getJwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -25,15 +26,50 @@ export async function createAccessToken(userId: string, email: string) {
   return token;
 }
 
+// ── Token revocation ─────────────────────────────────────────────────────────
+// logout-all / password change / password reset / account deletion stamp
+// user_profiles.tokens_invalidated_at; any access token issued before that
+// instant is dead. verifyAccessToken enforces this on EVERY call, so all
+// protected routes get revocation for free. A short per-user cache keeps it from
+// adding a DB read to each request; clearRevocationCache() busts it immediately
+// when an invalidation is written.
+const revocationCache = new Map<string, { invalidatedAt: number | null; expires: number }>();
+const REVOCATION_TTL_MS = 30_000;
+
+export function clearRevocationCache(userId: string) {
+  revocationCache.delete(userId);
+}
+
+async function getInvalidatedAt(userId: string): Promise<number | null> {
+  const now = Date.now();
+  const cached = revocationCache.get(userId);
+  if (cached && cached.expires > now) return cached.invalidatedAt;
+  try {
+    const supabase = createServerSupabaseClient();
+    const { data } = await supabase
+      .from('user_profiles')
+      .select('tokens_invalidated_at')
+      .eq('id', userId)
+      .single();
+    const invalidatedAt = data?.tokens_invalidated_at ? new Date(data.tokens_invalidated_at).getTime() : null;
+    revocationCache.set(userId, { invalidatedAt, expires: now + REVOCATION_TTL_MS });
+    return invalidatedAt;
+  } catch {
+    // Fail open on a DB hiccup: a valid-signature token is still accepted rather
+    // than locking everyone out. The JWT signature check already passed.
+    return null;
+  }
+}
+
 export async function verifyAccessToken(token: string) {
   try {
     const { payload } = await jwtVerify(token, getJwtSecret());
     if (payload.type !== 'access') throw new Error('Invalid token type');
-    return {
-      userId: payload.sub as string,
-      email: payload.email as string,
-      issuedAt: payload.iat as number,
-    };
+    const userId = payload.sub as string;
+    const issuedAt = payload.iat as number;
+    const invalidatedAt = await getInvalidatedAt(userId);
+    if (invalidatedAt && issuedAt * 1000 < invalidatedAt) return null;
+    return { userId, email: payload.email as string, issuedAt };
   } catch {
     return null;
   }
