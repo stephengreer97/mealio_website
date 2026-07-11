@@ -1,22 +1,18 @@
 import { redirect, notFound } from 'next/navigation';
 import { createServerSupabaseClient } from '@/lib/supabase';
-
-const RESERVED = new Set([
-  'about', 'account', 'admin', 'api', 'check-email', 'creator', 'discover',
-  'fonts', 'forgot-password', 'help', 'meal', 'my-meals', 'pricing', 'privacy',
-  'reset-password', 'robots.txt', 'sitemap.xml', 'signout', 'terms', 'verify-email',
-]);
+import { RESERVED_HANDLES, normalizeHandle } from '@/lib/handles';
 
 export default async function HandlePage({ params }: { params: Promise<{ handle: string }> }) {
-  const { handle } = await params;
+  const { handle: raw } = await params;
+  const handle = normalizeHandle(raw);
 
-  if (RESERVED.has(handle)) notFound();
+  if (!handle || RESERVED_HANDLES.has(handle)) notFound();
 
   const supabase = createServerSupabaseClient();
   const { data } = await supabase
     .from('creators')
     .select('id')
-    .eq('handle', handle.toLowerCase())
+    .eq('handle', handle)
     .maybeSingle();
 
   if (!data) notFound();

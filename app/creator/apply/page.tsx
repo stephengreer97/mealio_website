@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { CheckCircle2 } from 'lucide-react';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
+import { HANDLE_RE, normalizeHandle } from '@/lib/handles';
 
 export default function CreatorApply() {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function CreatorApply() {
   const [error, setError] = useState('');
 
   const [displayName, setDisplayName] = useState('');
+  const [handle, setHandle] = useState('');
   const [phone, setPhone] = useState('');
   const [findUs, setFindUs] = useState('');
   const [agreedToTerms, setAgreedToTerms] = useState(false);
@@ -85,6 +87,8 @@ export default function CreatorApply() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!displayName.trim()) { setError('Display name is required.'); return; }
+    if (!handle.trim()) { setError('Choose a handle for your Mealio link.'); return; }
+    if (!HANDLE_RE.test(normalizeHandle(handle))) { setError('Handle must be 3–30 characters: letters, numbers, hyphens, or underscores.'); return; }
     if (!photoUrl) { setError('A profile photo is required.'); return; }
     if (!findUs.trim()) { setError('Please tell us where we can find you online.'); return; }
     if (!agreedToTerms) { setError('You must agree to the Terms and Conditions to apply.'); return; }
@@ -96,7 +100,7 @@ export default function CreatorApply() {
       const res = await fetch('/api/creator/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ displayName, phone, findUs, photoUrl: photoUrl || null }),
+        body: JSON.stringify({ displayName, handle: normalizeHandle(handle), phone, findUs, photoUrl: photoUrl || null }),
       });
 
       if (!res.ok) {
@@ -191,6 +195,33 @@ export default function CreatorApply() {
                     Display Name <span style={{ color: '#dd0031' }}>*</span>
                   </label>
                   <input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="e.g. Chef Sarah" style={{ width: '100%', padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box', outline: 'none' }} />
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
+                    Your Mealio Link <span style={{ color: '#dd0031' }}>*</span>
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e0e0e0', borderRadius: '8px', overflow: 'hidden', background: '#fafafa' }}>
+                    <span style={{ padding: '10px 2px 10px 12px', fontSize: '14px', color: '#888', whiteSpace: 'nowrap' }}>mealio.co/</span>
+                    <input
+                      value={handle}
+                      onChange={e => setHandle(normalizeHandle(e.target.value))}
+                      placeholder="chefsarah"
+                      maxLength={30}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      style={{ flex: 1, padding: '10px 12px 10px 0', border: 'none', fontSize: '14px', outline: 'none', background: '#fafafa' }}
+                    />
+                  </div>
+                  <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#c40029', fontWeight: 600 }}>
+                    ⚠ This is your permanent referral link. It cannot be changed after you apply — choose carefully.
+                  </p>
+                  {handle.trim() && (
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#666' }}>
+                      Your link: <strong>mealio.co/{normalizeHandle(handle)}</strong>
+                    </p>
+                  )}
                 </div>
 
                 <div style={{ marginBottom: '20px' }}>

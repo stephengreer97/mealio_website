@@ -719,6 +719,16 @@ export default function CreatorPortal() {
   const [loading, setLoading] = useState(true);
 
   const [copiedMealId, setCopiedMealId] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  const copyReferralLink = async () => {
+    if (!creator?.handle) return;
+    try {
+      await navigator.clipboard.writeText(`https://mealio.co/${creator.handle}`);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 1800);
+    } catch { /* clipboard unavailable */ }
+  };
   const [editingMeal, setEditingMeal] = useState<CreatorMeal | null>(null);
   const [viewingMeal, setViewingMeal] = useState<CreatorMeal | null>(null);
   const publishDragRef = useRef(false);
@@ -1041,15 +1051,27 @@ export default function CreatorPortal() {
                           <p className="text-sm text-gray-600 mt-2 leading-relaxed">{creator.bio}</p>
                         )}
                         {creator?.handle && (
-                          <a
-                            href={`/${creator.handle}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 mt-2 font-medium"
-                          >
-                            mealio.co/{creator.handle}
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                          </a>
+                          <div className="mt-2">
+                            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Your referral link</p>
+                            <div className="inline-flex items-center gap-2">
+                              <a
+                                href={`/${creator.handle}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-medium"
+                              >
+                                mealio.co/{creator.handle}
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                              </a>
+                              <button
+                                onClick={copyReferralLink}
+                                className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2 py-0.5 hover:bg-gray-50 transition-colors"
+                              >
+                                {linkCopied ? 'Copied!' : 'Copy'}
+                              </button>
+                            </div>
+                            <p className="text-[11px] text-gray-400 mt-1">Share this link — new signups from it are credited to you.</p>
+                          </div>
                         )}
                       </div>
                       <button
@@ -1136,20 +1158,32 @@ export default function CreatorPortal() {
                   />
                 </div>
 
-                {/* Profile link */}
+                {/* Profile / referral link — permanent once set */}
                 <div className="mb-5">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Profile link</label>
-                  <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-400 transition-colors">
-                    <span className="px-3 py-2.5 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
-                    <input
-                      value={handleInput}
-                      onChange={e => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
-                      placeholder="yourhandle"
-                      maxLength={30}
-                      className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
-                    />
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">3–30 characters, letters, numbers, hyphens, underscores</p>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Referral link</label>
+                  {creator?.handle ? (
+                    <>
+                      <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
+                        <span className="px-3 py-2.5 text-sm text-gray-400 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
+                        <span className="flex-1 px-3 py-2.5 text-sm text-gray-500">{creator.handle}</span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">Your referral link is permanent and can&apos;t be changed.</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-400 transition-colors">
+                        <span className="px-3 py-2.5 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
+                        <input
+                          value={handleInput}
+                          onChange={e => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                          placeholder="yourhandle"
+                          maxLength={30}
+                          className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
+                        />
+                      </div>
+                      <p className="text-xs text-red-600 font-semibold mt-1">⚠ Permanent once saved — choose carefully. 3–30 characters: letters, numbers, hyphens, underscores.</p>
+                    </>
+                  )}
                 </div>
 
                 {profileError && (

@@ -50,6 +50,13 @@ export async function POST(request: NextRequest) {
         break;
       }
 
+      // Record the first real paid conversion time. `.is(..., null)` makes this
+      // set-once: renewals/retries won't overwrite the original date.
+      await supabase.from('user_profiles')
+        .update({ subscribed_at: new Date().toISOString() })
+        .eq('id', userId)
+        .is('subscribed_at', null);
+
       // Idempotent on the Stripe event id — retries of the same event no-op
       // instead of double-counting (see add-subscription-event-idempotency.sql).
       const { error: insertErr } = await supabase
@@ -84,6 +91,13 @@ export async function POST(request: NextRequest) {
       }
 
       await supabase.from('user_profiles').update({ subscription_tier: newTier }).eq('id', dbUserId);
+      if (newTier === 'paid') {
+        // Set-once first paid conversion time (e.g. trial→active); never overwritten.
+        await supabase.from('user_profiles')
+          .update({ subscribed_at: new Date().toISOString() })
+          .eq('id', dbUserId)
+          .is('subscribed_at', null);
+      }
       log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: `subscription.updated→${newTier}` });
       break;
     }

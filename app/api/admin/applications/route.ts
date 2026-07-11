@@ -51,7 +51,7 @@ export async function PATCH(request: NextRequest) {
   // Fetch the application
   const { data: app, error: fetchError } = await supabase
     .from('creator_applications')
-    .select('user_id, display_name, photo_url, user_profiles!user_id ( email )')
+    .select('user_id, display_name, photo_url, handle, user_profiles!user_id ( email )')
     .eq('id', id)
     .single();
 
@@ -100,6 +100,8 @@ export async function PATCH(request: NextRequest) {
       user_id:      app.user_id,
       display_name: app.display_name,
       ...(app.photo_url ? { photo_url: app.photo_url } : {}),
+      // Carry the immutable referral handle chosen at application time.
+      ...(app.handle ? { handle: app.handle } : {}),
     });
 
     if (creatorError) {
