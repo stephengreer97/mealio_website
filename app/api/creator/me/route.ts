@@ -3,14 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { getCachedTrendingMeals } from '@/lib/trending-cache';
 import { log } from '@/lib/logger';
-
-const HANDLE_RE = /^[a-z0-9_-]{3,30}$/;
-const RESERVED_HANDLES = new Set([
-  'about', 'account', 'admin', 'api', 'check-email', 'creator', 'discover',
-  'fonts', 'forgot-password', 'help', 'meal', 'my-meals', 'pricing', 'privacy',
-  'reset-password', 'robots', 'sitemap', 'signout', 'terms', 'verify-email',
-  'mealio', 'app', 'www', 'mail', 'support',
-]);
+import { HANDLE_RE, RESERVED_HANDLES, normalizeHandle } from '@/lib/handles';
 
 // PATCH /api/creator/me — update creator profile fields
 export async function PATCH(request: NextRequest) {
@@ -31,10 +24,9 @@ export async function PATCH(request: NextRequest) {
   if (socialHandle !== undefined) updates.social_handle = typeof socialHandle === 'string' ? (socialHandle.trim() || null) : null;
 
   if (handle !== undefined) {
-    const h = (handle ?? '').toLowerCase().trim();
-    if (h === '') {
-      updates.handle = null;
-    } else {
+    const h = normalizeHandle(handle);
+    // Handles are permanent once set. Blank input is ignored (a handle can't be cleared).
+    if (h !== '') {
       if (!HANDLE_RE.test(h)) {
         return NextResponse.json(
           { error: 'Handle must be 3–30 characters and contain only letters, numbers, hyphens, or underscores.' },
@@ -44,17 +36,29 @@ export async function PATCH(request: NextRequest) {
       if (RESERVED_HANDLES.has(h)) {
         return NextResponse.json({ error: 'That handle is not available.' }, { status: 400 });
       }
-      // Check uniqueness (exclude self)
-      const { data: existing } = await supabase
+      // Immutable: only settable when the creator has no handle yet (covers legacy
+      // creators from before handles were chosen at application time).
+      const { data: self } = await supabase
         .from('creators')
-        .select('id')
-        .eq('handle', h)
-        .neq('user_id', decoded.userId)
+        .select('handle')
+        .eq('user_id', decoded.userId)
         .maybeSingle();
-      if (existing) {
-        return NextResponse.json({ error: 'That handle is already taken.' }, { status: 409 });
+      if (self?.handle && self.handle !== h) {
+        return NextResponse.json({ error: "Your handle is permanent and can't be changed." }, { status: 400 });
       }
-      updates.handle = h;
+      if (!self?.handle) {
+        // Uniqueness check before the one-time set (exclude self).
+        const { data: existing } = await supabase
+          .from('creators')
+          .select('id')
+          .eq('handle', h)
+          .neq('user_id', decoded.userId)
+          .maybeSingle();
+        if (existing) {
+          return NextResponse.json({ error: 'That handle is already taken.' }, { status: 409 });
+        }
+        updates.handle = h;
+      }
     }
   }
 

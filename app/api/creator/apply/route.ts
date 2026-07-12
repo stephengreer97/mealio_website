@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { sendCreatorApplicationEmail, sendCreatorAppliedEmail } from '@/lib/email';
+import { isValidHandle, normalizeHandle } from '@/lib/handles';
 
 // POST /api/creator/apply
 export async function POST(request: NextRequest) {
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { displayName, phone, findUs, photoUrl } = body;
+  const { displayName, phone, findUs, photoUrl, handle } = body;
 
   if (!displayName?.trim()) {
     return NextResponse.json({ error: 'Display name is required' }, { status: 400 });
@@ -56,15 +57,42 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Please provide a link where we can find you online' }, { status: 400 });
   }
 
+  // Handle = the creator's permanent referral path (mealio.co/<handle>). Chosen
+  // here and immutable once set, so validate format + reserve it uniquely.
+  const normHandle = normalizeHandle(handle);
+  if (!normHandle) {
+    return NextResponse.json({ error: 'Choose a handle for your Mealio link' }, { status: 400 });
+  }
+  if (!isValidHandle(normHandle)) {
+    return NextResponse.json(
+      { error: 'Handle must be 3–30 characters (letters, numbers, hyphens, underscores) and not a reserved word.' },
+      { status: 400 }
+    );
+  }
+  // Reserve against both approved creators and other pending applications. The
+  // partial unique indexes back this against races (handled below).
+  const [{ data: takenCreator }, { data: takenApp }] = await Promise.all([
+    supabase.from('creators').select('id').eq('handle', normHandle).maybeSingle(),
+    supabase.from('creator_applications').select('id').eq('handle', normHandle).maybeSingle(),
+  ]);
+  if (takenCreator || takenApp) {
+    return NextResponse.json({ error: 'That handle is already taken.' }, { status: 409 });
+  }
+
   const { error } = await supabase.from('creator_applications').insert({
     user_id:      decoded.userId,
     display_name: displayName.trim(),
     phone:        phone?.trim() || null,
     find_us:      findUs?.trim() || null,
     photo_url:    photoUrl || null,
+    handle:       normHandle,
   });
 
   if (error) {
+    // Unique-index violation = someone claimed the handle between our check and insert.
+    if ((error as { code?: string }).code === '23505') {
+      return NextResponse.json({ error: 'That handle is already taken.' }, { status: 409 });
+    }
     log({ event: 'CREATOR:APPLY', status: 'error', userId: decoded.userId, error });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

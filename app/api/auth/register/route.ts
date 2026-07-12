@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAnonSupabaseClient } from '@/lib/supabase';
+import { createAnonSupabaseClient, createServerSupabaseClient } from '@/lib/supabase';
+import { normalizeHandle } from '@/lib/handles';
 import { log } from '@/lib/logger';
 
 export async function POST(request: NextRequest) {
   const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
   try {
-    const { email, password, firstName, lastName } = await request.json();
+    const { email, password, firstName, lastName, acquisitionSource } = await request.json();
 
     if (!email || !password) {
       return NextResponse.json({ error: 'Email and password required' }, { status: 400 });
@@ -48,6 +49,28 @@ export async function POST(request: NextRequest) {
     if (authData.user.identities?.length === 0) {
       log({ event: 'AUTH:REGISTER', status: 'failed', email, ip, reason: 'email already registered' });
       return NextResponse.json({ error: 'An account with this email already exists' }, { status: 400 });
+    }
+
+    // Creator attribution (last-touch): an explicit acquisitionSource in the body
+    // (future mobile/deep-link/code path) wins, else the mealio_ref cookie set by
+    // middleware when the user visited a creator's link. Only stamp it if it maps
+    // to a REAL creator handle, so typos/junk cookie values never get stored. The
+    // profile row already exists here (handle_new_user trigger fires during signUp).
+    const ref = normalizeHandle(acquisitionSource || request.cookies.get('mealio_ref')?.value);
+    if (ref) {
+      const admin = createServerSupabaseClient();
+      const { data: creator } = await admin
+        .from('creators')
+        .select('id')
+        .eq('handle', ref)
+        .maybeSingle();
+      if (creator) {
+        await admin
+          .from('user_profiles')
+          .update({ acquisition_source: ref })
+          .eq('id', authData.user.id);
+        log({ event: 'AUTH:REGISTER', status: 'success', email, ip, detail: `attributed acquisition_source=${ref}` });
+      }
     }
 
     // Do NOT issue tokens or set a session cookie yet — the user must verify

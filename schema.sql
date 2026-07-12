@@ -15,6 +15,7 @@ CREATE TABLE creator_applications (
   phone        text,
   find_us      text,
   photo_url    text,
+  handle       text,
   PRIMARY KEY (id)
 );
 
@@ -37,6 +38,7 @@ CREATE TABLE creators (
   approved_at   timestamptz DEFAULT now(),
   created_at    timestamptz DEFAULT now(),
   photo_url     text,
+  handle        text,
   PRIMARY KEY (id)
 );
 
@@ -154,6 +156,8 @@ CREATE TABLE user_profiles (
   is_admin                     boolean NOT NULL DEFAULT false,
   stripe_customer_id           text,
   stripe_subscription_id       text,
+  acquisition_source           text,
+  subscribed_at                timestamptz,
   PRIMARY KEY (id)
 );
 
@@ -180,6 +184,9 @@ CREATE INDEX idx_refresh_tokens_user_id        ON refresh_tokens     (user_id);
 CREATE INDEX idx_remembered_devices_token_hash ON remembered_devices (token_hash);
 CREATE INDEX idx_remembered_devices_user_id    ON remembered_devices (user_id);
 CREATE INDEX idx_user_profiles_email           ON user_profiles      (email);
+CREATE INDEX idx_user_profiles_acquisition_source ON user_profiles   (acquisition_source);
+CREATE UNIQUE INDEX creators_handle_lower_key             ON creators             (lower(handle)) WHERE handle IS NOT NULL;
+CREATE UNIQUE INDEX creator_applications_handle_lower_key ON creator_applications (lower(handle)) WHERE handle IS NOT NULL;
 
 -- Foreign keys
 ALTER TABLE meals                ADD CONSTRAINT meals_preset_meal_id_fkey                    FOREIGN KEY (preset_meal_id) REFERENCES preset_meals  (id);
