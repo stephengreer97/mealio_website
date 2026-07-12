@@ -82,7 +82,9 @@ export type EventType =
   | 'CRON:DAILY'
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
-  | 'STORAGE:BACKFILL';
+  | 'STORAGE:BACKFILL'
+  | 'USAGE:OPEN'
+  | 'USAGE:AUTOMATION';
 
 export type Status = 'success' | 'failed' | 'pending' | 'error';
 
