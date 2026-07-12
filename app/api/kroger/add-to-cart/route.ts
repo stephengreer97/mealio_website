@@ -12,6 +12,30 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
+// Usage analytics (best-effort; never affects the cart response). Kroger is the
+// single server chokepoint for cart adds (mobile + web), so both sources are
+// captured here without client hooks. One row per run: started -> completed/failed.
+type Sb = ReturnType<typeof createServerSupabaseClient>;
+async function startRun(supabase: Sb, userId: string, source: unknown, itemsRequested: number): Promise<string | null> {
+  try {
+    const { data } = await supabase
+      .from('automation_runs')
+      .insert({ user_id: userId, store_id: 'kroger', source: source === 'app' ? 'app' : 'web', status: 'started', items_requested: itemsRequested })
+      .select('id')
+      .single();
+    return data?.id ?? null;
+  } catch { return null; }
+}
+async function finishRun(supabase: Sb, runId: string | null, outcome: 'success' | 'partial' | 'failed', itemsAdded: number): Promise<void> {
+  if (!runId) return;
+  try {
+    await supabase
+      .from('automation_runs')
+      .update({ status: outcome === 'failed' ? 'failed' : 'completed', outcome, items_added: itemsAdded, completed_at: new Date().toISOString() })
+      .eq('id', runId);
+  } catch { /* best-effort */ }
+}
+
 /**
  * POST /api/kroger/add-to-cart
  * Body: { ingredients: Array<{ productName: string; quantity?: number }>, locationId?: string }
@@ -69,13 +93,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });
     }
 
+    const runId = await startRun(supabase, decoded.userId, body?.source, directItems.length);
     try {
       await krogerAddToCart(userAccessToken, directItems);
     } catch (err) {
+      await finishRun(supabase, runId, 'failed', 0);
       log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error', error: err });
       return NextResponse.json({ error: 'Failed to add items to Kroger cart' }, { status: 502 });
     }
 
+    await finishRun(supabase, runId, 'success', directItems.length);
     log({ event: 'KROGER:ADD_TO_CART', status: 'success', userId: decoded.userId, detail: `direct added=${directItems.length}` });
     return NextResponse.json({ cartAdded: true });
   }
@@ -120,6 +147,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to authenticate with Kroger' }, { status: 502 });
   }
 
+  const searchRunId = await startRun(supabase, decoded.userId, body?.source, ingredients.length);
+
   // Search for each ingredient concurrently (up to 10 at once to be polite to the API)
   const BATCH = 10;
   const added: string[] = [];
@@ -153,11 +182,18 @@ export async function POST(request: NextRequest) {
       await krogerAddToCart(userAccessToken, cartItems);
       cartAdded = true;
     } catch (err) {
+      await finishRun(supabase, searchRunId, 'failed', 0);
       log({ event: 'KROGER:ADD_TO_CART', status: 'error', userId: decoded.userId, reason: 'cart_api_error', error: err });
       return NextResponse.json({ error: 'Failed to add items to Kroger cart' }, { status: 502 });
     }
   }
 
+  await finishRun(
+    supabase,
+    searchRunId,
+    added.length === 0 ? 'failed' : notFound.length > 0 ? 'partial' : 'success',
+    added.length,
+  );
   log({
     event: 'KROGER:ADD_TO_CART',
     status: 'success',

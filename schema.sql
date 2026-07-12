@@ -5,6 +5,33 @@ CREATE TABLE app_settings (
   PRIMARY KEY (key)
 );
 
+-- app_opens (usage analytics: one row per session)
+CREATE TABLE app_opens (
+  id          uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id     uuid NOT NULL,
+  source      text NOT NULL,
+  platform    text,
+  app_version text,
+  opened_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (id)
+);
+
+-- automation_runs (usage analytics: one row per add-to-cart run, start→completion)
+CREATE TABLE automation_runs (
+  id              uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id         uuid NOT NULL,
+  store_id        text NOT NULL,
+  source          text NOT NULL,
+  status          text NOT NULL DEFAULT 'started',
+  meal_count      int,
+  items_requested int,
+  items_added     int,
+  outcome         text,
+  started_at      timestamptz NOT NULL DEFAULT now(),
+  completed_at    timestamptz,
+  PRIMARY KEY (id)
+);
+
 -- creator_applications
 CREATE TABLE creator_applications (
   id           uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -185,6 +212,9 @@ CREATE INDEX idx_remembered_devices_token_hash ON remembered_devices (token_hash
 CREATE INDEX idx_remembered_devices_user_id    ON remembered_devices (user_id);
 CREATE INDEX idx_user_profiles_email           ON user_profiles      (email);
 CREATE INDEX idx_user_profiles_acquisition_source ON user_profiles   (acquisition_source);
+CREATE INDEX idx_app_opens_user_opened          ON app_opens        (user_id, opened_at);
+CREATE INDEX idx_automation_runs_user_started   ON automation_runs  (user_id, started_at);
+CREATE INDEX idx_automation_runs_store          ON automation_runs  (store_id);
 CREATE UNIQUE INDEX creators_handle_lower_key             ON creators             (lower(handle)) WHERE handle IS NOT NULL;
 CREATE UNIQUE INDEX creator_applications_handle_lower_key ON creator_applications (lower(handle)) WHERE handle IS NOT NULL;
 
@@ -197,6 +227,8 @@ ALTER TABLE preset_meal_saves    ADD CONSTRAINT preset_meal_saves_preset_meal_id
 ALTER TABLE preset_meal_saves    ADD CONSTRAINT preset_meal_saves_user_id_fkey               FOREIGN KEY (user_id)        REFERENCES user_profiles  (id);
 ALTER TABLE creator_applications ADD CONSTRAINT creator_applications_user_id_fkey            FOREIGN KEY (user_id)        REFERENCES user_profiles  (id);
 ALTER TABLE creators             ADD CONSTRAINT creators_user_id_fkey                        FOREIGN KEY (user_id)        REFERENCES user_profiles  (id);
+ALTER TABLE app_opens            ADD CONSTRAINT app_opens_user_id_fkey                       FOREIGN KEY (user_id)        REFERENCES user_profiles  (id) ON DELETE CASCADE;
+ALTER TABLE automation_runs      ADD CONSTRAINT automation_runs_user_id_fkey                 FOREIGN KEY (user_id)        REFERENCES user_profiles  (id) ON DELETE CASCADE;
 ALTER TABLE creator_follows      ADD CONSTRAINT creator_follows_user_id_fkey                 FOREIGN KEY (user_id)        REFERENCES user_profiles  (id);
 ALTER TABLE creator_follows      ADD CONSTRAINT creator_follows_creator_id_fkey              FOREIGN KEY (creator_id)     REFERENCES creators       (id);
 ALTER TABLE otp_codes            ADD CONSTRAINT otp_codes_user_id_fkey                       FOREIGN KEY (user_id)        REFERENCES user_profiles  (id);

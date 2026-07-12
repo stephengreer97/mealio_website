@@ -15,6 +15,17 @@ export default function AppHeader() {
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
     if (!token) return;
+    // Usage analytics: log one "open" per browser session (fire-and-forget).
+    try {
+      if (!sessionStorage.getItem('mealio_open_logged')) {
+        sessionStorage.setItem('mealio_open_logged', '1');
+        fetch('/api/usage/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ source: 'web', platform: 'web' }),
+        }).catch(() => {});
+      }
+    } catch {}
     try {
       const user = JSON.parse(localStorage.getItem('user') ?? '{}');
       if (user?.isAdmin)   setIsAdmin(true);
