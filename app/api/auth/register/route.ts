@@ -69,7 +69,20 @@ export async function POST(request: NextRequest) {
           .from('user_profiles')
           .update({ acquisition_source: ref })
           .eq('id', authData.user.id);
-        log({ event: 'AUTH:REGISTER', status: 'success', email, ip, detail: `attributed acquisition_source=${ref}` });
+        // Signing up through a creator's link auto-follows that creator. Idempotent
+        // (same shape/onConflict as POST /api/creators/[id]/follow) so a re-run can't
+        // duplicate. Non-fatal: a follow failure must never block the signup.
+        const { error: followError } = await admin
+          .from('creator_follows')
+          .upsert({ user_id: authData.user.id, creator_id: creator.id }, { onConflict: 'user_id,creator_id' });
+        log({
+          event: 'AUTH:REGISTER',
+          status: followError ? 'error' : 'success',
+          email,
+          ip,
+          detail: `attributed acquisition_source=${ref} auto_follow=${followError ? 'failed' : 'ok'} creator=${creator.id}`,
+          ...(followError ? { error: followError } : {}),
+        });
       }
     }
 
