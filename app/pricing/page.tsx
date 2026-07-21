@@ -76,8 +76,8 @@ export default function PricingPage() {
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
       {/* Header */}
-      <header style={{ background: 'var(--surface-raised)', borderBottom: '1px solid var(--border)' }}>
-        <div className="max-w-5xl mx-auto px-5 py-4 flex justify-between items-center">
+      <header style={{ background: 'rgba(250, 246, 240, 0.86)', backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)', borderBottom: '1px solid var(--border)' }}>
+        <div className="max-w-5xl mx-auto px-5 h-16 flex justify-between items-center">
           <button
             onClick={handleBack}
             className="text-sm transition-colors flex items-center gap-1.5"
@@ -90,9 +90,9 @@ export default function PricingPage() {
             </svg>
             Back
           </button>
-          <div style={{ fontFamily: 'var(--font-pacifico), cursive', lineHeight: 1 }}>
-            <span style={{ fontSize: '32px', lineHeight: '0.9', display: 'inline-block', verticalAlign: 'middle', color: 'var(--brand)' }}>M</span>
-            <span style={{ fontSize: '24px', color: 'var(--brand)' }}>ealio</span>
+          <div style={{ display: 'flex', alignItems: 'baseline', lineHeight: 1 }}>
+            <span style={{ fontFamily: 'var(--font-display), Georgia, serif', fontWeight: 600, fontSize: '26px', letterSpacing: '-0.02em', color: 'var(--text-1)', fontVariationSettings: "'SOFT' 80, 'WONK' 1" }}>Mealio</span>
+            <span aria-hidden style={{ width: 7, height: 7, borderRadius: 999, marginLeft: 4, background: 'var(--brand)', display: 'inline-block', transform: 'translateY(-1px)' }} />
           </div>
           {user ? (
             <button
@@ -122,8 +122,8 @@ export default function PricingPage() {
       <div className="max-w-4xl mx-auto px-5 py-14">
         {/* Heading */}
         <div className="text-center mb-12">
-          <h1 className="text-4xl font-bold mb-3" style={{ color: 'var(--text-1)', letterSpacing: '-0.02em' }}>Simple, honest pricing</h1>
-          <p className="text-lg" style={{ color: 'var(--text-2)' }}>
+          <h1 className="reveal text-4xl md:text-5xl mb-4" style={{ color: 'var(--text-1)' }}>Simple, honest pricing</h1>
+          <p className="reveal text-lg" style={{ color: 'var(--text-2)' }}>
             Try Mealio free, then unlock unlimited meals when you&apos;re ready.
           </p>
 
@@ -146,7 +146,7 @@ export default function PricingPage() {
                 : { background: 'transparent', color: 'var(--text-3)', border: 'none', cursor: 'pointer' }}
             >
               Annual
-              <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#dcfce7', color: '#166534' }}>
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'var(--success-light)', color: 'var(--success)' }}>
                 Save 2 months
               </span>
             </button>
@@ -157,7 +157,7 @@ export default function PricingPage() {
         <div className="grid md:grid-cols-2 gap-6 max-w-3xl mx-auto">
 
           {/* Free */}
-          <div className="rounded-2xl p-8 flex flex-col" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+          <div className="p-8 flex flex-col" style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)', borderRadius: 'var(--radius-lg)', animation: 'riseIn 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both' }}>
             <div className="mb-5">
               <h2 className="text-lg font-bold mb-1" style={{ color: 'var(--text-1)' }}>Free Trial</h2>
               <p className="text-sm" style={{ color: 'var(--text-3)' }}>Try it out at no cost</p>
@@ -183,14 +183,22 @@ export default function PricingPage() {
               ))}
             </ul>
 
-            <div className="py-3 text-center text-sm rounded-xl" style={{ border: '1.5px solid var(--border)', color: 'var(--text-3)' }}>
+            <div className="py-3 text-center text-sm rounded-full" style={{ border: '1.5px solid var(--border)', color: 'var(--text-3)' }}>
               {user ? 'Your current plan' : 'No credit card required'}
             </div>
           </div>
 
           {/* Full Access */}
-          <div className="rounded-2xl p-8 flex flex-col relative overflow-hidden" style={{ background: 'var(--brand)' }}>
-            <div className="absolute top-4 right-4 text-xs font-bold px-3 py-1 rounded-full" style={{ background: 'rgba(255,255,255,0.15)', color: '#fff' }}>
+          <div
+            className="texture-grain p-8 flex flex-col relative overflow-hidden"
+            style={{
+              background: 'linear-gradient(160deg, var(--brand) 0%, var(--brand-dark) 62%, var(--brand-deep) 100%)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-lg), var(--shadow-brand)',
+              animation: 'riseIn 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.18s both',
+            }}
+          >
+            <div className="absolute top-4 right-4 text-xs font-bold px-3 py-1 rounded-full" style={{ background: 'rgba(255,255,255,0.18)', color: '#fff', backdropFilter: 'blur(4px)' }}>
               Most popular
             </div>
 
@@ -237,7 +245,7 @@ export default function PricingPage() {
                 <button
                   onClick={openManageSubscription}
                   disabled={portalLoading}
-                  className="w-full py-3 rounded-xl font-bold disabled:opacity-60 transition-colors text-sm"
+                  className="w-full py-3 rounded-full font-bold disabled:opacity-60 transition-colors text-sm"
                   style={{ background: '#fff', color: 'var(--brand)', border: 'none', cursor: 'pointer' }}
                   onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-light)'}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#fff'}
@@ -250,7 +258,7 @@ export default function PricingPage() {
               <button
                 onClick={handleCheckout}
                 disabled={checkoutLoading}
-                className="w-full py-3 rounded-xl font-bold disabled:opacity-60 transition-colors text-sm"
+                className="w-full py-3 rounded-full font-bold disabled:opacity-60 transition-colors text-sm"
                 style={{ background: '#fff', color: 'var(--brand)', border: 'none', cursor: 'pointer' }}
                 onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand-light)'}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#fff'}
@@ -260,7 +268,7 @@ export default function PricingPage() {
             ) : (
               <button
                 disabled
-                className="w-full py-3 rounded-xl font-bold cursor-not-allowed text-sm"
+                className="w-full py-3 rounded-full font-bold cursor-not-allowed text-sm"
                 style={{ background: 'rgba(255,255,255,0.25)', color: 'rgba(255,255,255,0.5)', border: 'none' }}
               >
                 Coming Soon

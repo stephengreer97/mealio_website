@@ -2,32 +2,179 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Mealio design system — "Fresh Market Editorial"
+   Warm cream canvas, ink typography, deep carmine brand, basil + honey accents.
+   Fraunces (display serif) carries the brand voice; Instrument Sans carries UI.
+   Every legacy token name below keeps working — pages style via these vars.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Type. Legacy aliases keep the whole app on the new faces without edits:
+     the old Pacifico wordmarks become Fraunces, the old Inter body becomes
+     Instrument Sans. */
+  --font-pacifico:   var(--font-display);
+  --font-inter:      var(--font-sans);
+
+  /* Brand — deep carmine, richer than the old #DD0031, appetizing on cream. */
+  --brand:           #C22335;
+  --brand-dark:      #9E1A2A;
+  --brand-deep:      #7C1421;
+  --brand-light:     #FBEEEC;
+  --brand-border:    #F0CFC9;
+
+  /* Canvas — warm cream, not gray. The single biggest "premium" shift. */
+  --bg:              #FAF6F0;
+  --surface:         #F3EDE4;
+  --surface-raised:  #FFFDFA;
+  --border:          #EAE2D6;
+  --border-strong:   #D8CDBC;
+
+  /* Ink — warm near-blacks. */
+  --text-1:          #221D16;
+  --text-2:          #5D554A;
+  --text-3:          #A2988A;
+
+  /* Accents — basil for fresh/success, honey for highlights. */
+  --success:         #3E7C4F;
+  --success-light:   #EDF4EE;
+  --honey:           #E9A13B;
+  --honey-light:     #FBF3E4;
+  --error:           #C0392B;
+
+  /* Depth — warm-tinted, layered. */
+  --shadow-sm:       0 1px 2px rgba(60, 42, 24, 0.06), 0 2px 8px rgba(60, 42, 24, 0.05);
+  --shadow-md:       0 2px 6px rgba(60, 42, 24, 0.07), 0 12px 32px rgba(60, 42, 24, 0.09);
+  --shadow-lg:       0 4px 12px rgba(60, 42, 24, 0.08), 0 24px 64px rgba(60, 42, 24, 0.13);
+  --shadow-brand:    0 4px 14px rgba(194, 35, 53, 0.25);
+
+  --radius-sm:       10px;
+  --radius-md:       14px;
+  --radius-lg:       20px;
+}
+
+html, body {
+  font-family: var(--font-sans, 'Instrument Sans', -apple-system, BlinkMacSystemFont, sans-serif);
+  background-color: var(--bg);
+  color: var(--text-1);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Editorial headings — the brand's voice. Fraunces at low optical size reads
+   soft and appetizing; tight tracking keeps it modern rather than bookish. */
+h1, h2 {
+  font-family: var(--font-display, Georgia, serif);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  font-variation-settings: 'SOFT' 60, 'WONK' 0;
+}
+
+::selection {
+  background: var(--brand);
+  color: #fff;
+}
+
+/* Focus — visible, branded, never a default blue ring. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Refined scrollbar (WebKit) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ── Motion ────────────────────────────────────────────────────────────────── */
+
 @keyframes fadeInDown {
   from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
-:root {
-  --brand:           #DD0031;
-  --brand-dark:      #B5002A;
-  --brand-light:     #FFF0F2;
-  --brand-border:    #FECDD3;
-  --bg:              #FAFAF9;
-  --surface:         #F4F3F1;
-  --surface-raised:  #FFFFFF;
-  --border:          #E8E6E2;
-  --border-strong:   #D1CEC8;
-  --text-1:          #18181B;
-  --text-2:          #52525B;
-  --text-3:          #A1A1AA;
-  --success:         #16A34A;
-  --error:           #DC2626;
-  --shadow-sm:       0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md:       0 6px 24px rgba(0,0,0,0.09), 0 1px 4px rgba(0,0,0,0.05);
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-html, body {
-  font-family: var(--font-inter, 'Inter', -apple-system, BlinkMacSystemFont, sans-serif);
-  background-color: var(--bg);
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Staggered page-load reveal: add .reveal to up to 6 siblings. */
+.reveal { animation: riseIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.reveal:nth-child(2) { animation-delay: 0.07s; }
+.reveal:nth-child(3) { animation-delay: 0.14s; }
+.reveal:nth-child(4) { animation-delay: 0.21s; }
+.reveal:nth-child(5) { animation-delay: 0.28s; }
+.reveal:nth-child(6) { animation-delay: 0.35s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal { animation: none; }
+}
+
+/* ── Primitives ────────────────────────────────────────────────────────────── */
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+  border: none;
+  border-radius: 999px;
+  padding: 12px 24px;
+  cursor: pointer;
+  box-shadow: var(--shadow-brand);
+  transition: background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+.btn-primary:hover { background: var(--brand-dark); transform: translateY(-1px); }
+.btn-primary:active { transform: translateY(0); box-shadow: none; }
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--surface-raised);
   color: var(--text-1);
+  font-weight: 600;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 11px 22px;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+.btn-secondary:hover { border-color: var(--text-3); transform: translateY(-1px); }
+
+.card-raised {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.22s ease, transform 0.22s ease, border-color 0.22s ease;
+}
+.card-raised:hover { box-shadow: var(--shadow-md); }
+
+/* Subtle grain — layered onto hero/header surfaces for tactility. */
+.texture-grain {
+  position: relative;
+}
+.texture-grain::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
 }

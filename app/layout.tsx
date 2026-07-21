@@ -1,18 +1,22 @@
 import type { Metadata } from 'next'
-import { Pacifico, Inter, JetBrains_Mono } from 'next/font/google'
+import { Fraunces, Instrument_Sans, JetBrains_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
-const pacifico = Pacifico({
-  weight: '400',
+// Display serif — the brand voice. Wordmark, headings, editorial moments.
+// (globals.css aliases the legacy --font-pacifico variable to this, so every
+// page that renders the old wordmark picks up the new identity automatically.)
+const fraunces = Fraunces({
   subsets: ['latin'],
-  variable: '--font-pacifico',
+  variable: '--font-display',
+  axes: ['opsz', 'SOFT', 'WONK'],
   display: 'swap',
 })
 
-const inter = Inter({
+// UI sans — body copy, controls, data. (Aliased to the legacy --font-inter.)
+const instrumentSans = Instrument_Sans({
   subsets: ['latin'],
-  variable: '--font-inter',
+  variable: '--font-sans',
   display: 'swap',
 })
 
@@ -61,7 +65,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${pacifico.variable} ${inter.variable} ${jetbrainsMono.variable}`}>
+      <body className={`${fraunces.variable} ${instrumentSans.variable} ${jetbrainsMono.variable}`}>
         {children}
         <Analytics />
       </body>

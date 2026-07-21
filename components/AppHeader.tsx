@@ -107,23 +107,48 @@ export default function AppHeader() {
   ] as { label: string; onClick: () => void; active: boolean; danger?: boolean }[];
 
   return (
-    <header style={{ background: 'var(--brand)', position: 'relative' }}>
-      <div className="max-w-5xl mx-auto px-6 py-3.5 flex items-center">
+    <header
+      className="sticky top-0 z-40"
+      style={{
+        background: 'rgba(250, 246, 240, 0.86)',
+        backdropFilter: 'blur(14px)',
+        WebkitBackdropFilter: 'blur(14px)',
+        borderBottom: '1px solid var(--border)',
+      }}
+    >
+      <div className="max-w-6xl mx-auto px-6 h-16 flex items-center">
 
-        {/* Logo — left */}
+        {/* Wordmark — left */}
         <div className="flex-1 flex items-center">
           <button
             onClick={() => router.push('/discover')}
-            style={{ fontFamily: 'var(--font-pacifico), cursive', background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1 }}
             aria-label="Mealio home"
+            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1, display: 'flex', alignItems: 'baseline' }}
           >
-            <span style={{ fontSize: '36px', lineHeight: '1', display: 'inline-block', verticalAlign: 'middle', color: '#fff' }}>M</span>
-            <span style={{ fontSize: '26px', color: 'rgba(255,255,255,0.92)' }}>ealio</span>
+            <span
+              style={{
+                fontFamily: 'var(--font-display), Georgia, serif',
+                fontWeight: 600,
+                fontSize: '26px',
+                letterSpacing: '-0.02em',
+                color: 'var(--text-1)',
+                fontVariationSettings: "'SOFT' 80, 'WONK' 1",
+              }}
+            >
+              Mealio
+            </span>
+            <span
+              aria-hidden
+              style={{
+                width: 7, height: 7, borderRadius: 999, marginLeft: 4,
+                background: 'var(--brand)', display: 'inline-block', transform: 'translateY(-1px)',
+              }}
+            />
           </button>
         </div>
 
         {/* Desktop Nav — center */}
-        <nav className="hidden sm:flex items-center gap-0.5">
+        <nav className="hidden sm:flex items-center gap-1">
           <NavButton label="Discover" active={isNavActive('/discover')} onClick={() => router.push('/discover')} />
           {isLoggedIn && <NavButton label="My Meals" active={isNavActive('/my-meals')} onClick={() => router.push('/my-meals')} />}
 
@@ -145,15 +170,30 @@ export default function AppHeader() {
 
         {/* Right — Log Out / Sign In (desktop) + Hamburger (mobile) */}
         <div className="flex-1 flex items-center justify-end">
-          <button
-            onClick={isLoggedIn ? handleLogout : handleSignIn}
-            className="hidden sm:block px-4 py-2 text-sm font-medium rounded-lg transition-colors"
-            style={{ color: 'rgba(255,255,255,0.75)', background: 'transparent', border: 'none', cursor: 'pointer' }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; }}
-          >
-            {isLoggedIn ? 'Log Out' : 'Sign In / Sign Up'}
-          </button>
+          {isLoggedIn ? (
+            <button
+              onClick={handleLogout}
+              className="hidden sm:block px-4 py-2 text-sm font-medium rounded-full transition-colors"
+              style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--text-1)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)'; }}
+            >
+              Log Out
+            </button>
+          ) : (
+            <button
+              onClick={handleSignIn}
+              className="hidden sm:inline-flex items-center text-sm font-semibold rounded-full transition-all"
+              style={{
+                background: 'var(--brand)', color: '#fff', border: 'none', cursor: 'pointer',
+                padding: '9px 20px', boxShadow: 'var(--shadow-brand)',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--brand-dark)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--brand)'; }}
+            >
+              Sign In
+            </button>
+          )}
 
           {/* Mobile Hamburger */}
           <button
@@ -163,9 +203,9 @@ export default function AppHeader() {
             style={{ background: 'none', border: 'none', cursor: 'pointer' }}
             aria-label="Menu"
           >
-            <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(6.5px) rotate(45deg)' : 'none' }} />
-            <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', opacity: mobileOpen ? 0 : 1, transition: 'opacity 0.15s' }} />
-            <span style={{ display: 'block', width: '20px', height: '1.5px', background: '#fff', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(-6.5px) rotate(-45deg)' : 'none' }} />
+            <span style={{ display: 'block', width: '20px', height: '1.5px', background: 'var(--text-1)', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(6.5px) rotate(45deg)' : 'none' }} />
+            <span style={{ display: 'block', width: '20px', height: '1.5px', background: 'var(--text-1)', borderRadius: '2px', opacity: mobileOpen ? 0 : 1, transition: 'opacity 0.15s' }} />
+            <span style={{ display: 'block', width: '20px', height: '1.5px', background: 'var(--text-1)', borderRadius: '2px', transition: 'transform 0.2s', transform: mobileOpen ? 'translateY(-6.5px) rotate(-45deg)' : 'none' }} />
           </button>
         </div>
       </div>
@@ -174,8 +214,15 @@ export default function AppHeader() {
       {mobileOpen && (
         <div
           ref={mobileMenuRef}
-          className="sm:hidden absolute left-0 right-0 z-50 py-1.5 shadow-xl"
-          style={{ background: 'var(--surface-raised)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
+          className="sm:hidden absolute left-3 right-3 z-50 py-2 rounded-2xl"
+          style={{
+            top: 'calc(100% + 6px)',
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-lg)',
+            animation: 'scaleIn 0.16s ease both',
+            transformOrigin: 'top center',
+          }}
         >
           {mobileNavItems.map(item => (
             <button
@@ -202,15 +249,15 @@ function CreatorNavButton({ active, onClick }: { active: boolean; onClick: () =>
   return (
     <button
       onClick={onClick}
-      className="px-4 py-2 text-sm font-semibold rounded-lg transition-colors"
+      className="px-4 py-2 text-sm font-semibold rounded-full transition-colors"
       style={{
-        background: active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.15)',
-        color: '#fff',
-        border: '1px solid rgba(255,255,255,0.35)',
+        background: active ? 'var(--brand-light)' : 'transparent',
+        color: 'var(--brand)',
+        border: '1px solid var(--brand-border)',
         cursor: 'pointer',
       }}
-      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.25)'; }}
-      onMouseLeave={e => { e.currentTarget.style.background = active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.15)'; }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--brand-light)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = active ? 'var(--brand-light)' : 'transparent'; }}
     >
       Creator Portal
     </button>
@@ -221,15 +268,16 @@ function NavButton({ label, active, onClick }: { label: string; active: boolean;
   return (
     <button
       onClick={onClick}
-      className="px-4 py-2 text-sm font-medium rounded-lg transition-colors"
+      className="px-4 py-2 text-sm font-medium rounded-full transition-colors"
       style={{
-        color: active ? '#fff' : 'rgba(255,255,255,0.75)',
-        background: active ? 'rgba(0,0,0,0.16)' : 'transparent',
+        color: active ? 'var(--text-1)' : 'var(--text-2)',
+        background: active ? 'var(--surface)' : 'transparent',
         border: 'none',
         cursor: 'pointer',
+        fontWeight: active ? 600 : 500,
       }}
-      onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
-      onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; } }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--text-1)'; }}
+      onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)'; } }}
     >
       {label}
     </button>
@@ -256,15 +304,15 @@ function DropdownMenu({
     <div className="relative" onMouseEnter={show} onMouseLeave={hide}>
       <button
         onClick={onLabelClick}
-        className="px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-1 transition-colors"
+        className="px-4 py-2 text-sm font-medium rounded-full flex items-center gap-1 transition-colors"
         style={{
-          color: active || open ? '#fff' : 'rgba(255,255,255,0.75)',
-          background: active || open ? 'rgba(0,0,0,0.16)' : 'transparent',
+          color: active || open ? 'var(--text-1)' : 'var(--text-2)',
+          background: active || open ? 'var(--surface)' : 'transparent',
           border: 'none',
           cursor: 'pointer',
         }}
-        onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(0,0,0,0.10)'; e.currentTarget.style.color = '#fff'; }}
-        onMouseLeave={e => { if (!active && !open) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; } }}
+        onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.color = 'var(--text-1)'; }}
+        onMouseLeave={e => { if (!active && !open) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)'; } }}
       >
         {label}
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.65, marginTop: '1px', transition: 'transform 0.15s', transform: open ? 'rotate(180deg)' : 'none' }}>
@@ -274,12 +322,14 @@ function DropdownMenu({
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-1.5 py-1 rounded-xl z-50"
+          className="absolute right-0 top-full mt-1.5 py-1.5 rounded-2xl z-50"
           style={{
             background: 'var(--surface-raised)',
             border: '1px solid var(--border)',
-            boxShadow: 'var(--shadow-md)',
-            minWidth: '168px',
+            boxShadow: 'var(--shadow-lg)',
+            minWidth: '176px',
+            animation: 'scaleIn 0.14s ease both',
+            transformOrigin: 'top right',
           }}
           onMouseEnter={show}
           onMouseLeave={hide}
@@ -294,7 +344,7 @@ function DropdownMenu({
                 background: 'transparent',
                 border: 'none',
                 cursor: 'pointer',
-                fontWeight: 400,
+                fontWeight: 450,
               }}
               onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}

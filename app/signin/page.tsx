@@ -182,7 +182,10 @@ export default function SignIn() {
     return (
       <div className="min-h-screen flex items-center justify-center px-4" style={{ background: 'var(--bg)' }}>
         <div className="w-full max-w-sm rounded-2xl p-8" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border)' }}>
-          <div style={{ fontFamily: 'var(--font-pacifico), cursive', color: 'var(--brand)', fontSize: '26px', marginBottom: '24px', lineHeight: 1 }}>Mealio</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: '24px', lineHeight: 1 }}>
+            <span style={{ fontFamily: 'var(--font-display), Georgia, serif', fontWeight: 600, fontSize: '24px', letterSpacing: '-0.02em', color: 'var(--text-1)', fontVariationSettings: "'SOFT' 80, 'WONK' 1" }}>Mealio</span>
+            <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, marginLeft: 4, background: 'var(--brand)', display: 'inline-block' }} />
+          </div>
           <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--text-1)' }}>Check your email</h2>
           <p className="text-sm mb-6 leading-relaxed" style={{ color: 'var(--text-2)' }}>
             We sent a 6-digit code to <strong style={{ color: 'var(--text-1)' }}>{email}</strong>. It expires in 10 minutes.
@@ -286,11 +289,11 @@ export default function SignIn() {
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
       {/* Header */}
-      <header style={{ background: 'var(--surface-raised)', borderBottom: '1px solid var(--border)' }}>
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-3">
-          <div style={{ fontFamily: 'var(--font-pacifico), cursive', lineHeight: 1 }}>
-            <span style={{ fontSize: '38px', lineHeight: '0.9', display: 'inline-block', verticalAlign: 'middle', color: 'var(--brand)' }}>M</span>
-            <span style={{ fontSize: '28px', color: 'var(--brand)' }}>ealio</span>
+      <header style={{ background: 'rgba(250, 246, 240, 0.86)', backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)', borderBottom: '1px solid var(--border)' }}>
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center gap-3">
+          <div style={{ display: 'flex', alignItems: 'baseline', lineHeight: 1 }}>
+            <span style={{ fontFamily: 'var(--font-display), Georgia, serif', fontWeight: 600, fontSize: '26px', letterSpacing: '-0.02em', color: 'var(--text-1)', fontVariationSettings: "'SOFT' 80, 'WONK' 1" }}>Mealio</span>
+            <span aria-hidden style={{ width: 7, height: 7, borderRadius: 999, marginLeft: 4, background: 'var(--brand)', display: 'inline-block', transform: 'translateY(-1px)' }} />
           </div>
         </div>
       </header>
@@ -299,32 +302,39 @@ export default function SignIn() {
         <div className="grid md:grid-cols-2 gap-12 lg:gap-20 items-center">
           {/* Hero left */}
           <div>
-            <h1 className="text-5xl font-bold mb-5 leading-tight" style={{ color: 'var(--text-1)', letterSpacing: '-0.02em' }}>
+            <div
+              className="reveal inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold mb-6"
+              style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', color: 'var(--text-2)', boxShadow: 'var(--shadow-sm)' }}
+            >
+              <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--success)', display: 'inline-block' }} />
+              Groceries, on autopilot
+            </div>
+            <h1 className="reveal text-5xl md:text-6xl mb-6" style={{ color: 'var(--text-1)', lineHeight: 1.06 }}>
               Shop meals,<br />
-              <span style={{ color: 'var(--brand)' }}>we'll fill</span> the cart
+              <em style={{ color: 'var(--brand)', fontStyle: 'italic', fontVariationSettings: "'SOFT' 100, 'WONK' 1" }}>we&apos;ll fill</em> the cart
             </h1>
-            <p className="text-lg mb-8 leading-relaxed" style={{ color: 'var(--text-2)' }}>
-              Automatically add meal ingredients to your cart at all major grocery retailers.
+            <p className="reveal text-lg mb-9 leading-relaxed" style={{ color: 'var(--text-2)', maxWidth: '26rem' }}>
+              Save the meals you love. Mealio finds every ingredient at your grocery store and adds it to your cart in one tap.
             </p>
-            <div className="flex flex-col gap-3">
+            <div className="reveal flex flex-col gap-3.5">
               {FEATURES.map(feat => (
                 <div key={feat.text} className="flex items-center gap-3">
                   <div
                     className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-                    style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)' }}
+                    style={{ background: 'var(--success-light)', border: '1px solid #CFE1D2' }}
                   >
                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                      <path d="M2 5l2 2 4-4" stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      <path d="M2 5l2 2 4-4" stroke="var(--success)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   </div>
-                  <span className="text-sm" style={{ color: 'var(--text-2)' }}>{feat.text}</span>
+                  <span className="text-[15px]" style={{ color: 'var(--text-2)' }}>{feat.text}</span>
                 </div>
               ))}
             </div>
           </div>
 
           {/* Auth card right */}
-          <div className="rounded-2xl p-7" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-md)', border: '1px solid var(--border)' }}>
+          <div className="p-8" style={{ background: 'var(--surface-raised)', boxShadow: 'var(--shadow-lg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', animation: 'scaleIn 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both' }}>
             {/* Tab switcher */}
             <div className="flex gap-1 mb-6 p-1 rounded-xl" style={{ background: 'var(--surface)' }}>
               {(['login', 'signup'] as const).map(tab => (
@@ -436,8 +446,8 @@ export default function SignIn() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full text-white py-3 rounded-xl text-sm font-semibold disabled:opacity-50 transition-colors"
-                style={{ background: 'var(--brand)' }}
+                className="w-full text-white py-3 rounded-full text-sm font-semibold disabled:opacity-50 transition-all"
+                style={{ background: 'var(--brand)', boxShadow: 'var(--shadow-brand)' }}
                 onMouseEnter={e => { if (!loading) (e.currentTarget as HTMLElement).style.background = 'var(--brand-dark)'; }}
                 onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'var(--brand)'}
               >

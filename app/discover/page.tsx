@@ -1220,6 +1220,38 @@ export default function DiscoverPage() {
 
       <AppHeader />
 
+      {/* Guest hero — the first thing a logged-out visitor sees. */}
+      {!token && (
+        <section className="texture-grain" style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
+          <div className="max-w-4xl mx-auto px-6 pt-16 pb-14 text-center relative" style={{ zIndex: 1 }}>
+            <div
+              className="reveal inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold mb-6"
+              style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', color: 'var(--text-2)', boxShadow: 'var(--shadow-sm)' }}
+            >
+              <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--success)', display: 'inline-block' }} />
+              Works with 36 grocery stores
+            </div>
+            <h1 className="reveal text-5xl md:text-6xl mb-5" style={{ color: 'var(--text-1)', lineHeight: 1.05 }}>
+              Dinner, decided.<br />
+              <em style={{ color: 'var(--brand)', fontStyle: 'italic', fontVariationSettings: "'SOFT' 100, 'WONK' 1" }}>Cart, filled.</em>
+            </h1>
+            <p className="reveal text-lg mb-8 leading-relaxed mx-auto" style={{ color: 'var(--text-2)', maxWidth: '30rem' }}>
+              Pick the meals you want to cook this week. Mealio adds every ingredient
+              to your grocery cart at the store you already shop.
+            </p>
+            <div className="reveal flex items-center justify-center gap-3 flex-wrap">
+              <a href="/signin?tab=signup" className="btn-primary text-sm" style={{ textDecoration: 'none' }}>
+                Start free
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </a>
+              <a href="/pricing" className="btn-secondary text-sm" style={{ textDecoration: 'none' }}>
+                See pricing
+              </a>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Upgrade nudge */}
       {user && user.tier !== 'paid' && activeMealCount >= 3 && (
         <div className="w-full py-2.5 px-4 text-center text-sm" style={{ background: 'var(--brand-light)', borderBottom: '1px solid var(--brand-border)', color: 'var(--brand)' }}>
