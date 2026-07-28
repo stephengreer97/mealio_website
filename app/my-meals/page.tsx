@@ -2831,10 +2831,10 @@ function DashboardMealCard({
         <div className="hidden sm:block">
           {meal.photo_url ? (
             <div className="flex-shrink-0">
-              <img src={meal.photo_url} alt={meal.name} className="object-cover rounded-lg" style={{ width: '120px', height: '120px', border: '1px solid var(--border)' }} />
+              <img src={meal.photo_url} alt={meal.name} className="object-cover rounded-lg" style={{ width: '240px', height: '120px', border: '1px solid var(--border)' }} />
             </div>
           ) : (
-            <div className="rounded-lg flex-shrink-0 flex items-center justify-center" style={{ width: '120px', height: '120px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="rounded-lg flex-shrink-0 flex items-center justify-center" style={{ width: '240px', height: '120px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
               <span className="text-2xl">🍽️</span>
             </div>
           )}

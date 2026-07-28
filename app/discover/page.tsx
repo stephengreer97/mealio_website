@@ -843,11 +843,11 @@ function MealCard({
             <img
               src={meal.photo_url}
               alt={meal.name}
-              className="object-cover rounded-xl w-24 h-24 sm:w-[120px] sm:h-[120px]"
+              className="object-cover rounded-xl w-48 h-24 sm:w-[240px] sm:h-[120px]"
               style={{ border: '1px solid var(--border)' }}
             />
           ) : (
-            <div className="rounded-xl flex items-center justify-center w-24 h-24 sm:w-[120px] sm:h-[120px]" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="rounded-xl flex items-center justify-center w-48 h-24 sm:w-[240px] sm:h-[120px]" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--border-strong)' }}>
                 <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
               </svg>
