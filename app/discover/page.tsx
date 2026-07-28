@@ -832,7 +832,7 @@ function MealCard({
       )}
 
       <div
-        className="flex items-start gap-4 p-4 rounded-2xl cursor-pointer transition-all"
+        className="flex items-start gap-3 p-4 rounded-2xl cursor-pointer transition-all"
         style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}
         onClick={() => setDetailOpen(true)}
         onMouseEnter={e => (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-md)'}
@@ -843,11 +843,11 @@ function MealCard({
             <img
               src={meal.photo_url}
               alt={meal.name}
-              className="object-cover rounded-xl w-48 h-24 sm:w-[240px] sm:h-[120px]"
+              className="object-cover rounded-xl w-48 h-[100px] sm:w-[240px] sm:h-[126px]"
               style={{ border: '1px solid var(--border)' }}
             />
           ) : (
-            <div className="rounded-xl flex items-center justify-center w-48 h-24 sm:w-[240px] sm:h-[120px]" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="rounded-xl flex items-center justify-center w-48 h-[100px] sm:w-[240px] sm:h-[126px]" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--border-strong)' }}>
                 <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
               </svg>
@@ -1228,7 +1228,7 @@ export default function DiscoverPage() {
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto px-6 pt-6 pb-10 w-full flex-1">
+      <div className="max-w-[1400px] mx-auto px-4 pt-6 pb-10 w-full flex-1">
 
         {/* Discover Section */}
         <div className="mb-10">

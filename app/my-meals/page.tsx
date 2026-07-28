@@ -2831,10 +2831,10 @@ function DashboardMealCard({
         <div className="hidden sm:block">
           {meal.photo_url ? (
             <div className="flex-shrink-0">
-              <img src={meal.photo_url} alt={meal.name} className="object-cover rounded-lg" style={{ width: '240px', height: '120px', border: '1px solid var(--border)' }} />
+              <img src={meal.photo_url} alt={meal.name} className="object-cover rounded-lg" style={{ width: '240px', height: '126px', border: '1px solid var(--border)' }} />
             </div>
           ) : (
-            <div className="rounded-lg flex-shrink-0 flex items-center justify-center" style={{ width: '240px', height: '120px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="rounded-lg flex-shrink-0 flex items-center justify-center" style={{ width: '240px', height: '126px', background: 'var(--surface)', border: '1px solid var(--border)' }}>
               <span className="text-2xl">🍽️</span>
             </div>
           )}
@@ -3317,7 +3317,7 @@ export default function MyMealsPage() {
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto px-6 py-10 w-full flex-1">
+      <div className="max-w-[1400px] mx-auto px-4 py-10 w-full flex-1">
 
         <div className="lg:flex lg:gap-8 lg:items-start">
 
