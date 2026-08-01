@@ -153,8 +153,11 @@ export async function classifySource(
     };
   }
 
+  // The title is capped here as well as in `toSourceDocument`, because the gate
+  // takes a source-agnostic `{title, text}` — MEAL-74 will hand it video
+  // metadata that never passed through the HTML path's caps.
   const prompt = [
-    `TITLE: ${title || '(none)'}`,
+    `TITLE: ${title.slice(0, 300) || '(none)'}`,
     '',
     'CONTENT:',
     firstWords(text, GATE_TEXT_WORD_LIMIT) || '(none)',

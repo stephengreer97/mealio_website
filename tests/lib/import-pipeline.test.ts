@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { runImport } from '@/lib/import/pipeline';
 import { MemoryImportCache } from '@/lib/import/cache';
-import { EXTRACTION_MODEL, GATE_MODEL } from '@/lib/import/anthropic';
+import { EXTRACTION_MODEL, GATE_MODEL, type StructuredCaller } from '@/lib/import/anthropic';
 import type { ImportTelemetry } from '@/lib/import/types';
+import { formatTelemetry } from '@/lib/import/telemetry';
 import {
+  brokenCache,
   endlessBody,
   extractionFixture,
   failingCaller,
@@ -356,5 +358,86 @@ describe('import/pipeline — telemetry', () => {
     expect(events[0].outcome).toBe('rejected');
     expect(events[0].stage).toBe('fetch');
     expect(events[0].reason).toBe('blocked-private-address');
+  });
+});
+
+/**
+ * Regressions from the external review.
+ */
+describe('import/pipeline — review regressions', () => {
+  it('sends a fabricated value paired with a real page sentence to red, end to end', async () => {
+    // The span is lifted verbatim out of the recorded page's own JSON-LD; only
+    // the values lie. A span-only check reads all of this green.
+    const realLine = '4 medium ripe avocados, halved and pitted';
+    const call = stubCaller(() =>
+      extractionFixture({
+        serves: { value: '48', evidence: realLine, derivation: 'json-ld' },
+        ingredients: [
+          {
+            productName: 'saffron threads',
+            measure: '2',
+            unit: 'tbsp',
+            qty: 1,
+            evidence: realLine,
+            derivation: 'json-ld',
+          },
+        ],
+      }),
+    );
+
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.confidence.serves.level).toBe('red');
+    expect(result.confidence.ingredients[0].level).toBe('red');
+    // The span itself matched — it is the value that failed verification.
+    expect(result.confidence.ingredients[0].match).toBe('exact');
+  });
+
+  it('degrades to a slow import when the cache backend is down, rather than failing', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, {
+      ...options({ call }),
+      cache: brokenCache(),
+    });
+    expect(result.status).toBe('ok');
+    expect(events).toHaveLength(1);
+  });
+
+  it('still emits telemetry when something throws unexpectedly', async () => {
+    // A caller that throws a non-Anthropic error mid-pipeline: the result is a
+    // rejection, and crucially it is still traced.
+    const exploding = (async () => {
+      throw Object.assign(new Error('kaboom'), { name: 'TypeError' });
+    }) as unknown as StructuredCaller;
+
+    const result = await runImport(CHICKEN_URL, options({ call: exploding }));
+
+    expect(result.status).toBe('rejected');
+    expect(events).toHaveLength(1);
+    expect(events[0].outcome).toBe('rejected');
+    expect(events[0].reason).toBeTruthy();
+  });
+});
+
+describe('import/telemetry — log lines cannot be forged', () => {
+  it('escapes a newline in a submitted URL instead of emitting a second line', () => {
+    const line = formatTelemetry({
+      url: 'https://x.example.com/p\noutcome=ok stage=complete platform=forged',
+      outcome: 'rejected',
+      stage: 'fetch',
+      reason: 'invalid-url\nreason=something-else',
+      platform: null,
+      path: null,
+      gateVerdict: null,
+      gateSource: null,
+      cached: false,
+      ingredientCount: null,
+      confidence: null,
+      costUsd: 0,
+      durationMs: 1,
+    });
+    expect(line).not.toContain('\n');
+    expect(line).toContain('\\n');
   });
 });

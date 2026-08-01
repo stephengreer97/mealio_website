@@ -17,16 +17,16 @@
  *   4. Size and time caps enforced *during streaming*. A 50 MB page must fail
  *      without ever being fully buffered, and a server that trickles bytes
  *      forever must fail on the wall clock.
- *
- * Residual risk we accept: DNS rebinding. We resolve the hostname, check the
- * addresses, then hand the *hostname* to fetch, which resolves again — a
- * TTL-0 record can return a different address the second time. Closing that
- * requires connecting to a pinned IP with a Host header override, which Node's
- * fetch does not expose. Documented rather than silently ignored.
+ *   5. **The address check happens at connect time**, not only before it. A
+ *      pre-flight check that resolves the hostname and then hands the
+ *      *hostname* to fetch resolves twice, and a TTL-0 record can answer
+ *      differently the second time — the check passes on a public address and
+ *      the socket opens on a private one. See `guardedAgent`.
  */
 
 import { isIP } from 'net';
 import { lookup as dnsLookup } from 'dns/promises';
+import { Agent, fetch as undiciFetch } from 'undici';
 import type { FetchResult, FetchFailure } from './types';
 
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB
@@ -54,6 +54,95 @@ const defaultLookup: LookupFn = async (hostname) => {
   const records = await dnsLookup(hostname, { all: true, verbatim: true });
   return records.map((r) => r.address);
 };
+
+/**
+ * Closes the DNS-rebinding window.
+ *
+ * The pre-flight `assertPublicUrl` check resolves the hostname and inspects the
+ * addresses, but it then hands the *hostname* to fetch, which resolves again.
+ * An attacker serving a TTL-0 record answers the first query with a public
+ * address and the second with `127.0.0.1`, and the connection opens somewhere
+ * our check never saw. Against an adaptive attacker the pre-flight check alone
+ * is advisory.
+ *
+ * This moves the check to the moment that matters. undici passes `connect`
+ * options through to the socket layer, so a custom `lookup` runs *as the
+ * connection is being established* — we resolve once, validate every address
+ * that resolution returned, and hand back that same resolved set for undici to
+ * connect to. There is no second lookup to poison.
+ *
+ * The pre-flight check stays: it fails fast, gives the creator a precise error,
+ * and covers redirect targets before we spend a connection on them.
+ */
+export type GuardedLookup = (
+  hostname: string,
+  options: { all?: boolean } | undefined,
+  callback: (...args: never[]) => void,
+) => void;
+
+/** The connect-time address guard, exported so it can be tested on its own. */
+export function createGuardedLookup(lookup: LookupFn): GuardedLookup {
+  return (hostname, options, callback) => {
+    const done = callback as unknown as (
+      err: NodeJS.ErrnoException | null,
+      ...rest: unknown[]
+    ) => void;
+
+    const deny = (message: string) => {
+      const error = new Error(message) as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      done(error, []);
+    };
+
+    lookup(hostname)
+      .then((addresses) => {
+        if (addresses.length === 0) {
+          deny(`"${hostname}" resolved to no addresses`);
+          return;
+        }
+        const blocked = addresses.find((address) => isPrivateAddress(address));
+        if (blocked) {
+          deny(
+            `Refusing to connect: "${hostname}" resolves to ${blocked}, which is in a ` +
+              'private or reserved range',
+          );
+          return;
+        }
+        const resolved = addresses.map((address) => ({
+          address,
+          family: isIP(address) as 4 | 6,
+        }));
+        // Signature depends on `all`; undici passes `{ all: true }`.
+        if (options?.all) done(null, resolved);
+        else done(null, resolved[0].address, resolved[0].family);
+      })
+      .catch((err) => deny(`Could not resolve "${hostname}": ${String(err)}`));
+  };
+}
+
+function buildGuardedAgent(lookup: LookupFn): Agent {
+  return new Agent({ connect: { lookup: createGuardedLookup(lookup) as never } });
+}
+
+/**
+ * One agent per resolver, so connections are pooled normally. Only ever built
+ * for the real fetch path — when a test injects `fetchImpl`, no agent exists.
+ */
+const agentsByLookup = new WeakMap<LookupFn, Agent>();
+
+function guardedFetch(lookup: LookupFn): FetchFn {
+  let agent = agentsByLookup.get(lookup);
+  if (!agent) {
+    agent = buildGuardedAgent(lookup);
+    agentsByLookup.set(lookup, agent);
+  }
+  const dispatcher = agent;
+  return ((input: RequestInfo | URL, init?: RequestInit) =>
+    undiciFetch(input as never, {
+      ...(init as Record<string, unknown>),
+      dispatcher,
+    } as never)) as unknown as FetchFn;
+}
 
 function fail(reason: FetchFailure['reason'], detail: string): FetchFailure {
   return { ok: false, reason, detail };
@@ -247,7 +336,11 @@ export async function assertPublicUrl(
 
 // ── Streaming read with a hard byte cap ──────────────────────────────────────
 
-async function readCapped(response: Response, maxBytes: number): Promise<string | FetchFailure> {
+async function readCapped(
+  response: Response,
+  maxBytes: number,
+  isExpired: () => boolean,
+): Promise<string | FetchFailure> {
   const declared = Number(response.headers.get('content-length') ?? '');
   if (Number.isFinite(declared) && declared > maxBytes) {
     return fail(
@@ -269,6 +362,14 @@ async function readCapped(response: Response, maxBytes: number): Promise<string 
   let total = 0;
   try {
     for (;;) {
+      // The deadline has to be re-checked on every chunk, not just before the
+      // read starts. A server that drips one byte every 20ms never trips the
+      // size cap and never stalls a single read — it just keeps the request
+      // alive indefinitely. Both limits are needed: bytes *and* wall clock.
+      if (isExpired()) {
+        await reader.cancel().catch(() => {});
+        return fail('timeout', 'Timed out while reading the response body');
+      }
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
@@ -281,11 +382,31 @@ async function readCapped(response: Response, maxBytes: number): Promise<string 
       }
       chunks.push(value);
     }
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === 'AbortError';
+    return aborted
+      ? fail('timeout', 'Timed out while reading the response body')
+      : fail('network-error', `Failed while reading the response body: ${String(err)}`);
   } finally {
     reader.releaseLock?.();
   }
 
   return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+}
+
+/**
+ * Releases a response we are not going to read.
+ *
+ * Undici keeps the socket checked out of the pool until the body is consumed or
+ * cancelled, so every early return — redirect, bot challenge, wrong content
+ * type — has to let go of it explicitly or the connection leaks.
+ */
+async function discard(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* already errored or consumed — nothing to release */
+  }
 }
 
 // ── The fetcher ──────────────────────────────────────────────────────────────
@@ -303,9 +424,11 @@ export async function safeFetch(
     timeoutMs = REQUEST_TIMEOUT_MS,
     maxRedirects = MAX_REDIRECTS,
     lookup = defaultLookup,
-    fetchImpl = fetch,
     now = Date.now,
   } = options;
+  // The default path routes through a dispatcher that re-validates the address
+  // at connect time; an injected fetch (tests) bypasses the network entirely.
+  const fetchImpl = options.fetchImpl ?? guardedFetch(lookup);
 
   const deadline = now() + timeoutMs;
   const redirects: string[] = [];
@@ -327,69 +450,80 @@ export async function safeFetch(
 
     redirects.push(current);
 
+    // The controller has to outlive the fetch call. `await fetchImpl(...)`
+    // settles as soon as the *headers* arrive, so clearing the timer in a
+    // `finally` around it leaves the body read with no deadline and no signal —
+    // a server that drips bytes slowly then runs unbounded. It is cleared once,
+    // after the body has been read or abandoned.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), remaining);
+    const isExpired = () => now() >= deadline;
 
-    let response: Response;
     try {
-      response = await fetchImpl(current, {
-        method: 'GET',
-        redirect: 'manual',
-        signal: controller.signal,
-        headers: { 'user-agent': USER_AGENT, accept: 'text/html,application/xhtml+xml' },
-      });
-    } catch (err) {
-      const aborted = err instanceof Error && err.name === 'AbortError';
-      return aborted
-        ? fail('timeout', `Timed out after ${timeoutMs}ms`)
-        : fail('network-error', `Request to ${current} failed: ${String(err)}`);
+      let response: Response;
+      try {
+        response = await fetchImpl(current, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: controller.signal,
+          headers: { 'user-agent': USER_AGENT, accept: 'text/html,application/xhtml+xml' },
+        });
+      } catch (err) {
+        const aborted = err instanceof Error && err.name === 'AbortError';
+        return aborted
+          ? fail('timeout', `Timed out after ${timeoutMs}ms`)
+          : fail('network-error', `Request to ${current} failed: ${String(err)}`);
+      }
+
+      if (response.status >= 300 && response.status < 400) {
+        await discard(response);
+        const location = response.headers.get('location');
+        if (!location) {
+          return fail('http-error', `HTTP ${response.status} with no Location header`);
+        }
+        let next: string;
+        try {
+          next = new URL(location, current).toString();
+        } catch {
+          return fail('invalid-url', `Redirect target is not a valid URL: ${location}`);
+        }
+        current = next;
+        continue;
+      }
+
+      if (!response.ok) {
+        await discard(response);
+        // 12% of the MEAL-69 sample refused a plain server-side fetch while
+        // working fine in a browser — Cloudflare, Medium, Beacons. That is a
+        // different failure from "we read the page and could not extract a
+        // recipe", and the creator needs to be told which one happened. The error
+        // body is never used as page content.
+        if (response.status === 401 || response.status === 403 || response.status === 429) {
+          return fail(
+            'blocked-by-site',
+            `${new URL(current).hostname} refused our request (HTTP ${response.status}). ` +
+              'Some sites block automated readers even though the page opens fine in a browser.',
+          );
+        }
+        return fail('http-error', `HTTP ${response.status} from ${current}`);
+      }
+
+      const contentType = response.headers.get('content-type') ?? '';
+      if (contentType && !/text\/html|application\/xhtml|text\/plain|application\/json/i.test(contentType)) {
+        await discard(response);
+        return fail(
+          'unsupported-content-type',
+          `Expected an HTML page, got "${contentType}"`,
+        );
+      }
+
+      const body = await readCapped(response, maxBytes, isExpired);
+      if (typeof body !== 'string') return body;
+
+      return { ok: true, url: current, status: response.status, contentType, html: body, redirects };
     } finally {
       clearTimeout(timer);
     }
-
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      if (!location) {
-        return fail('http-error', `HTTP ${response.status} with no Location header`);
-      }
-      let next: string;
-      try {
-        next = new URL(location, current).toString();
-      } catch {
-        return fail('invalid-url', `Redirect target is not a valid URL: ${location}`);
-      }
-      current = next;
-      continue;
-    }
-
-    if (!response.ok) {
-      // 12% of the MEAL-69 sample refused a plain server-side fetch while
-      // working fine in a browser — Cloudflare, Medium, Beacons. That is a
-      // different failure from "we read the page and could not extract a
-      // recipe", and the creator needs to be told which one happened. The error
-      // body is never used as page content.
-      if (response.status === 401 || response.status === 403 || response.status === 429) {
-        return fail(
-          'blocked-by-site',
-          `${new URL(current).hostname} refused our request (HTTP ${response.status}). ` +
-            'Some sites block automated readers even though the page opens fine in a browser.',
-        );
-      }
-      return fail('http-error', `HTTP ${response.status} from ${current}`);
-    }
-
-    const contentType = response.headers.get('content-type') ?? '';
-    if (contentType && !/text\/html|application\/xhtml|text\/plain|application\/json/i.test(contentType)) {
-      return fail(
-        'unsupported-content-type',
-        `Expected an HTML page, got "${contentType}"`,
-      );
-    }
-
-    const body = await readCapped(response, maxBytes);
-    if (typeof body !== 'string') return body;
-
-    return { ok: true, url: current, status: response.status, contentType, html: body, redirects };
   }
 
   return fail('too-many-redirects', `More than ${maxRedirects} redirects starting at ${rawUrl}`);

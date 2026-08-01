@@ -47,7 +47,15 @@ export function formatTelemetry(event: ImportTelemetry): string {
       `red=${event.confidence.red}`,
     );
   }
-  parts.push(`cost=$${event.costUsd.toFixed(4)}`, `ms=${event.durationMs}`, `url=${event.url}`);
+  // Both of these are attacker-controlled: the URL comes straight from the
+  // request body, and `reason` can carry a hostname or a site's error text. A
+  // raw newline in either forges a log line, so both are JSON-quoted (which
+  // escapes newlines, tabs and quotes) rather than interpolated.
+  parts.push(
+    `cost=$${event.costUsd.toFixed(4)}`,
+    `ms=${event.durationMs}`,
+    `url=${JSON.stringify(event.url)}`,
+  );
   if (event.reason) parts.push(`reason=${JSON.stringify(event.reason)}`);
   return parts.join(' ');
 }

@@ -136,3 +136,43 @@ export function extractionFixture(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+/**
+ * A body that emits one byte every `intervalMs` and never ends — the slow-drip
+ * server. It never trips the size cap and never stalls a single read, so only a
+ * wall-clock deadline stops it.
+ */
+export function drippingBody(intervalMs = 20) {
+  let emitted = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      return new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          emitted++;
+          controller.enqueue(new Uint8Array([0x61]));
+          resolve();
+        }, intervalMs);
+      });
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+    },
+  });
+  return { stream, bytesEmitted: () => emitted };
+}
+
+/** A cache whose every operation throws — the durable-store-outage case. */
+export function brokenCache() {
+  return {
+    async get(): Promise<never> {
+      throw new Error('cache backend unavailable');
+    },
+    async set(): Promise<never> {
+      throw new Error('cache backend unavailable');
+    },
+    async delete(): Promise<never> {
+      throw new Error('cache backend unavailable');
+    },
+  };
+}

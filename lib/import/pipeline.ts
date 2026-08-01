@@ -91,6 +91,28 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
   const now = options.now ?? Date.now;
   const startedAt = now();
 
+  // Tracks how far we got, so an unexpected throw is attributed to the right
+  // stage rather than always blamed on the fetch.
+  let stage: ImportRejection['stage'] = 'fetch';
+
+  // The cache is an injectable interface, and the durable implementation the
+  // poller will want can fail in ways the in-memory one never does. A cache
+  // outage must degrade to a slow import, never to a failed one.
+  const cacheGet = async <T>(key: string): Promise<T | null> => {
+    try {
+      return await cache.get<T>(key);
+    } catch {
+      return null;
+    }
+  };
+  const cacheSet = async <T>(key: string, value: T, ttl: number): Promise<void> => {
+    try {
+      await cache.set(key, value, ttl);
+    } catch {
+      /* a write we could not make is not a reason to fail the import */
+    }
+  };
+
   // Every exit from this function goes through `finish`, so no path can escape
   // without a telemetry line.
   const finish = <T extends ImportResult>(result: T, event: Partial<ImportTelemetry>): T => {
@@ -142,8 +164,13 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     );
   }
 
+  // Wrapped so the "every exit emits telemetry" invariant survives an
+  // *unexpected* failure too — a durable ImportCache throwing, a pathological
+  // page breaking the stripper. Without this an escaping exception is the one
+  // path that leaves no trace, which is precisely the path worth tracing.
+  try {
   if (useCache) {
-    const cached = await cache.get<ImportResult>(importKey(url));
+    const cached = await cacheGet<ImportResult>(importKey(url));
     if (cached) {
       const hit = { ...cached, meta: { ...cached.meta, cached: true } } as ImportResult;
       return finish(hit, {
@@ -162,16 +189,18 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
   }
 
   // ── robots.txt ────────────────────────────────────────────────────────────
+  stage = 'robots';
   if (honourRobots) {
     const robots = await checkRobots(url, options.fetchOptions);
     if (!robots.allowed) {
       const result = rejection(url, 'robots', 'blocked-by-robots', robots.detail);
-      if (useCache) await cache.set(importKey(url), result, IMPORT_TTL_MS);
+      if (useCache) await cacheSet(importKey(url), result, IMPORT_TTL_MS);
       return finish(result, {});
     }
   }
 
   // ── fetch ─────────────────────────────────────────────────────────────────
+  stage = 'fetch';
   const fetched = await safeFetch(url, options.fetchOptions);
   if (!fetched.ok) {
     // Not cached: fetch failures are usually transient (timeout, 5xx, bot
@@ -181,6 +210,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     return finish(rejection(url, 'fetch', fetched.reason, fetched.detail), {});
   }
 
+  stage = 'gate';
   const document = toSourceDocument(fetched.url, fetched.html);
   const platform = document.platform;
 
@@ -198,12 +228,12 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
         'Open the recipe itself and paste that link instead.',
       { platform },
     );
-    if (useCache) await cache.set(importKey(url), result, IMPORT_TTL_MS);
+    if (useCache) await cacheSet(importKey(url), result, IMPORT_TTL_MS);
     return finish(result, { platform });
   }
 
   // ── gate ──────────────────────────────────────────────────────────────────
-  let verdict = useCache ? await cache.get<GateVerdict>(gateKey(url)) : null;
+  let verdict = useCache ? await cacheGet<GateVerdict>(gateKey(url)) : null;
   let gateUsage: StructuredUsage | null = null;
 
   if (!verdict) {
@@ -215,7 +245,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     gateUsage = result.usage;
     // An `unavailable` verdict is a transient outage, not a fact about the URL.
     if (useCache && verdict.source !== 'classifier-unavailable') {
-      await cache.set(gateKey(url), verdict, GATE_TTL_MS);
+      await cacheSet(gateKey(url), verdict, GATE_TTL_MS);
     }
   }
 
@@ -226,7 +256,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       platform,
     });
     if (useCache && verdict.verdict === 'no') {
-      await cache.set(importKey(url), result, IMPORT_TTL_MS);
+      await cacheSet(importKey(url), result, IMPORT_TTL_MS);
     }
     return finish(result, {
       platform,
@@ -237,6 +267,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
   }
 
   // ── extract ───────────────────────────────────────────────────────────────
+  stage = 'extract';
   let extraction;
   try {
     extraction = await extractDraft(document, { call: options.call ?? safeDefaultCaller() });
@@ -256,12 +287,18 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
 
   // ── confidence ────────────────────────────────────────────────────────────
   const source = verificationSourceFor(document);
-  const field = (f: { evidence: string | null; derivation: FieldConfidence['derivation'] }) =>
-    assessField(f.evidence, f.derivation, source);
+  const field = (f: {
+    value: unknown;
+    evidence: string | null;
+    derivation: FieldConfidence['derivation'];
+  }) => assessField(f.value, f.evidence, f.derivation, source);
 
-  const ingredientConfidence: FieldConfidence[] = extraction.keptIngredientIndices.map((index) => {
+  const ingredientConfidence: FieldConfidence[] = extraction.keptIngredientIndices.map((index, position) => {
     const item = extraction.output.ingredients[index];
-    return assessField(item.evidence, item.derivation, source);
+    // The canonicalised product name, not the raw one: it is what reaches the
+    // cart, so it is what has to be traceable back into the evidence span.
+    const productName = extraction.draft.ingredients[position].ingredientName;
+    return assessField(productName, item.evidence, item.derivation, source);
   });
 
   const confidence: ImportConfidence = {
@@ -292,7 +329,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     },
   };
 
-  if (useCache) await cache.set(importKey(url), success, IMPORT_TTL_MS);
+  if (useCache) await cacheSet(importKey(url), success, IMPORT_TTL_MS);
 
   const allFields = [
     confidence.name, confidence.recipe, confidence.story, confidence.photoUrl,
@@ -308,6 +345,18 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     confidence: summariseConfidence(allFields),
     costUsd: (extraction.usage.costUsd ?? 0) + (gateUsage?.costUsd ?? 0),
   });
+  } catch (err) {
+    return finish(
+      rejection(
+        url,
+        stage,
+        'internal-error',
+        `The import failed unexpectedly while we were ${stage === 'extract' ? 'reading the recipe' : 'reading the page'}. ` +
+          `Please try again. (${err instanceof Error ? err.message : String(err)})`,
+      ),
+      {},
+    );
+  }
 }
 
 /**

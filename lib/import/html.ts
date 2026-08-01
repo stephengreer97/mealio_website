@@ -209,6 +209,31 @@ export function detectPlatform(html: string, url: string): Platform {
 const MAX_TEXT_CHARS = 24_000;
 
 /**
+ * Every field on a `SourceDocument` is attacker-controlled and every one of them
+ * reaches a prompt, so each needs its own ceiling — capping `text` alone leaves
+ * the others as uncapped paths to the same place.
+ *
+ * A 1.2 MB `<title>` is a valid page and passes every documented limit: 2 MB
+ * response, 24k of text. It then flows into the gate prompt (which truncates
+ * `text` but passed the title through whole), the extraction prompt, and the
+ * confidence corpus — turning a page that looks compliant into a ~300k-token
+ * request against the cheap classifier.
+ */
+const MAX_TITLE_CHARS = 300;
+
+/**
+ * Structured data is quoted into the extraction prompt in full and is the
+ * corpus `json-ld` evidence spans are verified against. A page can publish an
+ * arbitrarily large `Recipe` block — 900 ingredients, a novel in `description`
+ * — so it is capped like everything else. Well past any real recipe.
+ */
+const MAX_JSONLD_CHARS = 32_000;
+
+function truncate(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+
+/**
  * Turns fetched HTML into the source-agnostic document the rest of the pipeline
  * consumes. Structured data is read JSON-LD first, then microdata/hRecipe.
  */
@@ -223,16 +248,18 @@ export function toSourceDocument(url: string, html: string): SourceDocument {
   }
 
   const text = htmlToText(html);
+  const imageUrl = jsonLd?.image ?? metaContent(html, 'og:image');
   return {
     url,
-    title: extractTitle(html),
+    title: truncate(extractTitle(html), MAX_TITLE_CHARS),
     // Recipe blogs bury the recipe under a long preamble but never past 24k chars;
     // the cap bounds token spend on pages with huge comment sections.
-    text: text.length > MAX_TEXT_CHARS ? text.slice(0, MAX_TEXT_CHARS) : text,
+    text: truncate(text, MAX_TEXT_CHARS),
     jsonLd,
     structuredSource,
-    jsonLdRaw: jsonLd ? serializeJsonLd(jsonLd) : null,
-    imageUrl: jsonLd?.image ?? metaContent(html, 'og:image'),
+    jsonLdRaw: jsonLd ? truncate(serializeJsonLd(jsonLd), MAX_JSONLD_CHARS) : null,
+    // A URL is a prompt input too, and a data: URI can carry a megabyte.
+    imageUrl: imageUrl && imageUrl.length <= 2048 ? imageUrl : null,
     platform: detectPlatform(html, url),
   };
 }

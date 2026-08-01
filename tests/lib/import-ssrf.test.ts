@@ -1,12 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import {
   assertPublicUrl,
+  createGuardedLookup,
   isPrivateAddress,
   normalizeUrl,
   safeFetch,
   MAX_RESPONSE_BYTES,
+  type LookupFn,
 } from '@/lib/import/ssrf';
-import { endlessBody, hangingFetch, lookupMap, publicLookup, stubFetch } from '../helpers/import-stubs';
+import {
+  drippingBody,
+  endlessBody,
+  hangingFetch,
+  lookupMap,
+  publicLookup,
+  stubFetch,
+} from '../helpers/import-stubs';
 
 /**
  * SSRF is the real risk on this branch: we fetch a user-supplied URL from our
@@ -232,5 +241,122 @@ describe('import/ssrf — normalizeUrl', () => {
     for (const input of ['', 'not a url', 'file:///etc/passwd', 'javascript:alert(1)']) {
       expect(normalizeUrl(input)).toBeNull();
     }
+  });
+});
+
+/**
+ * Regressions from the external review. Each of these passed the original test
+ * suite while the defect was live, which is the point of writing them down.
+ */
+describe('import/ssrf — review regressions', () => {
+  it('enforces the timeout while the body is streaming, not just before headers', async () => {
+    // The original hang test used a fetch that never resolved, so it only ever
+    // covered the pre-headers case. A server that returns headers immediately
+    // and then drips one byte every 20ms never trips the size cap and never
+    // stalls a read — only a wall-clock deadline stops it.
+    const { stream, bytesEmitted } = drippingBody(20);
+    const { impl } = stubFetch({ 'https://drip.example.com/': { body: stream } });
+
+    const startedAt = Date.now();
+    const result = await safeFetch('https://drip.example.com/', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+      timeoutMs: 150,
+    });
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('timeout');
+    expect(result.detail).toMatch(/body/i);
+    // Bounded by the deadline, not by the 2 MB cap it would never have reached.
+    expect(elapsed).toBeLessThan(1500);
+    expect(bytesEmitted()).toBeLessThan(MAX_RESPONSE_BYTES);
+  });
+
+  it('releases the body on every early return so sockets go back to the pool', async () => {
+    const cancelled: string[] = [];
+    const bodyFor = (name: string) =>
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(16));
+        },
+        cancel() {
+          cancelled.push(name);
+        },
+      });
+
+    const impl = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.endsWith('/redirect')) {
+        return new Response(bodyFor('redirect'), {
+          status: 302,
+          headers: { location: 'https://a.example.com/final', 'content-type': 'text/html' },
+        });
+      }
+      if (url.endsWith('/blocked')) {
+        return new Response(bodyFor('blocked'), { status: 403, headers: { 'content-type': 'text/html' } });
+      }
+      if (url.endsWith('/pdf')) {
+        return new Response(bodyFor('pdf'), { status: 200, headers: { 'content-type': 'application/pdf' } });
+      }
+      return new Response('<html><title>ok</title></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    }) as unknown as typeof fetch;
+
+    await safeFetch('https://a.example.com/redirect', { fetchImpl: impl, lookup: publicLookup });
+    await safeFetch('https://a.example.com/blocked', { fetchImpl: impl, lookup: publicLookup });
+    await safeFetch('https://a.example.com/pdf', { fetchImpl: impl, lookup: publicLookup });
+
+    expect(cancelled.sort()).toEqual(['blocked', 'pdf', 'redirect']);
+  });
+});
+
+/**
+ * DNS rebinding. The pre-flight check resolves the hostname and then hands the
+ * *hostname* to fetch, which resolves again — so a TTL-0 record can answer
+ * publicly the first time and privately the second. The guard below runs as the
+ * socket is being opened, on the addresses actually being connected to.
+ */
+describe('import/ssrf — connect-time address guard', () => {
+  const resolveOnce = (guard: ReturnType<typeof createGuardedLookup>, hostname: string) =>
+    new Promise<{ err: NodeJS.ErrnoException | null; addresses: unknown }>((resolve) => {
+      guard(hostname, { all: true }, ((err: NodeJS.ErrnoException | null, addresses: unknown) =>
+        resolve({ err, addresses })) as never);
+    });
+
+  it('refuses to connect when the resolver returns a private address', async () => {
+    const guard = createGuardedLookup(lookupMap({ 'rebind.example.com': ['127.0.0.1'] }));
+    const { err } = await resolveOnce(guard, 'rebind.example.com');
+    expect(err).toBeTruthy();
+    expect(err!.message).toMatch(/private or reserved/);
+  });
+
+  it('catches the second answer of a rebinding resolver', async () => {
+    // Public on the pre-flight lookup, private when the socket opens.
+    let call = 0;
+    const flipping: LookupFn = async () => (++call === 1 ? ['93.184.216.34'] : ['169.254.169.254']);
+
+    expect(await assertPublicUrl('https://rebind.example.com/x', flipping)).toBeNull();
+
+    const guard = createGuardedLookup(flipping);
+    const { err } = await resolveOnce(guard, 'rebind.example.com');
+    expect(err).toBeTruthy();
+    expect(err!.message).toContain('169.254.169.254');
+  });
+
+  it('passes the resolved addresses through when they are all public', async () => {
+    const guard = createGuardedLookup(lookupMap({ 'ok.example.com': ['93.184.216.34'] }));
+    const { err, addresses } = await resolveOnce(guard, 'ok.example.com');
+    expect(err).toBeNull();
+    expect(addresses).toEqual([{ address: '93.184.216.34', family: 4 }]);
+  });
+
+  it('refuses when one of several addresses is private', async () => {
+    const guard = createGuardedLookup(lookupMap({ 'mixed.example.com': ['93.184.216.34', '10.0.0.7'] }));
+    const { err } = await resolveOnce(guard, 'mixed.example.com');
+    expect(err).toBeTruthy();
   });
 });

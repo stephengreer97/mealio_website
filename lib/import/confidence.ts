@@ -144,19 +144,108 @@ export function verificationSourceFor(document: SourceDocument): VerificationSou
   };
 }
 
-function levelFor(derivation: Derivation, match: MatchKind): Confidence {
+// ── Value ↔ span verification ────────────────────────────────────────────────
+
+/**
+ * How the emitted **value** relates to the evidence span it was supposedly taken
+ * from.
+ *
+ * Checking only that the span exists in the source is not enough, and assuming
+ * otherwise is the mistake this type exists to prevent. A model that pairs a
+ * fabricated value with a *genuine* sentence lifted off the page passes a
+ * span-only check: `serves: "48"` with the evidence "Serve it with tortilla
+ * chips at your next party" would read green, because that sentence really is
+ * on the page. MEAL-72's stated property — a hallucinated value cannot produce
+ * a matching span — only holds if the model also fabricates the span, and we
+ * cannot assume that: the page text is attacker-controlled and is interpolated
+ * into the extraction prompt, so "it won't think to reuse a real sentence" is
+ * not a security boundary.
+ *
+ * So the chain has to be verified end to end: **value ⊆ span ⊆ source.**
+ */
+type ValueCheck =
+  /** The value appears inside its own span. The strongest claim available. */
+  | 'contained'
+  /** The value and the span share meaningful vocabulary — a restatement. */
+  | 'overlap'
+  /** The value has nothing to do with the span it cites. */
+  | 'unrelated'
+  /** Not free text; containment is the wrong question. See `checkValue`. */
+  | 'exempt'
+  /** No value at all. */
+  | 'empty';
+
+/** Tokens worth comparing — short words match by accident too easily. */
+function significantTokens(text: string): string[] {
+  return text.split(' ').filter((t) => t.length >= 3);
+}
+
+/**
+ * Compares an emitted value against the span the model cited for it.
+ *
+ * Two value shapes are exempt, because containment is the wrong test rather
+ * than a test we are skipping:
+ *
+ *  - **Numbers** (`difficulty`) are a 1–5 judgement, not a quotation. "Medium"
+ *    is not a word that appears in the page; the honest guarantee is that it is
+ *    an inference, which caps it at amber regardless.
+ *  - **String arrays** (`tags`) are drawn from a closed vocabulary that
+ *    `canonicalizeTags` enforces against `MEAL_TAGS`. A tag that is not one of
+ *    ours is dropped before it ever reaches here, which is a stronger guarantee
+ *    than span containment, and legitimate tags ("Vegan") rarely appear
+ *    verbatim in the text that implies them.
+ *
+ * Everything else — names, ingredient product names, yields, methods, stories,
+ * photo URLs — is free text lifted from the page, and must be traceable into
+ * the span that claims to source it.
+ */
+function checkValue(value: unknown, span: string): ValueCheck {
+  if (value == null) return 'empty';
+  if (typeof value === 'number') return Number.isFinite(value) ? 'exempt' : 'empty';
+  if (Array.isArray(value)) return value.length > 0 ? 'exempt' : 'empty';
+
+  const needle = normalizeForMatch(String(value));
+  if (!needle) return 'empty';
+
+  const haystack = normalizeForMatch(span);
+  if (haystack.includes(needle)) return 'contained';
+
+  // A restatement still has to be about the same thing: "a knob of butter"
+  // becoming "2 tbsp butter" shares "butter"; "saffron threads" shares nothing.
+  const valueTokens = significantTokens(needle);
+  const spanTokens = new Set(significantTokens(haystack));
+  if (valueTokens.length === 0) {
+    // Purely short/numeric free text ("48", "4"). Only a containment hit counts;
+    // there is no vocabulary to overlap on, and accepting it on overlap alone is
+    // exactly the `serves: "48"` hole.
+    return 'unrelated';
+  }
+  const shared = valueTokens.filter((t) => spanTokens.has(t)).length;
+  return shared / valueTokens.length >= 0.5 ? 'overlap' : 'unrelated';
+}
+
+function levelFor(derivation: Derivation, match: MatchKind, value: ValueCheck): Confidence {
   if (match === 'none') return 'red';
+  if (value === 'empty') return 'red';
+
+  // A value that has nothing to do with the span it cites is not evidenced by
+  // that span, however real the span is. This is the case a span-only check
+  // waves through.
+  if (value === 'unrelated') return 'red';
+
   switch (derivation) {
     case 'json-ld':
-      // Structured data, and we confirmed the span really is in that block.
-      return match === 'exact' ? 'green' : 'amber';
     case 'page-text':
-      // Verbatim from the page is green; a re-typed near-match is not.
-      return match === 'exact' ? 'green' : 'amber';
+      // A verbatim claim has to survive both halves of the chain: the span is
+      // in the source, *and* the value is in the span. A value that is merely
+      // related to its span is a restatement mislabelled as a quotation, so it
+      // gets the amber a restatement would have got.
+      return match === 'exact' && value !== 'overlap' ? 'green' : 'amber';
     case 'normalized':
     case 'inferred':
-      // The span checks out but the value is a restatement of it — "a knob of
-      // butter" became "2 tbsp". Never green, however good the span match.
+      // The span checks out and the value is drawn from it, but the value is a
+      // restatement — "a knob of butter" became "2 tbsp". Never green, however
+      // good the span match.
       return 'amber';
     case 'absent':
     default:
@@ -164,9 +253,23 @@ function levelFor(derivation: Derivation, match: MatchKind): Confidence {
   }
 }
 
-function reasonFor(derivation: Derivation, match: MatchKind, hasSpan: boolean): string {
+function reasonFor(
+  derivation: Derivation,
+  match: MatchKind,
+  hasSpan: boolean,
+  value: ValueCheck,
+): string {
   if (!hasSpan) return 'No evidence span — the value is not traceable to the source.';
   if (match === 'none') return 'Evidence span was not found in the page we fetched.';
+  if (value === 'empty') return 'No value was extracted for this field.';
+  if (value === 'unrelated') {
+    return 'The evidence span is real, but it does not contain or support this value.';
+  }
+
+  const verbatim = derivation === 'json-ld' || derivation === 'page-text';
+  if (verbatim && value === 'overlap') {
+    return 'Marked as quoted, but the value is not verbatim within its evidence span.';
+  }
   if (derivation === 'json-ld') {
     return match === 'exact'
       ? 'Taken from the page’s structured recipe data.'
@@ -182,10 +285,22 @@ function reasonFor(derivation: Derivation, match: MatchKind, hasSpan: boolean): 
 /**
  * Verifies one field's provenance and assigns its confidence.
  *
- * `json-ld` claims are checked against the JSON-LD block specifically; every
- * other derivation may draw on the page text or the JSON-LD.
+ * Two independent checks, both of which have to pass:
+ *
+ *  1. **span ⊆ source** — the span the model cited really is in the page we
+ *     fetched. `json-ld` claims are checked against the JSON-LD block
+ *     specifically, so a fabricated provenance is downgraded rather than
+ *     believed; other derivations may draw on the page text or the JSON-LD.
+ *  2. **value ⊆ span** — the value really is in the span it cites. Without this
+ *     a fabricated value riding a genuine sentence reads green.
+ *
+ * `value` is the emitted value for this field. For an ingredient, pass the
+ * product name: it is the part that reaches the cart and the part a
+ * hallucination invents, while the amount and unit are exactly what a
+ * `normalized` derivation is allowed to restate.
  */
 export function assessField(
+  value: unknown,
   evidence: string | null,
   derivation: Derivation,
   source: VerificationSource,
@@ -199,7 +314,7 @@ export function assessField(
       match: 'none',
       score: 0,
       evidence: span || null,
-      reason: reasonFor(derivation, 'none', Boolean(span)),
+      reason: reasonFor(derivation, 'none', Boolean(span), 'empty'),
     };
   }
 
@@ -213,12 +328,14 @@ export function assessField(
     match = inPage.score >= inJsonLd.score ? inPage : inJsonLd;
   }
 
+  const valueCheck = checkValue(value, span);
+
   return {
-    level: levelFor(derivation, match.kind),
+    level: levelFor(derivation, match.kind, valueCheck),
     derivation,
     match: match.kind,
     score: Math.round(match.score * 1000) / 1000,
     evidence: span,
-    reason: reasonFor(derivation, match.kind, true),
+    reason: reasonFor(derivation, match.kind, true, valueCheck),
   };
 }

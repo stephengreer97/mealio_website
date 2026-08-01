@@ -208,3 +208,81 @@ describe('import/html — platform detection (telemetry)', () => {
     expect(detectPlatform('<html><body>hi</body></html>', 'not a url')).toBe('unknown');
   });
 });
+
+/**
+ * Regressions from the external review.
+ */
+describe('import/html — bounded stripping (CPU DoS)', () => {
+  it('strips a 1.5 MB body of unclosed tags in well under a second', () => {
+    // The regex version — /<(script|style|…)\b[^>]*>[\s\S]*?<\/\1>/g — backtracks
+    // quadratically here: every unclosed opening tag rescans to end of input for
+    // a close that never comes. Measured at 23.4s for a body inside the
+    // fetcher's own 2 MB cap, blocking the event loop before the gate ran.
+    const html = `<html><body>${'<div><span>hello world '.repeat(70_000)}</body></html>`;
+    expect(html.length).toBeGreaterThan(1_000_000);
+
+    const startedAt = Date.now();
+    const text = htmlToText(html);
+    const elapsed = Date.now() - startedAt;
+
+    expect(elapsed).toBeLessThan(1000);
+    expect(text).toContain('hello world');
+  });
+
+  it('does not rescan for a close tag that never arrives', () => {
+    const html = '<script>'.repeat(20_000) + 'x'.repeat(500_000);
+    const startedAt = Date.now();
+    htmlToText(html);
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+  });
+
+  it('caps its own input regardless of what the fetcher allowed through', () => {
+    const html = `<p>start</p>${'<p>filler</p>'.repeat(200_000)}`;
+    const startedAt = Date.now();
+    const text = htmlToText(html);
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(text.length).toBeLessThan(html.length);
+  });
+
+  it('still drops the contents of an element it is skipping', () => {
+    expect(htmlToText('<p>before</p><script>var secret = 1;</script><p>after</p>')).toBe(
+      'before\nafter',
+    );
+  });
+
+  it('handles a self-closing dropped element and an unterminated tag', () => {
+    expect(htmlToText('<p>a</p><svg/><p>b</p>')).toBe('a\nb');
+    expect(htmlToText('<p>a</p><div')).toBe('a');
+  });
+});
+
+describe('import/html — every prompt input is capped', () => {
+  it('caps a runaway <title> that passes every other limit', () => {
+    // A 1.2 MB title is a valid page: under the 2 MB response cap, and `text`
+    // is capped separately. Uncapped it flowed whole into the gate prompt, the
+    // extraction prompt and the confidence corpus.
+    const title = 'A'.repeat(1_200_000);
+    const document = toSourceDocument('https://x.example.com/p', `<html><head><title>${title}</title></head><body><p>hi</p></body></html>`);
+    expect(document.title.length).toBeLessThanOrEqual(301);
+  });
+
+  it('caps structured data quoted into the prompt and used as the verification corpus', () => {
+    const recipe = {
+      '@type': 'Recipe',
+      name: 'Huge',
+      recipeIngredient: Array.from({ length: 40_000 }, (_, i) => `ingredient number ${i}`),
+    };
+    const html = `<script type="application/ld+json">${JSON.stringify(recipe)}</script>`;
+    const document = toSourceDocument('https://x.example.com/p', html);
+    expect(document.jsonLdRaw!.length).toBeLessThanOrEqual(32_001);
+  });
+
+  it('drops an image URL long enough to be a payload rather than a link', () => {
+    const dataUri = `data:image/png;base64,${'A'.repeat(5000)}`;
+    const document = toSourceDocument(
+      'https://x.example.com/p',
+      `<html><head><meta property="og:image" content="${dataUri}"></head><body><p>hi</p></body></html>`,
+    );
+    expect(document.imageUrl).toBeNull();
+  });
+});
