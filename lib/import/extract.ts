@@ -30,7 +30,8 @@ import {
   type StructuredUsage,
 } from './anthropic';
 import { canonicalizeIngredients } from './ingredients';
-import { canonicalizeDifficulty, canonicalizeTags, MEAL_TAGS } from './vocab';
+import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, MEAL_TAGS } from './vocab';
+import { nullPhotoResolver, type PhotoResolution, type PhotoResolver } from './photo';
 import type {
   CreatorMealDraft,
   Derivation,
@@ -96,7 +97,12 @@ const ExtractionSchema = z.object({
     derivation: DerivationEnum,
   }),
   serves: z.object({
-    value: z.string().describe('Yield as a short phrase, e.g. "4" or "4 large bowls". Empty string if absent.'),
+    value: z
+      .string()
+      .describe(
+        'How many PEOPLE the dish feeds, as digits only: "4", or a range "4-6". ' +
+          'Empty string if the source does not say how many people it feeds.',
+      ),
     evidence: z.string().nullable().describe(EVIDENCE_DESCRIPTION),
     derivation: DerivationEnum,
   }),
@@ -145,7 +151,24 @@ If a line gives no amount at all, set measure to null and unit to "qty" — do n
 Set derivation to "json-ld" or "page-text" when you split a line without changing any value, and
 "normalized" when you converted or estimated one.
 
-Skip section headings ("For the sauce:") and equipment. Do not merge or reorder ingredients.`;
+Skip section headings ("For the sauce:") and equipment. Do not merge or reorder ingredients.
+
+## serves is a number of people, not a yield
+
+"serves" means how many PEOPLE the dish feeds. Emit digits only: "4", or a range like "4-6".
+
+Recipe pages usually publish a YIELD instead, and a yield is a different quantity. Do not convert
+one into the other:
+- "2 1/2 cups guacamole" is a volume. It is NOT "serves 2". Emit "" and mark it absent.
+- "Makes 12 pancakes" is a batch of items. It is NOT "serves 12". Emit "" and mark it absent.
+- "1 loaf", "500 g", "one 9-inch pie" are all yields, not serving counts. Emit "" and mark absent.
+- "Serves 4", "Serves 4-6", "4 servings", "Feeds a family of 6" ARE serving counts. Emit
+  "4", "4-6", "4", "6".
+
+If the page gives only a yield and never says how many people it feeds, that is a normal and
+correct outcome: emit "" with derivation "absent". Do not estimate a serving count from a volume,
+a weight, or a number of items. A creator filling in one number themselves costs far less than a
+wrong number they do not notice.`;
 
 const TAG_INSTRUCTION = `Choose tags only from this list; anything outside it is dropped:\n${MEAL_TAGS.join(', ')}`;
 
@@ -186,6 +209,8 @@ export interface ExtractOptions {
   call: StructuredCaller;
   model?: string;
   maxTokens?: number;
+  /** Copies the page's image into our storage, or finds a stand-in. */
+  resolvePhoto?: PhotoResolver;
 }
 
 export interface ExtractionResult {
@@ -196,6 +221,8 @@ export interface ExtractionResult {
   usedJsonLd: boolean;
   /** Which route was taken — logged for every import. */
   path: ExtractionPath;
+  /** How the photo was obtained. */
+  photo: PhotoResolution;
   usage: StructuredUsage;
 }
 
@@ -204,13 +231,24 @@ function emptyField<T>(value: T): ExtractedField<T> {
 }
 
 /**
- * Resolves the photo without asking the model. JSON-LD `image` is structured
- * data and reads green; `og:image` is page metadata and reads verbatim.
+ * Turns a resolved photo into a provenance-bearing field.
+ *
+ * A copied image reports the **source** URL as both value and evidence: what we
+ * are attesting is that the page really does publish this image, which is
+ * checkable against the page. Re-hosting it on our storage is our own
+ * bookkeeping, not a claim about the source, so the storage URL goes in the
+ * draft and the source URL goes in the provenance. A Pixabay stand-in makes no
+ * claim about the page at all and is marked `generated`.
  */
-function resolvePhoto(document: SourceDocument): ExtractedField<string> {
-  if (!document.imageUrl) return emptyField('');
-  const derivation: Derivation = document.jsonLd?.image === document.imageUrl ? 'json-ld' : 'page-text';
-  return { value: document.imageUrl, evidence: document.imageUrl, derivation };
+function photoField(document: SourceDocument, photo: PhotoResolution): ExtractedField<string> {
+  if (!photo.url) return emptyField('');
+  if (photo.origin === 'copied' && photo.sourceUrl) {
+    const derivation: Derivation =
+      document.jsonLd?.image === photo.sourceUrl ? 'json-ld' : 'page-text';
+    return { value: photo.sourceUrl, evidence: photo.sourceUrl, derivation };
+  }
+  // `evidence` carries the explanation for a generated value; there is no span.
+  return { value: photo.url, evidence: photo.detail, derivation: 'generated' };
 }
 
 /** Runs extraction against whichever path the source supports. */
@@ -244,7 +282,15 @@ export async function extractDraft(
     derivation: item.derivation,
   }));
 
-  const photoUrl = resolvePhoto(document);
+  // The photo is resolved by us, never asked of the model: a model inventing an
+  // image URL is exactly the failure the confidence indicator exists to catch.
+  const photo = await (options.resolvePhoto ?? nullPhotoResolver)({
+    sourceImageUrl: document.imageUrl,
+    mealName: raw.name.value.trim() || document.title,
+  });
+
+  const photoUrl = photoField(document, photo);
+  const serves = canonicalizeServes(raw.serves.value, raw.serves.evidence);
 
   const output: ExtractionOutput = {
     name: raw.name,
@@ -254,7 +300,9 @@ export async function extractDraft(
     photoUrl,
     difficulty: { ...raw.difficulty, value: canonicalizeDifficulty(raw.difficulty.value) },
     tags: { ...raw.tags, value: canonicalizeTags(raw.tags.value) },
-    serves: raw.serves,
+    // A rejected serves keeps its span so the reason can explain what we saw,
+    // but carries no value — which reads red, as it should.
+    serves: { ...raw.serves, value: serves ?? '' },
   };
 
   const canonical = canonicalizeIngredients(output.ingredients);
@@ -265,7 +313,8 @@ export async function extractDraft(
     recipe: output.recipe.value.trim() || null,
     source: document.url,
     story: output.story.value.trim() || null,
-    photoUrl: output.photoUrl.value.trim() || null,
+    // Our storage URL, never the third-party one we read it from.
+    photoUrl: photo.url,
     difficulty: output.difficulty.value,
     tags: output.tags.value,
     serves: output.serves.value.trim() || null,
@@ -277,6 +326,7 @@ export async function extractDraft(
     keptIngredientIndices: canonical.keptIndices,
     usedJsonLd,
     path,
+    photo,
     usage: response.usage,
   };
 }

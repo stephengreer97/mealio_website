@@ -132,7 +132,49 @@ export function extractionFixture(overrides: Record<string, unknown> = {}) {
     story: { value: '', evidence: null, derivation: 'absent' },
     difficulty: { value: 1, evidence: 'ready in 15 minutes', derivation: 'inferred' },
     tags: { value: ['Mexican', 'No Cook'], evidence: 'guacamole', derivation: 'inferred' },
-    serves: { value: '2 1/2 cups guacamole', evidence: '2 1/2 cups guacamole', derivation: 'json-ld' },
+    // The recorded page's recipeYield is "2 1/2 cups guacamole" — a volume, not
+    // a head count — so a correctly-prompted model marks serves absent.
+    serves: { value: '', evidence: null, derivation: 'absent' },
     ...overrides,
+  };
+}
+
+/**
+ * A body that emits one byte every `intervalMs` and never ends — the slow-drip
+ * server. It never trips the size cap and never stalls a single read, so only a
+ * wall-clock deadline stops it.
+ */
+export function drippingBody(intervalMs = 20) {
+  let emitted = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      return new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          emitted++;
+          controller.enqueue(new Uint8Array([0x61]));
+          resolve();
+        }, intervalMs);
+      });
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+    },
+  });
+  return { stream, bytesEmitted: () => emitted };
+}
+
+/** A cache whose every operation throws — the durable-store-outage case. */
+export function brokenCache() {
+  return {
+    async get(): Promise<never> {
+      throw new Error('cache backend unavailable');
+    },
+    async set(): Promise<never> {
+      throw new Error('cache backend unavailable');
+    },
+    async delete(): Promise<never> {
+      throw new Error('cache backend unavailable');
+    },
   };
 }

@@ -1,11 +1,11 @@
 {
   "id": "01-cookieandkate-guacamole",
   "url": "https://cookieandkate.com/best-guacamole-recipe",
-  "note": "Recorded page. JSON-LD Recipe nested in @graph; array recipeYield; HTML entities inside ingredient strings.",
+  "note": "Recorded page. JSON-LD Recipe nested in @graph; HTML entities inside ingredient strings. recipeYield is a VOLUME (\"2 1/2 cups guacamole\") — serves must come back empty, not 2.",
   "sourceFrom": "cookieandkate-guacamole.html",
   "expected": {
     "name": "Best Guacamole",
-    "serves": "2 1/2 cups guacamole",
+    "serves": null,
     "ingredients": [
       {
         "ingredientName": "avocados",
@@ -49,6 +49,7 @@
         "unit": "tsp",
         "measure": "1"
       }
-    ]
+    ],
+    "servesMustBeEmpty": true
   }
 }

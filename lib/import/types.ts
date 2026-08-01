@@ -163,9 +163,10 @@ export type Derivation =
   | 'inferred'
   /**
    * Produced by us, not found on the page — currently only a Pixabay stand-in
-   * photo. Always amber: a placeholder we chose is not something we read, and
-   * folding it into `inferred` would be the same dishonesty the confidence
-   * model exists to prevent.
+   * photo. It is deliberately not `inferred`: nothing about the source implied
+   * this value, we chose it, and saying otherwise would be the quiet
+   * mislabelling this whole model exists to prevent. Always amber: the value is
+   * real and usable, but the creator needs to know we picked it.
    */
   | 'generated'
   /** Not present in the source at all. */

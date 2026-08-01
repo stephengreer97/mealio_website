@@ -70,6 +70,24 @@ export async function resolvePhotoUrl(
     return photoUrl;
   }
 
+  const stored = await storeImageBuffer(buffer, contentType, userId);
+  return stored ?? photoUrl; // fall back to proxy URL
+}
+
+/**
+ * Stores image bytes in the meal-photos bucket and returns the permanent public
+ * URL, or null if the upload failed.
+ *
+ * Extracted from `resolvePhotoUrl` so the link-import pipeline can store a
+ * creator's own page image through exactly this path — same hash dedup, same
+ * bucket, same public-URL shape — rather than growing a second uploader beside
+ * it.
+ */
+export async function storeImageBuffer(
+  buffer: Buffer,
+  contentType: string,
+  userId: string,
+): Promise<string | null> {
   const hash = createHash('sha256').update(buffer).digest('hex');
   const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
 
@@ -94,7 +112,7 @@ export async function resolvePhotoUrl(
 
   if (error) {
     log({ event: 'PHOTO:UPLOAD', status: 'error', userId, detail: 'Supabase Storage upload failed', error });
-    return photoUrl; // fall back to proxy URL
+    return null;
   }
 
   const { data: { publicUrl } } = supabase.storage
@@ -106,4 +124,75 @@ export async function resolvePhotoUrl(
 
   log({ event: 'PHOTO:UPLOAD', status: 'success', userId, detail: publicUrl });
   return publicUrl;
+}
+
+const WORKER_URL = (process.env.PIXABAY_WORKER_URL ?? '').replace(/\/$/, '');
+const WORKER_SECRET = process.env.PIXABAY_WORKER_SECRET ?? '';
+
+export interface PixabayHit {
+  previewURL: string;
+  webformatURL: string;
+}
+
+/**
+ * Searches Pixabay through the Cloudflare worker.
+ *
+ * Lifted out of `app/api/meals/generate-photo/route.ts` so the route and the
+ * link-import pipeline share one implementation — the worker URL, the auth
+ * header and the cache window are all easy to get subtly wrong twice.
+ */
+export async function pixabaySearch(query: string, perPage = 5): Promise<PixabayHit[]> {
+  const apiKey = process.env.PIXABAY_API_KEY;
+  if (!apiKey || !WORKER_URL) return [];
+  const url =
+    `${WORKER_URL}/api?key=${apiKey}&q=${encodeURIComponent(query)}` +
+    `&image_type=photo&safesearch=true&per_page=${perPage}`;
+  // Cache search results for 1 hour — same meal name always returns the same images
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${WORKER_SECRET}` },
+    next: { revalidate: 3600 },
+  });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { hits?: PixabayHit[] };
+  return data.hits ?? [];
+}
+
+/** Wraps a Pixabay `webformatURL` in the proxy URL `resolvePhotoUrl` understands. */
+export function pixabayProxyUrl(webformatURL: string): string {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+  return `${appUrl}${PROXY_PATH}?url=${encodeURIComponent(webformatURL)}`;
+}
+
+/**
+ * Finds a stand-in photo for a meal name and stores it in our own bucket.
+ *
+ * Used when a source page has no usable image. Returns a permanent Supabase URL
+ * or null — never a Pixabay URL, because storing is the whole point.
+ */
+export async function pixabayPhotoFor(mealName: string, userId: string): Promise<string | null> {
+  const name = mealName.trim();
+  if (!name) return null;
+
+  const words = name.split(/\s+/);
+  const lastWord = words[words.length - 1];
+
+  // Same widening the generate-photo route uses: full name, then the head noun.
+  for (const query of [name, `${lastWord} food`]) {
+    let hits: PixabayHit[] = [];
+    try {
+      hits = await pixabaySearch(query, 3);
+    } catch (err) {
+      log({ event: 'PHOTO:GENERATE', status: 'error', userId, detail: `Pixabay search threw for "${query}"`, error: err });
+      continue;
+    }
+    for (const hit of hits) {
+      const stored = await resolvePhotoUrl(pixabayProxyUrl(hit.webformatURL), userId);
+      // resolvePhotoUrl returns the proxy URL unchanged when storage fails; a
+      // proxy URL is not a photo we can publish, so treat that as a miss.
+      if (stored && !stored.includes(PROXY_PATH)) return stored;
+    }
+  }
+
+  log({ event: 'PHOTO:GENERATE', status: 'error', userId, detail: `No Pixabay result for "${name}"` });
+  return null;
 }

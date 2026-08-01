@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { runImport } from '@/lib/import/pipeline';
 import { MemoryImportCache } from '@/lib/import/cache';
-import { EXTRACTION_MODEL, GATE_MODEL } from '@/lib/import/anthropic';
+import { EXTRACTION_MODEL, GATE_MODEL, type StructuredCaller } from '@/lib/import/anthropic';
 import type { ImportTelemetry } from '@/lib/import/types';
+import { formatTelemetry } from '@/lib/import/telemetry';
 import {
+  brokenCache,
   endlessBody,
   extractionFixture,
   failingCaller,
@@ -92,9 +94,12 @@ describe('import/pipeline — the JSON-LD fast path', () => {
 
     if (result.status !== 'ok') throw new Error('unreachable');
     expect(result.confidence.name.level).toBe('green');     // verbatim json-ld
-    expect(result.confidence.serves.level).toBe('green');   // verbatim json-ld
     expect(result.confidence.recipe.level).toBe('amber');   // normalized
     expect(result.confidence.story.level).toBe('red');      // no span
+    // This page's recipeYield is a volume ("2 1/2 cups guacamole"), which is not
+    // a serving count — so serves is empty and reads red rather than green.
+    expect(result.confidence.serves.level).toBe('red');
+    expect(result.draft.serves).toBeNull();
     expect(result.confidence.ingredients).toHaveLength(result.draft.ingredients.length);
     expect(result.confidence.ingredients[0].level).toBe('green');
   });
@@ -356,5 +361,206 @@ describe('import/pipeline — telemetry', () => {
     expect(events[0].outcome).toBe('rejected');
     expect(events[0].stage).toBe('fetch');
     expect(events[0].reason).toBe('blocked-private-address');
+  });
+});
+
+/**
+ * Regressions from the external review.
+ */
+describe('import/pipeline — review regressions', () => {
+  it('sends a fabricated value paired with a real page sentence to red, end to end', async () => {
+    // The span is lifted verbatim out of the recorded page's own JSON-LD; only
+    // the values lie. A span-only check reads all of this green.
+    const realLine = '4 medium ripe avocados, halved and pitted';
+    const call = stubCaller(() =>
+      extractionFixture({
+        serves: { value: '48', evidence: realLine, derivation: 'json-ld' },
+        ingredients: [
+          {
+            productName: 'saffron threads',
+            measure: '2',
+            unit: 'tbsp',
+            qty: 1,
+            evidence: realLine,
+            derivation: 'json-ld',
+          },
+        ],
+      }),
+    );
+
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.confidence.serves.level).toBe('red');
+    expect(result.confidence.ingredients[0].level).toBe('red');
+    // The span itself matched — it is the value that failed verification.
+    expect(result.confidence.ingredients[0].match).toBe('exact');
+  });
+
+  it('degrades to a slow import when the cache backend is down, rather than failing', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, {
+      ...options({ call }),
+      cache: brokenCache(),
+    });
+    expect(result.status).toBe('ok');
+    expect(events).toHaveLength(1);
+  });
+
+  it('still emits telemetry when something throws unexpectedly', async () => {
+    // A caller that throws a non-Anthropic error mid-pipeline: the result is a
+    // rejection, and crucially it is still traced.
+    const exploding = (async () => {
+      throw Object.assign(new Error('kaboom'), { name: 'TypeError' });
+    }) as unknown as StructuredCaller;
+
+    const result = await runImport(CHICKEN_URL, options({ call: exploding }));
+
+    expect(result.status).toBe('rejected');
+    expect(events).toHaveLength(1);
+    expect(events[0].outcome).toBe('rejected');
+    expect(events[0].reason).toBeTruthy();
+  });
+});
+
+describe('import/telemetry — log lines cannot be forged', () => {
+  it('escapes a newline in a submitted URL instead of emitting a second line', () => {
+    const line = formatTelemetry({
+      url: 'https://x.example.com/p\noutcome=ok stage=complete platform=forged',
+      outcome: 'rejected',
+      stage: 'fetch',
+      reason: 'invalid-url\nreason=something-else',
+      platform: null,
+      path: null,
+      gateVerdict: null,
+      gateSource: null,
+      cached: false,
+      ingredientCount: null,
+      confidence: null,
+      costUsd: 0,
+      durationMs: 1,
+    });
+    expect(line).not.toContain('\n');
+    expect(line).toContain('\\n');
+  });
+});
+
+/**
+ * Photo resolution. We never hotlink: a bare third-party URL makes the
+ * creator's server carry our traffic and breaks the meal silently when they
+ * move the file. A source image is copied into our bucket, or Pixabay stands
+ * in, or there is no photo.
+ */
+describe('import/pipeline — photos are never hotlinked', () => {
+  const stored = 'https://storage.mealio.co/meal-photos/u1/1.jpg';
+
+  it('emits our storage URL and green provenance when the page image is copied', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(
+      GUAC_URL,
+      options({
+        call,
+        resolvePhoto: async ({ sourceImageUrl }: { sourceImageUrl: string | null }) => ({
+          url: stored,
+          origin: 'copied' as const,
+          sourceUrl: sourceImageUrl,
+          detail: 'Copied from the image the page publishes.',
+        }),
+      }),
+    );
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.draft.photoUrl).toBe(stored);
+    // Green, because the page really does publish this image — the provenance
+    // is checked against the source URL, not against our storage URL.
+    expect(result.confidence.photoUrl.level).toBe('green');
+    expect(result.confidence.photoUrl.evidence).toMatch(/^https?:\/\//);
+    expect(result.confidence.photoUrl.evidence).not.toBe(stored);
+  });
+
+  it('falls back to a Pixabay stand-in and marks it amber, not green', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(
+      GUAC_URL,
+      options({
+        call,
+        resolvePhoto: async () => ({
+          url: stored,
+          origin: 'pixabay' as const,
+          sourceUrl: null,
+          detail: 'We could not copy the page’s image, so this is a stock photo we picked.',
+        }),
+      }),
+    );
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.draft.photoUrl).toBe(stored);
+    expect(result.confidence.photoUrl.level).toBe('amber');
+    expect(result.confidence.photoUrl.derivation).toBe('generated');
+    expect(result.confidence.photoUrl.reason).toMatch(/stock photo/i);
+  });
+
+  it('reads red when no photo could be resolved at all', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    // No userId and no injected resolver — the default resolves nothing.
+    expect(result.draft.photoUrl).toBeNull();
+    expect(result.confidence.photoUrl.level).toBe('red');
+  });
+
+  it('never emits a third-party URL, whatever the page advertises', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+    // null is a correct answer here; a foreign URL never is.
+    expect(result.draft.photoUrl ?? '').not.toMatch(/cookieandkate|wp-content/);
+  });
+});
+
+describe('import/pipeline — serves is a people count', () => {
+  it('drops a serving count the model read off a volume', async () => {
+    // A model that gets it wrong: "2" cited to "2 1/2 cups guacamole". The span
+    // is genuinely on the page, so a span-only check would call this green.
+    const call = stubCaller(() =>
+      extractionFixture({
+        serves: { value: '2', evidence: '2 1/2 cups guacamole', derivation: 'json-ld' },
+      }),
+    );
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.draft.serves).toBeNull();
+    expect(result.confidence.serves.level).toBe('red');
+  });
+
+  it('keeps a genuine people count in the form’s shape', async () => {
+    const call = stubCaller((request) =>
+      request.model === GATE_MODEL
+        ? { verdict: 'yes', reason: 'recipe' }
+        : extractionFixture({
+            serves: { value: '4', evidence: 'Serves 4.', derivation: 'page-text' },
+          }),
+    );
+    const result = await runImport(CHICKEN_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.draft.serves).toBe('4');
+    expect(result.draft.serves).toMatch(/^\d+(-\d+)?$/);
+    expect(result.confidence.serves.level).toBe('green');
+  });
+
+  it('accepts a range and normalises prose around it', async () => {
+    const call = stubCaller((request) =>
+      request.model === GATE_MODEL
+        ? { verdict: 'yes', reason: 'recipe' }
+        : extractionFixture({
+            serves: { value: '4-6 servings', evidence: 'Serves 4-6', derivation: 'page-text' },
+          }),
+    );
+    const result = await runImport(CHICKEN_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+    expect(result.draft.serves).toBe('4-6');
   });
 });

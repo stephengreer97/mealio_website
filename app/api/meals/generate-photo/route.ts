@@ -1,35 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
+// One Pixabay implementation, shared with the link-import pipeline.
+import { pixabaySearch, pixabayProxyUrl, type PixabayHit } from '@/lib/photos';
 
 export const dynamic = 'force-dynamic';
-
-const WORKER_URL    = (process.env.PIXABAY_WORKER_URL ?? '').replace(/\/$/, '');
-const WORKER_SECRET = process.env.PIXABAY_WORKER_SECRET ?? '';
-
-interface PixabayHit {
-  previewURL:   string;
-  webformatURL: string;
-}
-
-interface PixabayResponse {
-  hits: PixabayHit[];
-  totalHits: number;
-}
-
-async function pixabaySearch(apiKey: string, query: string, perPage: number): Promise<PixabayHit[]> {
-  const url =
-    `${WORKER_URL}/api?key=${apiKey}&q=${encodeURIComponent(query)}` +
-    `&image_type=photo&safesearch=true&per_page=${perPage}`;
-  // Cache search results for 1 hour — same meal name always returns the same images
-  const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${WORKER_SECRET}` },
-    next: { revalidate: 3600 },
-  });
-  if (!res.ok) return [];
-  const data = await res.json() as PixabayResponse;
-  return data.hits ?? [];
-}
 
 export async function POST(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -56,12 +31,11 @@ export async function POST(request: NextRequest) {
   try {
     // Three parallel searches
     const [fullHits, lastWordHits, lastWordFoodHits] = await Promise.all([
-      pixabaySearch(apiKey, mealName, 5),       // full name — need ≥2 unique
-      pixabaySearch(apiKey, lastWord, 3),        // last word only
-      pixabaySearch(apiKey, lastWordFood, 3),    // last word + food
+      pixabaySearch(mealName, 5),       // full name — need ≥2 unique
+      pixabaySearch(lastWord, 3),        // last word only
+      pixabaySearch(lastWordFood, 3),    // last word + food
     ]);
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
     const seenPreviews = new Set<string>();
 
     function pickUnique(hits: PixabayHit[], n: number): PixabayHit[] {
@@ -94,7 +68,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       thumbs: selected.map(h => h.previewURL),
-      fulls:  selected.map(h => `${appUrl}/api/meals/pixabay-image?url=${encodeURIComponent(h.webformatURL)}`),
+      fulls:  selected.map(h => pixabayProxyUrl(h.webformatURL)),
     }, { status: 201 });
 
   } catch (err) {
