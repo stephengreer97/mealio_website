@@ -61,6 +61,106 @@ const BLOCK_TAGS = new Set([
 const MAX_HTML_CHARS = 512 * 1024;
 
 /**
+ * Page furniture that is not the recipe: reader comments, related-post rails,
+ * share widgets, newsletter forms, author bios, affiliate disclosures.
+ *
+ * Matched on `id` and `class`, which is how every CMS in the MEAL-69 sample
+ * marks these regions. Deliberately broad — over-stripping costs a little
+ * context, under-stripping means a reader comment can be quoted as evidence
+ * and read as verified.
+ */
+const BOILERPLATE_MARKERS = [
+  'comment', 'respond', 'disqus', 'livefyre',
+  'related', 'jp-relatedposts', 'yarpp', 'recirc', 'more-from',
+  'sidebar', 'widget', 'share', 'sharedaddy', 'social',
+  'subscribe', 'newsletter', 'signup', 'optin', 'popup', 'modal', 'consent',
+  'disclosure', 'disclaimer', 'affiliate',
+  'author-bio', 'about-author', 'breadcrumb', 'pagination',
+  'post-navigation', 'nav-links', 'entry-footer',
+];
+
+/**
+ * Markers that say an element *is* the recipe. These beat the boilerplate list,
+ * because the markers above are substrings and recipe cards collide with them —
+ * a `<div class="recipe-widget">` or a cookie recipe on a baking blog must not
+ * be mistaken for page furniture. Losing the recipe is far worse than keeping a
+ * share button.
+ */
+const RECIPE_MARKERS = [
+  'wprm-recipe', 'tasty-recipe', 'recipe-card', 'hrecipe', 'jetpack-recipe',
+  'recipe-container', 'recipe-summary', 'entry-content', 'post-content',
+  'ingredient', 'instruction', 'directions', 'method',
+];
+
+/**
+ * Structural containers that are never page furniture, whatever their classes.
+ *
+ * `<body class="content-sidebar">` is a layout class on the recorded
+ * cookieandkate page — matching "sidebar" there dropped the entire document and
+ * left a 52-character corpus, which would have verified nothing at all.
+ */
+const NEVER_DROPPED_TAGS = new Set(['html', 'body', 'main', 'article']);
+
+/** Attribute values that mark an element as page furniture. */
+function isBoilerplate(tagName: string, tagAttributes: string): boolean {
+  if (NEVER_DROPPED_TAGS.has(tagName)) return false;
+
+  const match = /\b(?:id|class)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+  const values: string[] = [];
+  let found: RegExpExecArray | null;
+  while ((found = match.exec(tagAttributes)) !== null) {
+    values.push((found[1] ?? found[2] ?? found[3] ?? '').toLowerCase());
+  }
+
+  if (values.some((v) => RECIPE_MARKERS.some((marker) => v.includes(marker)))) return false;
+  return values.some((v) => BOILERPLATE_MARKERS.some((marker) => v.includes(marker)));
+}
+
+/**
+ * Index just past the close tag matching an element opened at `openEnd`.
+ *
+ * Counts depth rather than taking the first close tag, because the regions we
+ * skip are `<div>`s full of nested `<div>`s — a first-match scan would stop at
+ * the first inner close and leave the rest of a 345-comment thread in the
+ * output, which is exactly the bug this is here to prevent.
+ */
+function skipElement(lower: string, tagName: string, openEnd: number): number {
+  const open = `<${tagName}`;
+  const close = `</${tagName}`;
+  let depth = 1;
+  let cursor = openEnd;
+
+  while (depth > 0) {
+    const nextOpen = lower.indexOf(open, cursor);
+    const nextClose = lower.indexOf(close, cursor);
+    if (nextClose === -1) return lower.length;
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      // Only a real tag opening counts: `<divider>` is not a nested `<div>`.
+      const after = lower[nextOpen + open.length];
+      if (after === '>' || after === ' ' || after === '\n' || after === '\t' || after === '/') depth++;
+      cursor = nextOpen + open.length;
+      continue;
+    }
+    depth--;
+    cursor = nextClose + close.length;
+  }
+
+  const end = lower.indexOf('>', cursor - 1);
+  return end === -1 ? lower.length : end + 1;
+}
+
+export interface HtmlToTextOptions {
+  /**
+   * Also drop comment threads, related-post rails and disclosure blocks.
+   *
+   * Used to build the corpus that `value ⊆ span ⊆ source` is verified against:
+   * without it, a reader comment counts as "the source", and an ingredient
+   * lifted from one verifies as green.
+   */
+  dropBoilerplate?: boolean;
+}
+
+/**
  * Flattens HTML to readable plain text.
  *
  * Written as a single left-to-right scan rather than a chain of regex
@@ -72,12 +172,19 @@ const MAX_HTML_CHARS = 512 * 1024;
  * own size cap and before the gate has had a chance to reject the page. The
  * scan below touches each character a bounded number of times.
  */
-export function htmlToText(html: string): string {
+export function htmlToText(html: string, options: HtmlToTextOptions = {}): string {
   const input = html.length > MAX_HTML_CHARS ? html.slice(0, MAX_HTML_CHARS) : html;
+  const dropBoilerplate = options.dropBoilerplate === true;
   const out: string[] = [];
 
   let i = 0;
   const length = input.length;
+  // Lowercased once, not once per dropped tag. Building it inside the loop made
+  // the scan quadratic again by a different route: `MAX_HTML_CHARS` bounds the
+  // input length but not the number of times we walk it, so a page of inline
+  // `<svg>` icons — 512 KB of them, well inside the cap — cost 21 seconds.
+  // Allocating one lowercase copy up front makes close-tag lookup O(1) amortised.
+  const lower = input.toLowerCase();
 
   while (i < length) {
     const lt = input.indexOf('<', i);
@@ -113,23 +220,19 @@ export function htmlToText(html: string): string {
       return match ? match[0].toLowerCase() : '';
     })();
 
-    if (!closing && DROPPED_TAGS.has(nameEnd)) {
-      // Skip the element's contents. A self-closing form has no contents, and a
-      // missing close tag drops the remainder rather than rescanning for one.
+    const drop =
+      !closing && nameEnd !== '' &&
+      (DROPPED_TAGS.has(nameEnd) || (dropBoilerplate && isBoilerplate(nameEnd, raw)));
+
+    if (drop) {
+      // Skip the element's contents. A self-closing form has no contents.
       if (raw.endsWith('/')) {
         out.push(' ');
         i = gt + 1;
         continue;
       }
-      const close = input.toLowerCase().indexOf(`</${nameEnd}`, gt + 1);
-      if (close === -1) {
-        out.push(' ');
-        i = length;
-        continue;
-      }
-      const closeEnd = input.indexOf('>', close);
-      out.push(' ');
-      i = closeEnd === -1 ? length : closeEnd + 1;
+      out.push('\n');
+      i = skipElement(lower, nameEnd, gt + 1);
       continue;
     }
 

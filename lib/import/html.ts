@@ -248,6 +248,7 @@ export function toSourceDocument(url: string, html: string): SourceDocument {
   }
 
   const text = htmlToText(html);
+  const recipeText = htmlToText(html, { dropBoilerplate: true });
   const imageUrl = jsonLd?.image ?? metaContent(html, 'og:image');
   return {
     url,
@@ -255,6 +256,7 @@ export function toSourceDocument(url: string, html: string): SourceDocument {
     // Recipe blogs bury the recipe under a long preamble but never past 24k chars;
     // the cap bounds token spend on pages with huge comment sections.
     text: truncate(text, MAX_TEXT_CHARS),
+    recipeText: truncate(recipeText, MAX_TEXT_CHARS),
     jsonLd,
     structuredSource,
     jsonLdRaw: jsonLd ? truncate(serializeJsonLd(jsonLd), MAX_JSONLD_CHARS) : null,

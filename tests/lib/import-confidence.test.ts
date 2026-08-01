@@ -10,6 +10,16 @@ import type { VerificationSource } from '@/lib/import/confidence';
  * produce a matching span, so it goes red without anyone judging it.
  */
 
+const PAGE_BODY =
+  "Best Guacamole\nThis is the guacamole I make when friends come over. Add a knob of butter to " +
+  "the pan first — it's the one shortcut I keep. Ready in about 15 minutes and it never lasts.";
+
+/** Reader comments: on the page, but not the recipe. */
+const COMMENT_BODY =
+  'Comments\nJenna says: Add two diced roma tomatoes, seeds removed, and stir. ' +
+  'Marcus says: I always throw in a big pinch of cayenne. ' +
+  'Disclosure: this post contains affiliate links.';
+
 const source: VerificationSource = {
   jsonLd: JSON.stringify(
     {
@@ -20,9 +30,9 @@ const source: VerificationSource = {
     null,
     2,
   ),
-  pageText:
-    "Best Guacamole\nThis is the guacamole I make when friends come over. Add a knob of butter to " +
-    "the pan first — it's the one shortcut I keep. Ready in about 15 minutes and it never lasts.",
+  recipeText: PAGE_BODY,
+  // The whole page — recipe plus the comment thread underneath it.
+  pageText: `${PAGE_BODY}\n${COMMENT_BODY}`,
 };
 
 describe('import/confidence — normalisation', () => {
@@ -107,7 +117,7 @@ describe('import/confidence — levels', () => {
   });
 
   it('reads red for a json-ld claim on a page that publishes none', () => {
-    const noStructured = { jsonLd: null, pageText: source.pageText };
+    const noStructured = { jsonLd: null, recipeText: source.recipeText, pageText: source.pageText };
     expect(assessField('avocados', '3 medium ripe avocados', 'json-ld', noStructured).level).toBe('red');
   });
 
@@ -145,6 +155,7 @@ describe('import/confidence — a fabricated value riding a genuine span', () =>
   it('does not read green for an ingredient that is nowhere in its own span', () => {
     const result = assessField('saffron threads', genuineSpan, 'json-ld', {
       jsonLd: `${source.jsonLd}\n${genuineSpan}`,
+      recipeText: source.recipeText,
       pageText: source.pageText,
     });
     expect(result.level).toBe('red');
@@ -235,5 +246,63 @@ describe('import/confidence — generated values', () => {
     // The whole point: this URL is ours and is nowhere in the source.
     const result = assessField('https://storage.mealio.co/x.jpg', 'picked by us', 'generated', source);
     expect(result.level).toBe('amber');
+  });
+});
+
+/**
+ * The corpus question: "is this span on the page?" is the wrong test, because a
+ * recipe page is mostly not the recipe. Reader comments mention every
+ * ingredient there is, so while they counted as the source a hallucination
+ * could always find a home in one — and green renders as no marker at all.
+ */
+describe('import/confidence — comments are on the page but are not the recipe', () => {
+  it('does not read green for a value quoted from a reader comment', () => {
+    const result = assessField(
+      'roma tomatoes',
+      'Add two diced roma tomatoes, seeds removed, and stir',
+      'page-text',
+      source,
+    );
+    // The span is genuinely on the page and matched exactly — it is *where* it
+    // matched that stops it being green.
+    expect(result.match).toBe('exact');
+    expect(result.level).toBe('amber');
+    expect(result.reason).toMatch(/outside the recipe/i);
+  });
+
+  it('does not read green for a value quoted from a disclosure block', () => {
+    const result = assessField(
+      'affiliate links',
+      'Disclosure: this post contains affiliate links.',
+      'page-text',
+      source,
+    );
+    expect(result.level).toBe('amber');
+  });
+
+  it('still reads green for a value quoted from the recipe itself', () => {
+    expect(assessField('a knob of butter', 'a knob of butter', 'page-text', source).level).toBe('green');
+  });
+});
+
+describe('import/confidence — an unchecked value is never promoted', () => {
+  it('does not let a number claim to be a quotation', () => {
+    // `derivation` is the model's free choice. A number cannot be checked for
+    // containment, so claiming `page-text` must not buy it a green.
+    const result = assessField(5, 'Ready in about 15 minutes', 'page-text', source);
+    expect(result.match).toBe('exact');
+    expect(result.level).toBe('amber');
+  });
+
+  it('does not let a tag array claim to be a quotation', () => {
+    const result = assessField(['Vegan', 'Mexican'], 'a knob of butter', 'json-ld', source);
+    expect(result.level).not.toBe('green');
+  });
+
+  it('caps difficulty at amber however good the span', () => {
+    // Verbatim in the JSON-LD block, so the span itself is beyond doubt.
+    const span = '3 medium ripe avocados, halved and pitted';
+    expect(assessField(3, span, 'json-ld', source).level).toBe('amber');
+    expect(assessField(3, span, 'inferred', source).level).toBe('amber');
   });
 });

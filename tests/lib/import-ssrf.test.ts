@@ -5,6 +5,7 @@ import {
   isPrivateAddress,
   normalizeUrl,
   safeFetch,
+  safeFetchImage,
   MAX_RESPONSE_BYTES,
   type LookupFn,
 } from '@/lib/import/ssrf';
@@ -358,5 +359,62 @@ describe('import/ssrf — connect-time address guard', () => {
     const guard = createGuardedLookup(lookupMap({ 'mixed.example.com': ['93.184.216.34', '10.0.0.7'] }));
     const { err } = await resolveOnce(guard, 'mixed.example.com');
     expect(err).toBeTruthy();
+  });
+});
+
+describe('import/ssrf — image fetches require a declared type', () => {
+  const svgWithScript = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+
+  it('rejects an image response with no Content-Type at all', async () => {
+    // We re-serve whatever we store from our own origin, so "no declared type"
+    // cannot be treated as "probably fine" — it is the only thing separating a
+    // JPEG from a script-bearing SVG.
+    // A string body makes Response synthesise `text/plain`; an untyped Blob is
+    // how you get a genuinely header-less response.
+    const impl = (async () =>
+      new Response(new Blob([svgWithScript], { type: '' }), { status: 200 })) as unknown as typeof fetch;
+
+    const result = await safeFetchImage('https://cdn.example.com/x', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('unsupported-content-type');
+    expect(result.detail).toMatch(/no Content-Type/i);
+  });
+
+  it('rejects a declared SVG', async () => {
+    const { impl } = stubFetch({
+      'https://cdn.example.com/x.svg': {
+        body: svgWithScript,
+        headers: { 'content-type': 'image/svg+xml' },
+      },
+    });
+    const result = await safeFetchImage('https://cdn.example.com/x.svg', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('accepts a declared raster image and returns its bytes', async () => {
+    const { impl } = stubFetch({
+      'https://cdn.example.com/x.jpg': { body: 'JPEGDATA', headers: { 'content-type': 'image/jpeg' } },
+    });
+    const result = await safeFetchImage('https://cdn.example.com/x.jpg', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.bytes.toString()).toBe('JPEGDATA');
+  });
+
+  it('still tolerates a page served without a Content-Type', async () => {
+    const impl = (async () =>
+      new Response('<html><title>ok</title></html>', { status: 200, headers: {} })) as unknown as typeof fetch;
+    const result = await safeFetch('https://example.com/p', { fetchImpl: impl, lookup: publicLookup });
+    expect(result.ok).toBe(true);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { runImport } from '@/lib/import/pipeline';
+import { toSourceDocument } from '@/lib/import/html';
 import { MemoryImportCache } from '@/lib/import/cache';
 import { EXTRACTION_MODEL, GATE_MODEL, type StructuredCaller } from '@/lib/import/anthropic';
 import type { ImportTelemetry } from '@/lib/import/types';
@@ -117,11 +118,14 @@ describe('import/pipeline — the JSON-LD fast path', () => {
             derivation: 'json-ld',
           },
           {
+            // A fabricated product cited to a span that is REAL and verbatim in
+            // the page's JSON-LD. Pairing it with an invented span would only
+            // prove we can spot an invented span.
             productName: 'smoked paprika',
             measure: '2',
             unit: 'tbsp',
             qty: 1,
-            evidence: '2 tablespoons smoked paprika, toasted',
+            evidence: '4 medium ripe avocados, halved and pitted',
             derivation: 'json-ld',
           },
         ],
@@ -562,5 +566,79 @@ describe('import/pipeline — serves is a people count', () => {
     const result = await runImport(CHICKEN_URL, options({ call }));
     if (result.status !== 'ok') throw new Error('unreachable');
     expect(result.draft.serves).toBe('4-6');
+  });
+});
+
+/**
+ * End to end against the recorded page, driving the whole pipeline rather than
+ * unit-testing `assessField`. The recorded cookieandkate fixture carries 345
+ * reader comments; while they counted as "the source", anything quoted from one
+ * read green — and green renders as no marker at all.
+ */
+describe('import/pipeline — reader comments cannot launder a hallucination', () => {
+  /** Lifted verbatim from the comment thread of the recorded fixture. */
+  const COMMENT_SPANS = {
+    tomato: 'roma tomatoes',
+    cayenne: 'cayenne',
+  };
+
+  it('does not read green for an ingredient quoted out of the comment thread', async () => {
+    const document = toSourceDocument(GUAC_URL, readHtmlFixture('cookieandkate-guacamole.html'));
+
+    // Find a sentence that really is in the comments and really is not in the
+    // recipe, so the test cannot pass by accident.
+    const commentSentence = document.text
+      .split('\n')
+      .find(
+        (line) =>
+          line.toLowerCase().includes(COMMENT_SPANS.tomato) &&
+          !document.recipeText.toLowerCase().includes(line.toLowerCase().trim()) &&
+          line.trim().length > 25,
+      );
+    expect(commentSentence, 'fixture should contain a tomato comment').toBeTruthy();
+
+    const call = stubCaller(() =>
+      extractionFixture({
+        ingredients: [
+          {
+            productName: 'roma tomatoes',
+            measure: '2',
+            unit: 'qty',
+            qty: 2,
+            evidence: commentSentence!.trim(),
+            derivation: 'page-text',
+          },
+        ],
+      }),
+    );
+
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    // The recipe says to skip the tomato; a reader suggested adding one. This
+    // must never be presented as verified.
+    expect(result.confidence.ingredients[0].level).not.toBe('green');
+    expect(result.confidence.ingredients[0].reason).toMatch(/outside the recipe/i);
+  });
+
+  it('drops the comment thread from the verification corpus entirely', () => {
+    const document = toSourceDocument(GUAC_URL, readHtmlFixture('cookieandkate-guacamole.html'));
+    // Present on the page…
+    expect(document.text.toLowerCase()).toContain(COMMENT_SPANS.tomato);
+    expect(document.text.toLowerCase()).toContain(COMMENT_SPANS.cayenne);
+    // …absent from the recipe region.
+    expect(document.recipeText.toLowerCase()).not.toContain(COMMENT_SPANS.tomato);
+    expect(document.recipeText.toLowerCase()).not.toContain(COMMENT_SPANS.cayenne);
+    // …while the recipe itself survives.
+    expect(document.recipeText.toLowerCase()).toContain('avocado');
+    expect(document.recipeText.length).toBeGreaterThan(2000);
+  });
+
+  it('keeps a genuine recipe-body value green', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+    expect(result.confidence.name.level).toBe('green');
+    expect(result.confidence.ingredients[0].level).toBe('green');
   });
 });
