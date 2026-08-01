@@ -5,22 +5,24 @@ import { useRouter } from 'next/navigation';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import ImportLinkBar from '@/components/ImportLinkBar';
-import ConfidenceMarker from '@/components/ConfidenceMarker';
+import ImportFieldNotice, { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import {
-  appendIngredientMarker,
-  clearIngredientMarker,
-  clearScalarMarker,
+  appendIngredientState,
+  clearIngredientState,
+  clearScalarState,
+  FIELD_LABELS,
+  fieldStatesFor,
   hostLabel,
   importedFormValues,
-  markersFrom,
+  noticesFor,
   pathLabel,
-  removeIngredientMarker,
-  SERVES_TRIMMED_NOTE,
+  removeIngredientState,
   summarise,
   summaryLine,
-  type FormMarkers,
-  type ScalarMarkerField,
+  type FormFieldStates,
+  type ImportField,
+  type ScalarField,
 } from '@/lib/import/draft-form';
 
 interface Creator {
@@ -776,13 +778,34 @@ export default function CreatorPortal() {
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   // ── Imported-draft state (MEAL-73) ──
-  // `markers` is the per-field confidence MEAL-72 computed; entries are nulled
-  // out as the creator edits, because a level derived from our extraction stops
-  // describing a value they have typed over.
-  const [markers, setMarkers] = useState<FormMarkers | null>(null);
-  const [importInfo, setImportInfo] = useState<{ url: string; path: string } | null>(null);
+  // `fieldStates` holds what became of each field in the import — what we wrote
+  // and how MEAL-72 assessed it. Only the exceptions surface: a verified field
+  // renders nothing, and an entry is nulled out as soon as the creator edits
+  // that field, because our assessment stops describing what is on screen.
+  const [fieldStates, setFieldStates] = useState<FormFieldStates | null>(null);
+  const [importInfo, setImportInfo] = useState<{
+    url: string;
+    path: string;
+    /** Fields the creator was editing while the import ran, which we did not overwrite. */
+    kept: string[];
+  } | null>(null);
   const [importedPhotoUrl, setImportedPhotoUrl] = useState<string | null>(null);
-  const [servesTrimmed, setServesTrimmed] = useState(false);
+  const [tagsNote, setTagsNote] = useState<string | null>(null);
+
+  /**
+   * Fields the creator touched while an import was in flight.
+   *
+   * The progress copy invites them to keep working through a request that can
+   * take a minute, so the response must not land on top of what they typed in
+   * the meantime. Their edit wins, and the summary says which fields we left
+   * alone rather than letting the difference go unexplained.
+   */
+  const editedDuringImport = useRef<Set<ImportField>>(new Set());
+  const importInFlight = useRef(false);
+
+  const markTouched = (field: ImportField) => {
+    if (importInFlight.current) editedDuringImport.current.add(field);
+  };
 
   // Handle state (kept for backward compat, consumed by saveProfile)
   const [handleInput, setHandleInput]     = useState('');
@@ -908,7 +931,7 @@ export default function CreatorPortal() {
     setPhotoFile(file);
     setThumbs([]); setFulls([]); setSelectedIdx(null);
     setImportedPhotoUrl(null);
-    setMarkers(prev => clearScalarMarker(prev, 'photoUrl'));
+    setFieldStates(prev => clearScalarState(prev, 'photoUrl'));
     setPhotoPreview(URL.createObjectURL(file));
   };
 
@@ -919,7 +942,7 @@ export default function CreatorPortal() {
     setPhotoFile(null);
     setPhotoPreview('');
     setImportedPhotoUrl(null);
-    setMarkers(prev => clearScalarMarker(prev, 'photoUrl'));
+    setFieldStates(prev => clearScalarState(prev, 'photoUrl'));
     try {
       const token = localStorage.getItem('accessToken');
       const res = await fetch('/api/meals/generate-photo', {
@@ -947,12 +970,14 @@ export default function CreatorPortal() {
 
   const addIngredientRow = () => {
     setMealIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
-    setMarkers(prev => appendIngredientMarker(prev));
+    setFieldStates(prev => appendIngredientState(prev));
+    markTouched('ingredients');
   };
 
   const removeIngredientRow = (i: number) => {
     setMealIngredients(prev => prev.filter((_, idx) => idx !== i));
-    setMarkers(prev => removeIngredientMarker(prev, i));
+    setFieldStates(prev => removeIngredientState(prev, i));
+    markTouched('ingredients');
   };
 
   const updateIngredientForm = (i: number, field: keyof IngredientForm, value: string | number) => {
@@ -962,11 +987,15 @@ export default function CreatorPortal() {
       return { ...ing, [field]: value };
     }));
     // The row is theirs now; our provenance no longer describes it.
-    setMarkers(prev => clearIngredientMarker(prev, i));
+    setFieldStates(prev => clearIngredientState(prev, i));
+    markTouched('ingredients');
   };
 
-  /** Drops one field's marker when the creator edits that field. */
-  const touched = (field: ScalarMarkerField) => setMarkers(prev => clearScalarMarker(prev, field));
+  /** Drops one field's flag when the creator edits that field. */
+  const touched = (field: ScalarField) => {
+    setFieldStates(prev => clearScalarState(prev, field));
+    markTouched(field);
+  };
 
   // ── Import from a link (MEAL-73) ──
 
@@ -976,46 +1005,94 @@ export default function CreatorPortal() {
     setPhotoFile(null); setPhotoPreview('');
     setThumbs([]); setFulls([]); setSelectedIdx(null);
     setMealIngredients([{ ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
-    setMarkers(null); setImportInfo(null); setImportedPhotoUrl(null); setServesTrimmed(false);
+    setFieldStates(null); setImportInfo(null); setImportedPhotoUrl(null); setTagsNote(null);
     setPublishError('');
   };
 
+  const handleImportStart = () => {
+    importInFlight.current = true;
+    editedDuringImport.current = new Set();
+  };
+
+  /**
+   * Writes an imported draft into the form.
+   *
+   * Two rules, and they are the whole point:
+   *
+   *  - **Only fields the import actually has a value for are written.** An
+   *    empty `story` in the draft leaves a story the creator already wrote
+   *    alone; importing must never blank out work someone has done.
+   *  - **A field the creator edited while the import was in flight is theirs.**
+   *    We invited them to keep typing through a minute-long request, so the
+   *    response cannot land on top of it.
+   *
+   * Flags follow the same line. A field we wrote and verified says nothing at
+   * all; a field we wrote but could not verify, and a field the source had
+   * nothing for, each say what happened. A field the creator was editing says
+   * nothing, because we have no claim to make about their wording.
+   */
   const handleImported = (result: ImportSuccess) => {
+    importInFlight.current = false;
+    const edited = editedDuringImport.current;
+    editedDuringImport.current = new Set();
+
     const values = importedFormValues(result);
-    setMealName(values.name);
+    const written: Partial<Record<ImportField, boolean>> = {};
+    const kept: string[] = [];
+
+    const write = (field: ImportField, apply: () => void) => {
+      if (!values.provided[field]) return;
+      if (edited.has(field)) { kept.push(FIELD_LABELS[field]); return; }
+      apply();
+      written[field] = true;
+    };
+
+    // The link itself is never "imported content" — it is what the creator
+    // pasted — so it is always safe to record.
     setMealSource(values.source);
-    setMealStory(values.story);
-    setMealRecipe(values.recipe);
-    setMealServes(values.serves);
-    setMealDifficulty(values.difficulty);
-    setMealTags(values.tags);
-    setServesTrimmed(values.servesTrimmed);
-    setMealIngredients(
-      values.ingredients.length
-        ? values.ingredients
-        : [{ ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }],
-    );
 
-    // A photo lives on the page we read, not on the creator's disk, so it goes
-    // in as a URL and is only turned into a stored copy at publish time.
-    setPhotoFile(null);
-    setThumbs([]); setFulls([]); setSelectedIdx(null);
-    setImportedPhotoUrl(values.photoUrl);
-    setPhotoPreview(values.photoUrl ?? '');
+    write('name', () => setMealName(values.name));
+    write('story', () => setMealStory(values.story));
+    write('recipe', () => setMealRecipe(values.recipe));
+    write('serves', () => setMealServes(values.serves));
+    write('difficulty', () => setMealDifficulty(values.difficulty));
+    write('tags', () => { setMealTags(values.tags); setTagsNote(values.tagsNote); });
+    write('ingredients', () => setMealIngredients(values.ingredients));
 
-    setMarkers(markersFrom(result.confidence));
-    setImportInfo({ url: result.url, path: pathLabel(result.meta) });
+    // The pipeline stores the photo on our side before handing it over — we
+    // never hotlink a creator's blog — so this is a URL we can use directly.
+    // A creator who already chose their own photo keeps it.
+    const chosePhoto = Boolean(photoFile) || selectedIdx !== null;
+    if (!chosePhoto) {
+      write('photoUrl', () => {
+        setPhotoFile(null);
+        setThumbs([]); setFulls([]); setSelectedIdx(null);
+        setImportedPhotoUrl(values.photoUrl);
+        setPhotoPreview(values.photoUrl ?? '');
+      });
+    } else if (values.provided.photoUrl) {
+      kept.push(FIELD_LABELS.photoUrl);
+    }
+
+    setFieldStates(fieldStatesFor(result.confidence, values, written));
+    setImportInfo({ url: result.url, path: pathLabel(result.meta), kept });
     setPublishError('');
   };
 
   /**
    * A rejected import must leave the creator no worse off than if the feature
-   * did not exist: an empty form, and the link they pasted already sitting in
-   * Recipe URL so they do not retype it. Never a half-filled form.
+   * did not exist — and that cuts both ways. It does **not** clear the form:
+   * someone who typed half a meal by hand and then tried a link must not lose
+   * it, and with no API key provisioned rejection is the path every real
+   * request currently takes.
+   *
+   * The only thing written is the link they pasted, and only into an empty
+   * Recipe URL box, so they do not retype it.
    */
   const handleRejected = (_rejection: ImportRejection, url: string) => {
-    resetPublishForm();
-    setMealSource(url);
+    importInFlight.current = false;
+    editedDuringImport.current = new Set();
+    setMealSource(prev => prev.trim() ? prev : url);
   };
 
   const handlePublish = async (e: React.FormEvent) => {
@@ -1046,10 +1123,11 @@ export default function CreatorPortal() {
         const proxyUrl = fulls[selectedIdx] ?? thumbs[selectedIdx];
         photoUrl = await fetchAndUploadGeneratedPhoto(proxyUrl, token ?? '') ?? proxyUrl;
       } else if (importedPhotoUrl) {
-        // Try to keep our own copy so the meal card doesn't break when the
-        // creator reorganises their blog. Cross-origin reads often fail, and
-        // when they do we fall back to the original URL rather than losing it.
-        photoUrl = await fetchAndUploadGeneratedPhoto(importedPhotoUrl, token ?? '') ?? importedPhotoUrl;
+        // Used as-is: the import pipeline has already copied the source image
+        // into our own storage (falling back to a generated stand-in when it
+        // can't). We never hotlink a creator's blog, so there is nothing to
+        // re-upload here.
+        photoUrl = importedPhotoUrl;
       }
 
       const res = await fetch('/api/creator/meals', {
@@ -1109,6 +1187,12 @@ export default function CreatorPortal() {
   }
 
   const annualShare = stats ? stats.sharePercent.toFixed(1) : '0.0';
+
+  // Derived live, so both the counts and the flags describe what is on screen
+  // right now rather than what the import returned some edits ago.
+  const notices = noticesFor(fieldStates);
+  const counts = summarise(fieldStates);
+  const flagged = (field: ScalarField) => (notices[field] ? FLAGGED_FIELD_STYLE : undefined);
 
   return (
     <>
@@ -1402,58 +1486,67 @@ export default function CreatorPortal() {
                 <ImportLinkBar
                   onImported={handleImported}
                   onRejected={handleRejected}
+                  onImportStart={handleImportStart}
                   hasDraft={Boolean(importInfo)}
                   onClearDraft={resetPublishForm}
                 />
 
-                {importInfo && (() => {
-                  const counts = summarise(markers);
-                  return (
-                    <div
-                      className="mt-3 rounded-xl px-4 py-3"
-                      style={{ background: '#FFFFFF', border: '1px solid #E8E6E2' }}
-                      data-testid="import-summary"
-                    >
-                      <p className="text-sm font-semibold" style={{ color: '#18181B' }}>
-                        Filled from {hostLabel(importInfo.url)}
+                {/* The summary is what makes an unflagged field readable as
+                    *checked* rather than *skipped*. Without it, silence is
+                    ambiguous and the whole scheme stops working. */}
+                {importInfo && (
+                  <div
+                    className="mt-3 rounded-xl px-4 py-3"
+                    style={{ background: '#FFFFFF', border: '1px solid #E8E6E2' }}
+                    data-testid="import-summary"
+                  >
+                    <p className="text-sm font-semibold" style={{ color: '#18181B' }}>
+                      Filled {counts.filled} field{counts.filled === 1 ? '' : 's'} from {hostLabel(importInfo.url)}
+                    </p>
+                    <p className="text-xs mt-1 leading-relaxed" style={{ color: '#52525B' }}>
+                      {summaryLine(counts)}
+                    </p>
+                    {importInfo.kept.length > 0 && (
+                      <p className="text-xs mt-1.5 leading-relaxed font-medium" style={{ color: '#18181B' }}>
+                        You were editing while we read, so we kept your own wording
+                        for {importInfo.kept.join(', ')}.
                       </p>
-                      <p className="text-xs mt-1 leading-relaxed" style={{ color: '#52525B' }}>
-                        {counts.total > 0
-                          ? `${summaryLine(counts)} — tap any marker to see the exact wording it came from.`
-                          : 'Every field we filled has since been edited by you, so there are no markers left.'}
-                      </p>
-                      <p className="text-xs mt-1 leading-relaxed" style={{ color: '#A1A1AA' }}>
-                        {importInfo.path} Nothing here is final — edit anything, then publish.
-                      </p>
-                    </div>
-                  );
-                })()}
+                    )}
+                    <p className="text-xs mt-1 leading-relaxed" style={{ color: '#A1A1AA' }}>
+                      {importInfo.path} Nothing here is final — edit anything, then publish.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <form onSubmit={handlePublish} className="p-6 space-y-5">
 
                 {/* Name */}
-                <div className="relative">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className={pLabelBareCls}>Meal Name <span className="text-red-500">*</span></label>
-                    {markers?.name && <ConfidenceMarker field={markers.name} fieldLabel="Meal name" />}
-                  </div>
-                  <input value={mealName} onChange={e => { setMealName(e.target.value); touched('name'); }} placeholder="e.g. Spicy Chicken Ramen" className={pInputCls} />
+                <div>
+                  <label className={pLabelCls}>Meal Name <span className="text-red-500">*</span></label>
+                  <input
+                    value={mealName}
+                    onChange={e => { setMealName(e.target.value); touched('name'); }}
+                    placeholder="e.g. Spicy Chicken Ramen"
+                    className={pInputCls}
+                    style={flagged('name')}
+                  />
+                  <ImportFieldNotice notice={notices.name} fieldLabel="Meal name" />
                 </div>
 
-                {/* Source — the creator's own link, so it never carries a marker. */}
+                {/* Source — the creator's own link, so it is never flagged. */}
                 <div>
                   <label className={pLabelCls}>Recipe URL <span className="text-gray-400 font-normal">(optional)</span></label>
                   <input value={mealSource} onChange={e => setMealSource(e.target.value)} placeholder="https://yourblog.com/recipe" className={pInputCls} />
                 </div>
 
                 {/* Photo */}
-                <div className="relative">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className={pLabelBareCls}>Photo <span className="text-gray-400 font-normal">(optional)</span></label>
-                    {markers?.photoUrl && importedPhotoUrl && <ConfidenceMarker field={markers.photoUrl} fieldLabel="Photo" />}
-                  </div>
-                  <div className="flex items-center gap-3 flex-wrap">
+                <div>
+                  <label className={pLabelCls}>Photo <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <div
+                    className="flex items-center gap-3 flex-wrap"
+                    style={notices.photoUrl ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '10px' } : undefined}
+                  >
                     {photoPreview && (
                       <div className="relative">
                         <img src={photoPreview} alt="" className="w-16 h-16 rounded-xl object-cover block border border-gray-100" />
@@ -1493,15 +1586,30 @@ export default function CreatorPortal() {
                       ))}
                     </div>
                   )}
+
+                  {/* The one field where our value can be a placeholder *we
+                      chose* rather than something we read off the page, so the
+                      way out is spelled out rather than left to be found. */}
+                  <ImportFieldNotice notice={notices.photoUrl} fieldLabel="Photo" />
+                  {notices.photoUrl && (
+                    <p
+                      className="text-xs mt-1 leading-relaxed"
+                      style={{ color: '#52525B' }}
+                      data-testid="photo-replace-hint"
+                    >
+                      Use <strong>Choose photo</strong> or <strong>Generate photo</strong> above to
+                      replace it, or the ✕ on the picture to publish without one.
+                    </p>
+                  )}
                 </div>
 
                 {/* Difficulty */}
-                <div className="relative">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className={pLabelBareCls}>Difficulty <span className="text-gray-400 font-normal">(optional)</span></label>
-                    {markers?.difficulty && <ConfidenceMarker field={markers.difficulty} fieldLabel="Difficulty" />}
-                  </div>
-                  <div className="flex items-center gap-2">
+                <div>
+                  <label className={pLabelCls}>Difficulty <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <div
+                    className="flex items-center gap-2"
+                    style={notices.difficulty ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '10px' } : undefined}
+                  >
                     {[1, 2, 3, 4, 5].map(v => (
                       <button
                         key={v}
@@ -1518,36 +1626,34 @@ export default function CreatorPortal() {
                     ))}
                     {mealDifficulty && <span className="text-sm text-gray-400 ml-1">{DIFFICULTY_LABELS[mealDifficulty]}</span>}
                   </div>
+                  <ImportFieldNotice notice={notices.difficulty} fieldLabel="Difficulty" />
                 </div>
 
                 {/* Serves */}
-                <div className="relative">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className={pLabelBareCls}>Serves <span className="text-gray-400 font-normal">(optional)</span></label>
-                    {markers?.serves && (
-                      <ConfidenceMarker
-                        field={markers.serves}
-                        fieldLabel="Serves"
-                        note={servesTrimmed ? SERVES_TRIMMED_NOTE : null}
-                      />
-                    )}
-                  </div>
-                  <input value={mealServes} onChange={e => { setMealServes(e.target.value); touched('serves'); }} placeholder="e.g. 4 or 2-4" className={pInputCls} />
+                <div>
+                  <label className={pLabelCls}>Serves <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input
+                    value={mealServes}
+                    onChange={e => { setMealServes(e.target.value); touched('serves'); }}
+                    placeholder="e.g. 4 or 2-4"
+                    className={pInputCls}
+                    style={flagged('serves')}
+                  />
+                  <ImportFieldNotice notice={notices.serves} fieldLabel="Serves" />
                 </div>
 
                 {/* Story */}
-                <div className="relative">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className={pLabelBareCls}>Story <span className="text-gray-400 font-normal">(optional)</span></label>
-                    {markers?.story && <ConfidenceMarker field={markers.story} fieldLabel="Story" />}
-                  </div>
+                <div>
+                  <label className={pLabelCls}>Story <span className="text-gray-400 font-normal">(optional)</span></label>
                   <textarea
                     value={mealStory}
                     onChange={e => { setMealStory(e.target.value); touched('story'); }}
                     rows={3}
                     placeholder={"The story behind the meal or a simple one liner. e.g.\nPerfect for a summer BBQ\nGreat budget-friendly weeknight dinner\nHigh protein, low carb – great for meal prep"}
                     className={`${pInputCls} resize-y font-sans`}
+                    style={flagged('story')}
                   />
+                  <ImportFieldNotice notice={notices.story} fieldLabel="Story" />
                 </div>
 
                 {/* Measurements */}
@@ -1561,47 +1667,51 @@ export default function CreatorPortal() {
                     </div>
                   </div>
                   <div className="space-y-2 mb-2">
-                    {mealIngredients.map((ing, i) => (
-                      <div key={i} className="relative flex items-center gap-2">
-                        {/* Per-ingredient, not per-list: one bad row shows as one
-                            bad row. A dot rather than a labelled pill because the
-                            row is already dense — the word is in its aria-label
-                            and in the panel it opens. */}
-                        {markers && (markers.ingredients[i] ? (
-                          <ConfidenceMarker
-                            field={markers.ingredients[i]!}
+                    {/* Per-ingredient, not per-list: one bad row shows as one bad
+                        row, and the row that needs looking at says why directly
+                        underneath itself. A verified row is left completely alone —
+                        on a 14-ingredient import that is the difference between a
+                        list and a wall. */}
+                    {mealIngredients.map((ing, i) => {
+                      const notice = notices.ingredients[i] ?? null;
+                      return (
+                        <div key={i}>
+                          <div
+                            className="flex items-center gap-2"
+                            style={notice ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '6px' } : undefined}
+                          >
+                            <input
+                              value={ing.ingredientName}
+                              onChange={e => updateIngredientForm(i, 'ingredientName', e.target.value)}
+                              placeholder="Ingredient name"
+                              className={`${pInputCls} flex-1 min-w-0`}
+                            />
+                            <input
+                              type={ing.unit === 'Qty' ? 'number' : 'text'}
+                              value={ing.measure}
+                              min={ing.unit === 'Qty' ? 1 : undefined}
+                              onChange={e => updateIngredientForm(i, 'measure', e.target.value)}
+                              placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                              className={`${pInputCls} !w-16 text-center !px-1`}
+                            />
+                            <select
+                              value={ing.unit}
+                              onChange={e => updateIngredientForm(i, 'unit', e.target.value)}
+                              className={`${pInputCls} !w-20`}
+                            >
+                              {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                            </select>
+                            {mealIngredients.length > 1 && (
+                              <button type="button" onClick={() => removeIngredientRow(i)} className="text-gray-300 hover:text-red-400 text-lg leading-none cursor-pointer transition-colors bg-none border-none px-1">×</button>
+                            )}
+                          </div>
+                          <ImportFieldNotice
+                            notice={notice}
                             fieldLabel={`Ingredient ${i + 1}${ing.ingredientName ? `, ${ing.ingredientName}` : ''}`}
-                            variant="dot"
                           />
-                        ) : (
-                          <span className="flex-shrink-0" style={{ width: '15px' }} aria-hidden="true" />
-                        ))}
-                        <input
-                          value={ing.ingredientName}
-                          onChange={e => updateIngredientForm(i, 'ingredientName', e.target.value)}
-                          placeholder="Ingredient name"
-                          className={`${pInputCls} flex-1 min-w-0`}
-                        />
-                        <input
-                          type={ing.unit === 'Qty' ? 'number' : 'text'}
-                          value={ing.measure}
-                          min={ing.unit === 'Qty' ? 1 : undefined}
-                          onChange={e => updateIngredientForm(i, 'measure', e.target.value)}
-                          placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
-                          className={`${pInputCls} !w-16 text-center !px-1`}
-                        />
-                        <select
-                          value={ing.unit}
-                          onChange={e => updateIngredientForm(i, 'unit', e.target.value)}
-                          className={`${pInputCls} !w-20`}
-                        >
-                          {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                        </select>
-                        {mealIngredients.length > 1 && (
-                          <button type="button" onClick={() => removeIngredientRow(i)} className="text-gray-300 hover:text-red-400 text-lg leading-none cursor-pointer transition-colors bg-none border-none px-1">×</button>
-                        )}
-                      </div>
-                    ))}
+                        </div>
+                      );
+                    })}
                   </div>
                   <button type="button" onClick={addIngredientRow} className="text-sm text-red-600 hover:text-red-700 font-medium bg-none border-none cursor-pointer p-0 transition-colors">
                     + Add ingredient
@@ -1609,27 +1719,34 @@ export default function CreatorPortal() {
                 </div>
 
                 {/* Recipe */}
-                <div className="relative">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className={pLabelBareCls}>Recipe Instructions <span className="text-gray-400 font-normal">(optional)</span></label>
-                    {markers?.recipe && <ConfidenceMarker field={markers.recipe} fieldLabel="Recipe instructions" />}
-                  </div>
+                <div>
+                  <label className={pLabelCls}>Recipe Instructions <span className="text-gray-400 font-normal">(optional)</span></label>
                   <textarea
                     value={mealRecipe}
                     onChange={e => { setMealRecipe(e.target.value); touched('recipe'); }}
                     rows={6}
                     placeholder={'1. Boil 4 cups of water...\n2. Add 200g of noodles...'}
                     className={`${pInputCls} resize-y font-sans`}
+                    style={flagged('recipe')}
                   />
+                  <ImportFieldNotice notice={notices.recipe} fieldLabel="Recipe instructions" />
                 </div>
 
                 {/* Tags */}
-                <div className="relative">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className={pLabelBareCls}>Tags <span className="text-gray-400 font-normal">(up to 3)</span></label>
-                    {markers?.tags && <ConfidenceMarker field={markers.tags} fieldLabel="Tags" />}
+                <div>
+                  <label className={pLabelCls}>Tags <span className="text-gray-400 font-normal">(up to 3)</span></label>
+                  <div style={notices.tags ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '10px' } : undefined}>
+                    <TagPicker selected={mealTags} onChange={tags => { setMealTags(tags); touched('tags'); }} />
                   </div>
-                  <TagPicker selected={mealTags} onChange={tags => { setMealTags(tags); touched('tags'); }} />
+                  <ImportFieldNotice notice={notices.tags} fieldLabel="Tags" />
+                  {/* Dropping five of eight tags silently would look like the
+                      import simply missed them. Shown whether or not the field
+                      is flagged, because the trimming is ours either way. */}
+                  {tagsNote && fieldStates?.tags && (
+                    <p className="text-xs mt-1 leading-relaxed" style={{ color: '#52525B' }} data-testid="tags-trimmed-note">
+                      {tagsNote}
+                    </p>
+                  )}
                 </div>
 
                 {publishError && (

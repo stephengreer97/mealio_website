@@ -161,6 +161,13 @@ export type Derivation =
   | 'normalized'
   /** Judged from the source as a whole — tags, difficulty. */
   | 'inferred'
+  /**
+   * Produced by us, not found on the page — currently only a Pixabay stand-in
+   * photo. Always amber: a placeholder we chose is not something we read, and
+   * folding it into `inferred` would be the same dishonesty the confidence
+   * model exists to prevent.
+   */
+  | 'generated'
   /** Not present in the source at all. */
   | 'absent';
 

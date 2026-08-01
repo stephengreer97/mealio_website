@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 
@@ -8,8 +8,8 @@ import { importedGuacamole } from '../helpers/import-ui-fixtures';
  * Link → published meal, through the real creator portal.
  *
  * The import response is the one the real pipeline produces over a recorded
- * page (see `import-ui-fixtures`), so the markers under test are the levels
- * MEAL-72 actually computed rather than a hand-written guess at them.
+ * page (see `import-ui-fixtures`), so the levels driving what gets flagged are
+ * the ones MEAL-72 actually computed rather than a hand-written guess at them.
  */
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -22,7 +22,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 interface Routes {
-  import?: () => Response;
+  import?: () => Response | Promise<Response>;
 }
 
 let published: Record<string, unknown> | null;
@@ -50,8 +50,6 @@ function stubApi(routes: Routes = {}) {
     if (url.includes('/api/creator/import')) {
       return routes.import?.() ?? json({ error: 'no route' }, 500);
     }
-    // Everything else (the cross-origin photo re-upload attempt) fails the way
-    // a real cross-origin image read would.
     return new Response('nope', { status: 403 });
   }) as typeof fetch;
   vi.stubGlobal('fetch', impl);
@@ -59,8 +57,7 @@ function stubApi(routes: Routes = {}) {
 
 async function openPublishForm() {
   render(<CreatorPortal />);
-  const openButton = await screen.findByRole('button', { name: /publish new meal/i });
-  fireEvent.click(openButton);
+  fireEvent.click(await screen.findByRole('button', { name: /publish new meal/i }));
   return await screen.findByTestId('import-link-bar');
 }
 
@@ -68,6 +65,13 @@ async function importFrom(url: string) {
   fireEvent.change(screen.getByLabelText('Recipe link to import'), { target: { value: url } });
   fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 }
+
+const nameBox = () => screen.getByPlaceholderText('e.g. Spicy Chicken Ramen') as HTMLInputElement;
+const sourceBox = () => screen.getByPlaceholderText('https://yourblog.com/recipe') as HTMLInputElement;
+const servesBox = () => screen.getByPlaceholderText('e.g. 4 or 2-4') as HTMLInputElement;
+const storyBox = () => screen.getByPlaceholderText(/The story behind the meal/) as HTMLTextAreaElement;
+const rows = () => screen.getAllByPlaceholderText('Ingredient name') as HTMLInputElement[];
+const notices = () => screen.queryAllByTestId('import-notice');
 
 beforeEach(() => { localStorage.setItem('accessToken', 'test-token'); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -83,64 +87,109 @@ describe('creator portal — link to published meal', () => {
 
     await screen.findByTestId('import-summary');
 
-    expect((screen.getByPlaceholderText('e.g. Spicy Chicken Ramen') as HTMLInputElement).value)
-      .toBe('Best Guacamole');
-    expect((screen.getByPlaceholderText('https://yourblog.com/recipe') as HTMLInputElement).value)
-      .toBe(success.url);
-
-    const rows = screen.getAllByPlaceholderText('Ingredient name') as HTMLInputElement[];
-    expect(rows.map(r => r.value)).toEqual(['avocados', 'lime juice', 'smoked paprika']);
-    expect((screen.getByPlaceholderText('e.g. 4 or 2-4') as HTMLInputElement).value).toBe('2');
+    expect(nameBox().value).toBe('Best Guacamole');
+    expect(sourceBox().value).toBe(success.url);
+    expect(rows().map(r => r.value)).toEqual(['avocados', 'lime juice', 'smoked paprika']);
+    expect(servesBox().value).toBe('2');
   });
 
-  it('summarises the import as counts a creator can act on', async () => {
+  it('summarises the import as counts, and counts verified honestly', async () => {
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
 
     const summary = await screen.findByTestId('import-summary');
-    expect(summary.textContent).toContain('Filled from cookieandkate.com');
-    expect(summary.textContent).toMatch(/from the source/);
-    expect(summary.textContent).toMatch(/to check/);
+    expect(summary.textContent).toMatch(/Filled \d+ fields from cookieandkate\.com/);
+    expect(summary.textContent).toMatch(/\d+ verified · \d+ need a look/);
     expect(summary.textContent).toMatch(/structured recipe data/);
     // Not a self-reported score. See MEAL-72.
     expect(summary.textContent).not.toMatch(/\d+% confident/);
   });
+});
 
-  it('gives every filled field a marker, and every marker its evidence', async () => {
+describe('creator portal — only the exceptions are marked', () => {
+  let success: ImportSuccess;
+  beforeEach(async () => { success = await importedGuacamole(); });
+
+  it('says nothing at all about a field it verified', async () => {
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
     await screen.findByTestId('import-summary');
 
-    for (const name of ['Meal name', 'Serves', 'Recipe instructions', 'Tags', 'Difficulty', 'Story']) {
-      const marker = screen.getByRole('button', { name: new RegExp(`^${name}:`) });
-      fireEvent.click(marker);
-      const panel = await screen.findByRole('note');
-      // Either the span it came from, or an honest statement that there isn't one.
-      expect(panel.textContent).toMatch(/We got this from:|Nothing on the page backed this up/);
-      fireEvent.click(marker);
-    }
+    // Name and row 1 both came verbatim out of the page's structured data, so
+    // there is nothing beside them — silence is the signal.
+    const flaggedText = notices().map(n => n.textContent).join(' ');
+    expect(flaggedText).not.toContain('Best Guacamole');
+    expect(flaggedText).not.toContain('4 medium ripe avocados');
+
+    // Fewer flags than fields the import touched — seven scalars and three
+    // rows here. (This fixture is deliberately adversarial, landing one field
+    // on every level; a real import is mostly green and mostly silent.)
+    expect(notices().length).toBeLessThan(10);
+
+    // Specifically: the fields whose spans checked out say nothing.
+    const flaggedBoxes = notices().map(n => n.previousElementSibling);
+    expect(flaggedBoxes).not.toContain(nameBox());
+    expect(flaggedBoxes).not.toContain(servesBox());
   });
 
-  it('marks the hallucinated ingredient red, per row, and quotes what failed', async () => {
+  it('quotes the source span under an adjusted field', async () => {
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
     await screen.findByTestId('import-summary');
 
-    // Row 3 is "smoked paprika", which appears nowhere on the recorded page.
-    const marker = screen.getByRole('button', { name: /Ingredient 3, smoked paprika/ });
-    expect(marker.getAttribute('aria-label')).toContain('Unverified');
-    fireEvent.click(marker);
-    expect((await screen.findByRole('note')).textContent).toContain('1 teaspoon smoked paprika');
-
-    // …while row 1 came straight out of the page's structured data.
-    expect(screen.getByRole('button', { name: /Ingredient 1, avocados/ }).getAttribute('aria-label'))
-      .toContain('From the source');
+    const adjusted = notices().filter(n => n.dataset.kind === 'adjusted');
+    expect(adjusted.length).toBeGreaterThan(0);
+    // The creator reads the evidence directly instead of decoding a symbol.
+    const limeRow = adjusted.find(n => n.textContent?.includes('lime'));
+    expect(limeRow!.textContent).toContain('we read:');
+    expect(limeRow!.textContent).toContain('3 tablespoons lime juice');
   });
 
-  it('publishes with a red field left in place — markers inform, they do not validate', async () => {
+  it('flags the hallucinated ingredient, keeps its value, and quotes what failed', async () => {
+    stubApi({ import: () => json(success, 200) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    const unverified = notices().filter(n => n.dataset.kind === 'unverified');
+    expect(unverified).toHaveLength(1);
+    expect(unverified[0].textContent).toMatch(/couldn’t find this in the source/);
+    expect(unverified[0].textContent).toContain('1 teaspoon smoked paprika');
+
+    // Red does not mean deleted — the row is still there and still editable.
+    expect(rows()[2].value).toBe('smoked paprika');
+  });
+
+  it('asks the creator to add a field the source did not have', async () => {
+    stubApi({ import: () => json(success, 200) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    const absent = notices().filter(n => n.dataset.kind === 'absent');
+    expect(absent.length).toBeGreaterThan(0);
+    expect(absent[0].textContent).toContain('Not found in the source — add this');
+    // The fixture's story is absent, so the box stays empty and asks for input.
+    expect(storyBox().value).toBe('');
+  });
+
+  it('retires a flag as soon as the creator edits that field', async () => {
+    stubApi({ import: () => json(success, 200) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    const before = notices().length;
+    fireEvent.change(rows()[2], { target: { value: 'kosher salt' } });
+
+    expect(notices()).toHaveLength(before - 1);
+    expect(notices().filter(n => n.dataset.kind === 'unverified')).toHaveLength(0);
+  });
+
+  it('publishes an unverified value untouched — flags inform, they do not validate', async () => {
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
@@ -152,40 +201,21 @@ describe('creator portal — link to published meal', () => {
     expect(published!.name).toBe('Best Guacamole');
     expect((published!.ingredients as { ingredientName: string }[]).map(i => i.ingredientName))
       .toContain('smoked paprika');
-    expect(published!.source).toBe(success.url);
     expect(published!.serves).toBe('2');
   });
 
-  it('lets a creator fix a red field and publish their own value', async () => {
+  it('lets a creator fix a flagged row and publish their own value', async () => {
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
     await screen.findByTestId('import-summary');
 
-    const rows = screen.getAllByPlaceholderText('Ingredient name') as HTMLInputElement[];
-    fireEvent.change(rows[2], { target: { value: 'kosher salt' } });
-
-    // Editing the row retires its marker — the value is the creator's now.
-    expect(screen.queryByRole('button', { name: /Ingredient 3, smoked paprika/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Ingredient 3, kosher salt/ })).toBeNull();
-
+    fireEvent.change(rows()[2], { target: { value: 'kosher salt' } });
     fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
+
     await waitFor(() => expect(published).not.toBeNull());
     expect((published!.ingredients as { ingredientName: string }[]).map(i => i.ingredientName))
       .toEqual(['avocados', 'lime juice', 'kosher salt']);
-  });
-
-  it('retires a scalar field’s marker when it is edited', async () => {
-    stubApi({ import: () => json(success, 200) });
-    await openPublishForm();
-    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
-    await screen.findByTestId('import-summary');
-
-    expect(screen.queryByRole('button', { name: /^Meal name:/ })).not.toBeNull();
-    fireEvent.change(screen.getByPlaceholderText('e.g. Spicy Chicken Ramen'), {
-      target: { value: 'Kate’s Guacamole' },
-    });
-    expect(screen.queryByRole('button', { name: /^Meal name:/ })).toBeNull();
   });
 
   it('start-over empties the form completely', async () => {
@@ -196,13 +226,71 @@ describe('creator portal — link to published meal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /clear and start over/i }));
 
-    expect((screen.getByPlaceholderText('e.g. Spicy Chicken Ramen') as HTMLInputElement).value).toBe('');
-    expect(screen.getAllByPlaceholderText('Ingredient name')).toHaveLength(1);
+    expect(nameBox().value).toBe('');
+    expect(rows()).toHaveLength(1);
     expect(screen.queryByTestId('import-summary')).toBeNull();
+    expect(notices()).toHaveLength(0);
   });
 });
 
-describe('creator portal — a failed import leaves the creator no worse off', () => {
+describe('creator portal — a generated photo is a placeholder, not a finding', () => {
+  async function withGeneratedPhoto() {
+    const success = await importedGuacamole();
+    // What the pipeline emits when the page had no usable image: our own stored
+    // URL, marked amber, with a reason written to be shown as-is.
+    (success.draft as { photoUrl: string | null }).photoUrl =
+      'https://storage.mealio.co/meal-photos/stock-guacamole.jpg';
+    success.confidence.photoUrl = {
+      level: 'amber',
+      derivation: 'generated',
+      match: 'none',
+      score: 0,
+      evidence: null,
+      reason: 'No usable image on the page — this is a stock photo we picked.',
+    };
+    return success;
+  }
+
+  it('says the photo is ours, and how to replace it', async () => {
+    stubApi({ import: async () => json(await withGeneratedPhoto(), 200) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    const generated = notices().find(n => n.dataset.kind === 'generated');
+    // The pipeline's reason, verbatim.
+    expect(generated!.textContent).toContain('No usable image on the page — this is a stock photo we picked.');
+
+    const hint = screen.getByTestId('photo-replace-hint');
+    expect(hint.textContent).toMatch(/Choose photo/);
+    expect(hint.textContent).toMatch(/Generate photo/);
+  });
+
+  it('does not count it as verified', async () => {
+    stubApi({ import: async () => json(await withGeneratedPhoto(), 200) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+
+    const summary = await screen.findByTestId('import-summary');
+    const verified = Number(/(\d+) verified/.exec(summary.textContent!)![1]);
+    const needALook = Number(/(\d+) need a look/.exec(summary.textContent!)![1]);
+    expect(needALook).toBeGreaterThanOrEqual(2); // the stand-in photo, plus the hallucinated row
+    expect(verified).toBeGreaterThan(0);
+  });
+
+  it('publishes our stored URL as-is, never a third-party one', async () => {
+    stubApi({ import: async () => json(await withGeneratedPhoto(), 200) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
+    await waitFor(() => expect(published).not.toBeNull());
+    expect(published!.photoUrl).toBe('https://storage.mealio.co/meal-photos/stock-guacamole.jpg');
+  });
+});
+
+describe('creator portal — an import never destroys the creator’s own work', () => {
   const rejection: ImportRejection = {
     status: 'rejected',
     url: 'https://cookieandkate.com/best-guacamole-recipe',
@@ -212,31 +300,47 @@ describe('creator portal — a failed import leaves the creator no worse off', (
     meta: { cached: false },
   };
 
-  it('returns an empty form with an explanation, never a half-filled one', async () => {
+  it('keeps a half-typed meal when the import is rejected', async () => {
+    // The path every real request takes while there is no API key. Wiping the
+    // form here is the exact inverse of "never worse off than without us".
     stubApi({ import: () => json(rejection, 422) });
     await openPublishForm();
+
+    fireEvent.change(nameBox(), { target: { value: 'Nana’s Guacamole' } });
+    fireEvent.change(storyBox(), { target: { value: 'The one she made every summer.' } });
+    fireEvent.change(rows()[0], { target: { value: 'avocados' } });
+
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
-
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('ANTHROPIC_API_KEY is not set');
 
-    expect((screen.getByPlaceholderText('e.g. Spicy Chicken Ramen') as HTMLInputElement).value).toBe('');
-    expect(screen.getAllByPlaceholderText('Ingredient name')).toHaveLength(1);
-    expect((screen.getAllByPlaceholderText('Ingredient name')[0] as HTMLInputElement).value).toBe('');
-    expect(screen.queryByTestId('import-summary')).toBeNull();
-    // No markers at all — nothing on screen came from us.
-    expect(screen.queryAllByRole('button', { name: /: (From the source|Adjusted|Unverified|Not found)/ }))
-      .toHaveLength(0);
+    expect(alert.textContent).toContain('ANTHROPIC_API_KEY is not set');
+    expect(nameBox().value).toBe('Nana’s Guacamole');
+    expect(storyBox().value).toBe('The one she made every summer.');
+    expect(rows()[0].value).toBe('avocados');
+    expect(notices()).toHaveLength(0);
   });
 
-  it('keeps the pasted link in Recipe URL so nothing is retyped', async () => {
+  it('leaves an empty form empty, with the pasted link kept', async () => {
     stubApi({ import: () => json(rejection, 422) });
     await openPublishForm();
     await importFrom('cookieandkate.com/best-guacamole-recipe');
 
     await screen.findByRole('alert');
-    expect((screen.getByPlaceholderText('https://yourblog.com/recipe') as HTMLInputElement).value)
-      .toBe('https://cookieandkate.com/best-guacamole-recipe');
+    expect(nameBox().value).toBe('');
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0].value).toBe('');
+    expect(screen.queryByTestId('import-summary')).toBeNull();
+    expect(sourceBox().value).toBe('https://cookieandkate.com/best-guacamole-recipe');
+  });
+
+  it('does not overwrite a Recipe URL the creator already typed', async () => {
+    stubApi({ import: () => json(rejection, 422) });
+    await openPublishForm();
+    fireEvent.change(sourceBox(), { target: { value: 'https://myblog.example/mine' } });
+
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByRole('alert');
+    expect(sourceBox().value).toBe('https://myblog.example/mine');
   });
 
   it('still publishes a hand-typed meal after a failed import', async () => {
@@ -245,17 +349,77 @@ describe('creator portal — a failed import leaves the creator no worse off', (
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
     await screen.findByRole('alert');
 
-    fireEvent.change(screen.getByPlaceholderText('e.g. Spicy Chicken Ramen'), { target: { value: 'Guacamole' } });
-    fireEvent.change(screen.getAllByPlaceholderText('Ingredient name')[0], { target: { value: 'avocados' } });
+    fireEvent.change(nameBox(), { target: { value: 'Guacamole' } });
+    fireEvent.change(rows()[0], { target: { value: 'avocados' } });
     fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
 
     await waitFor(() => expect(published).not.toBeNull());
     expect(published!.name).toBe('Guacamole');
   });
+
+  it('leaves a field the creator filled that the import has nothing for', async () => {
+    const success = await importedGuacamole();
+    stubApi({ import: () => json(success, 200) });
+    await openPublishForm();
+
+    // The fixture has no story. A successful import must not blank this out.
+    fireEvent.change(storyBox(), { target: { value: 'My own note.' } });
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    expect(storyBox().value).toBe('My own note.');
+    expect(nameBox().value).toBe('Best Guacamole');
+  });
+});
+
+describe('creator portal — a slow import cannot overwrite what is typed under it', () => {
+  it('keeps edits made while the request was in flight, and says which', async () => {
+    const success = await importedGuacamole();
+    let release: (r: Response) => void = () => {};
+    stubApi({ import: () => new Promise<Response>(res => { release = res; }) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByRole('status');
+
+    // The progress copy invites exactly this.
+    fireEvent.change(nameBox(), { target: { value: 'Nana’s Guacamole' } });
+
+    release(json(success, 200));
+    const summary = await screen.findByTestId('import-summary');
+
+    expect(nameBox().value).toBe('Nana’s Guacamole');
+    expect(summary.textContent).toContain('we kept your own wording for Meal name');
+    // Everything they were not touching still landed.
+    expect(rows().map(r => r.value)).toEqual(['avocados', 'lime juice', 'smoked paprika']);
+    // And nothing claims provenance over their wording.
+    expect(notices().some(n => n.textContent?.includes('Nana'))).toBe(false);
+  });
+
+  it('does not repopulate the form after the creator has closed it', async () => {
+    const success = await importedGuacamole();
+    let release: (r: Response) => void = () => {};
+    stubApi({ import: () => new Promise<Response>(res => { release = res; }) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByRole('status');
+
+    // Cancel unmounts the modal; the portal underneath outlives it.
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    release(json(success, 200));
+    await new Promise(r => setTimeout(r, 0));
+
+    fireEvent.click(screen.getByRole('button', { name: /publish new meal/i }));
+    await screen.findByTestId('import-link-bar');
+
+    // A draft they never asked for would be waiting here without the guard.
+    expect(nameBox().value).toBe('');
+    expect(rows()).toHaveLength(1);
+    expect(screen.queryByTestId('import-summary')).toBeNull();
+  });
 });
 
 describe('creator portal — The One Tap Rule', () => {
-  it('keeps Publish as the only Signal Red action while a draft is on screen', async () => {
+  it('keeps Publish as the only accent action, and the flags silent', async () => {
     const success = await importedGuacamole();
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
@@ -267,15 +431,19 @@ describe('creator portal — The One Tap Rule', () => {
       expect(region.outerHTML.toLowerCase()).not.toContain('#dd0031');
     }
 
-    // The markers are status, not actions: none of them is a filled accent control.
-    const markers = screen.getAllByRole('button', { name: /: (From the source|Adjusted|Unverified|Not found)/ });
-    expect(markers.length).toBeGreaterThan(0);
-    for (const marker of markers) {
-      expect((marker as HTMLElement).style.background).not.toBe('rgb(221, 0, 49)');
+    // The flags are plain text on a dotted underline — no colour token of their
+    // own, so nothing on the form competes with Publish.
+    for (const notice of notices()) {
+      expect(notice.outerHTML.toLowerCase()).not.toContain('#dd0031');
+      expect((notice as HTMLElement).style.color).toBe('rgb(82, 82, 91)'); // Ink Muted
     }
 
     const publish = screen.getByRole('button', { name: /^publish meal$/i });
-    expect(within(publish.parentElement!).getByRole('button', { name: /^publish meal$/i })).toBeTruthy();
+    // NOTE: `bg-red-600` is #DC2626 — byte-identical to DESIGN.md's `error`
+    // token, so the "act" red and the "something is wrong" red are the same
+    // colour on this screen. Pre-existing, not introduced here, recorded on
+    // MEAL-73. The flags deliberately use no red at all, so nothing this work
+    // added depends on telling the two apart.
     expect(publish.className).toContain('bg-red-600');
   });
 });

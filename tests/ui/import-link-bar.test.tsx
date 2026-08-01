@@ -22,15 +22,17 @@ function harness(fetchImpl: typeof fetch) {
   const onImported = vi.fn();
   const onRejected = vi.fn();
   const onClearDraft = vi.fn();
-  render(
+  const onImportStart = vi.fn();
+  const view = render(
     <ImportLinkBar
       onImported={onImported}
       onRejected={onRejected}
+      onImportStart={onImportStart}
       hasDraft={false}
       onClearDraft={onClearDraft}
     />,
   );
-  return { onImported, onRejected, onClearDraft };
+  return { onImported, onRejected, onClearDraft, onImportStart, view };
 }
 
 function paste(url: string) {
@@ -70,14 +72,19 @@ describe('ImportLinkBar — success', () => {
 
   it('shows a progress state naming the site being read', async () => {
     let release: (r: Response) => void = () => {};
-    harness((async () => new Promise<Response>(res => { release = res; })) as typeof fetch);
+    const { onImportStart } = harness((async () => new Promise<Response>(res => { release = res; })) as typeof fetch);
 
     paste('https://cookieandkate.com/best-guacamole-recipe');
     fireEvent.click(screen.getByRole('button', { name: 'Import' }));
 
+    expect(onImportStart).toHaveBeenCalledTimes(1);
+
     const status = await screen.findByRole('status');
     expect(status.textContent).toContain('cookieandkate.com');
     expect(status.textContent).toMatch(/up to a minute/i);
+    // It invites the creator to keep working, so it has to promise their
+    // typing survives — and the form has to honour that.
+    expect(status.textContent).toMatch(/anything you type while we read stays/i);
     expect(screen.getByRole('button', { name: 'Reading…' })).toBeTruthy();
 
     release(json(success, 200));
@@ -90,6 +97,66 @@ describe('ImportLinkBar — success', () => {
     paste('https://cookieandkate.com/best-guacamole-recipe');
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(onImported).toHaveBeenCalled());
+  });
+});
+
+describe('ImportLinkBar — a response that outlives its request', () => {
+  let success: ImportSuccess;
+  beforeEach(async () => { success = await importedGuacamole(); });
+
+  it('writes nothing after the bar has been unmounted', async () => {
+    // The publish modal unmounts on Cancel, but the portal it writes into does
+    // not. Without the guard, a late response repopulates a form the creator
+    // has already walked away from.
+    let release: (r: Response) => void = () => {};
+    const { onImported, onRejected, view } =
+      harness((async () => new Promise<Response>(res => { release = res; })) as typeof fetch);
+
+    paste('https://cookieandkate.com/best-guacamole-recipe');
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await screen.findByRole('status');
+
+    view.unmount();
+    release(json(success, 200));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onImported).not.toHaveBeenCalled();
+    expect(onRejected).not.toHaveBeenCalled();
+  });
+
+  it('aborts the in-flight request on unmount', async () => {
+    const signals: AbortSignal[] = [];
+    const { view } = harness((async (_url, init) => {
+      signals.push((init as RequestInit).signal!);
+      return new Promise<Response>(() => {});
+    }) as typeof fetch);
+
+    paste('https://cookieandkate.com/best-guacamole-recipe');
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await screen.findByRole('status');
+
+    expect(signals[0].aborted).toBe(false);
+    view.unmount();
+    expect(signals[0].aborted).toBe(true);
+  });
+
+  it('will not start a second request while one is in flight', async () => {
+    // The single-writer guarantee comes from here first — the stale-request
+    // check behind it is defence for anything that gets past this.
+    const starts: string[] = [];
+    harness((async (_url, init) => {
+      starts.push(JSON.parse(String((init as RequestInit).body)).url);
+      return new Promise<Response>(() => {});
+    }) as typeof fetch);
+
+    paste('https://cookieandkate.com/one');
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await screen.findByRole('status');
+
+    paste('https://cookieandkate.com/two');
+    fireEvent.click(screen.getByRole('button', { name: 'Reading…' }));
+
+    expect(starts).toEqual(['https://cookieandkate.com/one']);
   });
 });
 

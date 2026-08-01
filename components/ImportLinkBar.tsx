@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ImportRejection, ImportResult, ImportSuccess } from '@/lib/import/types';
 import { hostLabel, rejectionCopy, transportRejection } from '@/lib/import/draft-form';
 
@@ -25,6 +25,8 @@ export interface ImportLinkBarProps {
   onImported: (result: ImportSuccess, url: string) => void;
   /** Called with the 422 body — or a synthesised one when the request itself failed. */
   onRejected: (rejection: ImportRejection, url: string) => void;
+  /** Fired when a request starts, so the form can watch for edits made while it is in flight. */
+  onImportStart?: () => void;
   /** True once a draft is on screen; the bar then offers to start over instead of re-importing. */
   hasDraft: boolean;
   onClearDraft: () => void;
@@ -39,6 +41,7 @@ function withScheme(raw: string): string {
 export default function ImportLinkBar({
   onImported,
   onRejected,
+  onImportStart,
   hasDraft,
   onClearDraft,
 }: ImportLinkBarProps) {
@@ -47,22 +50,56 @@ export default function ImportLinkBar({
   const [rejection, setRejection] = useState<ImportRejection | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * An import can outlive the bar: the whole publish modal unmounts when a
+   * creator hits Cancel, but `onImported` writes to the portal underneath,
+   * which does not. Without these guards a response landing after the modal
+   * closed would silently repopulate the form, and the creator would reopen
+   * Publish to find a draft they never asked for.
+   *
+   * `requestRef` handles the other ordering problem — a second Import started
+   * before the first came back — so only the newest request may write.
+   */
+  const abortRef = useRef<AbortController | null>(null);
+  const requestRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
+
   const runImport = async () => {
     const target = withScheme(url);
     if (!target || busy) return;
 
+    const id = ++requestRef.current;
+    const controller = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = controller;
+    /** True while this specific request is still the one allowed to write. */
+    const current = () => mountedRef.current && requestRef.current === id && !controller.signal.aborted;
+
     setBusy(true);
     setRejection(null);
+    onImportStart?.();
+
     try {
       const token = localStorage.getItem('accessToken');
       const res = await fetch('/api/creator/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ url: target }),
+        signal: controller.signal,
       });
 
       let body: unknown = null;
       try { body = await res.json(); } catch { /* handled below */ }
+
+      if (!current()) return;
 
       const result = body as ImportResult | { error?: string } | null;
 
@@ -87,6 +124,7 @@ export default function ImportLinkBar({
       setRejection(rejected);
       onRejected(rejected, target);
     } catch {
+      if (!current()) return;
       const rejected = transportRejection(
         target,
         'We couldn’t reach the import service. Check your connection and try again.',
@@ -94,7 +132,7 @@ export default function ImportLinkBar({
       setRejection(rejected);
       onRejected(rejected, target);
     } finally {
-      setBusy(false);
+      if (mountedRef.current && requestRef.current === id) setBusy(false);
     }
   };
 
@@ -124,7 +162,8 @@ export default function ImportLinkBar({
       </div>
       <p className="text-xs mt-1 leading-relaxed" style={{ color: '#52525B' }}>
         Paste a recipe you have already published and we&apos;ll fill this form in.
-        Every field it fills is marked with where it came from, and you can change all of it.
+        Anything we couldn&apos;t check against the page gets flagged, with the wording we
+        read from it. You can change all of it.
       </p>
 
       <div className="flex flex-col sm:flex-row gap-2 mt-3">
@@ -175,7 +214,8 @@ export default function ImportLinkBar({
           />
           <p className="text-xs leading-relaxed" style={{ color: '#52525B' }}>
             Reading {host} — fetching the page, then pulling the recipe out of it.
-            This can take up to a minute.
+            This can take up to a minute. Carry on filling the form in if you like:
+            anything you type while we read stays exactly as you typed it.
           </p>
         </div>
       )}

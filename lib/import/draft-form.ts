@@ -2,17 +2,39 @@
  * Turning an `ImportResult` into publish-form state (MEAL-73).
  *
  * Everything in this file is pure and framework-free so the rules that decide
- * what a creator sees — which colour a field gets, what a rejection says, what
- * lands in the Serves box — are testable without a browser or an API key.
+ * what a creator sees — which fields get flagged, what the flag says, what a
+ * rejection says — are testable without a browser or an API key.
  *
  * The one rule worth stating up front: **a confidence level is never minted
  * here.** MEAL-72 computes levels server-side from verified provenance, and
- * this module only presents what it is given. If a field is not covered by the
- * response it gets no marker at all rather than an invented one.
+ * this module only presents what it is given.
+ *
+ * ## Mark the exceptions, not everything
+ *
+ * An earlier revision put a coloured marker on all nine fields. Nine markers is
+ * nine things to scan, and colour ends up doing the work of saying which of
+ * them matters — which is exactly the job the evidence should be doing. So:
+ *
+ *   verified   nothing at all. Silence means we checked it and it held up.
+ *   adjusted   a dotted underline, and the source span quoted plainly beneath.
+ *   absent     a dotted underline, an empty field, and "add this".
+ *
+ * The creator reads the evidence directly instead of decoding a symbol, and the
+ * form recedes to the fields that need them — DESIGN.md's Quiet Countertop.
+ *
+ * There is deliberately **no colour token here at all**. The dotted underline
+ * and the sentence carry the meaning; colour would be reinforcement at best and
+ * a second thing to learn at worst. That also means this file adds nothing to
+ * DESIGN.md's palette.
+ *
+ * Known, pre-existing, and not introduced by this work: the publish button is
+ * Tailwind `bg-red-600` = `#DC2626`, byte-identical to DESIGN.md's `error`
+ * token. So on screen the "act" red and the "something is wrong" red are the
+ * same colour — a live violation of the Two Reds Rule that predates the import
+ * flow. Recorded on MEAL-73 rather than fixed here.
  */
 
 import type {
-  Confidence,
   DraftIngredient,
   FieldConfidence,
   ImportConfidence,
@@ -20,81 +42,19 @@ import type {
   ImportSuccess,
 } from './types';
 
-// ── Colour ───────────────────────────────────────────────────────────────────
-
-/**
- * The marker palette.
- *
- * Green and red are DESIGN.md's existing semantic tokens (`success` #16A34A,
- * `error` #DC2626). Amber had no token, so one is defined here: **Caution Amber
- * #B45309**.
- *
- * Two constraints picked that value. The Two Reds Rule forbids brand red
- * #DD0031 for a bad-confidence marker — brand red means *act*, and a marker is
- * status, not an action. And the amber has to survive as 12px text on Card
- * White, which rules out the usual mid-amber (#D97706 lands at 3.1:1 against
- * white); #B45309 clears 4.5:1.
- *
- * Colour is never the only channel — every marker also carries a word, because
- * amber and red are the pair a red-green colourblind creator is least able to
- * separate, and this indicator is worthless if it can only be read by hue.
- */
-export const MARKER_COLORS: Record<Confidence, { ink: string; fill: string; dot: string }> = {
-  green: { ink: '#15803D', fill: '#F0FDF4', dot: '#16A34A' },
-  amber: { ink: '#B45309', fill: '#FDF6EC', dot: '#B45309' },
-  red: { ink: '#B91C1C', fill: '#FEF2F2', dot: '#DC2626' },
-};
-
-/**
- * The word on the marker.
- *
- * Red splits two ways, because "we found nothing" and "we found something we
- * could not verify" ask the creator for different things. Both are red; only
- * the label differs.
- */
-export function markerLabel(field: FieldConfidence): string {
-  if (field.level === 'green') return 'From the source';
-  if (field.level === 'amber') return 'Adjusted';
-  return field.derivation === 'absent' ? 'Not found' : 'Unverified';
-}
-
-/** Sentence shown when a red field has no span to quote. */
-export const NO_EVIDENCE_COPY =
-  'Nothing on the page backed this up. Worth typing in yourself.';
-
 // ── Serves ───────────────────────────────────────────────────────────────────
-
-/**
- * Coerces an imported yield into what the Serves box accepts.
- *
- * `draft.serves` is a free-text yield — schema.org `recipeYield` is routinely
- * "2 1/2 cups guacamole" or "4 large bowls" — but the publish form has always
- * validated Serves as `^\d+(-\d+)?$`. Pasting the phrase in verbatim would put
- * a creator one click from a validation error they did not cause, on a field
- * they did not fill, which is precisely the "never worse off" line the ticket
- * draws.
- *
- * So we take the number, and the marker's evidence panel still shows the
- * original phrase — nothing is hidden, it is just not in the box.
- *
- * Returns null when there is no number to take, which leaves the field empty
- * and its marker showing.
- */
-export function servesForForm(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const text = String(raw).trim();
-  if (!text) return null;
-
-  const range = /(\d+)\s*(?:-|–|—|to)\s*(\d+)/.exec(text);
-  if (range) return `${Number(range[1])}-${Number(range[2])}`;
-
-  const single = /\d+/.exec(text);
-  return single ? String(Number(single[0])) : null;
-}
-
-/** Set when the Serves box shows something shorter than the source phrase. */
-export const SERVES_TRIMMED_NOTE =
-  'Shortened to fit the Serves box, which takes a number or a range.';
+//
+// There is deliberately no client-side coercion of `draft.serves` here.
+//
+// An earlier revision took the first number out of a free-text yield so it
+// would satisfy the form's `^\d+(-\d+)?$` validation. The product owner ruled
+// that out, and correctly: `recipeYield` is often a *volume* — "2 1/2 cups
+// guacamole" — and reading that as `serves: 2` is not a formatting fix, it is
+// wrong data presented as a fact, with a confidence marker vouching for it.
+//
+// The pipeline now owns this: it emits an integer or an integer range that
+// already matches the form's validation, or nothing at all when the source
+// states no people count. Serves is treated here like any other field.
 
 // ── Ingredients ──────────────────────────────────────────────────────────────
 
@@ -126,136 +86,317 @@ export function draftIngredientToForm(ing: DraftIngredient): DraftFormIngredient
 
 // ── Whole-form fill ──────────────────────────────────────────────────────────
 
-/** Everything a successful import writes into the publish form. */
+/** The fields an import can write to, as the form thinks of them. */
+export type ImportField =
+  | 'name' | 'recipe' | 'story' | 'photoUrl' | 'difficulty' | 'tags' | 'serves' | 'ingredients';
+
+export const FIELD_LABELS: Record<ImportField, string> = {
+  name: 'Meal name',
+  recipe: 'Recipe instructions',
+  story: 'Story',
+  photoUrl: 'Photo',
+  difficulty: 'Difficulty',
+  tags: 'Tags',
+  serves: 'Serves',
+  ingredients: 'Measurements',
+};
+
+/** Shown on the Tags marker when the import found more than the form accepts. */
+export function tagsTrimmedNote(found: number, kept: number): string | null {
+  if (found <= kept) return null;
+  return `We found ${found} tags and kept the first ${kept} — the form takes ${kept}.`;
+}
+
+/** Everything a successful import can write into the publish form. */
 export interface ImportedFormValues {
   name: string;
   source: string;
   story: string;
   recipe: string;
   serves: string;
-  /** True when `serves` is a shortened form of `draft.serves`. */
-  servesTrimmed: boolean;
   difficulty: number | null;
   /** Capped at the three the form accepts. */
   tags: string[];
+  /** Set when the import found more tags than the form can hold. */
+  tagsNote: string | null;
   photoUrl: string | null;
   ingredients: DraftFormIngredient[];
+  /**
+   * Which fields the import actually has a value for.
+   *
+   * The form writes only these, and marks only these. A field the import came
+   * back empty on is left exactly as the creator left it — importing must not
+   * blank out work someone already did — and carries no marker, because a
+   * confidence level is a claim about a value we put on screen. A green badge
+   * beside an empty box is a claim about nothing.
+   */
+  provided: Record<ImportField, boolean>;
 }
 
 export function importedFormValues(result: ImportSuccess): ImportedFormValues {
   const draft = result.draft;
-  const serves = servesForForm(draft.serves);
+  const allTags = draft.tags ?? [];
+  const tags = allTags.slice(0, 3);
+  const ingredients = (draft.ingredients ?? []).map(draftIngredientToForm);
+
   return {
     name: draft.name ?? '',
     source: draft.source || result.url,
     story: draft.story ?? '',
     recipe: draft.recipe ?? '',
-    serves: serves ?? '',
-    servesTrimmed: Boolean(serves && draft.serves && serves !== draft.serves.trim()),
+    serves: draft.serves ?? '',
     difficulty: draft.difficulty ?? null,
-    // The pipeline may return up to eight; the form has always taken three.
-    tags: (draft.tags ?? []).slice(0, 3),
+    tags,
+    tagsNote: tagsTrimmedNote(allTags.length, tags.length),
     photoUrl: draft.photoUrl ?? null,
-    ingredients: (draft.ingredients ?? []).map(draftIngredientToForm),
+    ingredients,
+    provided: {
+      name: Boolean(draft.name?.trim()),
+      recipe: Boolean(draft.recipe?.trim()),
+      story: Boolean(draft.story?.trim()),
+      photoUrl: Boolean(draft.photoUrl?.trim()),
+      difficulty: draft.difficulty != null,
+      tags: tags.length > 0,
+      serves: Boolean(draft.serves?.trim()),
+      ingredients: ingredients.length > 0,
+    },
   };
 }
 
-// ── Markers ──────────────────────────────────────────────────────────────────
+// ── Field state ──────────────────────────────────────────────────────────────
 
 /**
- * The confidence map as the form holds it.
+ * What became of one field in an import.
  *
- * Nullable per field because a marker is dropped the moment the creator edits
- * that field: once they have typed over it, the value is theirs and a level
- * computed from our extraction no longer describes what is on screen. A stale
- * green is worse than no marker.
+ *  - `written`  we put a value in the box; `confidence` describes that value.
+ *  - `absent`   the source had nothing, so the box is empty and stays the
+ *               creator's to fill.
+ *  - `kept`     the creator was editing this box while the import ran, so their
+ *               wording won and we say nothing about it. Represented by the
+ *               absence of a state, not by a value here.
  */
-export interface FormMarkers {
-  name: FieldConfidence | null;
-  recipe: FieldConfidence | null;
-  story: FieldConfidence | null;
-  photoUrl: FieldConfidence | null;
-  difficulty: FieldConfidence | null;
-  tags: FieldConfidence | null;
-  serves: FieldConfidence | null;
-  /** Index-aligned with the form's ingredient rows. */
-  ingredients: (FieldConfidence | null)[];
+export interface FieldState {
+  confidence: FieldConfidence;
+  written: boolean;
 }
 
-export type ScalarMarkerField = Exclude<keyof FormMarkers, 'ingredients'>;
+/**
+ * Per-field state as the form holds it.
+ *
+ * Nullable because a field's state is dropped the moment the creator edits it:
+ * once they have typed over a value, a level computed from our extraction no
+ * longer describes what is on screen, and a stale flag is worse than none.
+ */
+export interface FormFieldStates {
+  name: FieldState | null;
+  recipe: FieldState | null;
+  story: FieldState | null;
+  photoUrl: FieldState | null;
+  difficulty: FieldState | null;
+  tags: FieldState | null;
+  serves: FieldState | null;
+  /** Index-aligned with the form's ingredient rows. */
+  ingredients: (FieldState | null)[];
+}
 
-export function markersFrom(confidence: ImportConfidence): FormMarkers {
+export type ScalarField = Exclude<keyof FormFieldStates, 'ingredients'>;
+
+export const SCALAR_FIELDS: ScalarField[] =
+  ['name', 'recipe', 'story', 'photoUrl', 'difficulty', 'tags', 'serves'];
+
+/**
+ * Builds the field states from an import.
+ *
+ * `written` is not the same as `provided`: a field the import had a value for
+ * can still be skipped because the creator typed in that box while the request
+ * was in flight, and their work wins. A skipped field gets no state at all —
+ * we have nothing to say about a value we did not put there.
+ */
+export function fieldStatesFor(
+  confidence: ImportConfidence,
+  values: ImportedFormValues,
+  written: Partial<Record<ImportField, boolean>>,
+): FormFieldStates {
+  const state = (field: ScalarField): FieldState | null => {
+    if (written[field]) return { confidence: confidence[field], written: true };
+    // Not written and not provided means the source had nothing — worth saying.
+    // Not written but provided means the creator was mid-edit — say nothing.
+    if (!values.provided[field]) return { confidence: confidence[field], written: false };
+    return null;
+  };
+
   return {
-    name: confidence.name ?? null,
-    recipe: confidence.recipe ?? null,
-    story: confidence.story ?? null,
-    photoUrl: confidence.photoUrl ?? null,
-    difficulty: confidence.difficulty ?? null,
-    tags: confidence.tags ?? null,
-    serves: confidence.serves ?? null,
-    ingredients: [...(confidence.ingredients ?? [])],
+    name: state('name'),
+    recipe: state('recipe'),
+    story: state('story'),
+    photoUrl: state('photoUrl'),
+    difficulty: state('difficulty'),
+    tags: state('tags'),
+    serves: state('serves'),
+    ingredients: written.ingredients
+      ? (confidence.ingredients ?? []).map(c => ({ confidence: c, written: true }))
+      : [],
   };
 }
 
-export function clearScalarMarker(markers: FormMarkers | null, field: ScalarMarkerField): FormMarkers | null {
-  if (!markers || !markers[field]) return markers;
-  return { ...markers, [field]: null };
+export function clearScalarState(states: FormFieldStates | null, field: ScalarField): FormFieldStates | null {
+  if (!states || !states[field]) return states;
+  return { ...states, [field]: null };
 }
 
-export function clearIngredientMarker(markers: FormMarkers | null, index: number): FormMarkers | null {
-  if (!markers || !markers.ingredients[index]) return markers;
-  const ingredients = [...markers.ingredients];
+export function clearIngredientState(states: FormFieldStates | null, index: number): FormFieldStates | null {
+  if (!states || !states.ingredients[index]) return states;
+  const ingredients = [...states.ingredients];
   ingredients[index] = null;
-  return { ...markers, ingredients };
+  return { ...states, ingredients };
 }
 
-/** Keeps markers index-aligned when a row is removed. */
-export function removeIngredientMarker(markers: FormMarkers | null, index: number): FormMarkers | null {
-  if (!markers) return markers;
-  return { ...markers, ingredients: markers.ingredients.filter((_, i) => i !== index) };
+/** Keeps states index-aligned when a row is removed. */
+export function removeIngredientState(states: FormFieldStates | null, index: number): FormFieldStates | null {
+  if (!states) return states;
+  return { ...states, ingredients: states.ingredients.filter((_, i) => i !== index) };
 }
 
-/** Keeps markers index-aligned when a blank row is added. A new row has no provenance. */
-export function appendIngredientMarker(markers: FormMarkers | null): FormMarkers | null {
-  if (!markers) return markers;
-  return { ...markers, ingredients: [...markers.ingredients, null] };
+/** Keeps states index-aligned when a blank row is added. A new row has no provenance. */
+export function appendIngredientState(states: FormFieldStates | null): FormFieldStates | null {
+  if (!states) return states;
+  return { ...states, ingredients: [...states.ingredients, null] };
+}
+
+// ── Notices ──────────────────────────────────────────────────────────────────
+
+/**
+ * How long a quoted span may get before it is cut.
+ *
+ * Every flagged ingredient row grows by its quote, and a recipe with eight
+ * flagged rows on a 390px phone turns into a wall. Two lines of 11px text is
+ * roughly this many characters, so the cut bounds each row's height without
+ * hiding the part of the span that identifies it.
+ */
+export const EVIDENCE_MAX_CHARS = 120;
+
+export function truncateEvidence(span: string, max = EVIDENCE_MAX_CHARS): string {
+  const text = span.replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  // Cut on a word boundary so the tail is not a fragment of a word.
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+export type NoticeKind = 'adjusted' | 'unverified' | 'absent' | 'generated';
+
+/** The line rendered under a flagged field. Verified fields produce none. */
+export interface FieldNotice {
+  kind: NoticeKind;
+  /** Leading sentence. Empty for `adjusted`, where the quote says it all. */
+  text: string;
+  /** Source span to quote, already truncated. Null when there is nothing to quote. */
+  evidence: string | null;
+}
+
+/**
+ * The notice for one field, or null when there is nothing to say.
+ *
+ * Silence is the common case and is load-bearing: it means we checked the value
+ * against the source and it held up. The summary line is what tells a creator
+ * that silence means checked rather than skipped.
+ */
+export function noticeFor(state: FieldState | null): FieldNotice | null {
+  if (!state) return null;
+
+  if (!state.written) {
+    return { kind: 'absent', text: 'Not found in the source — add this', evidence: null };
+  }
+
+  const { level, evidence, derivation, reason } = state.confidence;
+  if (level === 'green') return null;
+
+  const quote = evidence ? truncateEvidence(evidence) : null;
+
+  // A `generated` value — today only a Pixabay stand-in photo — was not read
+  // off the page at all, so there is no span to quote and nothing a quote could
+  // honestly say. The pipeline's own `reason` is written to be shown, and this
+  // is the one field where our value is a placeholder we chose rather than
+  // something we found; a creator publishing a stock photo they never looked at
+  // is worse than an empty photo slot.
+  if (derivation === 'generated') {
+    return { kind: 'generated', text: reason, evidence: null };
+  }
+
+  if (level === 'amber') {
+    // With a span, the quote is the whole message. Without one, the pipeline's
+    // reason is — an empty notice would be worse than none.
+    return quote
+      ? { kind: 'adjusted', text: '', evidence: quote }
+      : { kind: 'adjusted', text: reason, evidence: null };
+  }
+
+  // Red on a value we did write: the span did not check out against the page.
+  // The value stays in the box — it is the creator's to keep, fix or delete,
+  // and deleting it for them would be its own kind of wrong.
+  return {
+    kind: 'unverified',
+    text: quote
+      ? 'We couldn’t find this in the source — check it.'
+      : 'Nothing in the source backed this up — check it.',
+    evidence: quote,
+  };
+}
+
+export function noticesFor(states: FormFieldStates | null) {
+  return {
+    name: noticeFor(states?.name ?? null),
+    recipe: noticeFor(states?.recipe ?? null),
+    story: noticeFor(states?.story ?? null),
+    photoUrl: noticeFor(states?.photoUrl ?? null),
+    difficulty: noticeFor(states?.difficulty ?? null),
+    tags: noticeFor(states?.tags ?? null),
+    serves: noticeFor(states?.serves ?? null),
+    ingredients: (states?.ingredients ?? []).map(noticeFor),
+  };
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 
-export interface MarkerSummary {
-  green: number;
-  amber: number;
-  red: number;
-  total: number;
+export interface ImportSummary {
+  /** Fields still holding a value this import put there. */
+  filled: number;
+  /** Of those, how many we verified against the source. Green only. */
+  verified: number;
+  /** Flagged fields: adjusted, unverified, or nothing found. */
+  needALook: number;
 }
 
-export function summarise(markers: FormMarkers | null): MarkerSummary {
-  const empty = { green: 0, amber: 0, red: 0, total: 0 };
-  if (!markers) return empty;
-  const all = [
-    markers.name, markers.recipe, markers.story, markers.photoUrl,
-    markers.difficulty, markers.tags, markers.serves, ...markers.ingredients,
-  ].filter((f): f is FieldConfidence => Boolean(f));
+/**
+ * The counts above the form.
+ *
+ * `verified` means *we checked this value against the source and it matched* —
+ * never merely *we filled it in*. A photo that came from a generated stand-in
+ * rather than the creator's page is not verified and lands in `needALook` with
+ * its own reason, which falls out of counting green only.
+ */
+export function summarise(states: FormFieldStates | null): ImportSummary {
+  const empty = { filled: 0, verified: 0, needALook: 0 };
+  if (!states) return empty;
 
-  return all.reduce((acc, field) => {
-    acc[field.level] += 1;
-    acc.total += 1;
+  const all = [...SCALAR_FIELDS.map(f => states[f]), ...states.ingredients]
+    .filter((s): s is FieldState => Boolean(s));
+
+  return all.reduce((acc, state) => {
+    if (state.written) {
+      acc.filled += 1;
+      if (state.confidence.level === 'green') acc.verified += 1;
+    }
+    if (noticeFor(state)) acc.needALook += 1;
     return acc;
   }, { ...empty });
 }
 
-/**
- * The one-line read on an import.
- *
- * Counts, not a score. "11 fields from the source, 2 adjusted, 1 to check" is
- * something a creator can act on; "92% confident" is not.
- */
-export function summaryLine(summary: MarkerSummary): string {
-  const parts: string[] = [];
-  if (summary.green) parts.push(`${summary.green} from the source`);
-  if (summary.amber) parts.push(`${summary.amber} adjusted`);
-  if (summary.red) parts.push(`${summary.red} to check`);
+/** "6 verified · 3 need a look" — counts, never a score. A "92% confident" badge would be the anti-pattern MEAL-72 exists to avoid. */
+export function summaryLine(summary: ImportSummary): string {
+  const parts = [`${summary.verified} verified`];
+  parts.push(summary.needALook > 0 ? `${summary.needALook} need a look` : 'nothing flagged');
   return parts.join(' · ');
 }
 

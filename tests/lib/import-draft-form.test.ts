@@ -1,21 +1,26 @@
 import { describe, it, expect } from 'vitest';
 import {
-  MARKER_COLORS,
-  appendIngredientMarker,
-  clearIngredientMarker,
-  clearScalarMarker,
+  EVIDENCE_MAX_CHARS,
+  FIELD_LABELS,
+  appendIngredientState,
+  clearIngredientState,
+  clearScalarState,
   draftIngredientToForm,
+  fieldStatesFor,
   hostLabel,
   importedFormValues,
-  markerLabel,
-  markersFrom,
+  noticeFor,
+  noticesFor,
   pathLabel,
   rejectionCopy,
-  removeIngredientMarker,
-  servesForForm,
+  removeIngredientState,
   summarise,
   summaryLine,
+  tagsTrimmedNote,
   transportRejection,
+  truncateEvidence,
+  type FieldState,
+  type ImportField,
 } from '@/lib/import/draft-form';
 import type { FieldConfidence, ImportRejection } from '@/lib/import/types';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
@@ -24,68 +29,132 @@ import { importedGuacamole } from '../helpers/import-ui-fixtures';
  * The rules behind what a creator sees. Pure functions, no DOM, no key.
  */
 
-function level(overrides: Partial<FieldConfidence> = {}): FieldConfidence {
+/** Every field written, i.e. the whole-import case. */
+const ALL: Partial<Record<ImportField, boolean>> = Object.fromEntries(
+  (Object.keys(FIELD_LABELS) as ImportField[]).map(f => [f, true]),
+);
+
+function state(overrides: Partial<FieldConfidence> = {}, written = true): FieldState {
   return {
-    level: 'green',
-    derivation: 'json-ld',
-    match: 'exact',
-    score: 1,
-    evidence: 'four ripe avocados',
-    reason: 'Taken from the page’s structured recipe data.',
-    ...overrides,
+    written,
+    confidence: {
+      level: 'green',
+      derivation: 'json-ld',
+      match: 'exact',
+      score: 1,
+      evidence: 'four ripe avocados',
+      reason: 'Taken from the page’s structured recipe data.',
+      ...overrides,
+    },
   };
 }
 
-describe('draft-form — colour', () => {
-  it('never uses the brand red for a bad-confidence marker', () => {
-    // The Two Reds Rule: #DD0031 means "act"; a marker is status, not an action.
-    for (const entry of Object.values(MARKER_COLORS)) {
-      for (const value of Object.values(entry)) {
-        expect(value.toUpperCase()).not.toBe('#DD0031');
-      }
-    }
+describe('draft-form — notices flag only the exceptions', () => {
+  it('says nothing at all about a verified field', () => {
+    // Silence is the signal. The summary line is what makes silence readable
+    // as "checked" rather than "skipped".
+    expect(noticeFor(state({ level: 'green' }))).toBeNull();
   });
 
-  it('uses DESIGN.md’s semantic tokens for green and red', () => {
-    expect(MARKER_COLORS.green.dot).toBe('#16A34A');
-    expect(MARKER_COLORS.red.dot).toBe('#DC2626');
+  it('says nothing about a field the creator was editing', () => {
+    expect(noticeFor(null)).toBeNull();
   });
 
-  it('gives every level a word, so the marker is not colour-only', () => {
-    expect(markerLabel(level({ level: 'green' }))).toBe('From the source');
-    expect(markerLabel(level({ level: 'amber' }))).toBe('Adjusted');
-    expect(markerLabel(level({ level: 'red', derivation: 'page-text' }))).toBe('Unverified');
-    expect(markerLabel(level({ level: 'red', derivation: 'absent' }))).toBe('Not found');
+  it('quotes the source span for an adjusted field, and nothing else', () => {
+    const notice = noticeFor(state({ level: 'amber', derivation: 'normalized', evidence: 'juice of 1 lime' }));
+    expect(notice).toEqual({ kind: 'adjusted', text: '', evidence: 'juice of 1 lime' });
+  });
+
+  it('falls back to the pipeline’s reason when an adjusted field has no span to quote', () => {
+    const notice = noticeFor(state({
+      level: 'amber', derivation: 'inferred', evidence: null,
+      reason: 'Inferred from the source as a whole, not stated outright.',
+    }));
+    // An empty notice would be worse than none.
+    expect(notice!.text).toBe('Inferred from the source as a whole, not stated outright.');
+    expect(notice!.evidence).toBeNull();
+  });
+
+  it('tells a creator to add a field the source did not have', () => {
+    expect(noticeFor(state({ level: 'red', derivation: 'absent', evidence: null }, false))).toEqual({
+      kind: 'absent',
+      text: 'Not found in the source — add this',
+      evidence: null,
+    });
+  });
+
+  it('keeps an unverified value on screen and asks for a check', () => {
+    // Red does not mean deleted. The value stays editable and publishable —
+    // silently removing it would be its own kind of wrong.
+    const notice = noticeFor(state({
+      level: 'red', derivation: 'page-text', match: 'none', score: 0,
+      evidence: '1 teaspoon smoked paprika',
+    }));
+    expect(notice!.kind).toBe('unverified');
+    expect(notice!.text).toMatch(/couldn’t find this in the source/);
+    expect(notice!.evidence).toBe('1 teaspoon smoked paprika');
+  });
+
+  it('shows the pipeline’s own reason for a photo we generated rather than read', () => {
+    // A Pixabay stand-in was not judged from the source, so there is no span
+    // and no quote that could honestly be shown.
+    const notice = noticeFor(state({
+      level: 'amber',
+      derivation: 'generated',
+      evidence: null,
+      reason: 'No usable image on the page — this is a stock photo we picked.',
+    }));
+    expect(notice).toEqual({
+      kind: 'generated',
+      text: 'No usable image on the page — this is a stock photo we picked.',
+      evidence: null,
+    });
+  });
+});
+
+describe('draft-form — evidence length', () => {
+  it('bounds a quoted span so a flagged row cannot become a wall', () => {
+    const long = 'a'.repeat(400);
+    expect(truncateEvidence(long).length).toBeLessThanOrEqual(EVIDENCE_MAX_CHARS + 1);
+    expect(truncateEvidence(long).endsWith('…')).toBe(true);
+  });
+
+  it('leaves a short span exactly as written', () => {
+    expect(truncateEvidence('juice of 1 lime')).toBe('juice of 1 lime');
+  });
+
+  it('cuts on a word boundary and flattens whitespace', () => {
+    const span = `${'word '.repeat(40)}end`;
+    const cut = truncateEvidence(span);
+    expect(cut).not.toMatch(/\s\S{0,3}…$/);
+    expect(truncateEvidence('one\n\n  two')).toBe('one two');
   });
 });
 
 describe('draft-form — serves', () => {
-  it('takes the number out of a free-text yield', () => {
-    // schema.org recipeYield is routinely a phrase, and the Serves box has
-    // always validated ^\d+(-\d+)?$.
-    expect(servesForForm('2 1/2 cups guacamole')).toBe('2');
-    expect(servesForForm('4 large bowls')).toBe('4');
-    expect(servesForForm('Serves 6')).toBe('6');
-    expect(servesForForm('4')).toBe('4');
+  it('passes the pipeline’s value through untouched', async () => {
+    // Deliberately no client-side coercion. Reading "2 1/2 cups guacamole" as
+    // serves: 2 is wrong data, not a formatting fix; the pipeline owns this and
+    // emits a people count or nothing.
+    const result = await importedGuacamole();
+    (result.draft as { serves: string | null }).serves = '4-6';
+    expect(importedFormValues(result).serves).toBe('4-6');
   });
 
-  it('keeps a range as a range', () => {
-    expect(servesForForm('4-6 servings')).toBe('4-6');
-    expect(servesForForm('4 to 6')).toBe('4-6');
-    expect(servesForForm('serves 2–3 people')).toBe('2-3');
-  });
+  it('leaves Serves blank and asks the creator to add it', async () => {
+    const result = await importedGuacamole();
+    (result.draft as { serves: string | null }).serves = null;
+    const values = importedFormValues(result);
+    const states = fieldStatesFor(result.confidence, values, { ...ALL, serves: false });
 
-  it('returns null when there is no number to take', () => {
-    expect(servesForForm('a crowd')).toBeNull();
-    expect(servesForForm('')).toBeNull();
-    expect(servesForForm(null)).toBeNull();
-  });
-
-  it('produces something the publish form’s own validation accepts', () => {
-    const rule = /^\d+(-\d+)?$/;
-    for (const raw of ['2 1/2 cups guacamole', '4 to 6', 'Serves 6', '12 muffins']) {
-      expect(rule.test(servesForForm(raw)!)).toBe(true);
-    }
+    expect(values.serves).toBe('');
+    expect(values.provided.serves).toBe(false);
+    // Never a verified claim about an empty box — that was the old bug.
+    expect(noticeFor(states.serves)).toEqual({
+      kind: 'absent',
+      text: 'Not found in the source — add this',
+      evidence: null,
+    });
   });
 });
 
@@ -115,72 +184,144 @@ describe('draft-form — filling the form from a real import', () => {
     expect(values.serves).toBe('2');
   });
 
-  it('caps tags at the three the form accepts', async () => {
+  it('caps tags at the three the form accepts, and says it did', async () => {
     const result = await importedGuacamole();
     (result.draft as { tags: string[] }).tags = ['Mexican', 'No Cook', 'Appetizer', 'Healthy', 'Vegan'];
-    expect(importedFormValues(result).tags).toEqual(['Mexican', 'No Cook', 'Appetizer']);
+    const values = importedFormValues(result);
+
+    expect(values.tags).toEqual(['Mexican', 'No Cook', 'Appetizer']);
+    // Dropping two silently would read as the import having missed them.
+    expect(values.tagsNote).toBe('We found 5 tags and kept the first 3 — the form takes 3.');
   });
 
-  it('flags a shortened Serves so the marker can say so', async () => {
+  it('says nothing about tags when none were dropped', () => {
+    expect(tagsTrimmedNote(3, 3)).toBeNull();
+    expect(tagsTrimmedNote(1, 3)).toBeNull();
+  });
+
+  it('reports which fields it had no value for', async () => {
     const result = await importedGuacamole();
-    (result.draft as { serves: string | null }).serves = '2 1/2 cups guacamole';
     const values = importedFormValues(result);
-    expect(values.serves).toBe('2');
-    expect(values.servesTrimmed).toBe(true);
+
+    // The fixture's story is absent, so the form must not claim anything there.
+    expect(values.provided.story).toBe(false);
+    expect(values.provided.name).toBe(true);
   });
 });
 
-describe('draft-form — markers', () => {
-  it('carries the levels the pipeline computed, per ingredient', async () => {
+describe('draft-form — field states', () => {
+  /**
+   * The real path: the form writes exactly the fields the import provided,
+   * minus any the caller marks as skipped.
+   */
+  async function statesFrom(skip: Partial<Record<ImportField, boolean>> = {}) {
     const result = await importedGuacamole();
-    const markers = markersFrom(result.confidence);
+    const values = importedFormValues(result);
+    const written = Object.fromEntries(
+      (Object.keys(FIELD_LABELS) as ImportField[])
+        .map(f => [f, values.provided[f] && !skip[f]]),
+    );
+    return { result, values, states: fieldStatesFor(result.confidence, values, written) };
+  }
 
-    expect(markers.name?.level).toBe('green');
-    expect(markers.ingredients.map(i => i?.level)).toEqual(['green', 'amber', 'red']);
+  it('carries the levels the pipeline computed, per ingredient', async () => {
+    const { states } = await statesFrom();
+
+    expect(states.name?.confidence.level).toBe('green');
+    expect(states.ingredients.map(s => s?.confidence.level)).toEqual(['green', 'amber', 'red']);
     // The hallucinated row is red because its span is not on the page — not
     // because anything here judged it.
-    expect(markers.ingredients[2]?.match).toBe('none');
-    expect(markers.story?.level).toBe('red');
+    expect(states.ingredients[2]?.confidence.match).toBe('none');
   });
 
-  it('drops a field’s marker once the creator edits it', async () => {
-    const result = await importedGuacamole();
-    const markers = markersFrom(result.confidence);
+  it('flags only the exceptions', async () => {
+    const { states } = await statesFrom();
+    const notices = noticesFor(states);
 
-    const edited = clearScalarMarker(markers, 'name');
+    // Verified — nothing at all.
+    expect(notices.name).toBeNull();
+    expect(notices.ingredients[0]).toBeNull();
+    // Adjusted and unverified — flagged.
+    expect(notices.ingredients[1]?.kind).toBe('adjusted');
+    expect(notices.ingredients[2]?.kind).toBe('unverified');
+    // The absent story asks to be filled in.
+    expect(notices.story?.kind).toBe('absent');
+  });
+
+  it('says nothing about a field the creator was editing while the import ran', async () => {
+    const { states } = await statesFrom({ name: true });
+    // `name` was provided by the import but not written, so it is theirs.
+    expect(states.name).toBeNull();
+    expect(noticesFor(states).name).toBeNull();
+  });
+
+  it('leaves ingredient states empty when the rows were not written', async () => {
+    const { states } = await statesFrom({ ingredients: true });
+    expect(states.ingredients).toEqual([]);
+  });
+
+  it('drops a field’s state once the creator edits it', async () => {
+    const { states } = await statesFrom();
+
+    const edited = clearScalarState(states, 'name');
     expect(edited!.name).toBeNull();
     expect(edited!.serves).not.toBeNull();
 
-    const rowEdited = clearIngredientMarker(markers, 1);
+    const rowEdited = clearIngredientState(states, 1);
     expect(rowEdited!.ingredients[1]).toBeNull();
+    expect(noticesFor(rowEdited).ingredients[1]).toBeNull();
     expect(rowEdited!.ingredients[0]).not.toBeNull();
   });
 
   it('stays index-aligned when rows are added and removed', async () => {
+    const { states } = await statesFrom();
+
+    const removed = removeIngredientState(states, 0);
+    expect(removed!.ingredients.map(s => s?.confidence.level)).toEqual(['amber', 'red']);
+
+    const added = appendIngredientState(removed);
+    expect(added!.ingredients.map(s => s?.confidence.level ?? null)).toEqual(['amber', 'red', null]);
+  });
+});
+
+describe('draft-form — summary', () => {
+  it('counts verified as “we checked this value”, never “we filled it in”', async () => {
     const result = await importedGuacamole();
-    const markers = markersFrom(result.confidence);
+    const values = importedFormValues(result);
+    const summary = summarise(fieldStatesFor(result.confidence, values, ALL));
 
-    const removed = removeIngredientMarker(markers, 0);
-    expect(removed!.ingredients.map(i => i?.level)).toEqual(['amber', 'red']);
-
-    const added = appendIngredientMarker(removed);
-    expect(added!.ingredients.map(i => i?.level ?? null)).toEqual(['amber', 'red', null]);
+    expect(summary.verified).toBeGreaterThan(0);
+    expect(summary.needALook).toBeGreaterThan(0);
+    // Everything filled is either verified or flagged; nothing is unaccounted for.
+    expect(summary.verified).toBeLessThanOrEqual(summary.filled);
+    expect(summaryLine(summary)).toBe(`${summary.verified} verified · ${summary.needALook} need a look`);
   });
 
-  it('summarises the spread as counts, never a score', async () => {
-    const result = await importedGuacamole();
-    const summary = summarise(markersFrom(result.confidence));
+  it('does not count a generated stand-in photo as verified', () => {
+    const states = {
+      name: state({ level: 'green' }),
+      recipe: null, story: null, difficulty: null, tags: null, serves: null,
+      photoUrl: state({ level: 'amber', derivation: 'generated', evidence: null, reason: 'A stock photo we picked.' }),
+      ingredients: [],
+    };
+    const summary = summarise(states);
 
-    expect(summary.total).toBe(summary.green + summary.amber + summary.red);
-    expect(summary.green).toBeGreaterThan(0);
-    expect(summary.red).toBeGreaterThan(0);
-    expect(summaryLine(summary)).toMatch(/from the source/);
-    expect(summaryLine(summary)).toMatch(/to check/);
+    expect(summary.filled).toBe(2);
+    expect(summary.verified).toBe(1);
+    expect(summary.needALook).toBe(1);
+  });
+
+  it('says so plainly when nothing is left to check', () => {
+    const summary = summarise({
+      name: state({ level: 'green' }),
+      recipe: null, story: null, photoUrl: null, difficulty: null, tags: null, serves: null,
+      ingredients: [],
+    });
+    expect(summaryLine(summary)).toBe('1 verified · nothing flagged');
   });
 
   it('summarises nothing when there is no import', () => {
-    expect(summarise(null)).toEqual({ green: 0, amber: 0, red: 0, total: 0 });
-    expect(summaryLine(summarise(null))).toBe('');
+    expect(summarise(null)).toEqual({ filled: 0, verified: 0, needALook: 0 });
   });
 });
 
