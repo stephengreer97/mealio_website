@@ -1501,10 +1501,7 @@ export default function CreatorPortal() {
                     data-testid="import-summary"
                   >
                     <p className="text-sm font-semibold" style={{ color: '#18181B' }}>
-                      Filled {counts.filled} field{counts.filled === 1 ? '' : 's'} from {hostLabel(importInfo.url)}
-                    </p>
-                    <p className="text-xs mt-1 leading-relaxed" style={{ color: '#52525B' }}>
-                      {summaryLine(counts)}
+                      Imported from {hostLabel(importInfo.url)} — {summaryLine(counts)}
                     </p>
                     {importInfo.kept.length > 0 && (
                       <p className="text-xs mt-1.5 leading-relaxed font-medium" style={{ color: '#18181B' }}>

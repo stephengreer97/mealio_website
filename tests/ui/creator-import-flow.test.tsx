@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
-import { importedGuacamole } from '../helpers/import-ui-fixtures';
+import { guacamoleExtraction, importedGuacamole, pixabayPhotoResolver } from '../helpers/import-ui-fixtures';
 
 /**
  * Link → published meal, through the real creator portal.
@@ -90,17 +90,24 @@ describe('creator portal — link to published meal', () => {
     expect(nameBox().value).toBe('Best Guacamole');
     expect(sourceBox().value).toBe(success.url);
     expect(rows().map(r => r.value)).toEqual(['avocados', 'lime juice', 'smoked paprika']);
-    expect(servesBox().value).toBe('2');
+    // This page publishes only a volume yield ("2 1/2 cups guacamole"), which is
+    // not a head count, so the pipeline emits nothing and the box stays empty.
+    expect(servesBox().value).toBe('');
   });
 
-  it('summarises the import as counts, and counts verified honestly', async () => {
+  it('summarises the import as counts that add up', async () => {
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
 
     const summary = await screen.findByTestId('import-summary');
-    expect(summary.textContent).toMatch(/Filled \d+ fields from cookieandkate\.com/);
-    expect(summary.textContent).toMatch(/\d+ verified · \d+ need a look/);
+    expect(summary.textContent).toMatch(/Imported from cookieandkate\.com/);
+
+    const [, verified, total] = /(\d+) of (\d+) fields verified/.exec(summary.textContent!)!;
+    const needALook = Number(/(\d+) needs? a look/.exec(summary.textContent!)![1]);
+    // Every field is in exactly one of the two counts.
+    expect(Number(verified) + needALook).toBe(Number(total));
+
     expect(summary.textContent).toMatch(/structured recipe data/);
     // Not a self-reported score. See MEAL-72.
     expect(summary.textContent).not.toMatch(/\d+% confident/);
@@ -115,23 +122,27 @@ describe('creator portal — only the exceptions are marked', () => {
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
-    await screen.findByTestId('import-summary');
+    const summary = await screen.findByTestId('import-summary');
 
-    // Name and row 1 both came verbatim out of the page's structured data, so
-    // there is nothing beside them — silence is the signal.
+    // The fixture has to contain verified fields for this test to mean
+    // anything: name, the photo, and the avocados row all came verbatim out of
+    // the page's structured data.
+    expect(Number(/(\d+) of \d+ fields verified/.exec(summary.textContent!)![1]))
+      .toBeGreaterThanOrEqual(3);
+
+    // Nothing is said beside any of them — silence is the signal.
     const flaggedText = notices().map(n => n.textContent).join(' ');
     expect(flaggedText).not.toContain('Best Guacamole');
     expect(flaggedText).not.toContain('4 medium ripe avocados');
+    expect(screen.queryByTestId('photo-replace-hint')).toBeNull();
 
-    // Fewer flags than fields the import touched — seven scalars and three
-    // rows here. (This fixture is deliberately adversarial, landing one field
-    // on every level; a real import is mostly green and mostly silent.)
-    expect(notices().length).toBeLessThan(10);
-
-    // Specifically: the fields whose spans checked out say nothing.
     const flaggedBoxes = notices().map(n => n.previousElementSibling);
     expect(flaggedBoxes).not.toContain(nameBox());
-    expect(flaggedBoxes).not.toContain(servesBox());
+
+    // Fewer flags than fields the import touched — seven scalars and three
+    // rows here. (This fixture is deliberately adversarial, landing a field on
+    // every level; a real import is mostly green and mostly silent.)
+    expect(notices().length).toBeLessThan(10);
   });
 
   it('quotes the source span under an adjusted field', async () => {
@@ -174,6 +185,13 @@ describe('creator portal — only the exceptions are marked', () => {
     expect(absent[0].textContent).toContain('Not found in the source — add this');
     // The fixture's story is absent, so the box stays empty and asks for input.
     expect(storyBox().value).toBe('');
+
+    // Serves too: this page publishes a volume yield and no head count, so the
+    // pipeline emits nothing rather than reading "2 1/2 cups" as two people.
+    // The box is empty and asks, instead of carrying a number nobody wrote.
+    expect(servesBox().value).toBe('');
+    const flaggedBoxes = absent.map(n => n.previousElementSibling);
+    expect(flaggedBoxes).toContain(servesBox());
   });
 
   it('retires a flag as soon as the creator edits that field', async () => {
@@ -201,7 +219,8 @@ describe('creator portal — only the exceptions are marked', () => {
     expect(published!.name).toBe('Best Guacamole');
     expect((published!.ingredients as { ingredientName: string }[]).map(i => i.ingredientName))
       .toContain('smoked paprika');
-    expect(published!.serves).toBe('2');
+    // Empty rather than a serving count invented from a volume.
+    expect(published!.serves).toBeNull();
   });
 
   it('lets a creator fix a flagged row and publish their own value', async () => {
@@ -234,22 +253,11 @@ describe('creator portal — only the exceptions are marked', () => {
 });
 
 describe('creator portal — a generated photo is a placeholder, not a finding', () => {
-  async function withGeneratedPhoto() {
-    const success = await importedGuacamole();
-    // What the pipeline emits when the page had no usable image: our own stored
-    // URL, marked amber, with a reason written to be shown as-is.
-    (success.draft as { photoUrl: string | null }).photoUrl =
-      'https://storage.mealio.co/meal-photos/stock-guacamole.jpg';
-    success.confidence.photoUrl = {
-      level: 'amber',
-      derivation: 'generated',
-      match: 'none',
-      score: 0,
-      evidence: null,
-      reason: 'No usable image on the page — this is a stock photo we picked.',
-    };
-    return success;
-  }
+  // Driven through the real photo resolver rather than by patching the
+  // response, so the `generated` derivation and its amber level are the ones
+  // the pipeline produces.
+  const withGeneratedPhoto = () =>
+    importedGuacamole(guacamoleExtraction(), pixabayPhotoResolver);
 
   it('says the photo is ours, and how to replace it', async () => {
     stubApi({ import: async () => json(await withGeneratedPhoto(), 200) });
@@ -266,16 +274,24 @@ describe('creator portal — a generated photo is a placeholder, not a finding',
     expect(hint.textContent).toMatch(/Generate photo/);
   });
 
-  it('does not count it as verified', async () => {
-    stubApi({ import: async () => json(await withGeneratedPhoto(), 200) });
+  async function verifiedCount(response: ImportSuccess) {
+    stubApi({ import: () => json(response, 200) });
     await openPublishForm();
     await importFrom('https://cookieandkate.com/best-guacamole-recipe');
-
     const summary = await screen.findByTestId('import-summary');
-    const verified = Number(/(\d+) verified/.exec(summary.textContent!)![1]);
-    const needALook = Number(/(\d+) need a look/.exec(summary.textContent!)![1]);
-    expect(needALook).toBeGreaterThanOrEqual(2); // the stand-in photo, plus the hallucinated row
-    expect(verified).toBeGreaterThan(0);
+    const count = Number(/(\d+) of \d+ fields verified/.exec(summary.textContent!)![1]);
+    cleanup();
+    return count;
+  }
+
+  it('does not count it as verified', async () => {
+    // The identical import differing only in the photo verifies one field
+    // fewer, so a stand-in demonstrably costs a verification rather than
+    // earning one.
+    const copied = await verifiedCount(await importedGuacamole());
+    const generated = await verifiedCount(await withGeneratedPhoto());
+
+    expect(generated).toBe(copied - 1);
   });
 
   it('publishes our stored URL as-is, never a third-party one', async () => {

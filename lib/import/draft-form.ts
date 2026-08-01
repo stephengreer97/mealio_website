@@ -360,11 +360,17 @@ export function noticesFor(states: FormFieldStates | null) {
 // ── Summary ──────────────────────────────────────────────────────────────────
 
 export interface ImportSummary {
-  /** Fields still holding a value this import put there. */
-  filled: number;
-  /** Of those, how many we verified against the source. Green only. */
+  /**
+   * Every field this import touched. Each one is in exactly one of the two
+   * counts below, so they add up — an earlier version also reported how many
+   * fields were *populated*, which is a second axis and made the arithmetic
+   * look broken. How many to check is what a creator needs; how many we filled
+   * is our bookkeeping.
+   */
+  total: number;
+  /** Verified against the source. Green only. */
   verified: number;
-  /** Flagged fields: adjusted, unverified, or nothing found. */
+  /** Flagged: adjusted, unverified, or nothing found. */
   needALook: number;
 }
 
@@ -377,27 +383,32 @@ export interface ImportSummary {
  * its own reason, which falls out of counting green only.
  */
 export function summarise(states: FormFieldStates | null): ImportSummary {
-  const empty = { filled: 0, verified: 0, needALook: 0 };
+  const empty = { total: 0, verified: 0, needALook: 0 };
   if (!states) return empty;
 
   const all = [...SCALAR_FIELDS.map(f => states[f]), ...states.ingredients]
     .filter((s): s is FieldState => Boolean(s));
 
   return all.reduce((acc, state) => {
-    if (state.written) {
-      acc.filled += 1;
-      if (state.confidence.level === 'green') acc.verified += 1;
-    }
+    acc.total += 1;
+    // Verified and flagged are exhaustive and mutually exclusive: `noticeFor`
+    // returns null for exactly the written-and-green fields.
     if (noticeFor(state)) acc.needALook += 1;
+    else acc.verified += 1;
     return acc;
   }, { ...empty });
 }
 
-/** "6 verified · 3 need a look" — counts, never a score. A "92% confident" badge would be the anti-pattern MEAL-72 exists to avoid. */
+/**
+ * "4 of 15 fields verified. 11 need a look."
+ *
+ * Counts, never a score — a "92% confident" badge is the anti-pattern MEAL-72
+ * exists to avoid.
+ */
 export function summaryLine(summary: ImportSummary): string {
-  const parts = [`${summary.verified} verified`];
-  parts.push(summary.needALook > 0 ? `${summary.needALook} need a look` : 'nothing flagged');
-  return parts.join(' · ');
+  const verified = `${summary.verified} of ${summary.total} field${summary.total === 1 ? '' : 's'} verified.`;
+  if (summary.needALook === 0) return verified;
+  return `${verified} ${summary.needALook} need${summary.needALook === 1 ? 's' : ''} a look.`;
 }
 
 /** Bare hostname, for telling a creator which page we read. */

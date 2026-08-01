@@ -181,7 +181,12 @@ describe('draft-form — filling the form from a real import', () => {
     expect(values.source).toBe(result.url);
     expect(values.ingredients.map(i => i.ingredientName)).toEqual(['avocados', 'lime juice', 'smoked paprika']);
     expect(values.ingredients[0].unit).toBe('Qty');
-    expect(values.serves).toBe('2');
+    // The recorded page publishes only "2 1/2 cups guacamole" — a volume, not a
+    // head count — so the pipeline emits no serves and the box stays empty.
+    expect(values.serves).toBe('');
+    expect(values.provided.serves).toBe(false);
+    // The photo is our stored copy, never the third-party URL.
+    expect(values.photoUrl).toBe('https://storage.mealio.co/meal-photos/cookieandkate-guacamole.jpg');
   });
 
   it('caps tags at the three the form accepts, and says it did', async () => {
@@ -292,9 +297,18 @@ describe('draft-form — summary', () => {
 
     expect(summary.verified).toBeGreaterThan(0);
     expect(summary.needALook).toBeGreaterThan(0);
-    // Everything filled is either verified or flagged; nothing is unaccounted for.
-    expect(summary.verified).toBeLessThanOrEqual(summary.filled);
-    expect(summaryLine(summary)).toBe(`${summary.verified} verified · ${summary.needALook} need a look`);
+  });
+
+  it('puts every field in exactly one bucket, so the counts add up', async () => {
+    // The old line reported how many fields were *populated* alongside these
+    // two, which is a second axis and made the arithmetic look broken.
+    const result = await importedGuacamole();
+    const values = importedFormValues(result);
+    const summary = summarise(fieldStatesFor(result.confidence, values, ALL));
+
+    expect(summary.verified + summary.needALook).toBe(summary.total);
+    expect(summaryLine(summary))
+      .toBe(`${summary.verified} of ${summary.total} fields verified. ${summary.needALook} need a look.`);
   });
 
   it('does not count a generated stand-in photo as verified', () => {
@@ -306,7 +320,7 @@ describe('draft-form — summary', () => {
     };
     const summary = summarise(states);
 
-    expect(summary.filled).toBe(2);
+    expect(summary.total).toBe(2);
     expect(summary.verified).toBe(1);
     expect(summary.needALook).toBe(1);
   });
@@ -317,11 +331,21 @@ describe('draft-form — summary', () => {
       recipe: null, story: null, photoUrl: null, difficulty: null, tags: null, serves: null,
       ingredients: [],
     });
-    expect(summaryLine(summary)).toBe('1 verified · nothing flagged');
+    expect(summaryLine(summary)).toBe('1 of 1 field verified.');
+  });
+
+  it('gets the grammar right for a single flagged field', () => {
+    const summary = summarise({
+      name: state({ level: 'green' }),
+      recipe: state({ level: 'amber', derivation: 'normalized' }),
+      story: null, photoUrl: null, difficulty: null, tags: null, serves: null,
+      ingredients: [],
+    });
+    expect(summaryLine(summary)).toBe('1 of 2 fields verified. 1 needs a look.');
   });
 
   it('summarises nothing when there is no import', () => {
-    expect(summarise(null)).toEqual({ filled: 0, verified: 0, needALook: 0 });
+    expect(summarise(null)).toEqual({ total: 0, verified: 0, needALook: 0 });
   });
 });
 

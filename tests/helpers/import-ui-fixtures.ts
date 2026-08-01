@@ -1,6 +1,7 @@
 import { runImport } from '@/lib/import/pipeline';
 import { MemoryImportCache } from '@/lib/import/cache';
 import type { ImportSuccess } from '@/lib/import/types';
+import type { PhotoResolver } from '@/lib/import/photo';
 import { extractionFixture, publicLookup, readHtmlFixture, stubCaller, stubFetch } from './import-stubs';
 
 /**
@@ -15,14 +16,43 @@ import { extractionFixture, publicLookup, readHtmlFixture, stubCaller, stubFetch
 
 export const GUAC_URL = 'https://cookieandkate.com/best-guacamole-recipe';
 
+/** The image the recorded page publishes, and where a copy of it would live. */
+export const GUAC_SOURCE_IMAGE =
+  'https://cookieandkate.com/images/2017/04/best-guacamole-recipe-225x225.jpg';
+export const GUAC_STORED_IMAGE =
+  'https://storage.mealio.co/meal-photos/cookieandkate-guacamole.jpg';
+
+/** What production does for a page that publishes a usable image: copy it to our storage. */
+export const copiedPhotoResolver: PhotoResolver = async ({ sourceImageUrl }) => ({
+  url: GUAC_STORED_IMAGE,
+  origin: 'copied',
+  sourceUrl: sourceImageUrl,
+  detail: 'Copied the image the page publishes.',
+});
+
+/** What production does when the page has no usable image. */
+export const pixabayPhotoResolver: PhotoResolver = async () => ({
+  url: 'https://storage.mealio.co/meal-photos/stock-guacamole.jpg',
+  origin: 'pixabay',
+  sourceUrl: null,
+  detail: 'No usable image on the page — this is a stock photo we picked.',
+});
+
 /**
  * The extraction the stub returns. Chosen to land one field on each level so
- * every marker state is exercised:
+ * every notice state is exercised:
  *
- *   green  name, avocados  — verbatim out of the page's JSON-LD
- *   amber  recipe, lime juice, difficulty, tags — restated or judged
- *   red    smoked paprika  — a deliberate hallucination, no such span on the page
- *   red    story           — absent, nothing to point at
+ *   green   name, photo, avocados  — verbatim from the page's JSON-LD
+ *   amber   recipe, lime juice, difficulty, tags — restated or judged
+ *   red     smoked paprika  — a deliberate hallucination, no such span on the page
+ *   absent  story, serves   — nothing on the page to take
+ *
+ * `serves` is worth spelling out. This page's `recipeYield` is
+ * `"2 1/2 cups guacamole"` — a volume, and the only yield it publishes. A model
+ * that cites that span honestly gets its value dropped by `canonicalizeServes`,
+ * because a volume is not a head count, so Serves ends up empty. That is the
+ * correct outcome for this page, and the fixture cites the real span rather
+ * than a convenient one so the guard is exercised instead of side-stepped.
  */
 export function guacamoleExtraction() {
   return extractionFixture({
@@ -62,12 +92,14 @@ export function guacamoleExtraction() {
     story: { value: '', evidence: null, derivation: 'absent' },
     difficulty: { value: 1, evidence: 'mash up the avocado until it reaches your desired texture', derivation: 'inferred' },
     tags: { value: ['Mexican', 'No Cook', 'Appetizer'], evidence: 'guacamole', derivation: 'inferred' },
-    serves: { value: '2', evidence: 'recipeYield', derivation: 'json-ld' },
+    // The real span from the page's structured data — a volume, not a head count.
+    serves: { value: '2', evidence: '2 1/2 cups guacamole', derivation: 'json-ld' },
   });
 }
 
 export async function importedGuacamole(
   extraction: Record<string, unknown> = guacamoleExtraction(),
+  resolvePhoto: PhotoResolver = copiedPhotoResolver,
 ): Promise<ImportSuccess> {
   const { impl } = stubFetch({
     'https://cookieandkate.com/robots.txt': { body: 'User-agent: *\nDisallow: /wp-admin/' },
@@ -77,6 +109,7 @@ export async function importedGuacamole(
   const result = await runImport(GUAC_URL, {
     cache: new MemoryImportCache(),
     call: stubCaller(() => extraction),
+    resolvePhoto,
     fetchOptions: { fetchImpl: impl, lookup: publicLookup },
   });
 
