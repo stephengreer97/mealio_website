@@ -1,0 +1,70 @@
+{
+  "id": "10-package-units",
+  "url": "https://pantryraid.example/three-bean-chilli",
+  "note": "Units the editor cannot display — cans, cloves, bunches, sprigs. All must fold to a count so the cart can act on them.",
+  "source": {
+    "title": "Store Cupboard Three Bean Chilli",
+    "text": "Serves 6 generously.\n\n2 cans kidney beans, drained\n1 can black beans, drained\n1 can chopped tomatoes\n4 cloves garlic, crushed\n1 bunch spring onions, sliced\n2 sprigs thyme\n1 tablespoon smoked paprika\n2 teaspoons ground cumin\n500 ml vegetable stock\n\nEverything in one pot. Simmer 30 minutes. Better the next day.",
+    "jsonLd": null
+  },
+  "expected": {
+    "name": "Store Cupboard Three Bean Chilli",
+    "serves": "6",
+    "ingredients": [
+      {
+        "ingredientName": "kidney beans",
+        "qty": 2,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "black beans",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "chopped tomatoes",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "garlic",
+        "qty": 4,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "spring onions",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "thyme",
+        "qty": 2,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "smoked paprika",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "1"
+      },
+      {
+        "ingredientName": "ground cumin",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "vegetable stock",
+        "qty": 1,
+        "unit": "ml",
+        "measure": "500"
+      }
+    ]
+  }
+}

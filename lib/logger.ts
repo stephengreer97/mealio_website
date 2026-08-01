@@ -50,6 +50,7 @@ export type EventType =
   | 'CREATOR:MEAL_CREATE'
   | 'CREATOR:MEAL_UPDATE'
   | 'CREATOR:MEAL_DELETE'
+  | 'CREATOR:MEAL_IMPORT'    // paste-a-link import pipeline (MEAL-67)
   | 'CREATOR:PROFILE_UPDATE'
   | 'CREATOR:FOLLOW'
   // ── Payments ──────────────────────────────────────────────────────────────

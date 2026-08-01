@@ -1,0 +1,24 @@
+{
+  "id": "02-minimalistbaker-black-bean-soup",
+  "url": "https://minimalistbaker.com/easy-1-pot-black-bean-soup/",
+  "note": "Recorded page. 17 ingredients, HowToStep instruction objects, optional/garnish lines.",
+  "sourceFrom": "minimalistbaker-black-bean-soup.html",
+  "expected": {
+    "name": "Easy 1-Pot Black Bean Soup",
+    "serves": "4 (Large bowls)",
+    "ingredientCountRange": [
+      14,
+      18
+    ],
+    "ingredients": [
+      {
+        "ingredientName": "olive oil",
+        "unit": "tbsp"
+      },
+      {
+        "ingredientName": "black beans",
+        "unit": "qty"
+      }
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "id": "05-metric-weights-baking",
+  "url": "https://bakeitright.example/rye-sourdough",
+  "note": "Metric weights throughout — grams and millilitres, the case a US-centric parser gets wrong.",
+  "source": {
+    "title": "Everyday Rye Sourdough",
+    "text": "A 70% hydration loaf with a third rye. Makes one 900g loaf.\n\nIngredients\n350 g strong white bread flour\n150 g wholegrain rye flour\n350 ml water at 30C\n100 g active sourdough starter\n10 g fine sea salt\n\nMethod\n1. Mix the flours and water and leave to autolyse for 45 minutes.\n2. Add the starter and salt and work them through until fully incorporated.\n3. Four sets of stretch and folds, 30 minutes apart.\n4. Bulk for 4 hours at room temperature, then shape and cold retard overnight.\n5. Bake at 250C in a covered pot for 20 minutes, then uncovered at 220C for 25.",
+    "jsonLd": null
+  },
+  "expected": {
+    "name": "Everyday Rye Sourdough",
+    "serves": "1 900g loaf",
+    "ingredients": [
+      {
+        "ingredientName": "strong white bread flour",
+        "qty": 1,
+        "unit": "g",
+        "measure": "350"
+      },
+      {
+        "ingredientName": "wholegrain rye flour",
+        "qty": 1,
+        "unit": "g",
+        "measure": "150"
+      },
+      {
+        "ingredientName": "water",
+        "qty": 1,
+        "unit": "ml",
+        "measure": "350"
+      },
+      {
+        "ingredientName": "sourdough starter",
+        "qty": 1,
+        "unit": "g",
+        "measure": "100"
+      },
+      {
+        "ingredientName": "fine sea salt",
+        "qty": 1,
+        "unit": "g",
+        "measure": "10"
+      }
+    ]
+  }
+}

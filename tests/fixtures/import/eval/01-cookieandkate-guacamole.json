@@ -1,0 +1,54 @@
+{
+  "id": "01-cookieandkate-guacamole",
+  "url": "https://cookieandkate.com/best-guacamole-recipe",
+  "note": "Recorded page. JSON-LD Recipe nested in @graph; array recipeYield; HTML entities inside ingredient strings.",
+  "sourceFrom": "cookieandkate-guacamole.html",
+  "expected": {
+    "name": "Best Guacamole",
+    "serves": "2 1/2 cups guacamole",
+    "ingredients": [
+      {
+        "ingredientName": "avocados",
+        "qty": 4,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "white onion",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "0.5"
+      },
+      {
+        "ingredientName": "fresh cilantro",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "0.25"
+      },
+      {
+        "ingredientName": "jalapeño",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "lime juice",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "3"
+      },
+      {
+        "ingredientName": "ground coriander",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "0.25"
+      },
+      {
+        "ingredientName": "kosher salt",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "1"
+      }
+    ]
+  }
+}

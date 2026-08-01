@@ -1,0 +1,39 @@
+{
+  "id": "06-no-amounts-to-taste",
+  "url": "https://noweighing.example/scrambled-eggs",
+  "note": "Almost no amounts at all — 'to taste', 'a handful', 'a knob of'. Nothing here may be guessed into a number.",
+  "source": {
+    "title": "Scrambled Eggs, Properly",
+    "text": "People overthink this. Here is the whole method.\n\nYou need eggs, a knob of butter, salt to taste, and a handful of chives if you have them. Cream\nis optional and I do not use it.\n\nCrack the eggs into a cold pan with the butter. Put it on a low heat and stir constantly with a\nspatula, scraping the bottom. When it looks nearly done, take it off — it keeps cooking. Salt at\nthe end. Chives over the top. Serves two, or one if you are honest.",
+    "jsonLd": null
+  },
+  "expected": {
+    "name": "Scrambled Eggs",
+    "nameContains": "scrambled",
+    "serves": "2",
+    "ingredients": [
+      {
+        "ingredientName": "eggs",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "butter",
+        "unit": "qty"
+      },
+      {
+        "ingredientName": "salt",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "chives",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      }
+    ]
+  }
+}

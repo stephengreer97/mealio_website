@@ -1,0 +1,64 @@
+{
+  "id": "09-ranges-and-fractions",
+  "url": "https://approximate.example/pancakes",
+  "note": "Ranges and vulgar fractions. A range must resolve to its lower bound, not an average or the upper.",
+  "source": {
+    "title": "Buttermilk Pancakes",
+    "text": "Makes about 12 pancakes.\n\n1 ½ cups all-purpose flour\n2–3 tablespoons granulated sugar, depending how sweet you like them\n1 ¼ teaspoons baking powder\n½ teaspoon baking soda\n¼ teaspoon salt\n1 ¼ cups buttermilk\n1 large egg\n3 tablespoons melted butter\n\nWhisk the dry, whisk the wet, combine until just lumpy. Rest 10 minutes. Cook on a medium griddle.",
+    "jsonLd": null
+  },
+  "expected": {
+    "name": "Buttermilk Pancakes",
+    "serves": "12 pancakes",
+    "ingredients": [
+      {
+        "ingredientName": "all-purpose flour",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "1.5"
+      },
+      {
+        "ingredientName": "granulated sugar",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "baking powder",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "1.25"
+      },
+      {
+        "ingredientName": "baking soda",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "0.5"
+      },
+      {
+        "ingredientName": "salt",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "0.25"
+      },
+      {
+        "ingredientName": "buttermilk",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "1.25"
+      },
+      {
+        "ingredientName": "egg",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "melted butter",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "3"
+      }
+    ]
+  }
+}

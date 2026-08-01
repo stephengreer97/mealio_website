@@ -1,0 +1,360 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { runImport } from '@/lib/import/pipeline';
+import { MemoryImportCache } from '@/lib/import/cache';
+import { EXTRACTION_MODEL, GATE_MODEL } from '@/lib/import/anthropic';
+import type { ImportTelemetry } from '@/lib/import/types';
+import {
+  endlessBody,
+  extractionFixture,
+  failingCaller,
+  publicLookup,
+  readHtmlFixture,
+  stubCaller,
+  stubFetch,
+} from '../helpers/import-stubs';
+
+/**
+ * End-to-end pipeline: fetch → gate → extract → confidence, against recorded
+ * fixtures with a stubbed Anthropic client. No network, no API key.
+ */
+
+const GUAC_URL = 'https://cookieandkate.com/best-guacamole-recipe';
+const ABOUT_URL = 'https://cookieandkate.com/about';
+const CHICKEN_URL = 'https://smallkitchen.example/lemon-butter-chicken';
+
+function routes() {
+  return {
+    'https://cookieandkate.com/robots.txt': { body: 'User-agent: *\nDisallow: /wp-admin/' },
+    'https://smallkitchen.example/robots.txt': { body: '' },
+    [GUAC_URL]: { body: readHtmlFixture('cookieandkate-guacamole.html') },
+    [ABOUT_URL]: { body: readHtmlFixture('cookieandkate-about.html') },
+    [CHICKEN_URL]: { body: readHtmlFixture('synthetic-no-jsonld-recipe.html') },
+  };
+}
+
+let cache: MemoryImportCache;
+let events: ImportTelemetry[];
+
+beforeEach(() => {
+  cache = new MemoryImportCache();
+  events = [];
+});
+
+function options(overrides: Record<string, unknown> = {}) {
+  const { impl } = stubFetch(routes());
+  return {
+    cache,
+    telemetry: (event: ImportTelemetry) => events.push(event),
+    fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+    ...overrides,
+  };
+}
+
+describe('import/pipeline — the JSON-LD fast path', () => {
+  it('produces a draft with the nine fields POST /api/creator/meals accepts', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, options({ call }));
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(Object.keys(result.draft).sort()).toEqual(
+      ['difficulty', 'ingredients', 'name', 'photoUrl', 'recipe', 'serves', 'source', 'story', 'tags'].sort(),
+    );
+    expect(result.draft.name).toBe('Best Guacamole');
+    expect(result.draft.source).toBe(GUAC_URL);
+    expect(result.draft.ingredients[0]).toEqual({
+      ingredientName: 'avocados',
+      qty: 4,
+      productQty: 4,
+      unit: 'qty',
+      measure: null,
+      searchTerm: null,
+    });
+    expect(result.meta.path).toBe('json-ld');
+    expect(result.meta.usedJsonLd).toBe(true);
+  });
+
+  it('skips the gate classifier because the page publishes a Recipe block', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, options({ call }));
+
+    if (result.status !== 'ok') throw new Error('unreachable');
+    expect(result.gate.source).toBe('json-ld');
+    // Exactly one model call: the extraction. The gate cost nothing.
+    expect(call.requests.map((r) => r.model)).toEqual([EXTRACTION_MODEL]);
+    expect(result.meta.gateUsage).toBeNull();
+  });
+
+  it('assigns confidence server-side per field and per ingredient', async () => {
+    const call = stubCaller(() => extractionFixture());
+    const result = await runImport(GUAC_URL, options({ call }));
+
+    if (result.status !== 'ok') throw new Error('unreachable');
+    expect(result.confidence.name.level).toBe('green');     // verbatim json-ld
+    expect(result.confidence.serves.level).toBe('green');   // verbatim json-ld
+    expect(result.confidence.recipe.level).toBe('amber');   // normalized
+    expect(result.confidence.story.level).toBe('red');      // no span
+    expect(result.confidence.ingredients).toHaveLength(result.draft.ingredients.length);
+    expect(result.confidence.ingredients[0].level).toBe('green');
+  });
+
+  it('sends a hallucinated ingredient to red while its neighbours stay green', async () => {
+    const call = stubCaller(() =>
+      extractionFixture({
+        ingredients: [
+          {
+            productName: 'avocados',
+            measure: '4',
+            unit: 'qty',
+            qty: 4,
+            evidence: '4 medium ripe avocados, halved and pitted',
+            derivation: 'json-ld',
+          },
+          {
+            productName: 'smoked paprika',
+            measure: '2',
+            unit: 'tbsp',
+            qty: 1,
+            evidence: '2 tablespoons smoked paprika, toasted',
+            derivation: 'json-ld',
+          },
+        ],
+      }),
+    );
+
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    // A 14-ingredient recipe with one bad row shows one red row.
+    expect(result.confidence.ingredients.map((c) => c.level)).toEqual(['green', 'red']);
+    expect(result.draft.ingredients).toHaveLength(2);
+  });
+});
+
+describe('import/pipeline — the raw-HTML path (the common case)', () => {
+  it('runs the gate classifier and extracts from page text', async () => {
+    const call = stubCaller((request) =>
+      request.model === GATE_MODEL
+        ? { verdict: 'yes', reason: 'Lists ingredients and numbered steps for a chicken dish.' }
+        : extractionFixture({
+            name: {
+              value: 'Weeknight Lemon Butter Chicken',
+              evidence: 'Weeknight Lemon Butter Chicken',
+              derivation: 'page-text',
+            },
+            ingredients: [
+              {
+                productName: 'butter',
+                measure: '2',
+                unit: 'tbsp',
+                qty: 1,
+                evidence: 'a knob of butter',
+                derivation: 'normalized',
+              },
+            ],
+            serves: { value: '4', evidence: 'Serves 4.', derivation: 'page-text' },
+          }),
+    );
+
+    const result = await runImport(CHICKEN_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.meta.path).toBe('raw-html');
+    expect(result.meta.usedJsonLd).toBe(false);
+    expect(call.requests.map((r) => r.model)).toEqual([GATE_MODEL, EXTRACTION_MODEL]);
+    expect(result.gate.source).toBe('classifier');
+
+    expect(result.confidence.name.level).toBe('green');
+    expect(result.confidence.serves.level).toBe('green');
+    // "a knob of butter" became "2 tbsp" — the span is verbatim, the value isn't.
+    expect(result.confidence.ingredients[0].level).toBe('amber');
+    expect(result.meta.gateUsage).not.toBeNull();
+  });
+});
+
+describe('import/pipeline — rejections', () => {
+  it('rejects a non-recipe page at the gate, before any extraction is billed', async () => {
+    const call = stubCaller((request) => {
+      if (request.model !== GATE_MODEL) throw new Error('extraction must not run');
+      return { verdict: 'no', reason: 'About page: describes the author, contains no recipe.' };
+    });
+
+    const result = await runImport(ABOUT_URL, options({ call }));
+
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.stage).toBe('gate');
+    expect(result.detail).toMatch(/About page/);
+    expect(result.gate?.reason).toBeTruthy();
+    expect(call.requests.map((r) => r.model)).toEqual([GATE_MODEL]);
+  });
+
+  it('resolves the same unsure verdict differently for manual and poller callers', async () => {
+    const unsure = () => ({ verdict: 'unsure', reason: 'Body is truncated; cannot confirm a recipe.' });
+    const call = stubCaller((request) => (request.model === GATE_MODEL ? unsure() : extractionFixture()));
+
+    const manual = await runImport(CHICKEN_URL, { ...options({ call }), mode: 'manual', skipCache: true });
+    const poller = await runImport(CHICKEN_URL, { ...options({ call }), mode: 'poller', skipCache: true });
+
+    expect(manual.status).toBe('ok');
+    expect(poller.status).toBe('rejected');
+    if (poller.status !== 'rejected') throw new Error('unreachable');
+    // Silence is the correct output, but it has to be explicable.
+    expect(poller.detail).toContain('Body is truncated');
+    expect(poller.detail).toMatch(/skipping/i);
+  });
+
+  it('reports a bot-blocked fetch as a fetch failure, never as an extraction failure', async () => {
+    const { impl } = stubFetch({
+      'https://101cookbooks.example/robots.txt': { body: '' },
+      'https://101cookbooks.example/soup': {
+        status: 403,
+        body: '<html><title>Attention Required! | Cloudflare</title></html>',
+      },
+    });
+    const call = stubCaller(() => {
+      throw new Error('no model call should happen — we never saw the page');
+    });
+
+    const result = await runImport('https://101cookbooks.example/soup', {
+      ...options({ call }),
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+    });
+
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.stage).toBe('fetch');
+    expect(result.reason).toBe('blocked-by-site');
+    expect(result.detail).toMatch(/refused our request/i);
+  });
+
+  it('rejects a link-in-bio page deterministically, with no model call at all', async () => {
+    const { impl } = stubFetch({
+      'https://beacons.ai/robots.txt': { body: '' },
+      'https://beacons.ai/superrecipes': {
+        body: '<html><title>Super Recipes</title><body><a href="/1">My latest</a></body></html>',
+      },
+    });
+    const call = stubCaller(() => {
+      throw new Error('no model call should happen');
+    });
+
+    const result = await runImport('https://beacons.ai/superrecipes', {
+      ...options({ call }),
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+    });
+
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.reason).toBe('link-in-bio');
+    expect(result.detail).toMatch(/paste that link instead/i);
+    expect(result.meta.platform).toBe('link-in-bio');
+  });
+
+  it('rejects a private address before anything else runs', async () => {
+    const result = await runImport('http://169.254.169.254/latest/meta-data/', options());
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.stage).toBe('fetch');
+    expect(result.reason).toBe('blocked-private-address');
+  });
+
+  it('rejects a path robots.txt disallows', async () => {
+    const { impl } = stubFetch({
+      'https://blog.example.com/robots.txt': { body: 'User-agent: *\nDisallow: /recipes/' },
+      'https://blog.example.com/recipes/x': { body: '<html><title>x</title></html>' },
+    });
+    const result = await runImport('https://blog.example.com/recipes/x', {
+      ...options(),
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+    });
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.stage).toBe('robots');
+  });
+
+  it('turns a missing API key into a clean rejection, not a crash', async () => {
+    const result = await runImport(GUAC_URL, options({ call: failingCaller('ANTHROPIC_API_KEY is not set') }));
+
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.stage).toBe('extract');
+    expect(result.detail).toContain('ANTHROPIC_API_KEY');
+    // The fetch and gate stages still did their work, which is what makes this
+    // verifiable before a key exists.
+    expect(result.gate?.verdict).toBe('yes');
+    expect(result.meta.platform).toBeTruthy();
+  });
+
+  it('fails a 50 MB page inside the size cap', async () => {
+    const { stream } = endlessBody();
+    const { impl } = stubFetch({
+      'https://big.example.com/robots.txt': { body: '' },
+      'https://big.example.com/p': { body: stream },
+    });
+    const result = await runImport('https://big.example.com/p', {
+      ...options(),
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+    });
+    expect(result.status).toBe('rejected');
+    if (result.status !== 'rejected') throw new Error('unreachable');
+    expect(result.reason).toBe('response-too-large');
+  });
+});
+
+describe('import/pipeline — idempotency', () => {
+  it('serves the same URL from cache the second time', async () => {
+    const call = stubCaller(() => extractionFixture());
+
+    const first = await runImport(GUAC_URL, options({ call }));
+    const second = await runImport(`${GUAC_URL}/?utm_source=twitter`, options({ call }));
+
+    expect(first.meta.cached).toBe(false);
+    expect(second.meta.cached).toBe(true);
+    // One extraction call across both, despite the differing tracking params.
+    expect(call.requests.filter((r) => r.model === EXTRACTION_MODEL)).toHaveLength(1);
+  });
+
+  it('caches a gate verdict so a re-classified URL costs nothing', async () => {
+    const call = stubCaller((request) =>
+      request.model === GATE_MODEL
+        ? { verdict: 'yes', reason: 'Recipe with ingredients and steps.' }
+        : extractionFixture(),
+    );
+
+    await runImport(CHICKEN_URL, options({ call }));
+    await runImport(CHICKEN_URL, { ...options({ call }), skipCache: false });
+
+    expect(call.requests.filter((r) => r.model === GATE_MODEL)).toHaveLength(1);
+  });
+});
+
+describe('import/pipeline — telemetry', () => {
+  it('records platform, path and the confidence spread on success', async () => {
+    const call = stubCaller(() => extractionFixture());
+    await runImport(GUAC_URL, options({ call }));
+
+    expect(events).toHaveLength(1);
+    const event = events[0];
+    expect(event.outcome).toBe('ok');
+    expect(event.stage).toBe('complete');
+    expect(event.path).toBe('json-ld');
+    expect(event.platform).toBeTruthy();
+    expect(event.gateVerdict).toBe('yes');
+    expect(event.gateSource).toBe('json-ld');
+    expect(event.confidence).toEqual(expect.objectContaining({ green: expect.any(Number) }));
+    expect(event.confidence!.green + event.confidence!.amber + event.confidence!.red).toBe(
+      7 + event.ingredientCount!,
+    );
+    expect(event.costUsd).toBeGreaterThan(0);
+  });
+
+  it('records a line for every rejection too, with the reason', async () => {
+    await runImport('http://127.0.0.1/admin', options());
+    expect(events).toHaveLength(1);
+    expect(events[0].outcome).toBe('rejected');
+    expect(events[0].stage).toBe('fetch');
+    expect(events[0].reason).toBe('blocked-private-address');
+  });
+});
