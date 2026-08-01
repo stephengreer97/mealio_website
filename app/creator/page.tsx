@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
+import PublishedLinkModal from '@/components/PublishedLinkModal';
 
 interface Creator {
   id: string;
@@ -738,6 +739,7 @@ export default function CreatorPortal() {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const [publishSuccess, setPublishSuccess] = useState('');
+  const [publishedMeal, setPublishedMeal] = useState<{ id: string; name: string; source: string | null } | null>(null);
 
   const [mealName, setMealName]       = useState('');
   const [mealRecipe, setMealRecipe]   = useState('');
@@ -972,13 +974,21 @@ export default function CreatorPortal() {
         }),
       });
 
+      const data = await res.json();
       if (!res.ok) {
-        const data = await res.json();
         setPublishError(data.error || 'Failed to publish meal.');
         return;
       }
 
       setPublishSuccess(`"${mealName}" is now live in Discover!`);
+      // Publishing is the moment the creator can still edit the caption of the
+      // video this came from — on TikTok it is the only window there is — so
+      // hand them the link right here rather than hoping they hunt for it later.
+      if (data.meal?.id) {
+        // Use the stored source: the server normalises it, so a creator who typed
+        // "tiktok.com/…" without a scheme still gets the TikTok guidance.
+        setPublishedMeal({ id: data.meal.id, name: mealName.trim(), source: data.meal.source ?? null });
+      }
       setMealName(''); setMealRecipe(''); setMealSource(''); setMealStory('');
       setMealServes(''); setMealDifficulty(null); setMealTags([]); setPhotoFile(null); setPhotoPreview('');
       setThumbs([]); setFulls([]); setSelectedIdx(null);
@@ -1281,6 +1291,16 @@ export default function CreatorPortal() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Publish New Meal
           </button>
+
+          {/* ── Share-your-link prompt, shown once right after publishing ── */}
+          {publishedMeal && (
+            <PublishedLinkModal
+              mealId={publishedMeal.id}
+              mealName={publishedMeal.name}
+              source={publishedMeal.source}
+              onClose={() => setPublishedMeal(null)}
+            />
+          )}
 
           {/* ── Publish modal ── */}
           {showForm && (
