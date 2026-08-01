@@ -236,6 +236,24 @@ describe('import/html — bounded stripping (CPU DoS)', () => {
     expect(Date.now() - startedAt).toBeLessThan(1000);
   });
 
+  it('stays linear in the number of dropped elements, not just input size', () => {
+    // The shape the previous timing test missed. Many *closed* dropped
+    // elements — inline SVG icons are the everyday case — used to cost one
+    // full-string toLowerCase() each: 64KB was 28ms, 512KB was 20.9 seconds,
+    // and 512KB is inside MAX_HTML_CHARS. Input length was bounded; the number
+    // of walks over it was not.
+    const timings = [64, 512].map((kb) => {
+      const html = '<svg></svg>'.repeat(Math.floor((kb * 1024) / 11));
+      const startedAt = Date.now();
+      htmlToText(html);
+      return Date.now() - startedAt;
+    });
+
+    expect(timings[1]).toBeLessThan(1000);
+    // 8x the input must not cost anything like 8^2 the time.
+    expect(timings[1]).toBeLessThan(Math.max(timings[0], 5) * 20);
+  });
+
   it('caps its own input regardless of what the fetcher allowed through', () => {
     const html = `<p>start</p>${'<p>filler</p>'.repeat(200_000)}`;
     const startedAt = Date.now();

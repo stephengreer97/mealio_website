@@ -52,6 +52,17 @@ export interface SourceDocument {
   title: string;
   /** Cleaned page text for a blog; description + captions for a video. */
   text: string;
+  /**
+   * The same text with comment threads, related-post rails and disclosure
+   * blocks stripped — the corpus MEAL-72 verifies evidence spans against.
+   *
+   * The distinction is load-bearing, not cosmetic. The recorded cookieandkate
+   * fixture carries 345 reader comments, and while they counted as "the
+   * source" an ingredient quoted out of one verified green: comments mention
+   * every ingredient under the sun, so a hallucination could always find a
+   * home. A value that matches only outside this region is capped at amber.
+   */
+  recipeText: string;
   /** Normalised `schema.org/Recipe` from JSON-LD *or* microdata, if either is present. */
   jsonLd: RecipeJsonLd | null;
   /** Which format `jsonLd` came from. Null when neither was present. */

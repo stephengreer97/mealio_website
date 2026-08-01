@@ -125,11 +125,29 @@ export function findSpan(span: string, corpus: string): SpanMatch {
   return best >= FUZZY_THRESHOLD ? { kind: 'fuzzy', score: best } : { kind: 'none', score: best };
 }
 
-/** The verification corpora a source document offers. */
+/**
+ * The corpora a source document offers, narrowest first.
+ *
+ * The split exists because "is this span on the page?" turned out to be the
+ * wrong question. A recipe page is mostly *not* the recipe: the recorded
+ * cookieandkate fixture carries 345 reader comments, and readers collectively
+ * mention every ingredient there is. While the whole page counted as the
+ * source, an ingredient lifted from a comment — `roma tomatoes`, from
+ * "Add two diced roma tomatoes, seeds removed, and stir", on a recipe whose
+ * body says to skip the tomato — satisfied value ⊆ span ⊆ source and read
+ * green. Green renders as no marker at all, so the indicator was silent
+ * exactly where it was wrong.
+ */
 export interface VerificationSource {
   /** Serialised JSON-LD as handed to the model. Null when the page had none. */
   jsonLd: string | null;
-  /** Cleaned page text plus the title. */
+  /** Page text with comments, related posts and disclosures stripped. */
+  recipeText: string;
+  /**
+   * The full page. A match found only here is real but out of place, so it
+   * caps at amber — narrowing arbitrary HTML will never be perfect, and the
+   * imperfect case should be visibly uncertain rather than silently wrong.
+   */
   pageText: string;
 }
 
@@ -140,6 +158,7 @@ export function verificationSourceFor(document: SourceDocument): VerificationSou
   const image = document.imageUrl ? `\nimage: ${document.imageUrl}` : '';
   return {
     jsonLd: document.jsonLdRaw,
+    recipeText: `${document.title}\n${document.recipeText}${image}`,
     pageText: `${document.title}\n${document.text}${image}`,
   };
 }
@@ -224,7 +243,15 @@ function checkValue(value: unknown, span: string): ValueCheck {
   return shared / valueTokens.length >= 0.5 ? 'overlap' : 'unrelated';
 }
 
-function levelFor(derivation: Derivation, match: MatchKind, value: ValueCheck): Confidence {
+/** Which corpus the evidence span was found in. */
+type MatchRegion = 'recipe' | 'page';
+
+function levelFor(
+  derivation: Derivation,
+  match: MatchKind,
+  value: ValueCheck,
+  region: MatchRegion,
+): Confidence {
   if (match === 'none') return 'red';
   if (value === 'empty') return 'red';
 
@@ -233,14 +260,22 @@ function levelFor(derivation: Derivation, match: MatchKind, value: ValueCheck): 
   // waves through.
   if (value === 'unrelated') return 'red';
 
+  // The span is real but sits outside the recipe — a reader comment, a related
+  // post, a disclosure. Never green: the creator has to look at it.
+  if (region === 'page') return 'amber';
+
   switch (derivation) {
     case 'json-ld':
     case 'page-text':
       // A verbatim claim has to survive both halves of the chain: the span is
-      // in the source, *and* the value is in the span. A value that is merely
-      // related to its span is a restatement mislabelled as a quotation, so it
-      // gets the amber a restatement would have got.
-      return match === 'exact' && value !== 'overlap' ? 'green' : 'amber';
+      // in the source, *and* the value is in the span. Green requires the value
+      // to be *contained* in its span — `overlap` is a restatement mislabelled
+      // as a quotation, and `exempt` means we could not check containment at
+      // all, which is not evidence of anything. `derivation` is the model's
+      // free choice, so an unchecked value must never be promoted by claiming
+      // to be a quotation: `difficulty: 5` cited to "Coriander is cilantro btw"
+      // was reading green on exactly this path.
+      return match === 'exact' && value === 'contained' ? 'green' : 'amber';
     case 'normalized':
     case 'inferred':
       // The span checks out and the value is drawn from it, but the value is a
@@ -261,12 +296,22 @@ function reasonFor(
   match: MatchKind,
   hasSpan: boolean,
   value: ValueCheck,
+  region: MatchRegion = 'recipe',
 ): string {
   if (!hasSpan) return 'No evidence span — the value is not traceable to the source.';
   if (match === 'none') return 'Evidence span was not found in the page we fetched.';
   if (value === 'empty') return 'No value was extracted for this field.';
   if (value === 'unrelated') {
     return 'The evidence span is real, but it does not contain or support this value.';
+  }
+  if (region === 'page') {
+    return 'Found on the page but outside the recipe itself — it may have come from a reader ' +
+      'comment or a related post, so check it.';
+  }
+  if (value === 'exempt') {
+    return derivation === 'inferred' || derivation === 'normalized'
+      ? 'Inferred from the source as a whole, not stated outright.'
+      : 'We could not check this value against its evidence span directly.';
   }
 
   const verbatim = derivation === 'json-ld' || derivation === 'page-text';
@@ -336,23 +381,37 @@ export function assessField(
   }
 
   let match: SpanMatch;
+  let region: MatchRegion = 'recipe';
+
   if (derivation === 'json-ld') {
     // A json-ld claim with no json-ld on the page is a fabricated provenance.
+    // The Recipe node is already the narrowest corpus there is.
     match = source.jsonLd ? findSpan(span, source.jsonLd) : { kind: 'none', score: 0 };
   } else {
-    const inPage = findSpan(span, source.pageText);
+    // Narrowest first. Only if the span is nowhere in the recipe region do we
+    // fall back to the whole page — and a hit there is capped at amber, because
+    // it means the span came from a comment, a related post, or a disclosure.
     const inJsonLd = source.jsonLd ? findSpan(span, source.jsonLd) : { kind: 'none' as const, score: 0 };
-    match = inPage.score >= inJsonLd.score ? inPage : inJsonLd;
+    const inRecipe = findSpan(span, source.recipeText);
+    const best = inRecipe.score >= inJsonLd.score ? inRecipe : inJsonLd;
+
+    if (best.kind !== 'none') {
+      match = best;
+    } else {
+      const inPage = findSpan(span, source.pageText);
+      match = inPage;
+      if (inPage.kind !== 'none') region = 'page';
+    }
   }
 
   const valueCheck = checkValue(value, span);
 
   return {
-    level: levelFor(derivation, match.kind, valueCheck),
+    level: levelFor(derivation, match.kind, valueCheck, region),
     derivation,
     match: match.kind,
     score: Math.round(match.score * 1000) / 1000,
     evidence: span,
-    reason: reasonFor(derivation, match.kind, true, valueCheck),
+    reason: reasonFor(derivation, match.kind, true, valueCheck, region),
   };
 }

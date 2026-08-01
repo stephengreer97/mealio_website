@@ -74,6 +74,8 @@ function sourceFor(item: EvalItem): SourceDocument {
     url: item.url,
     title: source.title,
     text: source.text,
+    // Hand-written eval sources have no page furniture to strip.
+    recipeText: source.text,
     jsonLd: source.jsonLd,
     structuredSource: source.jsonLd ? 'json-ld' : null,
     jsonLdRaw: source.jsonLd ? serializeJsonLd(source.jsonLd) : null,

@@ -67,6 +67,15 @@ export interface SafeFetchOptions {
   accept?: RegExp;
   /** How to describe `accept` in an error a creator reads. */
   expected?: string;
+  /**
+   * Require the server to declare a matching Content-Type.
+   *
+   * Off for pages, where a missing header is common and harmless — we parse
+   * the bytes as HTML either way. On for images, where the header is the only
+   * thing standing between "SVG is excluded" and storing a script-bearing SVG
+   * that we then re-serve from our own origin.
+   */
+  requireContentType?: boolean;
   maxBytes?: number;
   timeoutMs?: number;
   maxRedirects?: number;
@@ -453,6 +462,7 @@ export async function safeFetch(
     now = Date.now,
     accept = HTML_CONTENT_TYPES,
     expected = 'an HTML page',
+    requireContentType = false,
   } = options;
   // The default path routes through a dispatcher that re-validates the address
   // at connect time; an injected fetch (tests) bypasses the network entirely.
@@ -537,9 +547,13 @@ export async function safeFetch(
       }
 
       const contentType = response.headers.get('content-type') ?? '';
-      if (contentType && !accept.test(contentType)) {
+      const declared = contentType.trim() !== '';
+      if (requireContentType ? !accept.test(contentType) : declared && !accept.test(contentType)) {
         await discard(response);
-        return fail('unsupported-content-type', `Expected ${expected}, got "${contentType}"`);
+        return fail(
+          'unsupported-content-type',
+          declared ? `Expected ${expected}, got "${contentType}"` : `Expected ${expected}, but no Content-Type was declared`,
+        );
       }
 
       const body = await readCapped(response, maxBytes, isExpired);
@@ -580,5 +594,8 @@ export async function safeFetchImage(
     ...options,
     accept: IMAGE_CONTENT_TYPES,
     expected: 'an image',
+    // No declared type means no proof it is not an SVG, and we re-serve what we
+    // store from our own origin.
+    requireContentType: true,
   });
 }
