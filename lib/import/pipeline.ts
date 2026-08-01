@@ -30,6 +30,7 @@ import {
   type ImportCache,
 } from './cache';
 import { assessField, verificationSourceFor } from './confidence';
+import { createPhotoResolver, nullPhotoResolver, type PhotoResolver } from './photo';
 import { extractDraft } from './extract';
 import { classifySource, resolveGate } from './gate';
 import { toSourceDocument } from './html';
@@ -65,6 +66,14 @@ export interface RunImportOptions {
   honourRobots?: boolean;
   /** Skips both cache reads and writes. */
   skipCache?: boolean;
+  /**
+   * Who the import is for. Scopes the storage path when we copy the page's
+   * image into our own bucket. Without it no photo is resolved — we never
+   * publish a bare third-party URL, so no user context means no photo.
+   */
+  userId?: string;
+  /** Overrides photo resolution wholesale. Tests inject; production uses `userId`. */
+  resolvePhoto?: PhotoResolver;
   /** Where the per-import telemetry line goes. */
   telemetry?: TelemetrySink;
   /** Overridable clock, so duration is testable. */
@@ -270,7 +279,13 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
   stage = 'extract';
   let extraction;
   try {
-    extraction = await extractDraft(document, { call: options.call ?? safeDefaultCaller() });
+    const resolvePhoto =
+      options.resolvePhoto ??
+      (options.userId ? createPhotoResolver(options.userId, options.fetchOptions) : nullPhotoResolver);
+    extraction = await extractDraft(document, {
+      call: options.call ?? safeDefaultCaller(),
+      resolvePhoto,
+    });
   } catch (err) {
     const detail = err instanceof AnthropicUnavailableError ? err.message : String(err);
     return finish(

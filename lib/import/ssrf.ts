@@ -27,11 +27,33 @@
 import { isIP } from 'net';
 import { lookup as dnsLookup } from 'dns/promises';
 import { Agent, fetch as undiciFetch } from 'undici';
-import type { FetchResult, FetchFailure } from './types';
+import type { FetchResult, FetchFailure, FetchSuccess } from './types';
+
+/**
+ * `FetchSuccess` plus the raw bytes.
+ *
+ * Declared here rather than widened in `types.ts`: the raw body is a detail of
+ * the fetch layer (the image path needs it), while `types.ts` is the contract
+ * the UI is built against and stays as it is.
+ */
+export interface SafeFetchSuccess extends FetchSuccess {
+  bytes: Buffer;
+}
+
+export type SafeFetchResult = SafeFetchSuccess | FetchFailure;
 
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB
 export const REQUEST_TIMEOUT_MS = 10_000;
 export const MAX_REDIRECTS = 5;
+
+/** What the page fetch will accept. */
+export const HTML_CONTENT_TYPES = /text\/html|application\/xhtml|text\/plain|application\/json/i;
+
+/** What the image fetch will accept. SVG is excluded: it is a script carrier. */
+export const IMAGE_CONTENT_TYPES = /^image\/(jpeg|jpg|png|webp|gif|avif)\b/i;
+
+/** Images are bigger than pages, but not unbounded. */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const USER_AGENT = 'MealioBot/1.0 (+https://mealio.co/about)';
 
 /** Resolves a hostname to its addresses. Injected so tests never touch DNS. */
@@ -41,6 +63,10 @@ export type LookupFn = (hostname: string) => Promise<string[]>;
 export type FetchFn = typeof fetch;
 
 export interface SafeFetchOptions {
+  /** Content types this fetch will accept. Defaults to HTML and friends. */
+  accept?: RegExp;
+  /** How to describe `accept` in an error a creator reads. */
+  expected?: string;
   maxBytes?: number;
   timeoutMs?: number;
   maxRedirects?: number;
@@ -340,7 +366,7 @@ async function readCapped(
   response: Response,
   maxBytes: number,
   isExpired: () => boolean,
-): Promise<string | FetchFailure> {
+): Promise<Buffer | FetchFailure> {
   const declared = Number(response.headers.get('content-length') ?? '');
   if (Number.isFinite(declared) && declared > maxBytes) {
     return fail(
@@ -351,10 +377,10 @@ async function readCapped(
 
   const body = response.body;
   if (!body) {
-    const text = await response.text();
-    return Buffer.byteLength(text) > maxBytes
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.byteLength > maxBytes
       ? fail('response-too-large', `Body exceeds the ${maxBytes} byte cap`)
-      : text;
+      : buffer;
   }
 
   const reader = body.getReader();
@@ -391,7 +417,7 @@ async function readCapped(
     reader.releaseLock?.();
   }
 
-  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
 }
 
 /**
@@ -418,13 +444,15 @@ async function discard(response: Response): Promise<void> {
 export async function safeFetch(
   rawUrl: string,
   options: SafeFetchOptions = {},
-): Promise<FetchResult> {
+): Promise<SafeFetchResult> {
   const {
     maxBytes = MAX_RESPONSE_BYTES,
     timeoutMs = REQUEST_TIMEOUT_MS,
     maxRedirects = MAX_REDIRECTS,
     lookup = defaultLookup,
     now = Date.now,
+    accept = HTML_CONTENT_TYPES,
+    expected = 'an HTML page',
   } = options;
   // The default path routes through a dispatcher that re-validates the address
   // at connect time; an injected fetch (tests) bypasses the network entirely.
@@ -509,22 +537,48 @@ export async function safeFetch(
       }
 
       const contentType = response.headers.get('content-type') ?? '';
-      if (contentType && !/text\/html|application\/xhtml|text\/plain|application\/json/i.test(contentType)) {
+      if (contentType && !accept.test(contentType)) {
         await discard(response);
-        return fail(
-          'unsupported-content-type',
-          `Expected an HTML page, got "${contentType}"`,
-        );
+        return fail('unsupported-content-type', `Expected ${expected}, got "${contentType}"`);
       }
 
       const body = await readCapped(response, maxBytes, isExpired);
-      if (typeof body !== 'string') return body;
+      if (!Buffer.isBuffer(body)) return body;
 
-      return { ok: true, url: current, status: response.status, contentType, html: body, redirects };
+      return {
+        ok: true,
+        url: current,
+        status: response.status,
+        contentType,
+        html: body.toString('utf8'),
+        bytes: body,
+        redirects,
+      };
     } finally {
       clearTimeout(timer);
     }
   }
 
   return fail('too-many-redirects', `More than ${maxRedirects} redirects starting at ${rawUrl}`);
+}
+
+/**
+ * Downloads an image through every guard `safeFetch` applies.
+ *
+ * The image URL comes off an attacker-controlled page, so it is exactly as
+ * untrusted as the page URL was and gets the same treatment: scheme allowlist,
+ * address validation at connect time, per-hop redirect re-validation, size cap
+ * and wall-clock deadline. Content types are restricted to real raster formats
+ * — SVG is excluded because it carries script and we re-serve what we store.
+ */
+export async function safeFetchImage(
+  rawUrl: string,
+  options: SafeFetchOptions = {},
+): Promise<SafeFetchResult> {
+  return safeFetch(rawUrl, {
+    maxBytes: MAX_IMAGE_BYTES,
+    ...options,
+    accept: IMAGE_CONTENT_TYPES,
+    expected: 'an image',
+  });
 }

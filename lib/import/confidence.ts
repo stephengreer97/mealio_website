@@ -247,6 +247,9 @@ function levelFor(derivation: Derivation, match: MatchKind, value: ValueCheck): 
       // restatement — "a knob of butter" became "2 tbsp". Never green, however
       // good the span match.
       return 'amber';
+    case 'generated':
+      // Handled before we get here; a generated value has no span to verify.
+      return 'amber';
     case 'absent':
     default:
       return 'red';
@@ -306,6 +309,20 @@ export function assessField(
   source: VerificationSource,
 ): FieldConfidence {
   const span = evidence?.trim() ?? '';
+
+  // A generated value makes no claim about the source, so there is no span to
+  // verify — the provenance is a fact about our own pipeline. Amber, always:
+  // the value is real and usable, but the creator has to know we chose it.
+  if (derivation === 'generated') {
+    return {
+      level: value == null || value === '' ? 'red' : 'amber',
+      derivation,
+      match: 'none',
+      score: 0,
+      evidence: null,
+      reason: span || 'Chosen by Mealio — not found on the page.',
+    };
+  }
 
   if (!span || derivation === 'absent') {
     return {

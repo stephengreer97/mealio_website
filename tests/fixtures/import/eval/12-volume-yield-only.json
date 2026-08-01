@@ -1,0 +1,59 @@
+{
+  "id": "12-volume-yield-only",
+  "url": "https://onlyvolume.example/pesto",
+  "note": "A yield in cups and no serving count anywhere on the page. serves must be empty — \"we looked and didn't find it\" is the correct answer, and inventing 2 from \"2 1/2 cups\" is the hallucination class MEAL-72 exists to catch.",
+  "source": {
+    "title": "Basil Pesto",
+    "text": "Basil Pesto\n\nBlitz everything in a food processor, adding the oil last and slowly. Store under a thin layer of oil and it will keep a week.\n\nMakes 2 1/2 cups.",
+    "jsonLd": {
+      "@context": "https://schema.org",
+      "@type": "Recipe",
+      "name": "Basil Pesto",
+      "recipeIngredient": [
+        "4 cups fresh basil leaves",
+        "1/2 cup pine nuts",
+        "3 cloves garlic",
+        "1 cup extra virgin olive oil",
+        "1 cup grated parmesan"
+      ],
+      "recipeYield": "2 1/2 cups"
+    }
+  },
+  "expected": {
+    "name": "Basil Pesto",
+    "serves": null,
+    "servesMustBeEmpty": true,
+    "ingredients": [
+      {
+        "ingredientName": "fresh basil leaves",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "4"
+      },
+      {
+        "ingredientName": "pine nuts",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "0.5"
+      },
+      {
+        "ingredientName": "garlic",
+        "qty": 3,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "extra virgin olive oil",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "1"
+      },
+      {
+        "ingredientName": "grated parmesan",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "1"
+      }
+    ]
+  }
+}

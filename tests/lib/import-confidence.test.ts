@@ -204,3 +204,36 @@ describe('import/confidence — against a real recorded page', () => {
     expect(result.level).toBe('red');
   });
 });
+
+/**
+ * A Pixabay stand-in is a value we chose, not one we found. It is deliberately
+ * not labelled `inferred` — nothing about the source implied it — and it is
+ * never green, because the creator needs to know we picked it.
+ */
+describe('import/confidence — generated values', () => {
+  it('reads amber with an explanation, never green', () => {
+    const result = assessField(
+      'https://storage.mealio.co/meal-photos/u1/123.jpg',
+      'The page has no photo, so this is a stock photo we picked.',
+      'generated',
+      source,
+    );
+    expect(result.level).toBe('amber');
+    expect(result.derivation).toBe('generated');
+    // No span to verify — the provenance is a fact about our pipeline.
+    expect(result.match).toBe('none');
+    expect(result.evidence).toBeNull();
+    expect(result.reason).toMatch(/stock photo/i);
+  });
+
+  it('reads red when there is no generated value either', () => {
+    expect(assessField(null, 'nothing found', 'generated', source).level).toBe('red');
+    expect(assessField('', 'nothing found', 'generated', source).level).toBe('red');
+  });
+
+  it('does not require the generated value to appear in the page', () => {
+    // The whole point: this URL is ours and is nowhere in the source.
+    const result = assessField('https://storage.mealio.co/x.jpg', 'picked by us', 'generated', source);
+    expect(result.level).toBe('amber');
+  });
+});

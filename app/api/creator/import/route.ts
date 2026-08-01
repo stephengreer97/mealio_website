@@ -63,6 +63,8 @@ export async function POST(request: NextRequest) {
   // path, gate verdict, confidence spread); this sink only adds who asked.
   const result = await runImport(url, {
     mode: 'manual',
+    // Scopes the storage path when we copy the page's image into our bucket.
+    userId: auth.userId,
     telemetry: (event) =>
       log({
         event: 'CREATOR:MEAL_IMPORT',

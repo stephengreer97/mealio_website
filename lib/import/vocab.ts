@@ -52,6 +52,82 @@ export function canonicalizeTags(tags: readonly string[]): string[] {
   return out;
 }
 
+/**
+ * The form's `serves` shape: a people count, or a range of them.
+ *
+ * `serves` is **how many people the dish feeds** — not a yield. Recipe pages
+ * overwhelmingly publish `recipeYield`, which is a different quantity and is
+ * frequently a *volume* ("2 1/2 cups guacamole") or a count of items
+ * ("12 pancakes", "1 loaf"). Reading "2 1/2 cups" as `serves: 2` is not a
+ * formatting mismatch, it is wrong data — and the span really is on the page,
+ * so the confidence model would mark it green. The only safe answer when a
+ * source states a volume and no people count is nothing at all.
+ */
+export const SERVES_PATTERN = /^\d+(-\d+)?$/;
+
+/** Units that make a number a measure of volume or weight, never of people. */
+const MEASURE_UNITS =
+  /\b(cups?|c|tbsp|tablespoons?|tsp|teaspoons?|fl\.?\s?oz|fluid\s+ounces?|ounces?|oz|pounds?|lbs?|lb|grams?|g|kg|kilograms?|ml|millilitres?|milliliters?|l|litres?|liters?|pints?|quarts?|gallons?)\b/i;
+
+/**
+ * Countable things a recipe yields that are not people. A number attached to
+ * one of these is a batch size, not a serving count.
+ */
+const YIELD_ITEMS =
+  /\b(cookies?|pancakes?|muffins?|cupcakes?|loaves|loaf|slices?|rolls?|bars?|waffles?|biscuits?|scones?|brownies?|doughnuts?|donuts?|tortillas?|patties|burgers?|jars?|bottles?|cans?)\b/i;
+
+/** Words that mark a number as a count of people or portions. */
+const PEOPLE_SIGNAL = /\b(serves?|serving|servings|people|persons?|portions?|guests?|feeds|diners?)\b/i;
+
+/**
+ * Coerces a model-supplied `serves` into the form's shape, or drops it.
+ *
+ * `evidence` is the span the value was taken from, and it is load-bearing: it
+ * is the only way to tell "2" meaning two people from "2" lifted out of
+ * "2 1/2 cups". When the span reads as a volume, a weight, or a batch of items
+ * with nothing marking it as a portion count, the value is discarded and the
+ * field reads red — "we looked and didn't find it" is the correct answer, and
+ * inventing a serving count from a volume is exactly the hallucination class
+ * MEAL-72 exists to catch.
+ */
+export function canonicalizeServes(
+  value: string | null | undefined,
+  evidence?: string | null,
+): string | null {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  // A leading sign means the value is malformed, not merely wrapped in prose.
+  if (/^[-–—+]/.test(text)) return null;
+
+  // Tolerate "4 servings" / "Serves 4-6" and reduce to the digits the form wants.
+  const range = /(\d+)\s*(?:-|–|—|to)\s*(\d+)/.exec(text);
+  const single = /(\d+)/.exec(text);
+  let normalized: string | null = null;
+  if (range) {
+    const low = Number(range[1]);
+    const high = Number(range[2]);
+    if (low > 0 && high >= low) normalized = `${low}-${high}`;
+  } else if (single) {
+    const count = Number(single[1]);
+    if (count > 0) normalized = String(count);
+  }
+  if (!normalized || !SERVES_PATTERN.test(normalized)) return null;
+
+  // A fractional amount is never a head count: "2 1/2" is a volume talking.
+  if (/\d+\s*\/\s*\d+|\d+\.\d+/.test(text)) return null;
+
+  if (evidence) {
+    const span = String(evidence);
+    const saysPeople = PEOPLE_SIGNAL.test(span);
+    if (!saysPeople && (MEASURE_UNITS.test(span) || YIELD_ITEMS.test(span))) return null;
+    // "2 1/2 cups guacamole" — a fraction in the span with no people word.
+    if (!saysPeople && /\d+\s*\/\s*\d+/.test(span)) return null;
+  }
+
+  return normalized;
+}
+
 /** Clamps a suggested difficulty to the 1–5 the portal renders, or null. */
 export function canonicalizeDifficulty(value: number | null | undefined): number | null {
   if (value == null || !Number.isFinite(value)) return null;

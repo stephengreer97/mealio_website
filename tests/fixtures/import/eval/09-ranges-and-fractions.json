@@ -1,7 +1,7 @@
 {
   "id": "09-ranges-and-fractions",
   "url": "https://approximate.example/pancakes",
-  "note": "Ranges and vulgar fractions. A range must resolve to its lower bound, not an average or the upper.",
+  "note": "Ranges and vulgar fractions. A range resolves to its lower bound. \"Makes about 12 pancakes\" is a batch of items, not 12 people — serves must be empty.",
   "source": {
     "title": "Buttermilk Pancakes",
     "text": "Makes about 12 pancakes.\n\n1 ½ cups all-purpose flour\n2–3 tablespoons granulated sugar, depending how sweet you like them\n1 ¼ teaspoons baking powder\n½ teaspoon baking soda\n¼ teaspoon salt\n1 ¼ cups buttermilk\n1 large egg\n3 tablespoons melted butter\n\nWhisk the dry, whisk the wet, combine until just lumpy. Rest 10 minutes. Cook on a medium griddle.",
@@ -9,7 +9,7 @@
   },
   "expected": {
     "name": "Buttermilk Pancakes",
-    "serves": "12 pancakes",
+    "serves": null,
     "ingredients": [
       {
         "ingredientName": "all-purpose flour",
@@ -59,6 +59,7 @@
         "unit": "tbsp",
         "measure": "3"
       }
-    ]
+    ],
+    "servesMustBeEmpty": true
   }
 }

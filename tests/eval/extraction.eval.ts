@@ -47,6 +47,10 @@ interface EvalItem {
     name?: string;
     nameContains?: string;
     serves?: string | null;
+    /** The source states a yield but no people count — serves must come back empty. */
+    servesMustBeEmpty?: boolean;
+    /** Values that would mean the yield was misread as a serving count. */
+    servesMustNotBe?: string[];
     ingredients: ExpectedIngredient[];
     ingredientCountRange?: [number, number];
     mustNotContain?: string[];
@@ -144,10 +148,20 @@ describe.skipIf(!hasKey)(`extraction eval — ${model}`, () => {
         if (item.expected.nameContains) {
           expect(result.draft.name.toLowerCase()).toContain(item.expected.nameContains.toLowerCase());
         }
+        // `serves` is a people count in the form's shape, never a yield.
+        if (result.draft.serves) {
+          expect(result.draft.serves).toMatch(/^\d+(-\d+)?$/);
+        }
+        if (item.expected.servesMustBeEmpty) {
+          // The page states a volume or a batch of items and no serving count.
+          // Empty is the correct answer; a number here is invented data.
+          expect(result.draft.serves).toBeNull();
+        }
         if (item.expected.serves) {
-          expect(normalise(result.draft.serves ?? '')).toContain(
-            normalise(item.expected.serves).split(' ')[0],
-          );
+          expect(result.draft.serves).toBe(item.expected.serves);
+        }
+        for (const forbidden of item.expected.servesMustNotBe ?? []) {
+          expect(result.draft.serves).not.toBe(forbidden);
         }
         if (item.expected.ingredientCountRange) {
           const [lo, hi] = item.expected.ingredientCountRange;
@@ -223,6 +237,6 @@ describe.skipIf(hasKey)('extraction eval', () => {
       'ANTHROPIC_API_KEY is not set, so the eval set did not run. Per MEAL-68 this needs an ' +
         'Anthropic API key billed through the Console — set it and re-run `npm run test:eval`.',
     );
-    expect(loadItems().length).toBeGreaterThanOrEqual(10);
+    expect(loadItems().length).toBeGreaterThanOrEqual(12);
   });
 });

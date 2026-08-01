@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { canonicalizeIngredient, canonicalizeIngredients, canonicalUnit, parseAmount } from '@/lib/import/ingredients';
-import { canonicalizeDifficulty, canonicalizeTags } from '@/lib/import/vocab';
+import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, SERVES_PATTERN } from '@/lib/import/vocab';
 import type { ExtractedIngredient } from '@/lib/import/types';
 
 /**
@@ -162,5 +162,60 @@ describe('import/vocab', () => {
     expect(canonicalizeDifficulty(0)).toBeNull();
     expect(canonicalizeDifficulty(9)).toBeNull();
     expect(canonicalizeDifficulty(null)).toBeNull();
+  });
+});
+
+/**
+ * `serves` is how many PEOPLE a dish feeds. Recipe pages overwhelmingly publish
+ * `recipeYield`, which is a different quantity and is often a volume or a batch
+ * of items. Turning "2 1/2 cups guacamole" into `serves: 2` is wrong data, and
+ * because the span is genuinely on the page the confidence model would mark it
+ * green — so it has to be caught here.
+ */
+describe('import/vocab — canonicalizeServes', () => {
+  it.each([
+    ['4', 'Serves 4', '4'],
+    ['4-6', 'Serves 4-6', '4-6'],
+    ['4 servings', '4 servings', '4'],
+    ['6', 'Feeds a family of 6', '6'],
+    ['8', '8 people', '8'],
+    ['4', '4 (Large bowls)', '4'],
+  ])('keeps %s from %s', (value, evidence, expected) => {
+    expect(canonicalizeServes(value, evidence)).toBe(expected);
+  });
+
+  it('drops a serving count read off a volume', () => {
+    // The owner's case: "2 1/2 cups" must not become "serves 2".
+    expect(canonicalizeServes('2', '2 1/2 cups guacamole')).toBeNull();
+    expect(canonicalizeServes('2 1/2', '2 1/2 cups guacamole')).toBeNull();
+    expect(canonicalizeServes('4', '4 cups of soup')).toBeNull();
+    expect(canonicalizeServes('500', '500 g')).toBeNull();
+    expect(canonicalizeServes('1', '1 loaf')).toBeNull();
+  });
+
+  it('drops a serving count read off a batch of items', () => {
+    expect(canonicalizeServes('12', 'Makes about 12 pancakes')).toBeNull();
+    expect(canonicalizeServes('24', '24 cookies')).toBeNull();
+  });
+
+  it('keeps a count when the span says people even alongside an item word', () => {
+    expect(canonicalizeServes('4', 'Serves 4, about 12 pancakes')).toBe('4');
+  });
+
+  it('rejects anything that is not the form shape', () => {
+    for (const value of ['', 'a few', 'lots', '0', '-2', 'many people']) {
+      expect(canonicalizeServes(value, 'Serves plenty')).toBeNull();
+    }
+  });
+
+  it('rejects a fractional count outright — people do not come in halves', () => {
+    expect(canonicalizeServes('2 1/2', 'Serves 2 1/2')).toBeNull();
+    expect(canonicalizeServes('2.5', 'Serves 2.5')).toBeNull();
+  });
+
+  it('matches the form pattern for everything it keeps', () => {
+    for (const [value, evidence] of [['4', 'Serves 4'], ['4-6', 'Serves 4-6'], ['10', '10 servings']]) {
+      expect(canonicalizeServes(value, evidence)).toMatch(SERVES_PATTERN);
+    }
   });
 });

@@ -132,7 +132,9 @@ export function extractionFixture(overrides: Record<string, unknown> = {}) {
     story: { value: '', evidence: null, derivation: 'absent' },
     difficulty: { value: 1, evidence: 'ready in 15 minutes', derivation: 'inferred' },
     tags: { value: ['Mexican', 'No Cook'], evidence: 'guacamole', derivation: 'inferred' },
-    serves: { value: '2 1/2 cups guacamole', evidence: '2 1/2 cups guacamole', derivation: 'json-ld' },
+    // The recorded page's recipeYield is "2 1/2 cups guacamole" — a volume, not
+    // a head count — so a correctly-prompted model marks serves absent.
+    serves: { value: '', evidence: null, derivation: 'absent' },
     ...overrides,
   };
 }

@@ -9,7 +9,7 @@
   },
   "expected": {
     "name": "Everyday Rye Sourdough",
-    "serves": "1 900g loaf",
+    "serves": null,
     "ingredients": [
       {
         "ingredientName": "strong white bread flour",
@@ -41,6 +41,7 @@
         "unit": "g",
         "measure": "10"
       }
-    ]
+    ],
+    "servesMustBeEmpty": true
   }
 }

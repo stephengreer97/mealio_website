@@ -161,6 +161,14 @@ export type Derivation =
   | 'normalized'
   /** Judged from the source as a whole — tags, difficulty. */
   | 'inferred'
+  /**
+   * Produced by us, not found on the page — currently only a Pixabay stand-in
+   * photo. It is deliberately not `inferred`: nothing about the source implied
+   * this value, we chose it, and saying otherwise would be the quiet
+   * mislabelling this whole model exists to prevent. Always amber: the value is
+   * real and usable, but the creator needs to know we picked it.
+   */
+  | 'generated'
   /** Not present in the source at all. */
   | 'absent';
 
