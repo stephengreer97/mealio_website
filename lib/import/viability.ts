@@ -16,11 +16,15 @@
  *   - none anywhere      → this creator is **not importable**, and they are told
  *                          so, rather than the feature quietly doing nothing
  *
- * `website` and `youtube` can be probed. Instagram and TikTok need OAuth
- * connections that do not exist yet (MEAL-82 / 83), so their probes report
- * `unavailable` and name the ticket. They are deliberately *not* stubbed to
- * return "viable" — a check that cannot run must never look like a check that
- * passed, since that is the exact failure this whole ticket exists to prevent.
+ * All four sources can be probed now. Two of them cost nothing and can be run at
+ * application review: a website has a feed, and a YouTube channel has a public
+ * uploads feed. The other two cannot — Instagram and TikTok hand over nothing
+ * without an OAuth grant (MEAL-82 / 83), so those probes report `unavailable`
+ * until the creator connects, and say why.
+ *
+ * They are deliberately *not* stubbed to return "viable" when they cannot run. A
+ * check that could not run must never look like a check that passed, since that
+ * is the exact failure this whole ticket exists to prevent.
  */
 
 import {
@@ -39,6 +43,18 @@ import { toSourceDocument } from './html';
 import { robotsPerOrigin } from './robots';
 import { safeFetch, type SafeFetchOptions } from './ssrf';
 import { isChannelId, readUploadsFeed, resolveChannelId, youtubeSourceDocument } from '@/lib/youtube';
+import {
+  fetchInstagramMedia,
+  hasRecipeText as hasInstagramText,
+  instagramSourceDocument,
+  INSTAGRAM_NO_CAPTION_DETAIL,
+} from '@/lib/instagram';
+import {
+  fetchTikTokVideos,
+  hasRecipeText as hasTikTokText,
+  tiktokSourceDocument,
+  TIKTOK_NO_DESCRIPTION_DETAIL,
+} from '@/lib/tiktok';
 import type { FeedEntry } from './feed';
 import type { GateVerdictValue } from './types';
 
@@ -330,33 +346,116 @@ export const youtubeProbe: SourceProbe = {
 };
 
 /**
- * A probe for a platform whose connection has not been built yet.
+ * The sentence for a platform that cannot be measured until its owner connects
+ * it (MEAL-82 / MEAL-83).
  *
- * It fails, loudly, naming the ticket. The tempting alternative — return no
- * items and let the caller decide — reads as "nothing passed", which is the one
- * thing this must never be confused with.
+ * This is the honest cost of Instagram and TikTok, and it is worth stating
+ * plainly because it is a real difference from every other source. A website has
+ * a feed and a YouTube channel has a public uploads feed, so both can be
+ * measured during application review — the moment an operator actually wants the
+ * number. Instagram and TikTok hand over nothing at all without a grant, so the
+ * order is reversed: approve the creator, ask them to connect, *then* measure.
+ *
+ * It fails loudly rather than returning no items, because "no items" reads as
+ * "nothing passed", which is the one thing it must never be confused with.
  */
-function pendingConnectionProbe(source: PlatformSource, ticket: string): SourceProbe {
+function notConnectedYet(source: PlatformSource): ProbeResult {
   return {
-    source,
-    async probe() {
-      return {
-        ok: false,
-        detail:
-          `${SOURCE_LABELS[source]} cannot be checked yet: it needs the ${SOURCE_LABELS[source]} ` +
-          `account connection from ${ticket}, which is not built. Their ${SOURCE_LABELS[source]} ` +
-          'link is stored and this check will work once that lands. Until then this is *not* a ' +
-          'pass — do not set this as the source of truth on the strength of it.',
-      };
-    },
+    ok: false,
+    detail:
+      `${SOURCE_LABELS[source]} cannot be checked until this creator connects their account: unlike a ` +
+      `website or a YouTube channel, ${SOURCE_LABELS[source]} publishes no feed we can read without a ` +
+      'grant. Ask them to connect it from the creator portal, then run this again. Until then this is ' +
+      '*not* a pass — do not set it as the source of truth on the strength of it.',
   };
 }
+
+/**
+ * Instagram probe: gate each recent post on its caption (MEAL-82).
+ *
+ * The caption is the only text this API exposes. A Reel whose recipe is spoken
+ * aloud arrives here as a caption saying "recipe in the video", and the gate
+ * will correctly call that not-a-recipe — which is a true statement about the
+ * post and a misleading one about the creator. So a post with **no** caption at
+ * all is reported rather than gated, the same distinction the YouTube probe
+ * makes for a video with neither description nor captions. A creator whose
+ * report comes back mostly red is telling us something real: their recipes are
+ * not in text, and no amount of prompt tuning changes that.
+ */
+export const instagramProbe: SourceProbe = {
+  source: 'instagram',
+
+  async probe(_link, context) {
+    const accessToken = context.grant?.accessToken;
+    if (!accessToken) return notConnectedYet('instagram');
+
+    const listed = await fetchInstagramMedia(accessToken, {
+      limit: context.maxItems,
+      fetchImpl: context.fetchOptions?.fetchImpl as typeof fetch | undefined,
+    });
+    if (!listed.ok) return { ok: false, detail: listed.detail };
+
+    const items = listed.media.slice(0, context.maxItems).map((media): ProbedItem => {
+      const document = instagramSourceDocument(media);
+      return {
+        url: document.url,
+        title: document.title,
+        text: document.text,
+        // No structured data on Instagram. The caption is all there is.
+        hasRecipeJsonLd: false,
+        ...(hasInstagramText(media) ? {} : { error: INSTAGRAM_NO_CAPTION_DETAIL }),
+      };
+    });
+
+    // No `feed`: nothing here is a URL an operator could confirm and store.
+    return { ok: true, items };
+  },
+};
+
+/**
+ * TikTok probe: gate each recent video on its title and description (MEAL-83).
+ *
+ * Structurally the same as Instagram's and with a harder ceiling. The Display
+ * API returns an embed link and a share URL and never a file, so there is no
+ * transcription fallback here and there cannot be one — MEAL-85 could rescue an
+ * Instagram Reel and could never rescue a TikTok. If this report comes back
+ * mostly red, the useful conclusion is that TikTok is this creator's *link*
+ * source rather than their recipe source, and MEAL-80's share link already
+ * serves that better than an import would.
+ */
+export const tiktokProbe: SourceProbe = {
+  source: 'tiktok',
+
+  async probe(_link, context) {
+    const accessToken = context.grant?.accessToken;
+    if (!accessToken) return notConnectedYet('tiktok');
+
+    const listed = await fetchTikTokVideos(accessToken, {
+      limit: context.maxItems,
+      fetchImpl: context.fetchOptions?.fetchImpl as typeof fetch | undefined,
+    });
+    if (!listed.ok) return { ok: false, detail: listed.detail };
+
+    const items = listed.videos.slice(0, context.maxItems).map((video): ProbedItem => {
+      const document = tiktokSourceDocument(video);
+      return {
+        url: document.url,
+        title: document.title,
+        text: document.text,
+        hasRecipeJsonLd: false,
+        ...(hasTikTokText(video) ? {} : { error: TIKTOK_NO_DESCRIPTION_DETAIL }),
+      };
+    });
+
+    return { ok: true, items };
+  },
+};
 
 export const SOURCE_PROBES: Record<PlatformSource, SourceProbe> = {
   website: websiteProbe,
   youtube: youtubeProbe,
-  instagram: pendingConnectionProbe('instagram', 'MEAL-82'),
-  tiktok: pendingConnectionProbe('tiktok', 'MEAL-83'),
+  instagram: instagramProbe,
+  tiktok: tiktokProbe,
 };
 
 // ── The check ────────────────────────────────────────────────────────────────

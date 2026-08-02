@@ -35,7 +35,7 @@ function cronRequest(secret = 'cron-secret') {
 beforeEach(() => {
   process.env.CRON_SECRET = 'cron-secret';
   refreshExpiringTokens.mockReset();
-  refreshExpiringTokens.mockResolvedValue({ checked: 3, refreshed: 2, broken: 1, skipped: 0 });
+  refreshExpiringTokens.mockResolvedValue({ checked: 3, refreshed: 2, broken: 1, skipped: 0, retried: 1 });
 });
 
 describe('/api/cron/daily', () => {
@@ -45,7 +45,10 @@ describe('/api/cron/daily', () => {
     expect(refreshExpiringTokens).toHaveBeenCalledTimes(1);
     // Reported rather than only logged: a run that broke a connection is the one
     // an operator needs to look at.
-    expect(body).toMatchObject({ ok: true, tokensRefreshed: 2, tokensBroken: 1 });
+    // `tokensRetried` is reported beside them: a provider that was unreachable
+    // leaves its grants alone for tomorrow, and a run where that number jumps is
+    // an outage rather than a set of creators to email (MEAL-82).
+    expect(body).toMatchObject({ ok: true, tokensRefreshed: 2, tokensBroken: 1, tokensRetried: 1 });
   });
 
   it('does not run the sweep unauthenticated', async () => {

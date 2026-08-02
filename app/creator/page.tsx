@@ -7,6 +7,7 @@ import AppFooter from '@/components/AppFooter';
 import ImportLinkBar from '@/components/ImportLinkBar';
 import ImportFieldNotice, { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
 import YouTubeConnectCard from '@/components/YouTubeConnectCard';
+import PlatformConnectCard from '@/components/PlatformConnectCard';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import {
   appendIngredientState,
@@ -1387,8 +1388,10 @@ export default function CreatorPortal() {
             )}
           </div>
 
-          {/* ── Where they publish (MEAL-74) ── */}
+          {/* ── Where they publish (MEAL-74 / MEAL-82 / MEAL-83) ── */}
           <YouTubeConnectCard />
+          <PlatformConnectCard platform="instagram" />
+          <PlatformConnectCard platform="tiktok" />
 
           {/* ── Stats ── */}
           {stats && (

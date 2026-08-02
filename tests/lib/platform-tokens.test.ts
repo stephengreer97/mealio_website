@@ -9,9 +9,12 @@ import {
   describeConnection,
   refreshExpiringTokens,
   refreshGoogleGrant,
+  refreshInstagramGrant,
+  refreshTikTokGrant,
   usableAccessToken,
   EXPIRY_SKEW_MS,
   REFRESH_WINDOW_MS,
+  TOKEN_REFRESHERS,
   type PlatformConnection,
   type TokenRefresher,
 } from '@/lib/platform-tokens';
@@ -85,7 +88,22 @@ beforeEach(() => {
   log.mockReset();
   process.env.GOOGLE_CLIENT_ID = 'client-id.apps.googleusercontent.com';
   process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
+  process.env.TIKTOK_CLIENT_KEY = 'tiktok-client-key';
+  process.env.TIKTOK_CLIENT_SECRET = 'tiktok-client-secret';
 });
+
+/** A fetch that answers once with `body` at `status`, recording what it was sent. */
+function answering(body: unknown, status = 200) {
+  const impl = vi.fn(async () =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+  ) as unknown as typeof fetch;
+  return impl;
+}
+
+function sentTo(impl: typeof fetch): { url: string; init: RequestInit } {
+  const [url, init] = (impl as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+  return { url: String(url), init: (init ?? {}) as RequestInit };
+}
 
 // ── The projection ───────────────────────────────────────────────────────────
 
@@ -143,12 +161,14 @@ describe('platform-tokens — the refresh sweep', () => {
   });
 
   it('does not mark a platform broken just because we have not built its refresher', async () => {
+    // All three real platforms have one now, so this uses a registry that is
+    // deliberately missing an entry. The property survives the platforms:
+    // "we have not built this yet" is a fact about us, not about the creator's
+    // grant, and it must not put a working connection on a reconnect list.
     fakeDb.queue('creator_platform_accounts', { data: [row({ platform: 'instagram' })] });
 
     const result = await refreshExpiringTokens({ supabase, now, refreshers: { youtube: working } });
 
-    // MEAL-82 is not built. That is a fact about us, not about the creator's
-    // grant, and it must not put a working connection on a reconnect list.
     expect(result).toMatchObject({ checked: 0, skipped: 1, broken: 0 });
     expect(fakeDb.calls.some((call) => call.method === 'update')).toBe(false);
   });
@@ -245,5 +265,161 @@ describe('platform-tokens — refreshGoogleGrant', () => {
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.reason).toMatch(/reconnect/i);
+  });
+});
+
+// ── Instagram's refresher (MEAL-82) ──────────────────────────────────────────
+
+describe('platform-tokens — refreshInstagramGrant', () => {
+  const igConnection = (overrides: Partial<PlatformConnection> = {}) =>
+    connection({
+      platform: 'instagram',
+      accessToken: 'IGQ-long-lived',
+      // There is no refresh token on Instagram. The access token is the only
+      // credential there is, and it renews itself.
+      refreshToken: null,
+      expiresAt: new Date(NOW + 5 * 24 * 60 * 60 * 1000).toISOString(),
+      ...overrides,
+    });
+
+  it('trades the still-valid access token for a new one', async () => {
+    const fetchImpl = answering({ access_token: 'IGQ-renewed', token_type: 'bearer', expires_in: 5_184_000 });
+
+    const outcome = await refreshInstagramGrant(igConnection(), { fetchImpl, now });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.grant.accessToken).toBe('IGQ-renewed');
+    expect(outcome.grant.expiresAt).toBe(new Date(NOW + 5_184_000_000).toISOString());
+    // Not an OAuth refresh-token exchange: the current token is what is sent.
+    expect(sentTo(fetchImpl).url).toContain('grant_type=ig_refresh_token');
+    expect(sentTo(fetchImpl).url).toContain('IGQ-long-lived');
+  });
+
+  it('says plainly that a lapsed Instagram token cannot be recovered', async () => {
+    const fetchImpl = answering({ error: { message: 'Error validating access token: Session has expired' } }, 400);
+
+    const outcome = await refreshInstagramGrant(igConnection(), { fetchImpl, now });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    // The refresh only works while the token is alive. Miss the window and there
+    // is no path back except the creator consenting again.
+    expect(outcome.reason).toMatch(/Session has expired/);
+    expect(outcome.reason).toMatch(/reconnect/i);
+    expect(outcome.retryable).toBeFalsy();
+  });
+
+  it('refuses when there is no stored token rather than silently doing nothing', async () => {
+    const outcome = await refreshInstagramGrant(igConnection({ accessToken: null }), { now });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toMatch(/reconnect/i);
+  });
+
+  it('marks a network failure retryable, because it says nothing about the grant', async () => {
+    const fetchImpl = (async () => { throw new Error('socket hang up'); }) as typeof fetch;
+
+    const outcome = await refreshInstagramGrant(igConnection(), { fetchImpl, now });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.retryable).toBe(true);
+  });
+});
+
+// ── TikTok's refresher (MEAL-83) ─────────────────────────────────────────────
+
+describe('platform-tokens — refreshTikTokGrant', () => {
+  const ttConnection = (overrides: Partial<PlatformConnection> = {}) =>
+    connection({
+      platform: 'tiktok',
+      accessToken: 'act.stale',
+      refreshToken: 'rft.super-secret',
+      expiresAt: new Date(NOW + 3_600_000).toISOString(),
+      ...overrides,
+    });
+
+  it('returns the rotated refresh token, which must replace the one just spent', async () => {
+    const fetchImpl = answering({
+      access_token: 'act.fresh',
+      expires_in: 86_400,
+      refresh_token: 'rft.rotated',
+      refresh_expires_in: 31_536_000,
+      scope: 'video.list',
+    });
+
+    const outcome = await refreshTikTokGrant(ttConnection(), { fetchImpl, now });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // Every refresh invalidates the token it was given. Failing to store the
+    // replacement costs the creator a re-consent a year before anything expired.
+    expect(outcome.grant.refreshToken).toBe('rft.rotated');
+    expect(outcome.grant.accessToken).toBe('act.fresh');
+    expect(outcome.grant.expiresAt).toBe(new Date(NOW + 86_400_000).toISOString());
+    expect(String(sentTo(fetchImpl).init.body)).toContain('grant_type=refresh_token');
+  });
+
+  it('reports TikTok’s words without echoing the token that was sent', async () => {
+    const fetchImpl = answering({ error: 'invalid_grant', error_description: 'Refresh token is invalid or expired.' }, 400);
+
+    const outcome = await refreshTikTokGrant(ttConnection(), { fetchImpl, now });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toMatch(/invalid or expired/i);
+    expect(outcome.reason).not.toContain('rft.super-secret');
+  });
+
+  it('refuses without a stored refresh token', async () => {
+    const outcome = await refreshTikTokGrant(ttConnection({ refreshToken: null }), { now });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toMatch(/reconnect/i);
+  });
+});
+
+// ── The registry, and the bound on retrying ──────────────────────────────────
+
+describe('platform-tokens — every connected platform has a refresher', () => {
+  it('registers all three, so no grant is skipped by the sweep', () => {
+    // A platform with no entry is skipped rather than broken, which is right —
+    // but a *shipped* platform being skipped is a grant nobody renews.
+    expect(Object.keys(TOKEN_REFRESHERS).sort()).toEqual(['instagram', 'tiktok', 'youtube']);
+  });
+});
+
+describe('platform-tokens — a provider outage does not disconnect everybody', () => {
+  const unreachable: TokenRefresher = async () => ({ ok: false, reason: 'socket hang up', retryable: true });
+
+  it('leaves a grant untouched when the provider is unreachable and the token has life left', async () => {
+    // Five days out: the sweep starts renewing a week early, so there are
+    // several more passes before anything actually lapses.
+    fakeDb.queue('creator_platform_accounts', {
+      data: [row({ platform: 'instagram', expires_at: new Date(NOW + 5 * 24 * 60 * 60 * 1000).toISOString() })],
+    });
+
+    const result = await refreshExpiringTokens({ supabase, now, refreshers: { instagram: unreachable } });
+
+    expect(result).toMatchObject({ checked: 1, refreshed: 0, broken: 0, retried: 1 });
+    // Nothing is written. For Instagram, marking this broken would clear the
+    // access token — the only credential there is — and turn a false alarm into
+    // a real disconnection.
+    expect(fakeDb.calls.some((call) => call.method === 'update')).toBe(false);
+  });
+
+  it('breaks it anyway once the token itself has expired', async () => {
+    fakeDb.queue('creator_platform_accounts', {
+      data: [row({ platform: 'instagram', expires_at: new Date(NOW - 1000).toISOString() })],
+    });
+
+    const result = await refreshExpiringTokens({ supabase, now, refreshers: { instagram: unreachable } });
+
+    // Retrying forever over a dead token is how a broken connection looks
+    // healthy while the poller quietly finds nothing.
+    expect(result).toMatchObject({ broken: 1, retried: 0 });
+    const update = fakeDb.calls.find((call) => call.method === 'update')?.args[0] as Record<string, unknown>;
+    expect(update.broken_reason).toMatch(/socket hang up/);
   });
 });

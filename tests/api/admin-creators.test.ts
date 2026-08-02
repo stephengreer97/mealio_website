@@ -318,12 +318,45 @@ describe('/api/admin/creators/viability', () => {
     expect(runViabilityCheck).not.toHaveBeenCalled();
   });
 
-  it('400 when the creator has no link for that source', async () => {
+  it('400 when the creator has neither a link nor a connected account', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: { ...READY, youtube_url: null } });
     const res = await VIABILITY(jsonRequest('/api/admin/creators/viability', { token, body: { id: 'c1', source: 'youtube' } }));
     expect(res.status).toBe(400);
     expect(runViabilityCheck).not.toHaveBeenCalled();
+  });
+
+  it('checks a connected account with no link on the row at all', async () => {
+    // Instagram and TikTok are read entirely through the grant (MEAL-82 /
+    // MEAL-83), so insisting on a link as well would refuse exactly the
+    // creators who did the connecting properly.
+    asAdmin();
+    fakeDb.queue('creators', { data: { ...READY, instagram_url: null } });
+    fakeDb.queue('creator_platform_accounts', {
+      data: {
+        id: 'pa1',
+        creator_id: 'c1',
+        platform: 'instagram',
+        external_id: '178',
+        external_name: 'chefsarah',
+        access_token: 'IGQ-long',
+        refresh_token: null,
+        scopes: 'instagram_business_basic',
+        expires_at: '2099-01-01T00:00:00.000Z',
+        broken_reason: null,
+        broken_at: null,
+      },
+    });
+    runViabilityCheck.mockResolvedValue({ outcome: 'viable', passed: 3, checked: 4, costUsd: 0.001, items: [], feed: null });
+
+    const res = await VIABILITY(jsonRequest('/api/admin/creators/viability', { token, body: { id: 'c1', source: 'instagram' } }));
+
+    expect(res.status).toBe(200);
+    // The grant is resolved by the route, not by the probe: this is the only
+    // layer with a database.
+    expect(runViabilityCheck.mock.calls[0][2]).toMatchObject({
+      grant: { externalId: '178', accessToken: 'IGQ-long' },
+    });
   });
 
   it('checks the link stored on the creator, never one from the request body', async () => {

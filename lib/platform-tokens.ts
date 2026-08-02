@@ -209,7 +209,24 @@ export interface RefreshedGrant {
 
 export type RefreshOutcome =
   | { ok: true; grant: RefreshedGrant }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      reason: string;
+      /**
+       * True when the provider never answered at all — a socket error, a
+       * timeout, a 5xx. Such a failure says nothing about the grant, and the
+       * sweep leaves the connection alone and tries again tomorrow instead of
+       * putting a working creator on the reconnect list (see `refreshConnection`
+       * for the bound that keeps this from hiding a real expiry).
+       *
+       * This matters most for Instagram, where marking a connection broken
+       * clears the access token — and the access token is the *only* credential
+       * there is. One flaky minute would otherwise permanently disconnect a
+       * creator whose token had another seven days to run, turning a false alarm
+       * into a true one.
+       */
+      retryable?: boolean;
+    };
 
 export interface RefreshOptions {
   /** Injected so tests never reach a provider. */
@@ -257,7 +274,11 @@ export const refreshGoogleGrant: TokenRefresher = async (connection, options) =>
       }),
     });
   } catch (err) {
-    return { ok: false, reason: `Google did not answer the refresh request: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      ok: false,
+      reason: `Google did not answer the refresh request: ${err instanceof Error ? err.message : String(err)}`,
+      retryable: true,
+    };
   }
 
   const payload = await response.json().catch(() => null as unknown);
@@ -267,7 +288,11 @@ export const refreshGoogleGrant: TokenRefresher = async (connection, options) =>
     const error = (payload as Record<string, unknown> | null)?.error_description
       ?? (payload as Record<string, unknown> | null)?.error
       ?? `HTTP ${response.status}`;
-    return { ok: false, reason: `Google refused to refresh this grant: ${String(error)}` };
+    return {
+      ok: false,
+      reason: `Google refused to refresh this grant: ${String(error)}`,
+      retryable: response.status >= 500,
+    };
   }
 
   const data = payload as Record<string, unknown>;
@@ -286,12 +311,161 @@ export const refreshGoogleGrant: TokenRefresher = async (connection, options) =>
 };
 
 /**
- * Per-platform refreshers. Instagram and TikTok land here (MEAL-82 / MEAL-83);
- * a platform with no entry is skipped by the sweep rather than marked broken,
+ * Instagram's refresh: trade a **still-valid** long-lived token for a new one.
+ *
+ * This is not the usual OAuth refresh-token exchange, and the difference is the
+ * whole risk. There is no refresh token; the access token renews itself, and
+ * only while it is alive. Miss the ~60-day window by a day and the creator has
+ * to consent again — there is no recovery path from our side.
+ *
+ * Which is why `REFRESH_WINDOW_MS` matters more here than anywhere else: the
+ * sweep starts renewing a week out and runs daily, so a token has roughly seven
+ * chances before it lapses. Instagram also refuses to refresh a token less than
+ * 24 hours old, which never bites in practice because a freshly connected
+ * account is sixty days from the window.
+ *
+ * The token travels in the query string because that is the only form this
+ * endpoint documents. Nothing here logs a URL.
+ */
+export const refreshInstagramGrant: TokenRefresher = async (connection, options) => {
+  if (!connection.accessToken) {
+    return {
+      ok: false,
+      reason:
+        'No Instagram token is stored, and Instagram has no separate refresh token to fall back on. ' +
+        'Reconnect the account.',
+    };
+  }
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const now = options.now ?? Date.now;
+
+  const query = new URLSearchParams({
+    grant_type: 'ig_refresh_token',
+    access_token: connection.accessToken,
+  });
+
+  let response: Response;
+  try {
+    response = await fetchImpl(`https://graph.instagram.com/refresh_access_token?${query}`);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Instagram did not answer the refresh request: ${err instanceof Error ? err.message : String(err)}`,
+      retryable: true,
+    };
+  }
+
+  const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
+  if (!response.ok || typeof payload?.access_token !== 'string') {
+    const message = typeof payload?.error?.message === 'string' ? payload.error.message : `HTTP ${response.status}`;
+    return {
+      ok: false,
+      reason:
+        `Instagram refused to refresh this grant: ${message}. Instagram tokens can only be renewed while ` +
+        'they are still valid, so the creator has to reconnect.',
+      retryable: response.status >= 500,
+    };
+  }
+
+  const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : null;
+  return {
+    ok: true,
+    grant: {
+      accessToken: payload.access_token,
+      expiresAt: expiresIn === null ? null : new Date(now() + expiresIn * 1000).toISOString(),
+      // No refresh token exists to rotate, and returning null here would be read
+      // as "unchanged" — which it is.
+      refreshToken: null,
+    },
+  };
+};
+
+/**
+ * TikTok's refresh: an ordinary refresh-token exchange that **rotates the
+ * refresh token**.
+ *
+ * The rotation is the part to get right. Every successful refresh invalidates
+ * the token that was sent and returns a replacement, so failing to store the new
+ * one leaves us holding a dead credential and the creator re-consenting. It is
+ * returned here and written by `storeRefresh`.
+ *
+ * The year-long refresh-token lifetime never gets tested by anything, so it is
+ * defended by construction instead: access tokens live about a day, every TikTok
+ * row therefore sits permanently inside the sweep's window, and the sweep runs
+ * daily — so the refresh token is re-issued long before its own expiry, whatever
+ * the polling cadence is.
+ */
+export const refreshTikTokGrant: TokenRefresher = async (connection, options) => {
+  const clientKey = process.env.TIKTOK_CLIENT_KEY;
+  const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
+  if (!clientKey || !clientSecret) {
+    return { ok: false, reason: 'TikTok OAuth is not configured on this deployment.' };
+  }
+  if (!connection.refreshToken) {
+    return { ok: false, reason: 'No refresh token is stored, so this grant cannot be renewed. Reconnect the account.' };
+  }
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const now = options.now ?? Date.now;
+
+  let response: Response;
+  try {
+    response = await fetchImpl('https://open.tiktokapis.com/v2/oauth/token/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cache-Control': 'no-cache' },
+      body: new URLSearchParams({
+        client_key: clientKey,
+        client_secret: clientSecret,
+        grant_type: 'refresh_token',
+        refresh_token: connection.refreshToken,
+      }),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `TikTok did not answer the refresh request: ${err instanceof Error ? err.message : String(err)}`,
+      retryable: true,
+    };
+  }
+
+  const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
+  if (!response.ok || typeof payload?.access_token !== 'string') {
+    // TikTok's own words. The request body is never echoed — it carries the
+    // refresh token, and this string ends up in `broken_reason` and a log line.
+    const message = payload?.error_description ?? payload?.error ?? `HTTP ${response.status}`;
+    return {
+      ok: false,
+      reason: `TikTok refused to refresh this grant: ${String(message)}`,
+      retryable: response.status >= 500,
+    };
+  }
+
+  const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : null;
+  return {
+    ok: true,
+    grant: {
+      accessToken: payload.access_token,
+      expiresAt: expiresIn === null ? null : new Date(now() + expiresIn * 1000).toISOString(),
+      // Must be stored. The one we just sent is now dead.
+      refreshToken: typeof payload.refresh_token === 'string' ? payload.refresh_token : null,
+      scopes: typeof payload.scope === 'string' ? payload.scope.split(/[,\s]+/).filter(Boolean) : undefined,
+    },
+  };
+};
+
+/**
+ * Per-platform refreshers (MEAL-74 / MEAL-82 / MEAL-83).
+ *
+ * A platform with no entry is skipped by the sweep rather than marked broken,
  * because "we have not built this yet" is not a fact about the creator's grant.
+ * All three are here now, so nothing is skipped in practice — the branch stays
+ * because a fourth platform will land the same way.
  */
 export const TOKEN_REFRESHERS: Partial<Record<ConnectedPlatform, TokenRefresher>> = {
   youtube: refreshGoogleGrant,
+  instagram: refreshInstagramGrant,
+  tiktok: refreshTikTokGrant,
 };
 
 /** Writes a successful refresh back, and returns the connection as it now stands. */
@@ -331,6 +505,60 @@ export interface RefreshDeps extends RefreshOptions {
 }
 
 /**
+ * Is the stored token still good for a while, quite apart from the refresh?
+ *
+ * The bound on `retryable`: a provider outage may be waited out only while there
+ * is something left to wait with. Once the token is at or past its expiry, any
+ * failure is terminal whatever caused it — otherwise a provider that answers
+ * every request with a 503 forever would leave a dead connection looking healthy
+ * and a poller quietly finding nothing, which is the exact failure the sweep
+ * exists to prevent.
+ */
+function stillUsable(connection: PlatformConnection, atMs: number): boolean {
+  if (!connection.accessToken) return false;
+  const expiresAt = connection.expiresAt ? Date.parse(connection.expiresAt) : NaN;
+  return Number.isFinite(expiresAt) && expiresAt - atMs > EXPIRY_SKEW_MS;
+}
+
+/**
+ * What one refresh attempt did. The sweep counts these; `refreshConnection`
+ * flattens them back to "a usable connection, or nothing".
+ */
+type RefreshAttempt =
+  | { outcome: 'refreshed' | 'skipped'; connection: PlatformConnection }
+  /** Nothing was written. The grant is untouched and tomorrow's sweep tries again. */
+  | { outcome: 'retry'; connection: PlatformConnection }
+  | { outcome: 'broken'; connection: null };
+
+async function attemptRefresh(deps: RefreshDeps, connection: PlatformConnection): Promise<RefreshAttempt> {
+  const now = deps.now ?? Date.now;
+  const refresher = (deps.refreshers ?? TOKEN_REFRESHERS)[connection.platform];
+  if (!refresher) return { outcome: 'skipped', connection };
+
+  const outcome = await refresher(connection, { fetchImpl: deps.fetchImpl, now });
+  if (!outcome.ok) {
+    if (outcome.retryable && stillUsable(connection, now())) {
+      // Logged rather than written: the connection is fine, we just could not
+      // reach the provider this minute. Recording it as broken would put a
+      // working creator on the reconnect list — and for Instagram it would
+      // destroy the only token they have.
+      log({
+        event: 'CRON:TOKEN_REFRESH',
+        status: 'pending',
+        userId: connection.creatorId,
+        detail: `platform=${connection.platform} account=${connection.id} retrying tomorrow`,
+        reason: outcome.reason,
+      });
+      return { outcome: 'retry', connection };
+    }
+    await markConnectionBroken(deps.supabase, connection, outcome.reason, now);
+    return { outcome: 'broken', connection: null };
+  }
+
+  return { outcome: 'refreshed', connection: await storeRefresh(deps.supabase, connection, outcome.grant, now) };
+}
+
+/**
  * Refreshes one grant, recording either the new token or why it failed.
  *
  * Returns null when the connection is now unusable, which is the answer every
@@ -341,16 +569,7 @@ export async function refreshConnection(
   deps: RefreshDeps,
   connection: PlatformConnection,
 ): Promise<PlatformConnection | null> {
-  const now = deps.now ?? Date.now;
-  const refresher = (deps.refreshers ?? TOKEN_REFRESHERS)[connection.platform];
-  if (!refresher) return connection;
-
-  const outcome = await refresher(connection, { fetchImpl: deps.fetchImpl, now });
-  if (!outcome.ok) {
-    await markConnectionBroken(deps.supabase, connection, outcome.reason, now);
-    return null;
-  }
-  return storeRefresh(deps.supabase, connection, outcome.grant, now);
+  return (await attemptRefresh(deps, connection)).connection;
 }
 
 /**
@@ -406,6 +625,12 @@ export interface RefreshSweepResult {
   refreshed: number;
   broken: number;
   skipped: number;
+  /**
+   * Grants left alone because the provider was unreachable and the stored token
+   * still has life in it. Counted separately from `broken` because it needs no
+   * action from anybody — tomorrow's pass tries again.
+   */
+  retried: number;
 }
 
 /**
@@ -433,7 +658,7 @@ export async function refreshExpiringTokens(deps: RefreshDeps): Promise<RefreshS
     .limit(REFRESH_BATCH);
 
   const rows = (data ?? []) as Array<Record<string, any>>;
-  const result: RefreshSweepResult = { checked: 0, refreshed: 0, broken: 0, skipped: 0 };
+  const result: RefreshSweepResult = { checked: 0, refreshed: 0, broken: 0, skipped: 0, retried: 0 };
 
   for (const row of rows) {
     const connection = toConnection(row);
@@ -447,9 +672,10 @@ export async function refreshExpiringTokens(deps: RefreshDeps): Promise<RefreshS
     result.checked++;
     // One creator's dead grant must not stop the sweep reaching the rest.
     try {
-      const refreshed = await refreshConnection(deps, connection);
-      if (refreshed) result.refreshed++;
-      else result.broken++;
+      const attempt = await attemptRefresh(deps, connection);
+      if (attempt.outcome === 'refreshed') result.refreshed++;
+      else if (attempt.outcome === 'retry') result.retried++;
+      else if (attempt.outcome === 'broken') result.broken++;
     } catch (err) {
       result.broken++;
       await markConnectionBroken(
@@ -464,7 +690,9 @@ export async function refreshExpiringTokens(deps: RefreshDeps): Promise<RefreshS
   log({
     event: 'CRON:TOKEN_REFRESH',
     status: result.broken > 0 ? 'error' : 'success',
-    detail: `checked=${result.checked} refreshed=${result.refreshed} broken=${result.broken} skipped=${result.skipped}`,
+    detail:
+      `checked=${result.checked} refreshed=${result.refreshed} broken=${result.broken} ` +
+      `retried=${result.retried} skipped=${result.skipped}`,
   });
 
   return result;

@@ -24,6 +24,7 @@ vi.mock('@/lib/creator-meals', () => ({
 import {
   advanceRun,
   buildCatalog,
+  createSourceDocumentResolver,
   processSyncItem,
   retrySyncItem,
   summariseRun,
@@ -95,6 +96,58 @@ function uploadsFeed(ids: string[], description = 'Ingredients:\n2 avocados\n1 l
     )
     .join('');
   return `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/">${entries}</feed>`;
+}
+
+// ── Instagram and TikTok fixtures (MEAL-82 / MEAL-83) ────────────────────────
+
+/**
+ * The exact URLs each listing hits. `stubFetch` matches on the whole string, so
+ * these double as an assertion that the request is built the way the API
+ * documents — which is the only check available until app review clears.
+ */
+const IG_MEDIA_URL =
+  'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cpermalink%2Ctimestamp' +
+  '&limit=50&access_token=IGQ-long';
+const TT_LIST_URL =
+  'https://open.tiktokapis.com/v2/video/list/?fields=id%2Ctitle%2Cvideo_description%2Cduration%2C' +
+  'cover_image_url%2Cembed_link%2Cshare_url%2Ccreate_time';
+
+const SOCIAL_CAPTION = 'Guacamole\nIngredients:\n2 avocados\n1 lime\n\nMash them together.';
+
+function jsonRoute(body: unknown) {
+  return { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } };
+}
+
+/** One `/me/media` page, with no `next` so the loop stops after it. */
+function instagramMedia(ids: string[], caption = SOCIAL_CAPTION) {
+  return jsonRoute({
+    data: ids.map((id) => ({
+      id,
+      caption,
+      media_type: 'VIDEO',
+      media_url: `https://scontent.cdninstagram.com/${id}.mp4`,
+      permalink: `https://www.instagram.com/reel/${id}/`,
+      timestamp: '2026-07-29T09:00:00+0000',
+    })),
+  });
+}
+
+/** One `/v2/video/list/` page, with `has_more` false. */
+function tiktokVideos(ids: string[], description = SOCIAL_CAPTION) {
+  return jsonRoute({
+    data: {
+      videos: ids.map((id) => ({
+        id,
+        title: 'Guacamole',
+        video_description: description,
+        share_url: `https://www.tiktok.com/@chefsarah/video/${id}`,
+        embed_link: `https://www.tiktok.com/embed/v2/${id}`,
+        create_time: 1_785_060_000,
+      })),
+      has_more: false,
+    },
+    error: { code: 'ok' },
+  });
 }
 
 function item(overrides: Partial<SyncItem> = {}): SyncItem {
@@ -230,11 +283,12 @@ describe('buildCatalog — drawing the list is free', () => {
 
   it('says a platform is not connected rather than showing an empty list', async () => {
     // An empty list would read as "this creator publishes nothing", which is the
-    // one thing it must not mean.
+    // one thing it must not mean. No grant is queued, so there is none.
     const result = await buildCatalog({ supabase }, CREATOR, 'instagram');
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.detail).toMatch(/MEAL-82/);
+    expect(result.reason).toBe('not-connected');
+    expect(result.detail).toMatch(/has not connected their Instagram account/i);
   });
 
   it('lists a connected channel from the uploads feed, fetching no video (MEAL-74)', async () => {
@@ -281,6 +335,64 @@ describe('buildCatalog — drawing the list is free', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.detail).toMatch(/connect YouTube/i);
+  });
+
+  it('lists a connected Instagram account from /me/media, downloading no video (MEAL-82)', async () => {
+    const { impl, calls } = stubFetch({ [IG_MEDIA_URL]: instagramMedia(['m1', 'm2']) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'instagram',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The media id, not the permalink's shortcode: they are different values and
+    // the id is the one every API call and every later record lookup is keyed on.
+    expect(result.entries.map((entry) => entry.itemId)).toEqual(['m1', 'm2']);
+    expect(result.entries[0].url).toBe('https://www.instagram.com/reel/m1/');
+    expect(result.entries[0].title).toBe('Guacamole');
+    // One request for the whole account. Nothing downloaded, no model called.
+    expect(calls).toEqual([IG_MEDIA_URL]);
+    // No feed URL to offer: there is nothing here an operator could confirm and
+    // store, and offering one to a button that writes `feed_url` invites an error.
+    expect(result.feed).toBeNull();
+  });
+
+  it('lists a connected TikTok account from /v2/video/list/ (MEAL-83)', async () => {
+    const { impl, calls } = stubFetch({ [TT_LIST_URL]: tiktokVideos(['v1', 'v2']) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' }) });
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'tiktok',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.entries.map((entry) => entry.itemId)).toEqual(['v1', 'v2']);
+    // `share_url` is the page a human can open; `embed_link` is a player and is
+    // no use in a record somebody reads later.
+    expect(result.entries[0].url).toBe('https://www.tiktok.com/@chefsarah/video/v1');
+    expect(calls).toEqual([TT_LIST_URL]);
+  });
+
+  it('names a broken grant rather than showing an empty account', async () => {
+    fakeDb.queue('creator_platform_accounts', {
+      data: connectionRow({ platform: 'instagram', broken_reason: 'Instagram refused to refresh this grant' }),
+    });
+
+    const result = await buildCatalog({ supabase }, CREATOR, 'instagram');
+
+    // A dead grant and an account that posted nothing look identical from the
+    // outside. This is the difference being stated out loud.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('not-connected');
+    expect(result.detail).toMatch(/stopped working/i);
   });
 });
 
@@ -347,6 +459,81 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
     expect(result.status).toBe('failed');
     expect(result.detail).toMatch(/no longer in the channel/i);
+    expect(importer).not.toHaveBeenCalled();
+  });
+
+  it('imports an Instagram post from its caption, never from the permalink (MEAL-82)', async () => {
+    const { impl, calls } = stubFetch({ [IG_MEDIA_URL]: instagramMedia(['m1']) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+    const importer = vi.fn(async (_url: string, _options: RunImportOptions) => success);
+
+    await processSyncItem(
+      deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      run([], { source: 'instagram' }),
+      CREATOR,
+      item({ itemId: 'm1', url: 'https://www.instagram.com/reel/m1/' }),
+    );
+
+    // An Instagram permalink serves a login-walled app. The gate would correctly
+    // say there is no recipe on it, and the operator would read that as a
+    // verdict on the post rather than on our reach.
+    const options = importer.mock.calls[0][1];
+    expect(options.document?.platform).toBe('instagram');
+    expect(options.document?.text).toContain('2 avocados');
+    expect(calls).toEqual([IG_MEDIA_URL]);
+  });
+
+  it('imports a TikTok video from its description (MEAL-83)', async () => {
+    const { impl, calls } = stubFetch({ [TT_LIST_URL]: tiktokVideos(['v1']) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' }) });
+    const importer = vi.fn(async (_url: string, _options: RunImportOptions) => success);
+
+    await processSyncItem(
+      deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      run([], { source: 'tiktok' }),
+      CREATOR,
+      item({ itemId: 'v1', url: 'https://www.tiktok.com/@chefsarah/video/v1' }),
+    );
+
+    const options = importer.mock.calls[0][1];
+    expect(options.document?.platform).toBe('tiktok');
+    expect(options.document?.text).toContain('2 avocados');
+    expect(calls).toEqual([TT_LIST_URL]);
+  });
+
+  it('reads a connected account once per run, not once per item', async () => {
+    const { impl, calls } = stubFetch({ [IG_MEDIA_URL]: instagramMedia(['m1', 'm2']) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+    const importer = vi.fn(async () => success);
+    // One resolver, shared — which is what `advanceRun` builds per invocation.
+    const shared = deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } });
+    const chunkDeps = { ...shared, sourceDocument: createSourceDocumentResolver(shared) };
+
+    for (const id of ['m1', 'm2']) {
+      await processSyncItem(chunkDeps, run([], { source: 'instagram' }), CREATOR, item({ itemId: id, url: `https://www.instagram.com/reel/${id}/` }));
+    }
+
+    // A 40-item selection is one API read, not forty.
+    expect(calls).toEqual([IG_MEDIA_URL]);
+    expect(importer).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails an item the connected account no longer lists rather than fetching its page', async () => {
+    const { impl } = stubFetch({ [TT_LIST_URL]: tiktokVideos(['v1']) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' }) });
+    const importer = vi.fn(async () => success);
+
+    const result = await processSyncItem(
+      deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      run([], { source: 'tiktok' }),
+      CREATOR,
+      item({ itemId: 'v9', url: 'https://www.tiktok.com/@chefsarah/video/v9' }),
+    );
+
+    // `failed`, not `rejected`: this is us not managing to read it, which is
+    // retryable, rather than the gate ruling on the post, which is not.
+    expect(result.status).toBe('failed');
+    expect(result.detail).toMatch(/no longer in the account/i);
     expect(importer).not.toHaveBeenCalled();
   });
 

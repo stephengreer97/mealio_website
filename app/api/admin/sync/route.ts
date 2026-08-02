@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
-import { isSameSite, platformSourceForUrl, SOURCE_COLUMNS, type PlatformSource } from '@/lib/creator-sources';
+import {
+  isConnectedPlatform,
+  isSameSite,
+  platformSourceForUrl,
+  SOURCE_COLUMNS,
+  SOURCE_LABELS,
+  type PlatformSource,
+} from '@/lib/creator-sources';
 import { normalizeUrl } from '@/lib/import/ssrf';
 import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncItem } from '@/lib/admin-sync';
 
@@ -122,13 +129,14 @@ export async function POST(request: NextRequest) {
     // hand-edited request — and publishing a stranger's recipe under a creator's
     // name is precisely the outcome MEAL-77 exists to prevent.
     //
-    // YouTube is exempt from the *link* requirement because the channel comes
-    // from the OAuth grant, so a connected creator can be synced with no
-    // `youtube_url` on their row at all. It is not exempt from the check: the
-    // rule below is stricter, and the worker reads each video out of the
-    // creator's own uploads feed by id whatever the URL claims.
+    // The three connected platforms are exempt from the *link* requirement
+    // because the account comes from the OAuth grant, so a creator who connected
+    // properly can be synced with no `youtube_url` / `instagram_url` /
+    // `tiktok_url` on their row at all. They are not exempt from the check: the
+    // rules below are stricter, and the worker reads every item out of the
+    // creator's own account listing by id whatever the URL claims.
     const site = (creator[SOURCE_COLUMNS[source] as keyof typeof creator] as string | null) || creator.feed_url;
-    if (!site && source !== 'youtube') {
+    if (!site && !isConnectedPlatform(source)) {
       return NextResponse.json({ error: 'This creator has no link for that source.' }, { status: 400 });
     }
 
@@ -152,6 +160,18 @@ export async function POST(request: NextRequest) {
       if (source === 'youtube' && url !== `https://www.youtube.com/watch?v=${itemId}`) {
         return NextResponse.json(
           { error: `${url} is not the watch page for video ${itemId}. Refusing the whole selection.` },
+          { status: 400 },
+        );
+      }
+      // Instagram and TikTok cannot get the same treatment: a permalink carries
+      // a shortcode, not the media id, and there is no way to derive one from
+      // the other. What can be insisted on is the host — a row claiming an
+      // Instagram post lives on somebody else's domain is either a hand-edited
+      // request or a bug, and either way it is not a URL to record under this
+      // creator's name.
+      if ((source === 'instagram' || source === 'tiktok') && platformSourceForUrl(url) !== source) {
+        return NextResponse.json(
+          { error: `${url} is not a ${SOURCE_LABELS[source]} link. Refusing the whole selection.` },
           { status: 400 },
         );
       }

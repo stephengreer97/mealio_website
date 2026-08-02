@@ -26,7 +26,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const results = { creatorReminders: 0, userUpsell: 0, syncRunsResumed: 0, tokensRefreshed: 0, tokensBroken: 0 };
+  const results = {
+    creatorReminders: 0,
+    userUpsell: 0,
+    syncRunsResumed: 0,
+    tokensRefreshed: 0,
+    tokensBroken: 0,
+    tokensRetried: 0,
+  };
 
   // Isolate the passes so one failing doesn't drop the other.
   try {
@@ -49,14 +56,19 @@ export async function GET(request: NextRequest) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'syncRuns', reason: err.message });
   }
 
-  // Creator platform grants (MEAL-74, shared with MEAL-82/83). Every one of the
+  // Creator platform grants (MEAL-74 / MEAL-82 / MEAL-83). Every one of the
   // three platforms fails the same silent way — an expired or revoked token
   // produces a poller that finds nothing rather than an error — so this pass
   // exists to turn that into a `broken_reason` an operator can list.
+  //
+  // `tokensRetried` is reported alongside: a provider that was unreachable
+  // leaves its grants untouched for tomorrow, and a run where that number is
+  // suddenly large is an outage rather than a set of creators to email.
   try {
     const sweep = await refreshExpiringTokens({ supabase: createServerSupabaseClient() });
     results.tokensRefreshed = sweep.refreshed;
     results.tokensBroken = sweep.broken;
+    results.tokensRetried = sweep.retried;
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'tokenRefresh', reason: err.message });
   }
