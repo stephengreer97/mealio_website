@@ -44,8 +44,18 @@ import type {
 
 const DerivationEnum = z.enum(['json-ld', 'page-text', 'normalized', 'inferred', 'absent']);
 
+/**
+ * Asks for a line, not a section.
+ *
+ * Not expressed as `z.string().max(…)`: the schema goes to the API as
+ * `output_config.format` and constrains decoding, so an unsupported keyword
+ * there fails every import rather than one span. This is guidance the model
+ * follows; the bound that actually holds is `MAX_EVIDENCE_CHARS` in
+ * `confidence.ts`, applied to what we store and show.
+ */
 const EVIDENCE_DESCRIPTION =
   'The exact span of the supplied source you took this from, copied character for character. ' +
+  'Quote the line, not the section — 600 characters is more than enough. ' +
   'null if there is nothing in the source to point at.';
 
 const ExtractionSchema = z.object({
