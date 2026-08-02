@@ -124,9 +124,9 @@ derivation values:
 - "json-ld"    — copied out of the STRUCTURED RECIPE DATA block. evidence must be an exact
                  substring of that block.
 - "page-text"  — copied verbatim out of the PAGE TEXT. evidence must be an exact substring of it.
-- "normalized" — restated from a span you can point to: a unit converted, "a knob of butter"
-                 turned into an amount, instructions renumbered. evidence is the span you
-                 restated, quoted exactly.
+- "normalized" — restated from a span you can point to without changing what it says: a unit
+                 spelled out ("tablespoons" -> "tbsp"), a compound line split, instructions
+                 renumbered. evidence is the span you restated, quoted exactly.
 - "inferred"   — judged from the source as a whole rather than stated outright (tags, difficulty).
                  evidence is the span that most supports the judgement.
 - "absent"     — the source does not contain this. evidence is null and value is "" (or null for
@@ -137,21 +137,53 @@ the creator fills in themselves costs far less than a plausible wrong one they d
 
 ## Ingredients
 
-One entry per ingredient line, in source order. Split each line into:
+**One entry per buyable product**, in source order. Every row becomes a search on a grocery
+site, so the test for a row is: could a shopper put this one thing in a basket?
+
+Split each ingredient into:
 - productName: the grocery item only. Drop amounts, units, and preparation notes.
   "2 tbsp unsalted butter, melted" -> "unsalted butter". "1 (14 oz) can black beans, drained"
   -> "black beans". "3 cloves garlic, minced" -> "garlic".
 - measure: the numeric amount exactly as written ("2", "1 1/2", "0.5"), or null when the source
-  gives none ("salt to taste", "a handful of parsley").
+  gives none.
 - unit: the unit as written. Use "qty" for anything counted rather than measured (3 eggs,
   2 onions, 1 lime).
 - qty: the count for countable items; 1 for anything measured by a unit.
 
-If a line gives no amount at all, set measure to null and unit to "qty" — do not guess a quantity.
-Set derivation to "json-ld" or "page-text" when you split a line without changing any value, and
-"normalized" when you converted or estimated one.
+### One line can name more than one product — split it
 
-Skip section headings ("For the sauce:") and equipment. Do not merge or reorder ingredients.
+"salt and pepper to taste" is two products and must produce two rows, "salt" and "pepper". Nobody
+sells "salt and pepper", so a single merged row is a row that will never match anything.
+
+Split on "and", "&", "or", and commas **between distinct products**, and give each row the amount
+that belongs to it:
+- "salt and pepper to taste" -> "salt" (no amount), "pepper" (no amount)
+- "1 tbsp oil and 1 tbsp vinegar" -> "oil" 1 tbsp, "vinegar" 1 tbsp
+- "2 tbsp olive or vegetable oil" -> ONE row, "olive oil" — that is one product with an
+  alternative, not two ingredients.
+
+Do not split a name that only *reads* like two things: "salt and vinegar crisps", "macaroni and
+cheese", "oil and vinegar dressing" are each one product. The question is always whether a shop
+sells them separately for this recipe.
+
+Keep split rows adjacent and in the order the line named them, and set derivation to "normalized"
+with the whole original line as the evidence span.
+
+### No stated amount means no amount
+
+If a line gives no number, set measure to null and unit to "qty". **Do not convert a vague amount
+into a precise one.** "a knob of butter", "a handful of parsley", "a pinch of saffron", "a splash
+of cream", "salt to taste" all give measure null and unit "qty" — not 1 tbsp, not 2 tbsp.
+
+A guessed number reads as fact to the creator reviewing the draft and to the cook following it,
+and there is nothing in the source to check it against. An amount left empty costs a creator one
+keystroke; an invented one is wrong quietly.
+
+Set derivation to "json-ld" or "page-text" when you split a line without changing any value, and
+"normalized" when you restated one.
+
+Skip section headings ("For the sauce:") and equipment. Do not reorder ingredients, and do not
+merge two products into one row.
 
 ## serves is a number of people, not a yield
 
