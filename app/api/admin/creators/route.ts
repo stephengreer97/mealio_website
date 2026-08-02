@@ -3,11 +3,11 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
 import {
+  describeHostMismatch,
   isPrimarySource,
   normalizePlatformUrl,
   SOURCE_COLUMNS,
   SOURCE_LABELS,
-  type PlatformSource,
 } from '@/lib/creator-sources';
 
 /**
@@ -82,15 +82,10 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Creator not found' }, { status: 404 });
   }
 
-  // Validate the result of the change, not the change itself: a request that
-  // only flips the opt-in has to be judged against the source already stored.
-  const primarySource = body.primarySource !== undefined && isPrimarySource(body.primarySource)
-    ? body.primarySource
-    : (creator.primary_source ?? 'none');
-  const importOptIn = typeof body.importOptIn === 'boolean' ? body.importOptIn : Boolean(creator.import_opt_in);
-
   const update: Record<string, unknown> = {};
-  if (body.primarySource !== undefined) update.primary_source = primarySource;
+  if (body.primarySource !== undefined && isPrimarySource(body.primarySource)) {
+    update.primary_source = body.primarySource;
+  }
 
   if (body.feedUrl !== undefined) {
     const feedUrl = normalizePlatformUrl('website', body.feedUrl);
@@ -111,45 +106,58 @@ export async function PATCH(request: NextRequest) {
     update.feed_url = feedUrl.url;
   }
 
-  if (body.importOptIn !== undefined) {
-    if (importOptIn) {
-      // Nothing is polled until a source is chosen AND opt-in is true. Refusing
-      // the incoherent combination here means the poller never has to wonder
-      // what an opted-in creator with no source means.
-      if (primarySource === 'none') {
-        return NextResponse.json(
-          { error: 'Choose a source of truth before turning import on — nothing is polled without one.' },
-          { status: 400 },
-        );
-      }
-      const link = creator[SOURCE_COLUMNS[primarySource as PlatformSource] as keyof typeof creator];
-      if (!link) {
-        return NextResponse.json(
-          { error: `This creator has no ${SOURCE_LABELS[primarySource as PlatformSource]} link, so there is nothing to poll.` },
-          { status: 400 },
-        );
-      }
-      // For a website the feed URL *is* the thing polled, and it must be one a
-      // human confirmed — that confirmation step is the whole defence against a
-      // silently wrong discovery.
-      const feedUrl = update.feed_url !== undefined ? update.feed_url : creator.feed_url;
-      if (primarySource === 'website' && !feedUrl) {
-        return NextResponse.json(
-          { error: 'Confirm the discovered feed URL before turning import on.' },
-          { status: 400 },
-        );
-      }
-    }
-    update.import_opt_in = importOptIn;
-  }
-
-  // Clearing the source turns polling off with it. Leaving an opt-in set against
-  // 'none' would be a switch that means nothing today and the wrong thing the
-  // day someone picks a source.
-  if (update.primary_source === 'none') update.import_opt_in = false;
+  if (body.importOptIn !== undefined) update.import_opt_in = body.importOptIn;
 
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+  }
+
+  // ── Judge the row this request would leave behind, not the fields it sent ──
+  //
+  // Every invariant below is about a *combination* of columns, so validating
+  // only the ones a request happened to mention validates nothing: the radio
+  // button sends `primarySource` alone and the feed-confirm button sends
+  // `feedUrl` alone, and either can walk an already-opted-in creator into a
+  // state these lines exist to refuse — pointed at a source they have no link
+  // for, or polling a website whose feed was just cleared.
+  const resulting = { ...creator, ...update };
+  const primarySource = isPrimarySource(resulting.primary_source) ? resulting.primary_source : 'none';
+
+  // Clearing the source turns polling off with it. Leaving an opt-in set against
+  // 'none' would be a switch that means nothing today and the wrong thing the
+  // day someone picks a source. A request that explicitly asks for opt-in with
+  // no source is a contradiction rather than an off switch, and is refused below.
+  if (primarySource === 'none' && resulting.import_opt_in && body.importOptIn !== true) {
+    update.import_opt_in = false;
+    resulting.import_opt_in = false;
+  }
+
+  if (resulting.import_opt_in) {
+    // Nothing is polled until a source is chosen AND opt-in is true. Refusing
+    // the incoherent combination here means the poller never has to wonder
+    // what an opted-in creator with no source means.
+    if (primarySource === 'none') {
+      return NextResponse.json(
+        { error: 'Choose a source of truth before turning import on — nothing is polled without one.' },
+        { status: 400 },
+      );
+    }
+    const link = resulting[SOURCE_COLUMNS[primarySource] as keyof typeof resulting];
+    if (!link) {
+      return NextResponse.json(
+        { error: `This creator has no ${SOURCE_LABELS[primarySource]} link, so there is nothing to poll.` },
+        { status: 400 },
+      );
+    }
+    // For a website the feed URL *is* the thing polled, and it must be one a
+    // human confirmed — that confirmation step is the whole defence against a
+    // silently wrong discovery.
+    if (primarySource === 'website' && !resulting.feed_url) {
+      return NextResponse.json(
+        { error: 'Confirm the discovered feed URL before turning import on.' },
+        { status: 400 },
+      );
+    }
   }
 
   const { error } = await supabase.from('creators').update(update).eq('id', id);
@@ -167,19 +175,4 @@ export async function PATCH(request: NextRequest) {
   });
 
   return NextResponse.json({ ok: true, creator: { ...creator, ...update } });
-}
-
-/** Returns an operator-facing complaint when a feed URL is not on the creator's own site. */
-function describeHostMismatch(websiteUrl: string, feedUrl: string): string | null {
-  if (!websiteUrl) return 'Set the creator\'s website link before storing a feed URL.';
-  let site: string;
-  let feed: string;
-  try {
-    site = new URL(websiteUrl).hostname.toLowerCase();
-    feed = new URL(feedUrl).hostname.toLowerCase();
-  } catch {
-    return 'Feed URL: that is not a URL we can fetch.';
-  }
-  if (feed === site || feed.endsWith(`.${site}`) || site.endsWith(`.${feed}`)) return null;
-  return `That feed (${feed}) is not on the creator's own site (${site}). Refusing it: a feed on someone else's host would import their recipes under this creator's name.`;
 }

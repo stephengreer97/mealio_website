@@ -24,8 +24,9 @@
  * an operator can look at them and say yes.
  */
 
+import { isOnSameSite } from '@/lib/creator-sources';
 import { findFeedLinks, mostRecent, parseFeed, parseSitemap, type FeedEntry, type FeedKind } from './feed';
-import type { RobotsRules } from './robots';
+import type { RobotsSource } from './robots';
 import { safeFetch, type SafeFetchOptions } from './ssrf';
 
 /** Which rung of the ladder found it. Shown to the operator — a `/feed` guess deserves more scrutiny than an advertised link. */
@@ -64,26 +65,70 @@ const SITEMAP_PATHS = ['/sitemap.xml', '/post-sitemap.xml', '/sitemap_index.xml'
  */
 const FEED_CONTENT_TYPES = /xml|json|text\/html|text\/plain/i;
 
+/**
+ * How many advertised `<link rel="alternate">` hrefs are followed.
+ *
+ * A creator's homepage is attacker-controlled from the moment they apply, and
+ * every href on it becomes a server-side fetch at an address its author chose. A
+ * page carrying 2,000 of them produced 2,000 sequential cross-origin requests
+ * from one *Check viability* click. Real sites advertise a handful: the main
+ * feed, the comments feed, occasionally one per category.
+ */
+const MAX_ADVERTISED_FEEDS = 5;
+
+/**
+ * Wall-clock ceiling on the whole ladder.
+ *
+ * The serial worst case is eight fetches, and at the fetcher's default 10s
+ * timeout that is 80 seconds against the viability route's `maxDuration = 60` —
+ * before any adversarial input. The function would be killed mid-ladder and the
+ * operator would see a network error instead of a report naming what was tried.
+ * This stops in time to say so.
+ */
+const DISCOVERY_BUDGET_MS = 30_000;
+
+/** Per-fetch budget, so one slow rung cannot spend the whole ladder's. */
+const DISCOVERY_TIMEOUT_MS = 8_000;
+
 export interface DiscoverFeedOptions {
-  /** The origin's robots.txt, already loaded — one fetch for the whole ladder. */
-  robots: RobotsRules;
+  /** robots.txt per origin. Fetched once each, however many rungs are walked. */
+  robots: RobotsSource;
   fetchOptions?: SafeFetchOptions;
   /** How many entries to carry back for confirmation and probing. */
   maxEntries?: number;
 }
 
+/** The ladder's own bookkeeping, threaded through every fetch it makes. */
+interface Ladder extends DiscoverFeedOptions {
+  now: () => number;
+  deadline: number;
+}
+
+function ladder(options: DiscoverFeedOptions): Ladder {
+  const now = options.fetchOptions?.now ?? Date.now;
+  return { ...options, now, deadline: now() + DISCOVERY_BUDGET_MS };
+}
+
 /** A fetch that reports robots refusals separately from network failures. */
 async function getDocument(
   url: string,
-  options: DiscoverFeedOptions,
+  options: Ladder,
 ): Promise<{ ok: true; url: string; body: string } | { ok: false; reason: string; detail: string }> {
-  const robots = options.robots.check(url);
+  const remaining = options.deadline - options.now();
+  if (remaining <= 0) {
+    return { ok: false, reason: 'unreachable', detail: `Gave up looking for a feed after ${DISCOVERY_BUDGET_MS}ms.` };
+  }
+
+  const robots = (await options.robots.for(url)).check(url);
   if (!robots.allowed) return { ok: false, reason: 'blocked-by-robots', detail: robots.detail };
 
   const result = await safeFetch(url, {
     ...options.fetchOptions,
     accept: FEED_CONTENT_TYPES,
     expected: 'a feed, sitemap or HTML page',
+    // After the spread: the ladder's budget is not a caller's to widen, and a
+    // rung that outlives the budget has already lost the ones behind it.
+    timeoutMs: Math.min(DISCOVERY_TIMEOUT_MS, remaining),
   });
   if (!result.ok) return { ok: false, reason: result.reason, detail: result.detail };
   return { ok: true, url: result.url, body: result.html };
@@ -104,8 +149,9 @@ function toFeed(body: string, url: string, via: FeedDiscoveryVia, maxEntries: nu
  */
 export async function discoverFeed(
   siteUrl: string,
-  options: DiscoverFeedOptions,
+  discoverOptions: DiscoverFeedOptions,
 ): Promise<FeedDiscoveryResult> {
+  const options = ladder(discoverOptions);
   const maxEntries = options.maxEntries ?? 10;
 
   let origin: string;
@@ -131,7 +177,16 @@ export async function discoverFeed(
     return { ok: false, reason: 'unreachable', detail: home.detail };
   }
 
-  for (const href of findFeedLinks(home.body, home.url)) {
+  // Only the creator's own site, and only a few of them. `feed_url` means "where
+  // this creator publishes" — an advertised href pointing anywhere else is not
+  // that, whatever the page says, and following one turns a homepage into a list
+  // of addresses our server will fetch on request. Filtered before the cap so a
+  // wall of decoys cannot crowd out the one real feed.
+  const advertised = findFeedLinks(home.body, home.url)
+    .filter((href) => isOnSameSite(origin, href))
+    .slice(0, MAX_ADVERTISED_FEEDS);
+
+  for (const href of advertised) {
     const document = await getDocument(href, options);
     if (!document.ok) continue;
     const feed = toFeed(document.body, document.url, 'link-alternate', maxEntries);
@@ -210,8 +265,9 @@ export async function discoverFeed(
  */
 export async function readFeed(
   feedUrl: string,
-  options: DiscoverFeedOptions,
+  readOptions: DiscoverFeedOptions,
 ): Promise<FeedDiscoveryResult> {
+  const options = ladder(readOptions);
   const maxEntries = options.maxEntries ?? 10;
   const document = await getDocument(feedUrl, options);
   if (!document.ok) {

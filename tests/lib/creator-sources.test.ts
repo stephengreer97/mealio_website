@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  isOnSameSite,
   knownUnsupportedSource,
   normalizePlatformUrl,
   normalizePlatformUrls,
@@ -57,6 +58,22 @@ describe('creator-sources — link normalisation', () => {
   it('strips credentials, which only ever disguise the real host', () => {
     const result = normalizePlatformUrl('website', 'https://user:pw@chefsarah.com/blog');
     expect(result).toEqual({ ok: true, url: 'https://chefsarah.com/blog' });
+  });
+
+  it('refuses a link too long to be a link', () => {
+    // Stored once, then read back into server-side fetches, log lines and the
+    // admin UI forever after. A 200 KB "URL" normalised perfectly well.
+    const result = normalizePlatformUrl('website', `https://chefsarah.com/${'a'.repeat(200_000)}`);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toMatch(/characters long/i);
+  });
+
+  it('normalises away the DNS root’s trailing dot', () => {
+    // `chefsarah.com.` and `chefsarah.com` are the same host, but they compare
+    // as different strings — and this value is later matched against a feed's
+    // host, so storing the dotted form made the creator unconfirmable forever.
+    expect(normalizePlatformUrl('website', 'chefsarah.com.')).toEqual({ ok: true, url: 'https://chefsarah.com/' });
+    expect(normalizePlatformUrl('website', 'https://.').ok).toBe(false);
   });
 
   it('normalises all four at once and fails on the first bad one', () => {
@@ -143,5 +160,47 @@ describe('creator-sources — creator-level roll-up', () => {
 
   it('has nothing to say about a creator with no links', () => {
     expect(summariseCreatorViability({}, {}).importable).toBeNull();
+  });
+
+  it('does not claim a link was checked when nothing was ever fetched', () => {
+    // The whole PR turns on "cannot check is never none passed", and this is
+    // the sentence an operator relays to the creator. Medium is refused on the
+    // hostname before a single request — saying it was "checked" is false.
+    const verdict = summariseCreatorViability(
+      { website: 'https://medium.com/@a' },
+      { website: 'unsupported' },
+    );
+    expect(verdict.importable).toBe(false);
+    expect(verdict.summary).not.toMatch(/was checked/i);
+    expect(verdict.summary).toMatch(/without fetching anything/i);
+  });
+});
+
+describe('creator-sources — is this on the creator\u2019s own site?', () => {
+  it('accepts the host itself, a subdomain, and the apex of a www. site', () => {
+    expect(isOnSameSite('https://chefsarah.test/', 'https://chefsarah.test/feed')).toBe(true);
+    expect(isOnSameSite('https://chefsarah.test/', 'https://feeds.chefsarah.test/rss')).toBe(true);
+    expect(isOnSameSite('https://www.chefsarah.test/', 'https://chefsarah.test/feed')).toBe(true);
+  });
+
+  it('refuses a shared parent domain, which is not the same site', () => {
+    // No public suffix list here, so the parent-domain direction is limited to
+    // `www.`. Without that limit a feed on the hosting platform's own root —
+    // every other tenant's posts — reads as the creator's own.
+    expect(isOnSameSite('https://sarah.wordpress.com/', 'https://wordpress.com/feed')).toBe(false);
+    expect(isOnSameSite('https://sarah.github.io/', 'https://github.io/feed')).toBe(false);
+    expect(isOnSameSite('https://chefsarah.test/', 'https://evil.test/feed')).toBe(false);
+    // A suffix match that is not a label boundary is not a subdomain either.
+    expect(isOnSameSite('https://sarah.test/', 'https://notsarah.test/feed')).toBe(false);
+  });
+
+  it('reads through a trailing dot in either position', () => {
+    expect(isOnSameSite('https://chefsarah.test./', 'https://chefsarah.test/feed')).toBe(true);
+    expect(isOnSameSite('https://chefsarah.test/', 'https://chefsarah.test./feed')).toBe(true);
+  });
+
+  it('refuses anything it cannot parse', () => {
+    expect(isOnSameSite('not a url', 'https://chefsarah.test/feed')).toBe(false);
+    expect(isOnSameSite('https://chefsarah.test/', 'not a url')).toBe(false);
   });
 });

@@ -119,6 +119,53 @@ describe('/api/admin/creators', () => {
       expect(fakeDb.calls.find((c) => c.method === 'update')?.args[0]).toMatchObject({ import_opt_in: true });
     });
 
+    /**
+     * The guards are about a *combination* of columns, so they have to be
+     * judged against the row the request would leave behind. Judging only the
+     * fields a request happened to send judges nothing: both buttons in the
+     * admin UI send exactly one field.
+     */
+    describe('judged against the resulting row, whatever the request contained', () => {
+      const OPTED_IN = { ...READY, import_opt_in: true };
+
+      it('refuses a source switch that would leave an opted-in creator with no link', async () => {
+        // The radio button sends `{primarySource}` alone. Without this the card
+        // reads "Polling YouTube" for a creator who has no YouTube link at all.
+        asAdmin();
+        fakeDb.queue('creators', { data: OPTED_IN });
+        const res = await PATCH(jsonRequest('/api/admin/creators', {
+          method: 'PATCH', token, body: { id: 'c1', primarySource: 'youtube' },
+        }));
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatch(/no YouTube link/i);
+        expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
+      });
+
+      it('refuses clearing the feed of a creator already polling their website', async () => {
+        // *Confirm this feed* sends `{feedUrl}` alone, and a blank one
+        // normalises to null — leaving import on against a website with nothing
+        // to poll, the state the confirm step exists to prevent.
+        asAdmin();
+        fakeDb.queue('creators', { data: OPTED_IN });
+        const res = await PATCH(jsonRequest('/api/admin/creators', {
+          method: 'PATCH', token, body: { id: 'c1', feedUrl: '' },
+        }));
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatch(/Confirm the discovered feed/i);
+        expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
+      });
+
+      it('allows a source switch to a link the creator actually has', async () => {
+        asAdmin();
+        fakeDb.queue('creators', { data: OPTED_IN });
+        fakeDb.queue('creators', { data: null, error: null });
+        const res = await PATCH(jsonRequest('/api/admin/creators', {
+          method: 'PATCH', token, body: { id: 'c1', primarySource: 'tiktok' },
+        }));
+        expect(res.status).toBe(200);
+      });
+    });
+
     it('clearing the source turns polling off with it', async () => {
       asAdmin();
       fakeDb.queue('creators', { data: { ...READY, import_opt_in: true } });
@@ -167,6 +214,47 @@ describe('/api/admin/creators', () => {
       }));
       expect(res.status).toBe(200);
     });
+
+    it('refuses the hosting platform’s own root for a creator on a subdomain of it', async () => {
+      // "Shares a parent domain" is not "same site" without a public suffix
+      // list: sarah.wordpress.com and wordpress.com share one, and a feed on
+      // the platform root is every other tenant's posts.
+      asAdmin();
+      fakeDb.queue('creators', { data: { ...READY, website_url: 'https://sarah.wordpress.com/' } });
+      const res = await PATCH(jsonRequest('/api/admin/creators', {
+        method: 'PATCH', token, body: { id: 'c1', feedUrl: 'https://wordpress.com/feed' },
+      }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/not on the creator's own site/i);
+    });
+
+    it('still accepts the apex feed of a www. site', async () => {
+      // The one parent-direction match that happens in real life, and the
+      // reason the branch above exists at all.
+      asAdmin();
+      fakeDb.queue('creators', { data: { ...READY, website_url: 'https://www.chefsarah.test/' } });
+      fakeDb.queue('creators', { data: null, error: null });
+      const res = await PATCH(jsonRequest('/api/admin/creators', {
+        method: 'PATCH', token, body: { id: 'c1', feedUrl: 'https://chefsarah.test/feed' },
+      }));
+      expect(res.status).toBe(200);
+    });
+
+    it.each([
+      ['a trailing dot on the feed', 'https://chefsarah.test/', 'https://chefsarah.test./feed'],
+      ['a trailing dot on the site', 'https://chefsarah.test./', 'https://chefsarah.test/feed'],
+    ])('treats %s as the same host', async (_label, website, feedUrl) => {
+      // The DNS root's trailing dot names the same host. Rejecting it made such
+      // a creator permanently unconfirmable in both directions, so they could
+      // never be opted in at all.
+      asAdmin();
+      fakeDb.queue('creators', { data: { ...READY, website_url: website } });
+      fakeDb.queue('creators', { data: null, error: null });
+      const res = await PATCH(jsonRequest('/api/admin/creators', {
+        method: 'PATCH', token, body: { id: 'c1', feedUrl },
+      }));
+      expect(res.status).toBe(200);
+    });
   });
 });
 
@@ -208,14 +296,36 @@ describe('/api/admin/creators/viability', () => {
     fakeDb.queue('creators', { data: READY });
     runViabilityCheck.mockResolvedValue({ outcome: 'viable', passed: 3, checked: 4, costUsd: 0.001, items: [], feed: null });
 
+    // `feedUrl` is the field the route actually reads and hands to the fetcher.
+    // This test used to send `link`, a key the route has never looked at, and
+    // passed because nothing happened — while the one body field that *is*
+    // fetched went untested.
     const res = await VIABILITY(jsonRequest('/api/admin/creators/viability', {
       token,
-      body: { id: 'c1', source: 'website', link: 'https://attacker.test/' },
+      body: { id: 'c1', source: 'website', feedUrl: 'https://chefsarah.test/other.xml' },
     }));
 
     expect(res.status).toBe(200);
     expect((await res.json()).report.outcome).toBe('viable');
     expect(runViabilityCheck).toHaveBeenCalledWith('website', 'https://chefsarah.test/', expect.anything());
+  });
+
+  it('refuses a feed URL in the body that is on somebody else’s host', async () => {
+    // This endpoint makes our server fetch a URL, parse it, and fetch every
+    // entry it lists. A body field doing that has to clear the same host rule
+    // PATCH applies before storing one — a rule enforced on the endpoint that
+    // writes the value and not on the one that acts on it does not exist.
+    asAdmin();
+    fakeDb.queue('creators', { data: READY });
+
+    const res = await VIABILITY(jsonRequest('/api/admin/creators/viability', {
+      token,
+      body: { id: 'c1', source: 'website', feedUrl: 'https://attacker.test/feed' },
+    }));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not on the creator's own site/i);
+    expect(runViabilityCheck).not.toHaveBeenCalled();
   });
 
   it('re-reads a confirmed feed rather than re-discovering it', async () => {

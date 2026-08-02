@@ -27,28 +27,117 @@ export interface FeedEntry {
 }
 
 /**
- * Ceiling on entries taken from one document. A blog sitemap can list every post
- * it has ever published; we only ever want the most recent handful, and parsing
- * 40,000 `<url>` blocks to throw away 39,990 is wasted work on a 2 MB body.
+ * Ceiling on entries *kept* from one document. A blog sitemap can list every post
+ * it has ever published; we only ever want the most recent handful.
  */
 const MAX_PARSED_ENTRIES = 500;
 
+/**
+ * Ceiling on entries *scanned* before the newest are chosen. These differ for a
+ * reason: WordPress emits post sitemaps oldest-first, so truncating the scan in
+ * document order and sorting afterwards discarded exactly the rows the probe and
+ * the poller exist to see — the probe measured a creator's oldest posts and the
+ * poller would never have found anything new.
+ */
+const MAX_SCANNED_BLOCKS = 5_000;
+
+/** A start tag's attribute run, and one element's content. Both generous. */
+const MAX_ATTRS_CHARS = 4_000;
+const MAX_BLOCK_CHARS = 500_000;
+
+/**
+ * Element scanning without a backtracking quantifier.
+ *
+ * The regex this replaces — `<item\b[^>]*>([\s\S]*?)</item\s*>` — expands its
+ * lazy span to end-of-input from *every* start position when the closing tag
+ * never arrives: 36 ms at 64 KB, 9 s at 1 MB, 39 s at 2 MB, and 392 s on a body
+ * with no `>` in it at all. That is synchronous CPU on a single-threaded
+ * runtime, so it stalls the whole function instance rather than one request, and
+ * one viability check walks a ladder with seven parse opportunities.
+ *
+ * Bounding the quantifiers is not enough at this size — the engine still retries
+ * from every one of ~350k positions. So the open tag is found by a pattern that
+ * cannot backtrack (no quantifier spans content), and both `>` and the closing
+ * tag are located by forward search from there. Every character is visited a
+ * constant number of times.
+ *
+ * The two early `return`s are what make the pathological cases linear: if there
+ * is no `>` after this position, or no closing tag after it, neither exists for
+ * any later start position either.
+ */
+function eachElement(
+  body: string,
+  lower: string,
+  name: string,
+  onElement: (inner: string, attrs: string) => boolean,
+): void {
+  // The haystack is lowercased, so the needle must be too — callers pass names
+  // as they appear in the spec (`pubDate`, `lastmod`), not as they appear here.
+  const lowerName = name.toLowerCase();
+  const open = new RegExp(`<(?:[a-z0-9-]+:)?${lowerName}\\b`, 'g');
+  const close = new RegExp(`</(?:[a-z0-9-]+:)?${lowerName}\\s*>`, 'g');
+
+  let match: RegExpExecArray | null;
+  while ((match = open.exec(lower)) !== null) {
+    const attrsFrom = match.index + match[0].length;
+    const gt = lower.indexOf('>', attrsFrom);
+    if (gt === -1) return;
+    if (gt - attrsFrom > MAX_ATTRS_CHARS) {
+      open.lastIndex = attrsFrom;
+      continue;
+    }
+
+    close.lastIndex = gt + 1;
+    const closing = close.exec(lower);
+    if (!closing) return;
+    if (closing.index - gt > MAX_BLOCK_CHARS) {
+      open.lastIndex = gt + 1;
+      continue;
+    }
+
+    if (!onElement(body.slice(gt + 1, closing.index), body.slice(attrsFrom, gt))) return;
+    open.lastIndex = closing.index + closing[0].length;
+  }
+}
+
 function tag(block: string, name: string): string | null {
-  const match = new RegExp(`<(?:\\w+:)?${name}\\b[^>]*>([\\s\\S]*?)</(?:\\w+:)?${name}\\s*>`, 'i').exec(block);
-  if (!match) return null;
-  const value = match[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, '$1');
+  let inner: string | null = null;
+  eachElement(block, block.toLowerCase(), name, (content) => {
+    inner = content;
+    return false; // first hit wins, matching the non-global exec this replaces
+  });
+  if (inner === null) return null;
+
+  const value = (inner as string).replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, '$1');
   const text = decodeEntities(value).replace(/\s+/g, ' ').trim();
   return text || null;
 }
 
-function blocks(body: string, name: string): string[] {
-  const pattern = new RegExp(`<(?:\\w+:)?${name}\\b[^>]*>([\\s\\S]*?)</(?:\\w+:)?${name}\\s*>`, 'gi');
+function blocks(body: string, name: string, limit = MAX_PARSED_ENTRIES): string[] {
   const out: string[] = [];
-  for (const match of body.matchAll(pattern)) {
-    out.push(match[1]);
-    if (out.length >= MAX_PARSED_ENTRIES) break;
-  }
+  eachElement(body, body.toLowerCase(), name, (inner) => {
+    out.push(inner);
+    return out.length < limit;
+  });
   return out;
+}
+
+/**
+ * Reads the attributes of every `<name …>` start tag, including empty elements.
+ * Same linear discipline as `eachElement`, for the tags that have no content.
+ */
+function eachStartTag(body: string, name: string, onTag: (attrs: string) => void): void {
+  const lower = body.toLowerCase();
+  const open = new RegExp(`<(?:[a-z0-9-]+:)?${name.toLowerCase()}\\b`, 'g');
+
+  let match: RegExpExecArray | null;
+  while ((match = open.exec(lower)) !== null) {
+    const attrsFrom = match.index + match[0].length;
+    const gt = lower.indexOf('>', attrsFrom);
+    if (gt === -1) return;
+    if (gt - attrsFrom <= MAX_ATTRS_CHARS) onTag(body.slice(attrsFrom, gt));
+    open.lastIndex = gt + 1;
+  }
 }
 
 /** Resolves a possibly-relative feed href against the document it came from. */
@@ -79,7 +168,8 @@ function toIso(value: string | null): string | null {
  * `enclosure` are not. RSS's `<link>` is a text node instead, handled by `tag`.
  */
 function atomLink(block: string, baseUrl: string): string | null {
-  const links = [...block.matchAll(/<(?:\w+:)?link\b([^>]*)\/?>/gi)].map((m) => m[1]);
+  const links: string[] = [];
+  eachStartTag(block, 'link', (attrs) => links.push(attrs.replace(/\/$/, '')));
   const href = (attrs: string) => /\bhref\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1] ?? null;
   const rel = (attrs: string) => /\brel\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase() ?? null;
 
@@ -99,7 +189,9 @@ export interface ParsedFeed {
  * behaviour.
  */
 export function parseFeed(body: string, baseUrl: string): ParsedFeed | null {
-  const isAtom = /<(?:\w+:)?feed\b[^>]*>/i.test(body) && /<(?:\w+:)?entry\b/i.test(body);
+  // No `[^>]*>` on the atom probe: on a body with no `>` in it that scans to
+  // end-of-input from every `<feed` position, and the name alone identifies it.
+  const isAtom = /<(?:\w+:)?feed\b/i.test(body) && /<(?:\w+:)?entry\b/i.test(body);
   const isRss = /<(?:\w+:)?rss\b|<(?:\w+:)?channel\b/i.test(body) && /<(?:\w+:)?item\b/i.test(body);
   if (!isAtom && !isRss) return null;
 
@@ -143,7 +235,10 @@ export function parseSitemap(body: string, baseUrl: string): ParsedSitemap | nul
   const isUrlset = /<urlset\b/i.test(body);
   if (!isIndex && !isUrlset) return null;
 
-  const rows = blocks(body, isIndex ? 'sitemap' : 'url')
+  // Scanned wide, kept narrow. Sorting only what survived a document-order
+  // truncation is how the newest posts got thrown away on an oldest-first
+  // sitemap — the cap has to come after the sort, not before it.
+  const rows = blocks(body, isIndex ? 'sitemap' : 'url', MAX_SCANNED_BLOCKS)
     .map((block) => ({
       url: absolute(tag(block, 'loc'), baseUrl),
       lastmod: toIso(tag(block, 'lastmod')),
@@ -153,6 +248,7 @@ export function parseSitemap(body: string, baseUrl: string): ParsedSitemap | nul
   // Undated rows sort last rather than first: a sitemap that dates some entries
   // and not others must not surface the undated ones as "most recent".
   rows.sort((a, b) => (b.lastmod ?? '').localeCompare(a.lastmod ?? ''));
+  rows.splice(MAX_PARSED_ENTRIES);
 
   if (isIndex) {
     return { entries: [], children: rows.map((row) => row.url) };
@@ -189,14 +285,13 @@ export function mostRecent(entries: FeedEntry[], limit: number): FeedEntry[] {
  */
 export function findFeedLinks(html: string, baseUrl: string): string[] {
   const found: string[] = [];
-  for (const match of html.matchAll(/<link\b([^>]*)>/gi)) {
-    const attrs = match[1];
+  eachStartTag(html, 'link', (attrs) => {
     const rel = /\brel\s*=\s*["']?([^"'>]+)/i.exec(attrs)?.[1]?.toLowerCase() ?? '';
-    if (!rel.split(/\s+/).includes('alternate')) continue;
+    if (!rel.split(/\s+/).includes('alternate')) return;
     const type = /\btype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase() ?? '';
-    if (!/^application\/(rss\+xml|atom\+xml)$/.test(type)) continue;
+    if (!/^application\/(rss\+xml|atom\+xml)$/.test(type)) return;
     const href = absolute(/\bhref\s*=\s*["']([^"']+)["']|\bhref\s*=\s*([^"'\s>]+)/i.exec(attrs)?.slice(1).find(Boolean) ?? null, baseUrl);
     if (href && !found.includes(href)) found.push(href);
-  }
+  });
   return found;
 }

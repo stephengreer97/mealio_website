@@ -232,3 +232,49 @@ describe('import/viability — platforms that are not connected yet', () => {
     expect(report.items[0].title).toBe('Tacos');
   });
 });
+
+describe('import/viability — only the creator’s own pages are read', () => {
+  /** A feed on the creator's host whose every entry points somewhere else. */
+  function feedOfSomeoneElsesPosts(...paths: string[]): Record<string, StubRoute> {
+    const items = paths
+      .map((path) => `<item><title>${path}</title><link>https://victim.example${path}</link></item>`)
+      .join('');
+    return {
+      [HOME]: { body: '<html><head><title>Chef Sarah</title></head></html>' },
+      'https://chefsarah.test/feed': { body: `<rss><channel>${items}</channel></rss>` },
+      ...Object.fromEntries(paths.map((path) => [`https://victim.example${path}`, { body: page(path) }])),
+    };
+  }
+
+  it('never fetches an entry that is not on the creator’s site', async () => {
+    // The host rule guarded `feed_url` and nothing else, so a feed that passed
+    // it cleanly could still hand us ten of a stranger's pages — which we
+    // fetched, classified, and reported as viable under this creator's name.
+    const { calls, fetchOptions: opts } = fetchOptions(feedOfSomeoneElsesPosts('/a', '/b', '/c'));
+    const report = await runViabilityCheck('website', 'https://chefsarah.test', {
+      call: stubCaller(() => ({ verdict: 'yes', reason: 'Lists ingredients and numbered steps.' })),
+      fetchOptions: opts,
+    });
+
+    expect(calls.filter((url) => url.startsWith('https://victim.example/'))).toEqual([]);
+    expect(report.outcome).not.toBe('viable');
+    // Reported rather than silently dropped: "this creator's feed lists someone
+    // else's posts" is the single most useful thing an operator could learn here.
+    expect(report.items).toHaveLength(3);
+    expect(report.items.every((item) => item.verdict === 'error')).toBe(true);
+    expect(report.items[0].reason).toMatch(/not on https:\/\/chefsarah\.test/);
+  });
+
+  it('refuses a confirmed feed URL that is not on the creator’s site', async () => {
+    const { calls, fetchOptions: opts } = fetchOptions({});
+    const report = await runViabilityCheck('website', 'https://chefsarah.test', {
+      call: stubCaller(() => ({ verdict: 'yes', reason: 'x' })),
+      fetchOptions: opts,
+      feedUrl: 'https://attacker.test/feed',
+    });
+
+    expect(report.outcome).toBe('unavailable');
+    expect(report.summary).toMatch(/not on https:\/\/chefsarah\.test/);
+    expect(calls).toEqual([]);
+  });
+});
