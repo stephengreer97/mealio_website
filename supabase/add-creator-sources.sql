@@ -224,6 +224,26 @@ CREATE INDEX IF NOT EXISTS idx_push_tokens_user
   ON push_tokens (user_id)
   WHERE revoked_at IS NULL;
 
+-- Expo only makes a delivery receipt available a few minutes AFTER the send, and
+-- only for about a day — so the request that sends cannot be the request that
+-- learns the device is gone. The ticket ids park here and the daily cron sweeps
+-- them (MEAL-88); without that hop `revoked_at` would only ever be written for
+-- the subset of dead devices Expo happens to reject synchronously, and every
+-- future send would keep paying for the rest forever.
+--
+-- Rows are deleted as soon as they are checked, including ones Expo no longer
+-- recognises, so an expired receipt cannot wedge the queue.
+CREATE TABLE IF NOT EXISTS push_receipts (
+  ticket_id  text PRIMARY KEY,
+  -- Denormalised rather than a FK: the receipt is about THIS token, and the
+  -- token row may legitimately be gone by the time the receipt is read.
+  token      text NOT NULL,
+  created_at timestamptz DEFAULT now()
+);
+
+-- The sweep's query: oldest first, anything past the settle delay.
+CREATE INDEX IF NOT EXISTS idx_push_receipts_created ON push_receipts (created_at);
+
 -- ---------------------------------------------------------------------------
 -- 7. RLS
 --
@@ -239,3 +259,4 @@ ALTER TABLE creator_source_items      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE creator_source_state      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE creator_import_drafts     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE push_tokens               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_receipts             ENABLE ROW LEVEL SECURITY;
