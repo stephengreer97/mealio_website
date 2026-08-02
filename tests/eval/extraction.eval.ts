@@ -41,6 +41,8 @@ interface EvalItem {
   id: string;
   url: string;
   note: string;
+  /** Why a hand-written expectation says what it says, when a live run has argued with it. */
+  why?: string[];
   sourceFrom?: string;
   source?: { title: string; text: string; jsonLd: RecipeJsonLd | null };
   expected: {

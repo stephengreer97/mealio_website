@@ -3,9 +3,15 @@
   "url": "https://minimalistbaker.com/easy-1-pot-black-bean-soup/",
   "note": "Recorded page. 17 ingredients, HowToStep instruction objects, optional/garnish lines.",
   "sourceFrom": "minimalistbaker-black-bean-soup.html",
+  "why": [
+    "serves expected '4 (Large bowls)' until 2026-08-01. That string predates the serves spec and",
+    "the pipeline cannot emit it: serves is a people count, digits only, enforced by /^\\d+(-\\d+)?$/.",
+    "The page's yield is '4 (Large bowls)', so '4' is the people count and the parenthetical is the",
+    "vessel. The fixture was wrong, not the model."
+  ],
   "expected": {
     "name": "Easy 1-Pot Black Bean Soup",
-    "serves": "4 (Large bowls)",
+    "serves": "4",
     "ingredientCountRange": [
       14,
       18
