@@ -241,7 +241,7 @@ describe('import/vocab — canonicalizeServes', () => {
     ['4 servings', '4 servings', '4'],
     ['6', 'Feeds a family of 6', '6'],
     ['8', '8 people', '8'],
-    ['4', '4 (Large bowls)', '4'],
+    ['6', 'Serves 6 generously', '6'],
   ])('keeps %s from %s', (value, evidence, expected) => {
     expect(canonicalizeServes(value, evidence)).toBe(expected);
   });
@@ -258,6 +258,33 @@ describe('import/vocab — canonicalizeServes', () => {
   it('drops a serving count read off a batch of items', () => {
     expect(canonicalizeServes('12', 'Makes about 12 pancakes')).toBeNull();
     expect(canonicalizeServes('24', '24 cookies')).toBeNull();
+  });
+
+  it('drops a batch of an item nobody put on a list', () => {
+    // The reason this is an allowlist now. A denylist of yield nouns passes
+    // every noun nobody thought of, and the span really is on the page, so all
+    // of these read green. The set of things a recipe can yield is open; the
+    // set of ways to say "people" is not.
+    expect(canonicalizeServes('12', 'Makes 12 empanadas')).toBeNull();
+    expect(canonicalizeServes('24', 'Makes 24 arancini')).toBeNull();
+    expect(canonicalizeServes('30', 'Yields 30 dumplings')).toBeNull();
+    // A recorded page publishes this as its recipeYield. Four bowls is a yield
+    // in a vessel, not a statement about how many people eat — and guessing
+    // costs the creator a wrong number they never look at, where dropping it
+    // costs one keystroke. Same trade the extraction prompt already asks for.
+    expect(canonicalizeServes('4', '4 (Large bowls)')).toBeNull();
+  });
+
+  it('does not read a serving suggestion as a head count', () => {
+    // "Serve" the imperative is not "serves" the count. This sentence is
+    // genuinely on the guacamole page, which is what makes it dangerous.
+    expect(canonicalizeServes('48', 'Serve it with tortilla chips at your next party')).toBeNull();
+  });
+
+  it('drops a count with no span to place it against', () => {
+    expect(canonicalizeServes('4', null)).toBeNull();
+    expect(canonicalizeServes('4', '')).toBeNull();
+    expect(canonicalizeServes('4')).toBeNull();
   });
 
   it('keeps a count when the span says people even alongside an item word', () => {
