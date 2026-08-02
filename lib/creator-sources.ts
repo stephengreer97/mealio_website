@@ -74,6 +74,16 @@ export type LinkResult =
   | { ok: false; error: string };
 
 /**
+ * Longest link we will normalise or store.
+ *
+ * Nothing legitimate comes close — browsers and CDNs give up long before this.
+ * A link is stored once and then read back forever: into server-side fetches,
+ * into log lines, into the admin UI. A 200 KB "URL" normalises perfectly well
+ * today, and every one of those places is somewhere it does not belong.
+ */
+const MAX_LINK_CHARS = 2048;
+
+/**
  * Normalises one platform link.
  *
  * Lenient on purpose. A creator typing `chefsarah.com` or leaving a trailing
@@ -86,6 +96,9 @@ export type LinkResult =
 export function normalizePlatformUrl(source: PlatformSource, raw: unknown): LinkResult {
   const input = typeof raw === 'string' ? raw.trim() : '';
   if (!input) return { ok: true, url: null };
+  if (input.length > MAX_LINK_CHARS) {
+    return { ok: false, error: `That link is ${input.length} characters long; the limit is ${MAX_LINK_CHARS}. Example: ${EXAMPLES[source]}` };
+  }
 
   // A bare `chefsarah.com` is what most people type, so a missing scheme is
   // filled in rather than rejected. A scheme that *is* present has to be a real
@@ -117,13 +130,18 @@ export function normalizePlatformUrl(source: PlatformSource, raw: unknown): Link
   url.password = '';
   url.hash = '';
 
-  const host = url.hostname.toLowerCase();
+  // The DNS root's trailing dot names the same host but compares as a different
+  // string, and this value is later matched against a feed's host — a creator
+  // stored as `chefsarah.test.` could never confirm a feed on `chefsarah.test`,
+  // in either direction, so they could never be opted in at all.
+  const host = url.hostname.toLowerCase().replace(/\.+$/, '');
   // No dot means `localhost` or an intranet name; a bare IP is never a creator's
   // published home. Both are refused at fetch time too — this is the early, and
   // legible, rejection.
   if (!host.includes('.') || /^\d+(\.\d+)*$/.test(host) || host.includes('[')) {
     return { ok: false, error: `"${url.hostname}" is not a public website. Example: ${EXAMPLES[source]}` };
   }
+  url.hostname = host;
 
   const expected = PLATFORM_HOSTS[source];
   if (expected) {
@@ -217,6 +235,58 @@ export function toSourceColumns(
     row[SOURCE_COLUMNS[source]] = urls[source] ?? null;
   }
   return row;
+}
+
+// ── "Is this on the creator's own site?" ─────────────────────────────────────
+
+/** A hostname in the form two links can be compared on, or null if unparseable. */
+function comparableHost(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/\.+$/, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is `candidateUrl` on the same site as `siteUrl`?
+ *
+ * Exact host, a subdomain of it, or the apex of a `www.` site. Deliberately
+ * *not* "shares a parent domain": `sarah.wordpress.com` and `wordpress.com`
+ * share one, and `sarah.github.io` and `github.io`, so that rule accepts a feed
+ * on the hosting platform's own root — every other tenant's posts, imported
+ * under this creator's name. Answering "is this a registrable domain" properly
+ * needs the public suffix list, which is a couple of hundred kilobytes and a
+ * standing update obligation for one comparison in this repository. The only
+ * parent-direction match that happens in real life is a creator who pastes
+ * `www.chefsarah.test` whose feed sits on the apex, so that is the only one
+ * allowed.
+ *
+ * Used everywhere a creator-supplied URL decides what our server fetches: the
+ * stored `feed_url`, the hrefs a homepage advertises, and the item URLs inside
+ * the feed itself.
+ */
+export function isOnSameSite(siteUrl: string, candidateUrl: string): boolean {
+  const site = comparableHost(siteUrl);
+  const candidate = comparableHost(candidateUrl);
+  if (!site || !candidate) return false;
+  return candidate === site || candidate.endsWith(`.${site}`) || site === `www.${candidate}`;
+}
+
+/**
+ * The operator-facing complaint when a URL is not on the creator's own site, or
+ * null when it is.
+ *
+ * Shared by the two admin routes that accept a feed URL, because a rule enforced
+ * on one of them and not the other is the rule not existing.
+ */
+export function describeHostMismatch(websiteUrl: string, feedUrl: string): string | null {
+  if (!websiteUrl) return "Set the creator's website link before storing a feed URL.";
+  const site = comparableHost(websiteUrl);
+  const feed = comparableHost(feedUrl);
+  if (!site || !feed) return 'Feed URL: that is not a URL we can fetch.';
+  if (isOnSameSite(websiteUrl, feedUrl)) return null;
+  return `That feed (${feed}) is not on the creator's own site (${site}). Refusing it: a feed on someone else's host would import their recipes under this creator's name.`;
 }
 
 // ── Known-unsupported sources ────────────────────────────────────────────────
@@ -349,12 +419,21 @@ export function summariseCreatorViability(
     };
   }
 
+  // "Checked" is not true of a source ruled out before anything was fetched — a
+  // Medium-only creator reaches here having had nothing read at all. This is the
+  // sentence an operator relays to the creator, so it says what happened.
+  const unsupported = present.filter((source) => outcomes[source] === 'unsupported');
+  const ruledOut = unsupported.length > 0
+    ? ` ${unsupported.map((source) => SOURCE_LABELS[source]).join(', ')} was ruled out without fetching ` +
+      'anything — see the known-unsupported list for why.'
+    : '';
+
   return {
     importable: false,
     summary:
-      'Every link this creator gave us was checked and none of them are importable. This creator is not ' +
-      'importable — tell them plainly rather than onboarding them into a feature that will do nothing ' +
-      'for them.',
+      'Every link this creator gave us has been ruled out, and none of them are importable.' +
+      `${ruledOut} This creator is not importable — tell them plainly rather than onboarding them ` +
+      'into a feature that will do nothing for them.',
     unchecked: [],
   };
 }

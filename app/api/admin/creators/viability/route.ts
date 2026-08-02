@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
-import { isPlatformSource, SOURCE_COLUMNS, SOURCE_LABELS } from '@/lib/creator-sources';
+import {
+  describeHostMismatch,
+  isPlatformSource,
+  normalizePlatformUrl,
+  SOURCE_COLUMNS,
+  SOURCE_LABELS,
+} from '@/lib/creator-sources';
 import { runViabilityCheck } from '@/lib/import/viability';
 
 /**
@@ -70,9 +76,25 @@ export async function POST(request: NextRequest) {
 
   // A feed the operator has already confirmed is re-read rather than
   // re-discovered; re-deriving it would make the confirmation meaningless.
-  const feedUrl = typeof body.feedUrl === 'string' && body.feedUrl.trim()
-    ? body.feedUrl.trim()
-    : (typeof creator.feed_url === 'string' ? creator.feed_url : null);
+  //
+  // A feed URL in the *body* has been confirmed by nobody — it is whatever the
+  // caller typed, and it is fetched, parsed, and its entries fetched in turn. So
+  // it gets the same host rule PATCH applies before storing one: a rule enforced
+  // on the endpoint that writes the value and not on the endpoint that acts on
+  // it is the rule not existing.
+  let feedUrl = typeof creator.feed_url === 'string' ? creator.feed_url : null;
+  if (typeof body.feedUrl === 'string' && body.feedUrl.trim()) {
+    const requested = normalizePlatformUrl('website', body.feedUrl);
+    if (!requested.ok) {
+      return NextResponse.json({ error: `Feed URL: ${requested.error}` }, { status: 400 });
+    }
+    const website = typeof creator.website_url === 'string' ? creator.website_url : '';
+    const mismatch = requested.url ? describeHostMismatch(website, requested.url) : null;
+    if (mismatch) {
+      return NextResponse.json({ error: mismatch }, { status: 400 });
+    }
+    feedUrl = requested.url;
+  }
 
   const report = await runViabilityCheck(source, link, {
     feedUrl: source === 'website' ? feedUrl : null,

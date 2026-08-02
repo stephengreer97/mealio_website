@@ -107,6 +107,56 @@ describe('import/feed — sitemaps', () => {
   it('returns null for anything that is not a sitemap', () => {
     expect(parseSitemap('<html></html>', 'https://x.test/sitemap.xml')).toBeNull();
   });
+
+  it('keeps the newest rows of an oldest-first sitemap, not the first ones it read', () => {
+    // WordPress emits post sitemaps oldest-first. Capping the scan in document
+    // order and sorting afterwards discarded exactly the entries the probe and
+    // the poller exist to see, so the probe measured a creator's oldest posts
+    // and the poller would never have found anything new.
+    const rows = Array.from({ length: 600 }, (_, i) =>
+      `<url><loc>https://x.test/post-${i}</loc><lastmod>${new Date(Date.UTC(2020, 0, 1) + i * 86_400_000).toISOString()}</lastmod></url>`,
+    ).join('');
+
+    const parsed = parseSitemap(`<urlset>${rows}</urlset>`, 'https://x.test/sitemap.xml')!;
+    expect(parsed.entries[0].url).toBe('https://x.test/post-599');
+    expect(mostRecent(parsed.entries, 3).map((e) => e.url)).toEqual([
+      'https://x.test/post-599',
+      'https://x.test/post-598',
+      'https://x.test/post-597',
+    ]);
+  });
+});
+
+describe('import/feed — a body that is trying to hurt us', () => {
+  /**
+   * The regression this file did not have.
+   *
+   * `<item\b[^>]*>([\s\S]*?)</item\s*>` over a body whose closing tag never
+   * arrives expands the lazy span to end-of-input from every start position:
+   * 36 ms at 64 KB, 596 ms at 256 KB, 9 s at 1 MB, 39 s at 2 MB. That is
+   * synchronous CPU on a single-threaded runtime — the whole function instance,
+   * not just the request — and one *Check viability* click walks a ladder with
+   * seven parse opportunities. The fetcher's 2 MB cap is a network budget and
+   * bounds none of it.
+   *
+   * The bound below is deliberately loose. It is not a benchmark; it is the line
+   * between linear and quadratic, and a fifth occurrence of this bug lands
+   * several orders of magnitude the wrong side of it.
+   */
+  const BUDGET_MS = 2_000;
+
+  it.each([
+    ['an RSS body of 175k unclosed <item> tags', '<rss><channel>' + '<item x="1">'.repeat(175_000)],
+    ['a sitemap of 190k unclosed <url> tags', '<urlset>' + '<url a="1">'.repeat(190_000)],
+    ['350k unterminated tags — no ">" anywhere', '<rss><channel><item>' + '<link '.repeat(350_000)],
+  ])('parses %s without blocking the event loop', (_label, body) => {
+    const started = Date.now();
+    // Both parsers run over the same body in `readFeed`, so both are timed.
+    parseFeed(body, 'https://x.test/feed');
+    parseSitemap(body, 'https://x.test/sitemap.xml');
+    findFeedLinks(body, 'https://x.test/');
+    expect(Date.now() - started).toBeLessThan(BUDGET_MS);
+  });
 });
 
 describe('import/feed — helpers', () => {

@@ -24,6 +24,7 @@
  */
 
 import {
+  isOnSameSite,
   knownUnsupportedSource,
   unsupportedSourceById,
   SOURCE_LABELS,
@@ -35,7 +36,7 @@ import { createStructuredCaller, type StructuredCaller } from './anthropic';
 import { discoverFeed, readFeed, type DiscoveredFeed } from './feed-discovery';
 import { classifySource } from './gate';
 import { toSourceDocument } from './html';
-import { loadRobots } from './robots';
+import { robotsPerOrigin } from './robots';
 import { safeFetch, type SafeFetchOptions } from './ssrf';
 import type { FeedEntry } from './feed';
 import type { GateVerdictValue } from './types';
@@ -152,9 +153,14 @@ async function mapWithConcurrency<T, R>(
  * Website probe: discover (or re-read) the feed, then read the most recent
  * entries.
  *
- * robots.txt is loaded once for the origin and consulted for every URL,
- * including each item page — ten requests to a creator's own site should not
- * involve ten requests for the same robots.txt.
+ * robots.txt is loaded once per origin and consulted for every URL, including
+ * each item page — ten requests to a creator's own site should not involve ten
+ * requests for the same robots.txt.
+ *
+ * Everything fetched here has to be on the creator's own site. That is what
+ * `feed_url` means, and it is the check that was missing: the *feed's* host was
+ * being policed while the item URLs inside it — the pages actually fetched,
+ * classified and reported — were not policed anywhere at all.
  */
 export const websiteProbe: SourceProbe = {
   source: 'website',
@@ -167,7 +173,16 @@ export const websiteProbe: SourceProbe = {
       return { ok: false, detail: `"${link}" is not a URL we can fetch.` };
     }
 
-    const robots = await loadRobots(origin, context.fetchOptions);
+    if (context.feedUrl && !isOnSameSite(link, context.feedUrl)) {
+      return {
+        ok: false,
+        detail:
+          `${context.feedUrl} is not on ${origin}. A feed on someone else's host would have us read ` +
+          "and report a stranger's posts under this creator's name.",
+      };
+    }
+
+    const robots = robotsPerOrigin(context.fetchOptions);
     const discoveryOptions = {
       robots,
       fetchOptions: context.fetchOptions,
@@ -195,7 +210,21 @@ export const websiteProbe: SourceProbe = {
     }
 
     const items = await mapWithConcurrency(entries, FETCH_CONCURRENCY, async (entry): Promise<ProbedItem> => {
-      const allowed = robots.check(entry.url);
+      // The feed is the creator's; the URLs it lists are only theirs by
+      // convention. A feed on their host whose ten `<link>`s all point at
+      // somewhere else reads as perfectly viable otherwise — we would fetch a
+      // stranger's pages, classify them, and report them as this creator's work.
+      if (!isOnSameSite(link, entry.url)) {
+        return {
+          url: entry.url,
+          title: entry.title ?? entry.url,
+          text: '',
+          hasRecipeJsonLd: false,
+          error: `Not fetched: this entry is not on ${origin}, so it is not this creator's own post.`,
+        };
+      }
+
+      const allowed = (await robots.for(entry.url)).check(entry.url);
       if (!allowed.allowed) {
         return { url: entry.url, title: entry.title ?? entry.url, text: '', hasRecipeJsonLd: false, error: allowed.detail };
       }

@@ -33,7 +33,7 @@ import { log } from '@/lib/logger';
 import { SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
 import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
-import { loadRobots } from '@/lib/import/robots';
+import { robotsPerOrigin } from '@/lib/import/robots';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
 import { formatTelemetry } from '@/lib/import/telemetry';
 import type { FeedKind } from '@/lib/import/feed';
@@ -215,14 +215,16 @@ export async function buildCatalog(
     return { ok: false, reason: 'no-link', detail: `This creator has no ${SOURCE_LABELS[source]} link.` };
   }
 
-  let origin: string;
   try {
-    origin = new URL(creator.feed_url || link).origin;
+    new URL(creator.feed_url || link);
   } catch {
     return { ok: false, reason: 'no-link', detail: `"${link}" is not a URL we can fetch.` };
   }
 
-  const robots = await loadRobots(origin, deps.fetchOptions);
+  // Per origin, not per run. A feed and the item pages inside it can sit on
+  // different hosts, and applying one host's robots.txt to another's URLs is how
+  // a Disallow we were told about goes unread.
+  const robots = robotsPerOrigin(deps.fetchOptions);
   const options = { robots, fetchOptions: deps.fetchOptions, maxEntries: CATALOG_MAX_ENTRIES };
   const discovery: FeedDiscoveryResult = creator.feed_url
     ? await readFeed(creator.feed_url, options)

@@ -114,6 +114,11 @@ export interface RobotsRules {
   check(targetUrl: string): RobotsCheck;
 }
 
+/** robots.txt for whichever origin a URL belongs to. */
+export interface RobotsSource {
+  for(targetUrl: string): Promise<RobotsRules>;
+}
+
 /** Rules that allow everything, with the reason we ended up here. */
 function permissive(detail: string): RobotsRules {
   return { check: () => ({ allowed: true, detail }) };
@@ -170,6 +175,40 @@ export async function loadRobots(
           ? `Allowed by robots.txt for ${USER_AGENT}`
           : `Disallowed by ${robotsUrl} for ${USER_AGENT}`,
       };
+    },
+  };
+}
+
+/**
+ * robots.txt for any origin, fetched once per origin and remembered.
+ *
+ * `loadRobots` answers for the origin it was given, but its `check` will just as
+ * happily be asked about a URL somewhere else — which is how one site's rules
+ * came to be applied to another site's pages, with the second site's own
+ * robots.txt never fetched and its `Disallow` lines never read. Keying the cache
+ * by the origin of the URL being asked about is what makes the answer belong to
+ * the question.
+ *
+ * The promise is cached, not the result, so ten concurrent item fetches on one
+ * origin still make one request rather than ten.
+ */
+export function robotsPerOrigin(options: SafeFetchOptions = {}): RobotsSource {
+  const byOrigin = new Map<string, Promise<RobotsRules>>();
+
+  return {
+    for(targetUrl: string): Promise<RobotsRules> {
+      let origin: string;
+      try {
+        origin = new URL(targetUrl).origin;
+      } catch {
+        return Promise.resolve(permissive('Unparseable URL; robots.txt not checked'));
+      }
+      let rules = byOrigin.get(origin);
+      if (!rules) {
+        rules = loadRobots(origin, options);
+        byOrigin.set(origin, rules);
+      }
+      return rules;
     },
   };
 }

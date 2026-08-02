@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { discoverFeed, readFeed } from '@/lib/import/feed-discovery';
-import type { RobotsRules } from '@/lib/import/robots';
+import type { RobotsRules, RobotsSource } from '@/lib/import/robots';
 import { publicLookup, stubFetch, type StubRoute } from '../helpers/import-stubs';
 
 const HOME = 'https://chefsarah.test/';
@@ -13,9 +13,14 @@ const RSS_BODY = `<rss><channel>
 /** robots.txt that allows everything — the fail-open default. */
 const allowAll: RobotsRules = { check: () => ({ allowed: true, detail: 'allowed' }) };
 
+/** The same rules for every origin, so a test can ignore robots entirely. */
+function everywhere(rules: RobotsRules): RobotsSource {
+  return { for: async () => rules };
+}
+
 function options(routes: Record<string, StubRoute>, robots: RobotsRules = allowAll) {
   const { impl, calls } = stubFetch(routes);
-  return { calls, options: { robots, fetchOptions: { fetchImpl: impl, lookup: publicLookup } } };
+  return { calls, options: { robots: everywhere(robots), fetchOptions: { fetchImpl: impl, lookup: publicLookup } } };
 }
 
 describe('import/feed-discovery — the ladder', () => {
@@ -117,6 +122,47 @@ describe('import/feed-discovery — the ladder', () => {
     const { options: opts } = options({ [HOME]: { status: 403, body: 'forbidden' } });
     const result = await discoverFeed('https://chefsarah.test', opts);
     expect(!result.ok && result.reason).toBe('blocked-by-site');
+  });
+
+  describe('a homepage is not a list of addresses we will fetch', () => {
+    it('follows no advertised feed off the creator’s own site', async () => {
+      // 2,000 of these produced 2,000 sequential cross-origin fetches, at
+      // attacker-chosen hosts, from one *Check viability* click. `feed_url`
+      // means "where this creator publishes"; none of these are that.
+      const decoys = Array.from({ length: 2_000 }, (_, i) =>
+        `<link rel="alternate" type="application/rss+xml" href="https://victim-${i}.example/wp-login.php">`,
+      ).join('');
+      const { options: opts, calls } = options({ [HOME]: { body: `<head>${decoys}</head>` } });
+
+      const result = await discoverFeed('https://chefsarah.test', opts);
+      expect(calls.filter((url) => url.includes('victim-'))).toEqual([]);
+      expect(!result.ok && result.reason).toBe('no-feed');
+    });
+
+    it('follows only a handful of advertised feeds, even on the creator’s own site', async () => {
+      const many = Array.from({ length: 50 }, (_, i) =>
+        `<link rel="alternate" type="application/rss+xml" href="/feed-${i}.xml">`,
+      ).join('');
+      const { options: opts, calls } = options({ [HOME]: { body: `<head>${many}</head>` } });
+
+      await discoverFeed('https://chefsarah.test', opts);
+      expect(calls.filter((url) => url.includes('/feed-')).length).toBeLessThanOrEqual(5);
+    });
+
+    it('still finds the one real feed buried in a wall of off-site decoys', async () => {
+      // The cap is applied after the filter for exactly this reason: a wall of
+      // decoys must not be able to push the genuine feed out of the window.
+      const decoys = Array.from({ length: 2_000 }, (_, i) =>
+        `<link rel="alternate" type="application/rss+xml" href="https://victim-${i}.example/x">`,
+      ).join('');
+      const { options: opts } = options({
+        [HOME]: { body: `<head>${decoys}<link rel="alternate" type="application/rss+xml" href="/feed.xml"></head>` },
+        'https://chefsarah.test/feed.xml': { body: RSS_BODY },
+      });
+
+      const result = await discoverFeed('https://chefsarah.test', opts);
+      expect(result.ok && result.feed.url).toBe('https://chefsarah.test/feed.xml');
+    });
   });
 
   it('refuses a private address before any request is made', async () => {
