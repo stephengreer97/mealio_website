@@ -62,30 +62,96 @@ const RECEIPT_SETTLE_MS = 15 * 60 * 1000;
 /** Ceiling on one sweep so the daily cron cannot run away on a bad day. */
 const RECEIPT_SWEEP_LIMIT = 2000;
 
+/**
+ * Hard TTL on a queued receipt. Expo keeps one for about a day, so a row older
+ * than this can never tell us anything again and exists only to be cleared.
+ */
+const RECEIPT_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * How many ids may ride in one `.in()` filter.
+ *
+ * PostgREST filters go in the QUERY STRING, not the body, so an id list is URL
+ * length. Measured against supabase-js: 2000 ticket ids is a 78 KB DELETE URL
+ * and 2000 Expo tokens is a 96 KB PATCH URL. Supabase fronts PostgREST with
+ * Cloudflare and Kong, which reject URIs in the 8–16 KB range — so an unchunked
+ * sweep does not slow down, it 414s, and every filtered write in this module
+ * silently stops working the day a send gets big enough. 100 ids is under 5 KB
+ * for both shapes, which leaves room for the rest of the URL and for a proxy
+ * stricter than we measured.
+ */
+const FILTER_CHUNK = 100;
+
+function chunked<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 type Supabase = ReturnType<typeof createServerSupabaseClient>;
 
-async function revokeTokens(supabase: Supabase, tokens: string[], reason: string): Promise<number> {
+/**
+ * Marks `tokens` revoked and returns how many ROWS that actually changed.
+ *
+ * Not the number of tokens handed in: a token already revoked by the ticket
+ * path, by DELETE /api/push/register, or by a concurrent sweep matches nothing.
+ * The cron reports this as `pushTokensPruned`, and a count that includes rows
+ * it did not touch is the one number an operator has for "is the prune state
+ * machine working" saying yes when it isn't.
+ *
+ * `notSeenSince` guards the receipt path: a receipt describes a device as it
+ * was at SEND time, and a device that has registered again since is live. The
+ * two are indistinguishable by token alone — a reinstall gets the same address
+ * back — so without the guard a sweep can revoke a device that came back, which
+ * costs the user a notification cycle and does not self-heal at all if they
+ * have since opted out locally.
+ */
+async function revokeTokens(
+  supabase: Supabase,
+  tokens: string[],
+  reason: string,
+  opts: { notSeenSince?: string } = {},
+): Promise<number> {
   if (tokens.length === 0) return 0;
-  const { error } = await supabase
-    .from('push_tokens')
-    .update({ revoked_at: new Date().toISOString() })
-    .in('token', tokens)
-    .is('revoked_at', null);
-  if (error) {
-    log({ event: 'PUSH:REVOKE', status: 'error', error, detail: reason });
-    return 0;
+
+  let revoked = 0;
+  for (const batch of chunked(tokens, FILTER_CHUNK)) {
+    let query = supabase
+      .from('push_tokens')
+      .update({ revoked_at: new Date().toISOString() })
+      .in('token', batch)
+      .is('revoked_at', null);
+    if (opts.notSeenSince) query = query.lt('last_seen_at', opts.notSeenSince);
+
+    // .select() so the count is the rows PostgREST changed, not our guess.
+    const { data, error } = await query.select('token');
+    if (error) {
+      // Keep going: one failed batch should cost that batch, not the rest.
+      log({ event: 'PUSH:REVOKE', status: 'error', error, detail: reason });
+      continue;
+    }
+    revoked += data?.length ?? 0;
   }
-  log({ event: 'PUSH:REVOKE', status: 'success', detail: `${tokens.length} ${reason}` });
-  return tokens.length;
+
+  log({ event: 'PUSH:REVOKE', status: 'success', detail: `${revoked}/${tokens.length} ${reason}` });
+  return revoked;
 }
 
 /**
  * Sends `message` to every live device belonging to `userIds`.
  *
- * A push_tokens row exists only because the user granted OS permission and the
- * app registered the device, and it is revoked the moment that stops being true
- * — so "has an unrevoked row" IS the opt-in check, and there is no path here
- * that sends to anyone else. No rows means no send, not a fallback.
+ * A push_tokens row exists only because that DEVICE was granted OS permission
+ * and registered while this account was signed in, and it is revoked the moment
+ * either stops being true — so "has an unrevoked row" IS the opt-in check, and
+ * there is no path here that sends to anyone else. No rows means no send, not a
+ * fallback.
+ *
+ * Consent is device-scoped, not account-scoped, and deliberately so: the OS
+ * grant and the in-app opt-out both live on the handset. On a shared phone that
+ * means the second person to sign in inherits the first person's grant without
+ * seeing a prompt, and inherits their opt-out without seeing a reason. That is
+ * the same bargain every app on the device makes with the OS permission model,
+ * but it is NOT "this user asked for notifications" — do not read it as one.
  */
 export async function sendPushToUsers(
   userIds: string[],
@@ -190,6 +256,13 @@ export async function sendPushToUsers(
  * Every row selected is deleted whether or not Expo still knows the ticket:
  * receipts live about a day, so a row kept until it "succeeds" would be retried
  * forever.
+ *
+ * That per-id dequeue is chunked (see FILTER_CHUNK) and can still fail per
+ * batch, so it is backed by a TTL purge that deletes by created_at RANGE — one
+ * short URL whatever the row count. The selection window is oldest-first, so
+ * without that backstop a batch of rows the dequeue could not delete would sit
+ * at the head of it forever and, once there were enough of them, no receipt
+ * written after would ever be read again.
  */
 export async function checkPushReceipts(
   opts: { client?: PushClient; now?: Date } = {},
@@ -198,9 +271,18 @@ export async function checkPushReceipts(
   const cutoff = new Date(now.getTime() - RECEIPT_SETTLE_MS).toISOString();
 
   const supabase = createServerSupabaseClient();
+
+  // Before selecting, not after: a row past the TTL cannot be acted on, and
+  // leaving it in place would let it occupy this run's window too.
+  const { error: purgeErr } = await supabase
+    .from('push_receipts')
+    .delete()
+    .lt('created_at', new Date(now.getTime() - RECEIPT_MAX_AGE_MS).toISOString());
+  if (purgeErr) log({ event: 'PUSH:RECEIPTS', status: 'error', error: purgeErr, detail: 'ttl purge' });
+
   const { data, error } = await supabase
     .from('push_receipts')
-    .select('ticket_id, token')
+    .select('ticket_id, token, created_at')
     .lt('created_at', cutoff)
     .order('created_at')
     .limit(RECEIPT_SWEEP_LIMIT);
@@ -210,12 +292,15 @@ export async function checkPushReceipts(
     return { checked: 0, revoked: 0 };
   }
 
-  const rows = (data ?? []) as Array<{ ticket_id: string; token: string }>;
+  const rows = (data ?? []) as Array<{ ticket_id: string; token: string; created_at: string }>;
   if (rows.length === 0) return { checked: 0, revoked: 0 };
 
-  const tokenByTicket = new Map(rows.map((r) => [r.ticket_id, r.token]));
+  const rowByTicket = new Map(rows.map((r) => [r.ticket_id, r]));
   const client = opts.client ?? getClient();
-  const dead: string[] = [];
+  // Keyed by the receipt's created_at — the moment the send happened — because
+  // that is what a token has to have gone quiet since to count as dead. Rows
+  // from one send share a timestamp, so this is a handful of keys per sweep.
+  const deadBySentAt = new Map<string, Set<string>>();
   const done: string[] = [];
 
   for (const chunk of client.chunkPushNotificationReceiptIds(rows.map((r) => r.ticket_id))) {
@@ -232,19 +317,24 @@ export async function checkPushReceipts(
     done.push(...chunk);
     for (const [ticketId, receipt] of Object.entries(batch)) {
       if (receipt.status !== 'error') continue;
-      const token = tokenByTicket.get(ticketId);
-      if (receipt.details?.error === 'DeviceNotRegistered' && token) {
-        dead.push(token);
+      const row = rowByTicket.get(ticketId);
+      if (receipt.details?.error === 'DeviceNotRegistered' && row) {
+        const bucket = deadBySentAt.get(row.created_at) ?? new Set<string>();
+        bucket.add(row.token);
+        deadBySentAt.set(row.created_at, bucket);
       } else {
         log({ event: 'PUSH:RECEIPTS', status: 'failed', reason: receipt.details?.error ?? 'unknown', detail: receipt.message });
       }
     }
   }
 
-  const revoked = await revokeTokens(supabase, [...new Set(dead)], 'DeviceNotRegistered (receipt)');
+  let revoked = 0;
+  for (const [sentAt, tokens] of deadBySentAt) {
+    revoked += await revokeTokens(supabase, [...tokens], 'DeviceNotRegistered (receipt)', { notSeenSince: sentAt });
+  }
 
-  if (done.length > 0) {
-    const { error: deleteErr } = await supabase.from('push_receipts').delete().in('ticket_id', done);
+  for (const batch of chunked(done, FILTER_CHUNK)) {
+    const { error: deleteErr } = await supabase.from('push_receipts').delete().in('ticket_id', batch);
     if (deleteErr) log({ event: 'PUSH:RECEIPTS', status: 'error', error: deleteErr, detail: 'dequeue' });
   }
 

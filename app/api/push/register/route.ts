@@ -33,6 +33,35 @@ export async function POST(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const now = new Date().toISOString();
 
+  // A push token addresses a DEVICE, and devices change hands: a shared or
+  // hand-me-down phone signs in as someone new and has to start receiving THEIR
+  // notifications, so registering a token another account holds must succeed.
+  //
+  // What it must not do is silently rewrite that account's row. An upsert keyed
+  // on the token alone would move `user_id` under them and leave nothing behind
+  // saying it happened — so a handover and a takeover by someone who scraped a
+  // token out of a crash report look identical, and neither is visible. Retire
+  // the other account's claim first, as its own recorded write.
+  //
+  // This is not a defence against a leaked token: only the handset can prove it
+  // holds one, and it has no way to. It bounds the damage instead — the
+  // displaced row survives as revoked, the log names both accounts, and the
+  // displaced user's next launch re-registers and takes the device back.
+  const { data: displaced, error: displaceErr } = await supabase
+    .from('push_tokens')
+    .update({ revoked_at: now })
+    .eq('token', token)
+    .neq('user_id', user.userId)
+    .is('revoked_at', null)
+    .select('user_id');
+
+  if (displaceErr) {
+    // Fail closed. Enrolling on top of a claim we could not retire leaves two
+    // accounts live on one handset, and both of them getting the other's push.
+    log({ event: 'PUSH:REGISTER', status: 'error', userId: user.userId, error: displaceErr, detail: 'displace' });
+    return NextResponse.json({ error: 'Failed to register device' }, { status: 500 });
+  }
+
   const { error } = await supabase.from('push_tokens').upsert(
     {
       user_id: user.userId,
@@ -44,7 +73,9 @@ export async function POST(request: NextRequest) {
       // receiving again, so re-registering un-revokes.
       revoked_at: null,
     },
-    { onConflict: 'token' },
+    // (user_id, token), not token: one row per account per device is what lets
+    // the displaced row above survive alongside the new one.
+    { onConflict: 'user_id,token' },
   );
 
   if (error) {
@@ -68,11 +99,12 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const took = displaced?.length ? ` displaced=${displaced.map((r: { user_id: string }) => r.user_id).join(',')}` : '';
   log({
     event: 'PUSH:REGISTER',
     status: 'success',
     userId: user.userId,
-    detail: previous && previous !== token ? 'rotated' : 'registered',
+    detail: `${previous && previous !== token ? 'rotated' : 'registered'}${took}`,
   });
   return NextResponse.json({ ok: true });
 }

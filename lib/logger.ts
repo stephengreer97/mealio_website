@@ -87,6 +87,7 @@ export type EventType =
   | 'PUSH:REVOKE'           // token pruned (DeviceNotRegistered)
   // ── Cron ──────────────────────────────────────────────────────────────────
   | 'CRON:DAILY'
+  | 'CRON:PUSH_RECEIPTS'    // second, offset receipt sweep
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'

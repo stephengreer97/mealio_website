@@ -5,18 +5,20 @@ import { checkPushReceipts } from '@/lib/push';
 
 export const dynamic = 'force-dynamic';
 
-// Single daily cron for all lifecycle passes — kept to one job so we stay
-// within Vercel Hobby's cron limits (see vercel.json). Vercel injects
-// `Authorization: Bearer <CRON_SECRET>` on scheduled invocations.
+// Daily cron for the lifecycle passes that must run exactly once a day —
+// everything email. Vercel injects `Authorization: Bearer <CRON_SECRET>` on
+// scheduled invocations.
 //
 // The two email passes route through sendMarketingEmail() (suppression + dedup
 // + the physical-address gate handled there), so nothing sends until
 // MEALIO_MAILING_ADDRESS is set to a real address.
 //
 // The push pass sends nothing — it reads settled Expo delivery receipts and
-// prunes the tokens of uninstalled apps (MEAL-88). It rides along here because
-// receipts are only readable for about a day, so it has to run on a schedule and
-// this is the only one we get.
+// prunes the tokens of uninstalled apps (MEAL-88). It rides along here so a
+// receipt written just after the other sweep still gets read the same day; the
+// second, offset pass lives at /api/cron/push-receipts, which explains why a
+// once-daily sweep is not enough. The pass is idempotent, so running it from
+// two schedules is free.
 export async function GET(request: NextRequest) {
   // Fail CLOSED if the cron secret isn't configured — never run unauthenticated.
   const secret = process.env.CRON_SECRET;
