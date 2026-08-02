@@ -19,6 +19,10 @@ export async function GET(request: NextRequest) {
       display_name,
       phone,
       find_us,
+      website_url,
+      youtube_url,
+      instagram_url,
+      tiktok_url,
       status,
       created_at,
       user_profiles!user_id ( email )
@@ -51,7 +55,7 @@ export async function PATCH(request: NextRequest) {
   // Fetch the application
   const { data: app, error: fetchError } = await supabase
     .from('creator_applications')
-    .select('user_id, display_name, photo_url, handle, user_profiles!user_id ( email )')
+    .select('user_id, display_name, photo_url, handle, website_url, youtube_url, instagram_url, tiktok_url, user_profiles!user_id ( email )')
     .eq('id', id)
     .single();
 
@@ -102,6 +106,14 @@ export async function PATCH(request: NextRequest) {
       ...(app.photo_url ? { photo_url: app.photo_url } : {}),
       // Carry the immutable referral handle chosen at application time.
       ...(app.handle ? { handle: app.handle } : {}),
+      // All four platform links come across as-is (MEAL-81). `primary_source`
+      // and `import_opt_in` keep their defaults — 'none' and false — so an
+      // approval never starts polling anyone. That is a separate, deliberate
+      // decision made in the Sources tab after a viability check.
+      website_url:   app.website_url ?? null,
+      youtube_url:   app.youtube_url ?? null,
+      instagram_url: app.instagram_url ?? null,
+      tiktok_url:    app.tiktok_url ?? null,
     });
 
     if (creatorError) {

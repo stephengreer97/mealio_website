@@ -109,25 +109,38 @@ export interface RobotsCheck {
   detail: string;
 }
 
+/** One origin's robots.txt, already fetched, ready to be asked about any path. */
+export interface RobotsRules {
+  check(targetUrl: string): RobotsCheck;
+}
+
+/** Rules that allow everything, with the reason we ended up here. */
+function permissive(detail: string): RobotsRules {
+  return { check: () => ({ allowed: true, detail }) };
+}
+
 /**
- * Fetches and evaluates robots.txt for `targetUrl`.
+ * Fetches robots.txt **once** for an origin and hands back a predicate.
  *
- * Fail-open: a missing, unreachable or unparseable robots.txt means allowed.
- * A site that cannot serve robots.txt has not disallowed anything, and failing
- * closed would make every import depend on a second network call succeeding.
+ * A single import checks one URL, but the MEAL-81 viability probe checks ten
+ * from the same site in a row. Re-fetching robots.txt per item would be ten
+ * requests to say the same thing, which is exactly the behaviour robots.txt
+ * exists to discourage.
+ *
+ * Fail-open, like `checkRobots`: a missing, unreachable or unparseable
+ * robots.txt means allowed. A site that cannot serve one has not disallowed
+ * anything, and failing closed would make every import depend on a second
+ * network call succeeding.
  */
-export async function checkRobots(
-  targetUrl: string,
+export async function loadRobots(
+  originUrl: string,
   options: SafeFetchOptions = {},
-): Promise<RobotsCheck> {
+): Promise<RobotsRules> {
   let robotsUrl: string;
-  let path: string;
   try {
-    const url = new URL(targetUrl);
-    robotsUrl = new URL('/robots.txt', url).toString();
-    path = url.pathname + url.search;
+    robotsUrl = new URL('/robots.txt', originUrl).toString();
   } catch {
-    return { allowed: true, detail: 'Unparseable URL; robots.txt not checked' };
+    return permissive('Unparseable URL; robots.txt not checked');
   }
 
   const result = await safeFetch(robotsUrl, {
@@ -137,15 +150,35 @@ export async function checkRobots(
   });
 
   if (!result.ok) {
-    return { allowed: true, detail: `No usable robots.txt (${result.reason}); proceeding` };
+    return permissive(`No usable robots.txt (${result.reason}); proceeding`);
   }
 
   const rules = parseRobots(result.html);
-  const allowed = isAllowed(rules, path);
   return {
-    allowed,
-    detail: allowed
-      ? `Allowed by robots.txt for ${USER_AGENT}`
-      : `Disallowed by ${robotsUrl} for ${USER_AGENT}`,
+    check(targetUrl: string): RobotsCheck {
+      let path: string;
+      try {
+        const url = new URL(targetUrl);
+        path = url.pathname + url.search;
+      } catch {
+        return { allowed: true, detail: 'Unparseable URL; robots.txt not checked' };
+      }
+      const allowed = isAllowed(rules, path);
+      return {
+        allowed,
+        detail: allowed
+          ? `Allowed by robots.txt for ${USER_AGENT}`
+          : `Disallowed by ${robotsUrl} for ${USER_AGENT}`,
+      };
+    },
   };
+}
+
+/** Fetches and evaluates robots.txt for a single `targetUrl`. */
+export async function checkRobots(
+  targetUrl: string,
+  options: SafeFetchOptions = {},
+): Promise<RobotsCheck> {
+  const rules = await loadRobots(targetUrl, options);
+  return rules.check(targetUrl);
 }
