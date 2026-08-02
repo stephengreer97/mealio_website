@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { log } from '@/lib/logger';
 import { runCreatorReminders, runUserUpsellDrip } from '@/lib/email-campaigns';
+import { resumeStalledSyncRuns } from '@/lib/admin-sync';
+import { createServerSupabaseClient } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +25,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const results = { creatorReminders: 0, userUpsell: 0 };
+  const results = { creatorReminders: 0, userUpsell: 0, syncRunsResumed: 0 };
 
   // Isolate the passes so one failing doesn't drop the other.
   try {
@@ -35,6 +37,15 @@ export async function GET(request: NextRequest) {
     results.userUpsell = await runUserUpsellDrip();
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'userUpsell', reason: err.message });
+  }
+  // Admin sync runs are driven by the admin screen, so closing the tab stops the
+  // loop. This is the backstop: a half-finished run gets finished, and — the
+  // part that actually matters — the creator still gets told what published
+  // under their name. Slow, but it means no run is abandoned silently.
+  try {
+    results.syncRunsResumed = await resumeStalledSyncRuns({ supabase: createServerSupabaseClient() });
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'syncRuns', reason: err.message });
   }
 
   log({ event: 'CRON:DAILY', status: 'success', detail: JSON.stringify(results) });

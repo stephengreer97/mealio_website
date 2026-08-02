@@ -70,6 +70,9 @@ export type EventType =
   | 'ADMIN:BROADCAST'
   | 'ADMIN:CREATOR_SOURCE'     // which of a creator's links we poll (MEAL-81)
   | 'ADMIN:CREATOR_VIABILITY'  // the onboarding importability measurement (MEAL-81)
+  | 'ADMIN:SYNC_RUN'           // an operator-triggered sync run (MEAL-90)
+  | 'ADMIN:SYNC_ITEM'          // one item inside a run: recorded, or retried
+  | 'ADMIN:SYNC_NOTIFY'        // the "these are live now" email to the creator
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'

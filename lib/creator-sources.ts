@@ -151,6 +151,50 @@ export function normalizePlatformUrl(source: PlatformSource, raw: unknown): Link
   return { ok: true, url: url.toString() };
 }
 
+/**
+ * Do two URLs live on the same site?
+ *
+ * True for an exact host match and for a subdomain in either direction, because
+ * `feeds.chefsarah.com` and `chefsarah.com` are the same publisher and refusing
+ * that pairing rejects real creators. Used wherever a URL has to be shown to
+ * belong to the creator it will be attributed to — a cross-host value there is
+ * how a stranger's recipes end up published under someone else's name.
+ */
+export function isSameSite(siteUrl: string, otherUrl: string): boolean {
+  let site: string;
+  let other: string;
+  try {
+    site = new URL(siteUrl).hostname.toLowerCase();
+    other = new URL(otherUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return other === site || other.endsWith(`.${site}`) || site.endsWith(`.${other}`);
+}
+
+/**
+ * Which of the four sources a bare URL belongs to.
+ *
+ * Used by the one-link admin sync (MEAL-90), where the operator pastes a URL and
+ * never picks a platform: the answer has to be derived so the
+ * `(creator_id, source, item_id)` record lands under the same source the
+ * checklist and the poller would have used for that post. Falls back to
+ * `website`, which is what a link on the creator's own domain is.
+ */
+export function platformSourceForUrl(link: string): PlatformSource {
+  let host: string;
+  try {
+    host = new URL(link).hostname.toLowerCase();
+  } catch {
+    return 'website';
+  }
+  for (const source of PLATFORM_SOURCES) {
+    const pattern = PLATFORM_HOSTS[source];
+    if (pattern && pattern.test(host)) return source;
+  }
+  return 'website';
+}
+
 /** Normalises all four links at once, failing on the first bad one. */
 export function normalizePlatformUrls(
   input: Partial<Record<PlatformSource, unknown>>,

@@ -15,8 +15,9 @@ import {
 // Type-only: `lib/import/viability` reaches undici and must never be bundled
 // into the client. The import is erased at compile time.
 import type { ViabilityReport } from '@/lib/import/viability';
+import AdminSyncPanel from '@/components/AdminSyncPanel';
 
-type Tab = 'applications' | 'sources' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
+type Tab = 'applications' | 'sources' | 'sync' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
@@ -292,6 +293,7 @@ export default function AdminPage() {
   const switchTab = (t: Tab) => {
     setTab(t);
     if (t === 'sources' && creators.length === 0) loadCreators();
+    if (t === 'sync' && creators.length === 0) loadCreators();
     if (t === 'meals' && meals.length === 0) loadMeals();
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
@@ -461,6 +463,7 @@ export default function AdminPage() {
       <div style={{ background: 'white', borderBottom: '1px solid #e0e0e0', display: 'flex', paddingLeft: '24px' }}>
         <button style={tabStyle('applications')} onClick={() => switchTab('applications')}>Applications</button>
         <button style={tabStyle('sources')} onClick={() => switchTab('sources')}>Sources</button>
+        <button style={tabStyle('sync')} onClick={() => switchTab('sync')}>Sync</button>
         <button style={tabStyle('meals')} onClick={() => switchTab('meals')}>Meals</button>
         <button style={tabStyle('stats')} onClick={() => switchTab('stats')}>Stats</button>
         <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
@@ -745,6 +748,9 @@ export default function AdminPage() {
             })}
           </div>
         )}
+
+        {/* Sync Tab — MEAL-90. One link, or a reviewed checklist. */}
+        {tab === 'sync' && <AdminSyncPanel creators={creators} />}
 
         {/* Meals Tab */}
         {tab === 'meals' && (

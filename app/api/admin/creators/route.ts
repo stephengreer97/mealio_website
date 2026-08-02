@@ -4,6 +4,7 @@ import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
 import {
   isPrimarySource,
+  isSameSite,
   normalizePlatformUrl,
   SOURCE_COLUMNS,
   SOURCE_LABELS,
@@ -180,6 +181,6 @@ function describeHostMismatch(websiteUrl: string, feedUrl: string): string | nul
   } catch {
     return 'Feed URL: that is not a URL we can fetch.';
   }
-  if (feed === site || feed.endsWith(`.${site}`) || site.endsWith(`.${feed}`)) return null;
+  if (isSameSite(websiteUrl, feedUrl)) return null;
   return `That feed (${feed}) is not on the creator's own site (${site}). Refusing it: a feed on someone else's host would import their recipes under this creator's name.`;
 }
