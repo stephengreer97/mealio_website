@@ -2,8 +2,21 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import {
+  KNOWN_UNSUPPORTED_SOURCES,
+  PLATFORM_SOURCES,
+  SOURCE_COLUMNS,
+  SOURCE_LABELS,
+  summariseCreatorViability,
+  type PlatformSource,
+  type PrimarySource,
+  type ViabilityOutcome,
+} from '@/lib/creator-sources';
+// Type-only: `lib/import/viability` reaches undici and must never be bundled
+// into the client. The import is erased at compile time.
+import type { ViabilityReport } from '@/lib/import/viability';
 
-type Tab = 'applications' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
+type Tab = 'applications' | 'sources' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
@@ -34,10 +47,40 @@ interface Application {
   display_name: string;
   phone: string | null;
   find_us: string | null;
+  website_url: string | null;
+  youtube_url: string | null;
+  instagram_url: string | null;
+  tiktok_url: string | null;
   status: string;
   created_at: string;
   user_profiles: { email: string } | null;
 }
+
+/** A creator row as the sources tab needs it (MEAL-81). */
+interface CreatorSource {
+  id: string;
+  display_name: string;
+  handle: string | null;
+  website_url: string | null;
+  youtube_url: string | null;
+  instagram_url: string | null;
+  tiktok_url: string | null;
+  primary_source: PrimarySource;
+  import_opt_in: boolean;
+  feed_url: string | null;
+}
+
+const OUTCOME_STYLES: Record<ViabilityOutcome, { bg: string; fg: string; label: string }> = {
+  viable:        { bg: '#e6f9ed', fg: '#1a7a3a', label: 'Viable' },
+  partial:       { bg: '#fff8e1', fg: '#b45309', label: 'Partial' },
+  'not-viable':  { bg: '#fff0f0', fg: '#c40029', label: 'Not viable here' },
+  unsupported:   { bg: '#f3f4f6', fg: '#374151', label: 'Unsupported platform' },
+  unavailable:   { bg: '#eef2ff', fg: '#3730a3', label: 'Could not check' },
+};
+
+const VERDICT_COLORS: Record<string, string> = {
+  yes: '#16a34a', no: '#c40029', unsure: '#b45309', error: '#6b7280',
+};
 
 interface Meal {
   id: string;
@@ -105,6 +148,12 @@ export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('applications');
 
   const [applications, setApplications] = useState<Application[]>([]);
+  const [creators, setCreators] = useState<CreatorSource[]>([]);
+  // Viability results for this session only, keyed creator → source. Not stored:
+  // a check is a measurement of the feed as it is today, and a stale "viable"
+  // from three months ago is worse than no answer.
+  const [viability, setViability] = useState<Record<string, Partial<Record<PlatformSource, ViabilityReport>>>>({});
+  const [sourceError, setSourceError] = useState<Record<string, string>>({});
   const [meals, setMeals] = useState<Meal[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<AvailableQuarter | null>(null);
@@ -165,6 +214,51 @@ export default function AdminPage() {
     }
   };
 
+  const loadCreators = async () => {
+    const res = await fetch('/api/admin/creators', {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setCreators(data.creators ?? []);
+    }
+  };
+
+  /** Sets primary_source / import_opt_in / feed_url. The route refuses incoherent combinations. */
+  const patchCreator = async (id: string, patch: Record<string, unknown>) => {
+    setActionLoading('creator' + id);
+    setSourceError(prev => ({ ...prev, [id]: '' }));
+    const res = await fetch('/api/admin/creators', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+      body: JSON.stringify({ id, ...patch }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setActionLoading(null);
+    if (!res.ok) {
+      setSourceError(prev => ({ ...prev, [id]: data.error || 'Update failed.' }));
+      return;
+    }
+    setCreators(prev => prev.map(c => (c.id === id ? { ...c, ...data.creator } : c)));
+  };
+
+  const runViability = async (id: string, source: PlatformSource) => {
+    setActionLoading('viability' + id + source);
+    setSourceError(prev => ({ ...prev, [id]: '' }));
+    const res = await fetch('/api/admin/creators/viability', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+      body: JSON.stringify({ id, source }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setActionLoading(null);
+    if (!res.ok) {
+      setSourceError(prev => ({ ...prev, [id]: data.error || 'Viability check failed.' }));
+      return;
+    }
+    setViability(prev => ({ ...prev, [id]: { ...prev[id], [source]: data.report as ViabilityReport } }));
+  };
+
   const loadMeals = async () => {
     const res = await fetch('/api/admin/meals', {
       headers: { Authorization: `Bearer ${token()}` },
@@ -197,6 +291,7 @@ export default function AdminPage() {
 
   const switchTab = (t: Tab) => {
     setTab(t);
+    if (t === 'sources' && creators.length === 0) loadCreators();
     if (t === 'meals' && meals.length === 0) loadMeals();
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
@@ -365,6 +460,7 @@ export default function AdminPage() {
       {/* Tabs */}
       <div style={{ background: 'white', borderBottom: '1px solid #e0e0e0', display: 'flex', paddingLeft: '24px' }}>
         <button style={tabStyle('applications')} onClick={() => switchTab('applications')}>Applications</button>
+        <button style={tabStyle('sources')} onClick={() => switchTab('sources')}>Sources</button>
         <button style={tabStyle('meals')} onClick={() => switchTab('meals')}>Meals</button>
         <button style={tabStyle('stats')} onClick={() => switchTab('stats')}>Stats</button>
         <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
@@ -386,7 +482,7 @@ export default function AdminPage() {
               <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
                 <thead>
                   <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
-                    {['Email', 'Display Name', 'Phone', 'How to find them', 'Applied', 'Status', ''].map(h => (
+                    {['Email', 'Display Name', 'Phone', 'How to find them', 'Links', 'Applied', 'Status', ''].map(h => (
                       <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 600, color: '#555' }}>{h}</th>
                     ))}
                   </tr>
@@ -398,6 +494,27 @@ export default function AdminPage() {
                       <td style={{ padding: '12px 16px', fontWeight: 500 }}>{app.display_name}</td>
                       <td style={{ padding: '12px 16px', color: '#555' }}>{app.phone || '—'}</td>
                       <td style={{ padding: '12px 16px', color: '#555', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app.find_us || '—'}</td>
+                      {/* A real site with real recipes is the most useful single
+                          signal for approving an application, so the four links
+                          are visible here rather than only after approval. */}
+                      <td style={{ padding: '12px 16px' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {PLATFORM_SOURCES.filter(s => app[SOURCE_COLUMNS[s] as keyof Application]).map(s => (
+                            <a
+                              key={s}
+                              href={String(app[SOURCE_COLUMNS[s] as keyof Application])}
+                              target="_blank"
+                              rel="noopener noreferrer nofollow"
+                              style={{ fontSize: '12px', color: '#2563eb', textDecoration: 'none', border: '1px solid #dbeafe', borderRadius: '99px', padding: '2px 8px' }}
+                            >
+                              {SOURCE_LABELS[s]}
+                            </a>
+                          ))}
+                          {PLATFORM_SOURCES.every(s => !app[SOURCE_COLUMNS[s] as keyof Application]) && (
+                            <span style={{ color: '#aaa' }}>—</span>
+                          )}
+                        </div>
+                      </td>
                       <td style={{ padding: '12px 16px', color: '#888' }}>{new Date(app.created_at).toLocaleDateString()}</td>
                       <td style={{ padding: '12px 16px' }}>
                         <span style={{
@@ -433,6 +550,199 @@ export default function AdminPage() {
                 </tbody>
               </table></div>
             )}
+          </div>
+        )}
+
+        {/* Sources Tab — MEAL-81. One manually-chosen source per creator. */}
+        {tab === 'sources' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+            {/* Unsupported platforms, listed beside the check so an operator
+                never rediscovers a question that was already measured. */}
+            <div style={{ background: '#f8f9fa', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '18px 20px' }}>
+              <h2 style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: 700, color: '#374151' }}>Known-unsupported sources</h2>
+              {KNOWN_UNSUPPORTED_SOURCES.map(entry => (
+                <p key={entry.id} style={{ margin: '6px 0 0', fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
+                  <strong style={{ color: '#374151' }}>{entry.label}</strong> — {entry.detail}
+                </p>
+              ))}
+            </div>
+
+            {creators.length === 0 ? (
+              <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '32px', textAlign: 'center', color: '#888' }}>
+                No creators yet.
+              </div>
+            ) : creators.map(creator => {
+              const reports = viability[creator.id] ?? {};
+              const links: Partial<Record<PlatformSource, string | null>> = Object.fromEntries(
+                PLATFORM_SOURCES.map(s => [s, creator[SOURCE_COLUMNS[s] as keyof CreatorSource] as string | null]),
+              );
+              const outcomes = Object.fromEntries(
+                PLATFORM_SOURCES.filter(s => reports[s]).map(s => [s, reports[s]!.outcome]),
+              ) as Partial<Record<PlatformSource, ViabilityOutcome>>;
+              const verdict = summariseCreatorViability(links, outcomes);
+
+              return (
+                <div key={creator.id} style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '22px 24px' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                    <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#222' }}>{creator.display_name}</h2>
+                    {creator.handle && <span style={{ fontSize: '12px', color: '#aaa' }}>mealio.co/{creator.handle}</span>}
+                    {creator.import_opt_in && creator.primary_source !== 'none' ? (
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#1a7a3a', background: '#e6f9ed', borderRadius: '99px', padding: '2px 10px' }}>
+                        Polling {SOURCE_LABELS[creator.primary_source as PlatformSource]}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', background: '#f3f4f6', borderRadius: '99px', padding: '2px 10px' }}>
+                        Not polled
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Creator-level answer: importable, not importable, or not yet known. */}
+                  <p style={{
+                    margin: '8px 0 16px', fontSize: '12px', lineHeight: 1.6,
+                    color: verdict.importable === false ? '#c40029' : verdict.importable ? '#1a7a3a' : '#888',
+                  }}>
+                    {verdict.summary}
+                  </p>
+
+                  {/* One row per link: check it, then choose it. */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {PLATFORM_SOURCES.map(source => {
+                      const link = links[source];
+                      const report = reports[source];
+                      const busy = actionLoading === 'viability' + creator.id + source;
+                      return (
+                        <div key={source} style={{ border: '1px solid #f0f0f0', borderRadius: '10px', padding: '12px 14px', background: creator.primary_source === source ? '#fffdf7' : 'white' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#444', cursor: link ? 'pointer' : 'not-allowed', opacity: link ? 1 : 0.5 }}>
+                              <input
+                                type="radio"
+                                name={`source-${creator.id}`}
+                                checked={creator.primary_source === source}
+                                disabled={!link}
+                                onChange={() => patchCreator(creator.id, { primarySource: source })}
+                                style={{ accentColor: '#dd0031' }}
+                              />
+                              {SOURCE_LABELS[source]}
+                            </label>
+                            {link ? (
+                              <a href={link} target="_blank" rel="noopener noreferrer nofollow" style={{ fontSize: '12px', color: '#2563eb', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {link}
+                              </a>
+                            ) : (
+                              <span style={{ fontSize: '12px', color: '#bbb', flex: 1 }}>no link</span>
+                            )}
+                            {link && (
+                              <button
+                                onClick={() => runViability(creator.id, source)}
+                                disabled={busy}
+                                style={{ padding: '5px 12px', background: busy ? '#aaa' : '#2563eb', color: 'white', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: busy ? 'wait' : 'pointer', flexShrink: 0 }}
+                              >
+                                {busy ? 'Checking…' : report ? 'Re-check' : 'Check viability'}
+                              </button>
+                            )}
+                          </div>
+
+                          {report && (
+                            <div style={{ marginTop: '12px', borderTop: '1px solid #f5f5f5', paddingTop: '12px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                <span style={{ fontSize: '11px', fontWeight: 700, borderRadius: '99px', padding: '2px 10px', background: OUTCOME_STYLES[report.outcome].bg, color: OUTCOME_STYLES[report.outcome].fg }}>
+                                  {OUTCOME_STYLES[report.outcome].label}
+                                </span>
+                                <span style={{ fontSize: '11px', color: '#aaa' }}>
+                                  {report.passed}/{report.checked} passed · ${report.costUsd.toFixed(4)}
+                                </span>
+                              </div>
+                              <p style={{ margin: '0 0 10px', fontSize: '12px', color: '#555', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{report.summary}</p>
+
+                              {/* The discovered feed, confirmed by a human before
+                                  it is stored. A silent wrong guess here starts
+                                  importing a stranger's recipes. */}
+                              {report.feed && (
+                                <div style={{ background: '#fafafa', borderRadius: '8px', padding: '10px 12px', marginBottom: '10px' }}>
+                                  <div style={{ fontSize: '12px', color: '#444', marginBottom: '6px' }}>
+                                    Feed found via <strong>{report.feed.via}</strong> ({report.feed.kind}):{' '}
+                                    <a href={report.feed.url} target="_blank" rel="noopener noreferrer nofollow" style={{ color: '#2563eb' }}>{report.feed.url}</a>
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px' }}>Most recent entries — confirm these are this creator&apos;s:</div>
+                                  <ol style={{ margin: '0 0 10px', paddingLeft: '18px' }}>
+                                    {report.feed.entries.slice(0, 5).map(entry => (
+                                      <li key={entry.id} style={{ fontSize: '12px', color: '#555', padding: '2px 0' }}>
+                                        <a href={entry.url} target="_blank" rel="noopener noreferrer nofollow" style={{ color: '#555' }}>
+                                          {entry.title || entry.url}
+                                        </a>
+                                        {entry.publishedAt && <span style={{ color: '#bbb' }}> · {new Date(entry.publishedAt).toLocaleDateString()}</span>}
+                                      </li>
+                                    ))}
+                                  </ol>
+                                  {creator.feed_url === report.feed.url ? (
+                                    <span style={{ fontSize: '12px', color: '#1a7a3a', fontWeight: 600 }}>✓ Confirmed and saved</span>
+                                  ) : (
+                                    <button
+                                      onClick={() => patchCreator(creator.id, { feedUrl: report.feed!.url })}
+                                      disabled={actionLoading === 'creator' + creator.id}
+                                      style={{ padding: '5px 12px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                                    >
+                                      Confirm this feed
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+
+                              {report.items.length > 0 && (
+                                <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
+                                  {report.items.map((item, i) => (
+                                    <div key={`${item.url}-${i}`} style={{ display: 'flex', gap: '8px', padding: '4px 0', fontSize: '12px', borderTop: i === 0 ? 'none' : '1px solid #f7f7f7' }}>
+                                      <span style={{ color: VERDICT_COLORS[item.verdict] ?? '#666', fontWeight: 700, width: '48px', flexShrink: 0 }}>{item.verdict}</span>
+                                      <span style={{ flex: 1, minWidth: 0 }}>
+                                        <a href={item.url} target="_blank" rel="noopener noreferrer nofollow" style={{ color: '#333', textDecoration: 'none' }}>{item.title}</a>
+                                        <div style={{ color: '#999' }}>{item.reason}</div>
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* The switch. Nothing is polled until a source is chosen AND this is on. */}
+                  <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', borderTop: '1px solid #f0f0f0', paddingTop: '14px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#333', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={creator.import_opt_in}
+                        onChange={e => patchCreator(creator.id, { importOptIn: e.target.checked })}
+                        style={{ accentColor: '#dd0031', width: '16px', height: '16px' }}
+                      />
+                      Import from this source
+                    </label>
+                    {creator.primary_source !== 'none' && (
+                      <button
+                        onClick={() => patchCreator(creator.id, { primarySource: 'none' })}
+                        style={{ background: 'none', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '4px 12px', fontSize: '12px', color: '#666', cursor: 'pointer' }}
+                      >
+                        Clear source
+                      </button>
+                    )}
+                    {creator.feed_url && (
+                      <span style={{ fontSize: '11px', color: '#aaa', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        feed_url: {creator.feed_url}
+                      </span>
+                    )}
+                  </div>
+                  {sourceError[creator.id] && (
+                    <div style={{ marginTop: '10px', background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: '#c40029' }}>
+                      {sourceError[creator.id]}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 

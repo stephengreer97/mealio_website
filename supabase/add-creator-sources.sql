@@ -135,8 +135,19 @@ ALTER TABLE creator_source_items
   ADD CONSTRAINT creator_source_items_status_check
   CHECK (status IN ('seen', 'imported', 'rejected', 'failed'));
 
-CREATE INDEX IF NOT EXISTS idx_source_items_creator ON creator_source_items (creator_id, source);
-CREATE INDEX IF NOT EXISTS idx_source_items_retry   ON creator_source_items (status) WHERE status = 'failed';
+-- No (creator_id, source) index: the UNIQUE above already builds a btree whose
+-- leading columns are exactly those, so the planner serves every such lookup
+-- from it and a second copy is write amplification on the table the 15-minute
+-- cron writes most. Dropped rather than merely omitted, so a database that
+-- already ran an earlier version of this file converges on the same shape.
+DROP INDEX IF EXISTS idx_source_items_creator;
+
+-- The retry sweep is "this creator's failed items", so the key is the column
+-- that varies. Keying a partial index on the same column its WHERE clause pins
+-- to one value buys nothing: every row in the index has status = 'failed'.
+DROP INDEX IF EXISTS idx_source_items_retry;
+CREATE INDEX IF NOT EXISTS idx_source_items_failed
+  ON creator_source_items (creator_id) WHERE status = 'failed';
 
 -- ---------------------------------------------------------------------------
 -- 4. Per-source polling state

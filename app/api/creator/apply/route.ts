@@ -4,6 +4,7 @@ import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { sendCreatorApplicationEmail, sendCreatorAppliedEmail } from '@/lib/email';
 import { isValidHandle, normalizeHandle } from '@/lib/handles';
+import { normalizePlatformUrls, toSourceColumns } from '@/lib/creator-sources';
 
 // POST /api/creator/apply
 export async function POST(request: NextRequest) {
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { displayName, phone, findUs, photoUrl, handle } = body;
+  const { displayName, phone, findUs, photoUrl, handle, websiteUrl, youtubeUrl, instagramUrl, tiktokUrl } = body;
 
   if (!displayName?.trim()) {
     return NextResponse.json({ error: 'Display name is required' }, { status: 400 });
@@ -79,6 +80,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'That handle is already taken.' }, { status: 409 });
   }
 
+  // All four platform links are optional, and all four are stored (MEAL-81).
+  // Worth collecting regardless of import: a real site with real recipes is the
+  // most useful single signal for approving an application, which `findUs` does
+  // not provide. Only one of them will ever be polled, and which one is an
+  // operator decision made later during review.
+  const links = normalizePlatformUrls({
+    website:   websiteUrl,
+    youtube:   youtubeUrl,
+    instagram: instagramUrl,
+    tiktok:    tiktokUrl,
+  });
+  if (!links.ok) {
+    return NextResponse.json({ error: links.error }, { status: 400 });
+  }
+
   const { error } = await supabase.from('creator_applications').insert({
     user_id:      decoded.userId,
     display_name: displayName.trim(),
@@ -86,6 +102,7 @@ export async function POST(request: NextRequest) {
     find_us:      findUs?.trim() || null,
     photo_url:    photoUrl || null,
     handle:       normHandle,
+    ...toSourceColumns(links.urls),
   });
 
   if (error) {
