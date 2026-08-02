@@ -22,6 +22,7 @@
  * the JSON-LD block is downgraded, not believed.
  */
 
+import { statedAmounts, statedUnits, type CartAmount } from './ingredients';
 import type { Confidence, Derivation, FieldConfidence, SourceDocument } from './types';
 
 /** Below this, a near-match is not a match at all. */
@@ -243,6 +244,43 @@ function checkValue(value: unknown, span: string): ValueCheck {
   return shared / valueTokens.length >= 0.5 ? 'overlap' : 'unrelated';
 }
 
+/**
+ * How the row's **amount** relates to the span it was taken from.
+ *
+ * The product name is not the only thing that reaches the cart. `checkValue`
+ * only ever sees the product name, so `12 cups kosher salt` cited to
+ * "1 teaspoon kosher salt, more to taste" passed every check we had and read
+ * green — a 48× error on a page that plainly states the right number, wearing a
+ * badge saying it came from the page's structured data. The amount is in the
+ * same span that was matched, so verification can simply ask for it.
+ */
+type AmountCheck =
+  /** The number, and the unit if the row names one, are both in the span. */
+  | 'stated'
+  /** The row's amount is not in the span it cites. */
+  | 'unstated'
+  /** Not an ingredient row, or a row that carries no amount. */
+  | 'exempt';
+
+/**
+ * Checks a row's amount against the span the model cited for it.
+ *
+ * Both halves have to hold. The number alone is not enough — "bake for 12
+ * minutes" would license `12 cups` — so a row that names a unit must find that
+ * unit in the span too, canonicalised, because a page writes "teaspoon" where
+ * the picker's vocabulary says "tsp".
+ */
+function checkAmount(amount: CartAmount | null | undefined, span: string): AmountCheck {
+  if (!amount) return 'exempt';
+  // Written amounts are decimal thirds and sixths often enough that an exact
+  // comparison would reject "1/3 cup" restated as 0.333.
+  if (!statedAmounts(span).some((stated) => Math.abs(stated - amount.value) < 0.005)) {
+    return 'unstated';
+  }
+  if (amount.unit && !statedUnits(span).has(amount.unit)) return 'unstated';
+  return 'stated';
+}
+
 /** Which corpus the evidence span was found in. */
 type MatchRegion = 'recipe' | 'page';
 
@@ -251,6 +289,7 @@ function levelFor(
   match: MatchKind,
   value: ValueCheck,
   region: MatchRegion,
+  amount: AmountCheck,
 ): Confidence {
   if (match === 'none') return 'red';
   if (value === 'empty') return 'red';
@@ -263,6 +302,17 @@ function levelFor(
   // The span is real but sits outside the recipe — a reader comment, a related
   // post, a disclosure. Never green: the creator has to look at it.
   if (region === 'page') return 'amber';
+
+  // An amount nobody wrote down is amber, not red: the product name did check
+  // out and the row is usable, so red — "we found nothing" — would be a lie
+  // about the half that verified. Amber puts a marker on the row, which is the
+  // whole ask: green renders as no marker at all, and this is precisely the
+  // number a creator has to look at before it reaches a cart. That applies
+  // whatever the derivation claims. `normalized` is *allowed* to restate an
+  // amount — "a knob of butter" becoming "2 tbsp" — but restating is not
+  // inventing, and a restatement of something the span does not say has nothing
+  // underneath it either.
+  if (amount === 'unstated') return 'amber';
 
   switch (derivation) {
     case 'json-ld':
@@ -297,6 +347,7 @@ function reasonFor(
   hasSpan: boolean,
   value: ValueCheck,
   region: MatchRegion = 'recipe',
+  amount: AmountCheck = 'exempt',
 ): string {
   if (!hasSpan) return 'No evidence span — the value is not traceable to the source.';
   if (match === 'none') return 'Evidence span was not found in the page we fetched.';
@@ -307,6 +358,10 @@ function reasonFor(
   if (region === 'page') {
     return 'Found on the page but outside the recipe itself — it may have come from a reader ' +
       'comment or a related post, so check it.';
+  }
+  if (amount === 'unstated') {
+    return 'The product name checks out, but the amount and unit are not stated in the ' +
+      'evidence span — check them before this reaches a cart.';
   }
   if (value === 'exempt') {
     return derivation === 'inferred' || derivation === 'normalized'
@@ -343,15 +398,18 @@ function reasonFor(
  *     a fabricated value riding a genuine sentence reads green.
  *
  * `value` is the emitted value for this field. For an ingredient, pass the
- * product name: it is the part that reaches the cart and the part a
- * hallucination invents, while the amount and unit are exactly what a
- * `normalized` derivation is allowed to restate.
+ * canonicalised product name — it is what reaches the cart and what a
+ * hallucination invents — **and pass `amount` as well**. The amount is the other
+ * half of what reaches the cart, and checking only the name is how
+ * `12 cups kosher salt` read green off a page that says `1 teaspoon`.
  */
 export function assessField(
   value: unknown,
   evidence: string | null,
   derivation: Derivation,
   source: VerificationSource,
+  /** The row's amount, for an ingredient. Omitted for every other field. */
+  amount?: CartAmount | null,
 ): FieldConfidence {
   const span = evidence?.trim() ?? '';
 
@@ -405,13 +463,14 @@ export function assessField(
   }
 
   const valueCheck = checkValue(value, span);
+  const amountCheck = checkAmount(amount, span);
 
   return {
-    level: levelFor(derivation, match.kind, valueCheck, region),
+    level: levelFor(derivation, match.kind, valueCheck, region, amountCheck),
     derivation,
     match: match.kind,
     score: Math.round(match.score * 1000) / 1000,
     evidence: span,
-    reason: reasonFor(derivation, match.kind, true, valueCheck, region),
+    reason: reasonFor(derivation, match.kind, true, valueCheck, region, amountCheck),
   };
 }

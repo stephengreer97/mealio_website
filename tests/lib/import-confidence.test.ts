@@ -285,6 +285,49 @@ describe('import/confidence — comments are on the page but are not the recipe'
   });
 });
 
+/**
+ * The product name is not the only thing that reaches the cart. Verifying it
+ * alone let `12 cups kosher salt` read green off a line that says `1 teaspoon` —
+ * green renders as no marker at all, so a 48× error shipped silently. The amount
+ * is inside the very span that was matched, so verification can ask for it.
+ */
+describe('import/confidence — the amount is verified against the span too', () => {
+  const salt = '¼ teaspoon fine sea salt';
+
+  it('demotes an amount that is nowhere in its own span', () => {
+    const result = assessField('fine sea salt', salt, 'json-ld', source, { value: 12, unit: 'cups' });
+    expect(result.level).toBe('amber');
+    // Both halves of value ⊆ span ⊆ source still hold — the amount is what failed.
+    expect(result.match).toBe('exact');
+    expect(result.reason).toMatch(/amount and unit are not stated/i);
+  });
+
+  it('accepts the amount the line actually states, spelled the way the picker spells it', () => {
+    // "¼ teaspoon" on the page, `0.25 tsp` in the draft: the same amount in the
+    // vocabulary IngredientEditor offers, not a different one.
+    expect(assessField('fine sea salt', salt, 'json-ld', source, { value: 0.25, unit: 'tsp' }).level)
+      .toBe('green');
+  });
+
+  it('demotes the right number attached to the wrong unit', () => {
+    expect(assessField('fine sea salt', salt, 'json-ld', source, { value: 0.25, unit: 'cups' }).level)
+      .toBe('amber');
+  });
+
+  it('demotes a restated amount with nothing behind it, not just a quoted one', () => {
+    // `normalized` is allowed to restate an amount. Restating is not inventing,
+    // and this reason has to say which half failed.
+    const result = assessField('fine sea salt', salt, 'normalized', source, { value: 9, unit: 'cups' });
+    expect(result.level).toBe('amber');
+    expect(result.reason).toMatch(/amount and unit are not stated/i);
+  });
+
+  it('leaves every non-ingredient field alone', () => {
+    // No amount is passed for name, story, serves, tags — nothing to check.
+    expect(assessField('a knob of butter', 'a knob of butter', 'page-text', source).level).toBe('green');
+  });
+});
+
 describe('import/confidence — an unchecked value is never promoted', () => {
   it('does not let a number claim to be a quotation', () => {
     // `derivation` is the model's free choice. A number cannot be checked for

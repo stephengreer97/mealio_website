@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { canonicalizeIngredient, canonicalizeIngredients, canonicalUnit, parseAmount } from '@/lib/import/ingredients';
+import {
+  canonicalizeIngredient,
+  canonicalizeIngredients,
+  canonicalUnit,
+  cartAmount,
+  parseAmount,
+  statedAmounts,
+  statedUnits,
+} from '@/lib/import/ingredients';
 import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, SERVES_PATTERN } from '@/lib/import/vocab';
 import type { ExtractedIngredient } from '@/lib/import/types';
 
@@ -45,6 +53,60 @@ describe('import/ingredients — parseAmount', () => {
     for (const input of ['', null, undefined, 'to taste', 'a handful', 'a knob of']) {
       expect(parseAmount(input)).toBeNull();
     }
+  });
+});
+
+/**
+ * The inverse of `parseAmount`, and the input to the amount half of MEAL-72's
+ * verification: a row saying `12 cups` cited to "1 teaspoon kosher salt" is a
+ * number nobody wrote down.
+ */
+describe('import/ingredients — statedAmounts', () => {
+  it.each([
+    ['1 teaspoon kosher salt, more to taste', [1]],
+    ['1 ½ cups all-purpose flour', [1.5]],
+    ['½ teaspoon fine sea salt', [0.5]],
+    ['2 1/2 cups guacamole', [2.5]],
+    ['1 (14 oz) can black beans, drained', [1, 14]],
+    ['2-3 cloves garlic', [2, 3]],
+    ['salt and pepper to taste', []],
+  ])('reads %s as %j', (line, expected) => {
+    const amounts = statedAmounts(line);
+    expect(amounts).toHaveLength(expected.length);
+    expected.forEach((value, i) => expect(amounts[i]).toBeCloseTo(value, 3));
+  });
+});
+
+describe('import/ingredients — statedUnits', () => {
+  it('canonicalises the units a line names, including the two-word ones', () => {
+    expect(statedUnits('1 teaspoon kosher salt')).toEqual(new Set(['tsp']));
+    expect(statedUnits('8 fl oz whole milk')).toEqual(new Set(['fl oz', 'oz']));
+    expect(statedUnits('3 cloves garlic, minced')).toEqual(new Set());
+  });
+});
+
+describe('import/ingredients — cartAmount', () => {
+  it('reports the amount a measured row will act on', () => {
+    const draft = canonicalizeIngredient(ing({ measure: '1', unit: 'teaspoon' }))!;
+    expect(cartAmount(draft, ing({ measure: '1', unit: 'teaspoon' }))).toEqual({ value: 1, unit: 'tsp' });
+  });
+
+  it('reports the count a countable row will act on', () => {
+    const extracted = ing({ productName: 'eggs', measure: '3', unit: 'qty', qty: 3 });
+    expect(cartAmount(canonicalizeIngredient(extracted)!, extracted)).toEqual({ value: 3, unit: null });
+  });
+
+  it('exempts the qty 1 we invented ourselves for a row with no stated amount', () => {
+    // "salt to taste" becomes one countable salt. That 1 is ours, not the
+    // page's — demanding it appear in the span would demote every honest
+    // to-taste row.
+    const extracted = ing({ productName: 'salt', measure: null, unit: 'qty', qty: 1 });
+    expect(cartAmount(canonicalizeIngredient(extracted)!, extracted)).toBeNull();
+  });
+
+  it('does not exempt a count the model supplied without an amount in the source', () => {
+    const extracted = ing({ productName: 'eggs', measure: null, unit: 'qty', qty: 12 });
+    expect(cartAmount(canonicalizeIngredient(extracted)!, extracted)).toEqual({ value: 12, unit: null });
   });
 });
 

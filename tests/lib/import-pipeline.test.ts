@@ -401,6 +401,58 @@ describe('import/pipeline — review regressions', () => {
     expect(result.confidence.ingredients[0].match).toBe('exact');
   });
 
+  it('never reads green for an amount the page does not state', async () => {
+    // The reviewer's case. The page's own JSON-LD says "1 teaspoon kosher salt";
+    // the model returns that line verbatim as evidence and a measure of 12 cups.
+    // Product name, span and derivation all check out, so before the amount was
+    // verified this row read green — no marker at all — carrying a 48× error to
+    // the cart on a page that plainly states the right number.
+    const call = stubCaller(() =>
+      extractionFixture({
+        ingredients: [
+          {
+            productName: 'kosher salt',
+            measure: '12',
+            unit: 'cups',
+            qty: 1,
+            evidence: '1 teaspoon kosher salt, more to taste',
+            derivation: 'json-ld',
+          },
+        ],
+      }),
+    );
+
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+
+    expect(result.draft.ingredients[0]).toMatchObject({ measure: '12', unit: 'cups' });
+    expect(result.confidence.ingredients[0].level).toBe('amber');
+    // The span really is on the page — it is the amount that has nothing behind it.
+    expect(result.confidence.ingredients[0].match).toBe('exact');
+    expect(result.confidence.ingredients[0].reason).toMatch(/amount and unit are not stated/i);
+  });
+
+  it('still reads green when the amount is the one the page states', async () => {
+    const call = stubCaller(() =>
+      extractionFixture({
+        ingredients: [
+          {
+            productName: 'kosher salt',
+            measure: '1',
+            unit: 'teaspoon',
+            qty: 1,
+            evidence: '1 teaspoon kosher salt, more to taste',
+            derivation: 'json-ld',
+          },
+        ],
+      }),
+    );
+
+    const result = await runImport(GUAC_URL, options({ call }));
+    if (result.status !== 'ok') throw new Error('unreachable');
+    expect(result.confidence.ingredients[0].level).toBe('green');
+  });
+
   it('degrades to a slow import when the cache backend is down, rather than failing', async () => {
     const call = stubCaller(() => extractionFixture());
     const result = await runImport(GUAC_URL, {
