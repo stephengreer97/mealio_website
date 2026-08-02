@@ -18,6 +18,10 @@ import type { CatalogEntry, CatalogResult, SyncItem, SyncRun, SyncRunTotals } fr
  *
  * The cost line under the selection is the real guard rail. A confirmation
  * dialog gets clicked through; "137 selected · about $9.16" gets read.
+ *
+ * A run **queues drafts for review** (MEAL-91). It used to publish, and the
+ * language on this screen said so; a finished run now hands over to the Review
+ * tab, and every "Published" here would be a lie about where the recipe is.
  */
 
 export interface SyncPanelCreator {
@@ -37,7 +41,7 @@ export interface AdminSyncPanelProps {
 
 const ITEM_STYLES: Record<SyncItem['status'], { fg: string; bg: string; label: string }> = {
   pending:  { fg: '#6b7280', bg: '#f3f4f6', label: 'Waiting' },
-  imported: { fg: '#1a7a3a', bg: '#e6f9ed', label: 'Published' },
+  drafted:  { fg: '#1a7a3a', bg: '#e6f9ed', label: 'For review' },
   rejected: { fg: '#b45309', bg: '#fff8e1', label: 'Not a recipe' },
   failed:   { fg: '#c40029', bg: '#fff0f0', label: 'Failed' },
   skipped:  { fg: '#374151', bg: '#f3f4f6', label: 'Already in' },
@@ -93,7 +97,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const [mode, setMode] = useState<'link' | 'catalog'>('link');
   const [source, setSource] = useState<PlatformSource>('website');
   const [linkUrl, setLinkUrl] = useState('');
-  const [notify, setNotify] = useState(true);
   const [error, setError] = useState('');
 
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
@@ -211,12 +214,11 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setTotals(null);
 
     const body = mode === 'link'
-      ? { creatorId, mode: 'link', url: linkUrl.trim(), notifyCreator: notify }
+      ? { creatorId, mode: 'link', url: linkUrl.trim() }
       : {
           creatorId,
           mode: 'catalog',
           source,
-          notifyCreator: notify,
           items: entries
             .filter(entry => selected.includes(entry.itemId))
             .map(entry => ({ itemId: entry.itemId, url: entry.url, title: entry.title, publishedAt: entry.publishedAt })),
@@ -272,9 +274,9 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
       <div style={{ background: '#f8f9fa', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '18px 20px' }}>
         <h2 style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: 700, color: '#374151' }}>Manual sync</h2>
         <p style={{ margin: 0, fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
-          Imports run on behalf of the creator you pick and <strong>publish straight to Discover</strong> — they do
-          not wait for the creator to approve anything. That is only fair if the creator hears about it, so the
-          notification below defaults to on. Listing a catalog is free; running a selection is not.
+          Imports run on behalf of the creator you pick and land in <strong>Review</strong> as drafts — nothing
+          goes live until somebody opens the meal card there and approves it. Listing a catalog is free; running a
+          selection is not.
         </p>
       </div>
 
@@ -424,19 +426,12 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
 
       {creatorId && (
         <div style={card}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#333', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={notify}
-              onChange={e => setNotify(e.target.checked)}
-              style={{ accentColor: '#dd0031', width: '16px', height: '16px' }}
-            />
-            Email {creator?.display_name ?? 'the creator'} what was published
-          </label>
-          <p style={{ margin: '6px 0 14px 24px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-            One email for the whole run, listing every published recipe with a link to it, and how to edit or
-            unpublish. Nothing is sent if nothing publishes. Turning this off means a creator finds out from a
-            follower.
+          {/* No notify checkbox here any more. A run tells the creator nothing
+              because a run publishes nothing; the email is offered on Approve,
+              which is the first point at which there is something true to say. */}
+          <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
+            {creator?.display_name ?? 'The creator'} is emailed when you approve a draft in Review, listing what
+            went live and how to edit or unpublish it. Nothing is sent for a sync on its own.
           </p>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
@@ -470,31 +465,21 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             )}
           </div>
 
-          {/* The arithmetic on screen: selected 12, published 9, and where the
+          {/* The arithmetic on screen: selected 12, queued 9, and where the
               other three went. Anything less makes a correct run look broken. */}
           <p style={{ margin: '8px 0 0', fontSize: '13px', color: '#444', lineHeight: 1.7 }} data-testid="run-summary">
-            Selected {totals.selected} · published <strong>{totals.imported}</strong>
+            Selected {totals.selected} · queued for review <strong>{totals.drafted}</strong>
             {totals.rejected > 0 && <> · {totals.rejected} dropped by the gate (not a recipe)</>}
             {totals.skipped > 0 && <> · {totals.skipped} already imported</>}
             {totals.failed > 0 && <> · {totals.failed} failed</>}
             {totals.pending > 0 && <> · {totals.pending} still to go</>}
           </p>
 
-          {run.notifyError && (
-            <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#c40029', lineHeight: 1.6 }}>
-              {run.notifyError}{' '}
-              <button onClick={resume} style={{ ...secondaryButton, marginLeft: '6px' }}>Retry notification</button>
-            </p>
-          )}
-          {run.notifiedAt && !run.notifyError && (
-            <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#1a7a3a' }}>
-              ✓ {creator?.display_name ?? 'The creator'} was emailed the list of what went live.
-            </p>
-          )}
-          {!run.notifyCreator && totals.imported > 0 && (
-            <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#b45309' }}>
-              Notification was turned off for this run — nobody has told this creator that {totals.imported}{' '}
-              {totals.imported === 1 ? 'recipe is' : 'recipes are'} live under their name.
+          {totals.drafted > 0 && (
+            <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#b45309', lineHeight: 1.6 }}>
+              Nothing is live yet. {totals.drafted} {totals.drafted === 1 ? 'draft is' : 'drafts are'} waiting in{' '}
+              <strong>Review</strong>
+              {totals.needALook > 0 && <> · {totals.needALook} {totals.needALook === 1 ? 'field' : 'fields'} flagged for a look</>}.
             </p>
           )}
 
@@ -512,10 +497,10 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
                       <span style={{ display: 'block', fontSize: '11px', color: '#888', lineHeight: 1.5 }}>{item.detail}</span>
                     )}
                   </span>
-                  {item.mealId && (
-                    <a href={`/meal/p/${item.mealId}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: '#2563eb', flexShrink: 0 }}>
-                      View
-                    </a>
+                  {item.status === 'drafted' && item.needALook != null && (
+                    <span style={{ fontSize: '11px', color: item.needALook > 0 ? '#b45309' : '#aaa', flexShrink: 0 }}>
+                      {item.needALook > 0 ? `${item.needALook} flagged` : 'nothing flagged'}
+                    </span>
                   )}
                   {item.status === 'failed' && (
                     <button onClick={() => retryItem(item.itemId)} disabled={busy} style={secondaryButton}>Retry</button>

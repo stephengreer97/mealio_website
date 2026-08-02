@@ -4,12 +4,16 @@ import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/re
 import AdminSyncPanel, { type SyncPanelCreator } from '@/components/AdminSyncPanel';
 
 /**
- * The sync screen (MEAL-90).
+ * The sync screen (MEAL-90, amended by MEAL-91).
  *
  * What is worth testing here is what stops an expensive mistake: the checklist
  * never arrives pre-ticked with things already imported, the cost of the current
  * selection is on screen before the button can be pressed, and a run that
- * publishes fewer meals than were selected says where the rest went.
+ * extracts fewer meals than were selected says where the rest went.
+ *
+ * And one thing worth testing about what the screen *says*: a finished run has
+ * published nothing. The old copy claimed otherwise on every path, which is the
+ * untruth MEAL-91 was filed about.
  */
 
 const CREATORS: SyncPanelCreator[] = [
@@ -56,11 +60,11 @@ function harness(overrides: { run?: unknown; totals?: unknown } = {}) {
     if (init?.body) bodies.push({ endpoint: url, body: JSON.parse(String(init.body)) });
     if (url.includes('/api/admin/sync/catalog')) return json({ catalog: CATALOG });
     if (url.includes('/api/admin/sync/worker')) {
-      return json({ run: overrides.run ?? { id: 'r1', status: 'done', items: [], notifyCreator: true, notifiedAt: null, notifyError: null }, totals: overrides.totals ?? { selected: 0, pending: 0, imported: 0, rejected: 0, failed: 0, skipped: 0, costUsd: 0 } });
+      return json({ run: overrides.run ?? { id: 'r1', status: 'done', items: [] }, totals: overrides.totals ?? { selected: 0, pending: 0, drafted: 0, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 } });
     }
     if (url.includes('/api/admin/sync')) {
       const body = JSON.parse(String(init?.body ?? '{}'));
-      return json({ run: { id: 'r1', status: 'queued', items: body.items ?? [], notifyCreator: body.notifyCreator, notifiedAt: null, notifyError: null } }, 201);
+      return json({ run: { id: 'r1', status: 'queued', items: body.items ?? [] } }, 201);
     }
     return json({}, 404);
   }) as unknown as typeof fetch;
@@ -130,38 +134,18 @@ describe('AdminSyncPanel — the checklist', () => {
   });
 });
 
-describe('AdminSyncPanel — notification', () => {
-  it('defaults to on', async () => {
-    harness();
-    chooseCreator();
-    expect((screen.getByRole('checkbox', { name: /Email Chef Sarah/ }) as HTMLInputElement).checked).toBe(true);
-  });
-
-  it('carries the operator’s choice into the run, off only when they turned it off', async () => {
-    const { calls, bodies } = harness();
-    chooseCreator();
-    fireEvent.change(screen.getByLabelText('Recipe link'), { target: { value: 'https://chefsarah.test/a' } });
-    fireEvent.click(screen.getByRole('checkbox', { name: /Email Chef Sarah/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Sync this link' }));
-
-    await waitFor(() => expect(calls).toContain('/api/admin/sync/worker'));
-    const created = bodies.find(b => b.endpoint === '/api/admin/sync');
-    expect(created?.body).toMatchObject({ mode: 'link', url: 'https://chefsarah.test/a', notifyCreator: false });
-  });
-});
-
 describe('AdminSyncPanel — a finished run', () => {
-  it('explains why 3 selected produced 1 published', async () => {
+  it('explains why 3 selected produced 1 draft', async () => {
     harness({
       run: {
-        id: 'r1', status: 'done', notifyCreator: true, notifiedAt: '2026-08-02T11:00:00.000Z', notifyError: null,
+        id: 'r1', status: 'done',
         items: [
-          { itemId: 'a', url: 'https://chefsarah.test/a', title: 'Guacamole', publishedAt: null, status: 'imported', detail: null, mealId: 'm1', mealName: 'Guacamole', costUsd: 0.067 },
-          { itemId: 'b', url: 'https://chefsarah.test/b', title: 'Kitchen tour', publishedAt: null, status: 'rejected', detail: 'Not a recipe: a photo diary of a kitchen.', mealId: null, mealName: null, costUsd: 0 },
-          { itemId: 'c', url: 'https://chefsarah.test/c', title: 'Soup', publishedAt: null, status: 'failed', detail: 'The site took too long to answer.', mealId: null, mealName: null, costUsd: 0 },
+          { itemId: 'a', url: 'https://chefsarah.test/a', title: 'Guacamole', publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'Guacamole', needALook: 2, costUsd: 0.067 },
+          { itemId: 'b', url: 'https://chefsarah.test/b', title: 'Kitchen tour', publishedAt: null, status: 'rejected', detail: 'Not a recipe: a photo diary of a kitchen.', draftId: null, mealName: null, needALook: null, costUsd: 0 },
+          { itemId: 'c', url: 'https://chefsarah.test/c', title: 'Soup', publishedAt: null, status: 'failed', detail: 'The site took too long to answer.', draftId: null, mealName: null, needALook: null, costUsd: 0 },
         ],
       },
-      totals: { selected: 3, pending: 0, imported: 1, rejected: 1, failed: 1, skipped: 0, costUsd: 0.067 },
+      totals: { selected: 3, pending: 0, drafted: 1, rejected: 1, failed: 1, skipped: 0, costUsd: 0.067, needALook: 2 },
     });
 
     chooseCreator();
@@ -170,29 +154,45 @@ describe('AdminSyncPanel — a finished run', () => {
 
     const summary = await screen.findByTestId('run-summary');
     expect(summary.textContent).toMatch(/Selected 3/);
-    expect(summary.textContent).toMatch(/published 1/);
+    expect(summary.textContent).toMatch(/queued for review 1/);
     expect(summary.textContent).toMatch(/1 dropped by the gate \(not a recipe\)/);
     expect(summary.textContent).toMatch(/1 failed/);
     // The gate's own sentence, so a correct run does not look like a bug.
     expect(screen.getByText('Not a recipe: a photo diary of a kitchen.')).toBeTruthy();
     // Only the failure is retryable.
     expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1);
-    expect(screen.getByText(/was emailed the list/)).toBeTruthy();
   });
 
-  it('says plainly when nobody was told', async () => {
+  it('says nothing is live, and points at where the decision is made', async () => {
+    // The screen used to say "published 1" and offer a link to the live meal.
+    // Neither was true of a queued draft, and both would put an operator off
+    // ever opening the Review tab.
     harness({
       run: {
-        id: 'r1', status: 'done', notifyCreator: false, notifiedAt: null, notifyError: null,
-        items: [{ itemId: 'a', url: 'u', title: 'Guacamole', publishedAt: null, status: 'imported', detail: null, mealId: 'm1', mealName: 'Guacamole', costUsd: 0.067 }],
+        id: 'r1', status: 'done',
+        items: [{ itemId: 'a', url: 'u', title: 'Guacamole', publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'Guacamole', needALook: 3, costUsd: 0.067 }],
       },
-      totals: { selected: 1, pending: 0, imported: 1, rejected: 0, failed: 0, skipped: 0, costUsd: 0.067 },
+      totals: { selected: 1, pending: 0, drafted: 1, rejected: 0, failed: 0, skipped: 0, costUsd: 0.067, needALook: 3 },
     });
 
     chooseCreator();
     fireEvent.change(screen.getByLabelText('Recipe link'), { target: { value: 'https://chefsarah.test/a' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sync this link' }));
 
-    expect(await screen.findByText(/nobody has told this creator/)).toBeTruthy();
+    expect(await screen.findByText(/Nothing is live yet/)).toBeTruthy();
+    expect(screen.getByText(/3 fields flagged for a look/)).toBeTruthy();
+    // No link to a published meal, because there is no published meal.
+    expect(screen.queryByRole('link', { name: 'View' })).toBeNull();
+  });
+
+  it('offers no per-run notification, because a run announces nothing', async () => {
+    harness();
+    chooseCreator();
+    expect(screen.queryByRole('checkbox', { name: /Email Chef Sarah/ })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Recipe link'), { target: { value: 'https://chefsarah.test/a' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sync this link' }));
+    await waitFor(() => expect(screen.getByTestId('run-summary')).toBeTruthy());
   });
 });
+

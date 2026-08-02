@@ -72,7 +72,13 @@ export type EventType =
   | 'ADMIN:CREATOR_VIABILITY'  // the onboarding importability measurement (MEAL-81)
   | 'ADMIN:SYNC_RUN'           // an operator-triggered sync run (MEAL-90)
   | 'ADMIN:SYNC_ITEM'          // one item inside a run: recorded, or retried
-  | 'ADMIN:SYNC_NOTIFY'        // the "these are live now" email to the creator
+  // The four decisions in the admin review queue (MEAL-91). Every publish under
+  // a creator's name now has one of these lines behind it, with the actor on it.
+  | 'ADMIN:DRAFT_APPROVE'
+  | 'ADMIN:DRAFT_HANDOFF'      // handed to the creator to decide instead
+  | 'ADMIN:DRAFT_EDIT'
+  | 'ADMIN:DRAFT_CANCEL'       // declined; the row is marked, never removed
+  | 'ADMIN:DRAFT_NOTIFY'       // the "these are live now" email to the creator
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'

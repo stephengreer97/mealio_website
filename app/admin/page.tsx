@@ -16,8 +16,9 @@ import {
 // into the client. The import is erased at compile time.
 import type { ViabilityReport } from '@/lib/import/viability';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
+import AdminReviewQueue from '@/components/AdminReviewQueue';
 
-type Tab = 'applications' | 'sources' | 'sync' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
+type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
@@ -464,6 +465,7 @@ export default function AdminPage() {
         <button style={tabStyle('applications')} onClick={() => switchTab('applications')}>Applications</button>
         <button style={tabStyle('sources')} onClick={() => switchTab('sources')}>Sources</button>
         <button style={tabStyle('sync')} onClick={() => switchTab('sync')}>Sync</button>
+        <button style={tabStyle('review')} onClick={() => switchTab('review')}>Review</button>
         <button style={tabStyle('meals')} onClick={() => switchTab('meals')}>Meals</button>
         <button style={tabStyle('stats')} onClick={() => switchTab('stats')}>Stats</button>
         <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
@@ -751,6 +753,10 @@ export default function AdminPage() {
 
         {/* Sync Tab — MEAL-90. One link, or a reviewed checklist. */}
         {tab === 'sync' && <AdminSyncPanel creators={creators} />}
+
+        {/* Where a synced recipe becomes live. Nothing published under a
+            creator's name skips this tab any more (MEAL-91). */}
+        {tab === 'review' && <AdminReviewQueue />}
 
         {/* Meals Tab */}
         {tab === 'meals' && (

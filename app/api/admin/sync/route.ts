@@ -16,9 +16,9 @@ import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncI
  * GET   — a run's progress (`?runId=`), or a creator's recent runs (`?creatorId=`).
  * PATCH — put one failed item back in the queue.
  *
- * Meals synced here **publish directly** and never enter the creator review
- * queue (MEAL-89): a human operator read the extraction first. What keeps that
- * honest is the notification the worker sends, not an approval gate.
+ * Nothing here publishes (MEAL-91). A run produces drafts in the admin review
+ * queue, where a human looks at each meal card and decides. The email announcing
+ * what went live fires from Approve, which is the first moment anything has.
  */
 
 /** A selection this size is already a $13 run; beyond it, sync in batches. */
@@ -44,8 +44,9 @@ function newItem(input: { itemId: string; url: string; title?: unknown; publishe
     publishedAt: typeof input.publishedAt === 'string' ? input.publishedAt : null,
     status: 'pending',
     detail: null,
-    mealId: null,
+    draftId: null,
     mealName: null,
+    needALook: null,
     costUsd: 0,
   };
 }
@@ -62,7 +63,6 @@ export async function POST(request: NextRequest) {
     url?: unknown;
     source?: unknown;
     items?: unknown;
-    notifyCreator?: unknown;
   };
   try {
     body = await request.json();
@@ -79,10 +79,9 @@ export async function POST(request: NextRequest) {
   }
   const mode = body.mode;
 
-  // Default ON. Turning notification off has to be the deliberate act — a
-  // default of silence would make the quiet path the easy one, and this is the
-  // one place that must not be quiet.
-  const notifyCreator = body.notifyCreator === undefined ? true : Boolean(body.notifyCreator);
+  // There is no notify flag on a run any more. A run publishes nothing, so
+  // there is nothing to announce until an operator approves something — the
+  // "email the creator" decision moved to the approve action with it.
 
   const supabase = createServerSupabaseClient();
   const { data: creator } = await supabase.from('creators').select(CREATOR_FIELDS).eq('id', creatorId).maybeSingle();
@@ -151,7 +150,6 @@ export async function POST(request: NextRequest) {
       source,
       mode,
       status: 'queued',
-      notify_creator: notifyCreator,
       requested_by: admin.userId,
       items,
     })
@@ -168,7 +166,7 @@ export async function POST(request: NextRequest) {
     status: 'pending',
     userId: admin.userId,
     email: admin.email,
-    detail: `run=${run.id} creator=${creatorId} mode=${mode} source=${source} items=${items.length} notify=${notifyCreator}`,
+    detail: `run=${run.id} creator=${creatorId} mode=${mode} source=${source} items=${items.length}`,
   });
 
   return NextResponse.json({ run: toSyncRun(run) }, { status: 201 });

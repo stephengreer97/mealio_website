@@ -47,8 +47,7 @@ function asAdmin(isAdmin = true) {
 function insertedRun(items: unknown[], overrides: Record<string, unknown> = {}) {
   return {
     id: 'r1', creator_id: 'c1', source: 'website', mode: 'catalog', status: 'queued',
-    notify_creator: true, items, notified_at: null, notify_error: null,
-    created_at: '2026-08-02T10:00:00.000Z', ...overrides,
+    items, created_at: '2026-08-02T10:00:00.000Z', ...overrides,
   };
 }
 
@@ -132,28 +131,30 @@ describe('POST /api/admin/sync', () => {
     expect(insert?.args[0].items[0]).toMatchObject({ url: 'https://chefsarah.test/guacamole', status: 'pending' });
   });
 
-  it('notification defaults to on', async () => {
+  it('never writes a preset meal — a run only enqueues (MEAL-91)', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: CREATOR });
     fakeDb.queue('creator_sync_runs', { data: insertedRun([]) });
 
     await POST(jsonRequest('/api/admin/sync', { token, body: { creatorId: 'c1', mode: 'link', url: 'https://chefsarah.test/a' } }));
 
-    const insert = fakeDb.calls.find((c) => c.method === 'insert');
-    expect(insert?.args[0].notify_creator).toBe(true);
+    expect(fakeDb.calls.some((c) => c.table === 'preset_meals')).toBe(false);
+    expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts')).toBe(false);
   });
 
-  it('honours notification being turned off deliberately', async () => {
+  it('carries no per-run notification flag, because a run announces nothing', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: CREATOR });
     fakeDb.queue('creator_sync_runs', { data: insertedRun([]) });
 
     await POST(jsonRequest('/api/admin/sync', {
       token,
-      body: { creatorId: 'c1', mode: 'link', url: 'https://chefsarah.test/a', notifyCreator: false },
+      body: { creatorId: 'c1', mode: 'link', url: 'https://chefsarah.test/a', notifyCreator: true },
     }));
 
-    expect(fakeDb.calls.find((c) => c.method === 'insert')?.args[0].notify_creator).toBe(false);
+    // Ignored rather than honoured: the email is a decision made at Approve now,
+    // and a flag stored here would be a promise this route cannot keep.
+    expect(fakeDb.calls.find((c) => c.method === 'insert')?.args[0]).not.toHaveProperty('notify_creator');
   });
 
   it('refuses a selection containing a URL that is not on the creator’s own site', async () => {
@@ -218,14 +219,14 @@ describe('GET /api/admin/sync', () => {
     asAdmin();
     fakeDb.queue('creator_sync_runs', {
       data: insertedRun([
-        { itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'imported', detail: null, mealId: 'm1', mealName: 'A', costUsd: 0.07 },
-        { itemId: 'b', url: 'u', title: null, publishedAt: null, status: 'rejected', detail: 'not a recipe', mealId: null, mealName: null, costUsd: 0 },
+        { itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'A', needALook: 2, costUsd: 0.07 },
+        { itemId: 'b', url: 'u', title: null, publishedAt: null, status: 'rejected', detail: 'not a recipe', draftId: null, mealName: null, needALook: null, costUsd: 0 },
       ]),
     });
 
     const res = await GET(jsonRequest('/api/admin/sync?runId=r1', { method: 'GET', token }));
     expect(res.status).toBe(200);
-    expect((await res.json()).totals).toMatchObject({ selected: 2, imported: 1, rejected: 1 });
+    expect((await res.json()).totals).toMatchObject({ selected: 2, drafted: 1, rejected: 1, needALook: 2 });
   });
 
   it('404 for a run that does not exist', async () => {
@@ -247,22 +248,22 @@ describe('PATCH /api/admin/sync — retry one item', () => {
     asAdmin();
     fakeDb.queue('creator_sync_runs', {
       data: insertedRun([
-        { itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'imported', detail: null, mealId: 'm1', mealName: 'A', costUsd: 0 },
-        { itemId: 'b', url: 'u', title: null, publishedAt: null, status: 'failed', detail: 'timeout', mealId: null, mealName: null, costUsd: 0 },
+        { itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'A', needALook: 0, costUsd: 0 },
+        { itemId: 'b', url: 'u', title: null, publishedAt: null, status: 'failed', detail: 'timeout', draftId: null, mealName: null, needALook: null, costUsd: 0 },
       ], { status: 'done' }),
     });
 
     const res = await PATCH(jsonRequest('/api/admin/sync', { method: 'PATCH', token, body: { runId: 'r1', itemId: 'b' } }));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.run.items[0].status).toBe('imported');
+    expect(body.run.items[0].status).toBe('drafted');
     expect(body.run.items[1].status).toBe('pending');
   });
 
   it('400 when the item is not retryable', async () => {
     asAdmin();
     fakeDb.queue('creator_sync_runs', {
-      data: insertedRun([{ itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'rejected', detail: null, mealId: null, mealName: null, costUsd: 0 }]),
+      data: insertedRun([{ itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'rejected', detail: null, draftId: null, mealName: null, needALook: null, costUsd: 0 }]),
     });
     const res = await PATCH(jsonRequest('/api/admin/sync', { method: 'PATCH', token, body: { runId: 'r1', itemId: 'a' } }));
     expect(res.status).toBe(400);
@@ -294,18 +295,18 @@ describe('/api/admin/sync/worker', () => {
     asAdmin();
     advanceRun.mockResolvedValue({
       id: 'r1', creatorId: 'c1', source: 'website', mode: 'catalog', status: 'running',
-      notifyCreator: true, notifiedAt: null, notifyError: null, createdAt: null, finishedAt: null,
+      createdAt: null, finishedAt: null,
       items: [
-        { itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'imported', detail: null, mealId: 'm1', mealName: 'A', costUsd: 0.07 },
-        { itemId: 'b', url: 'u', title: null, publishedAt: null, status: 'rejected', detail: 'Not a recipe.', mealId: null, mealName: null, costUsd: 0 },
-        { itemId: 'c', url: 'u', title: null, publishedAt: null, status: 'pending', detail: null, mealId: null, mealName: null, costUsd: 0 },
+        { itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'A', needALook: 1, costUsd: 0.07 },
+        { itemId: 'b', url: 'u', title: null, publishedAt: null, status: 'rejected', detail: 'Not a recipe.', draftId: null, mealName: null, needALook: null, costUsd: 0 },
+        { itemId: 'c', url: 'u', title: null, publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null, costUsd: 0 },
       ],
     });
 
     const res = await WORKER(jsonRequest('/api/admin/sync/worker', { token, body: { runId: 'r1' } }));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.totals).toMatchObject({ selected: 3, imported: 1, rejected: 1, pending: 1 });
+    expect(body.totals).toMatchObject({ selected: 3, drafted: 1, rejected: 1, pending: 1 });
     expect(body.run.items[1].detail).toBe('Not a recipe.');
   });
 });

@@ -7,14 +7,17 @@ import type { ImportResult, ImportSuccess } from '@/lib/import/types';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
+// A run must not be able to reach either of these any more: nothing it produces
+// is live, so there is nothing to announce and no cache to invalidate. The mocks
+// exist so the tests can assert they were never called.
 const sendCreatorSyncPublishedEmail = vi.fn();
 vi.mock('@/lib/email', () => ({
   sendCreatorSyncPublishedEmail: (...args: unknown[]) => sendCreatorSyncPublishedEmail(...args),
 }));
 
-const sendMarketingEmail = vi.fn();
-vi.mock('@/lib/marketing-email', () => ({
-  sendMarketingEmail: (...args: unknown[]) => sendMarketingEmail(...args),
+const publishCreatorMeal = vi.fn();
+vi.mock('@/lib/creator-meals', () => ({
+  publishCreatorMeal: (...args: unknown[]) => publishCreatorMeal(...args),
 }));
 
 import {
@@ -31,9 +34,11 @@ import {
 /**
  * The engine behind both sync modes.
  *
- * Three properties carry the ticket and are tested as such: drawing the
+ * Four properties carry the two tickets and are tested as such: drawing the
  * checklist costs one feed read and nothing else, the gate still decides what
- * publishes, and one bad item does not take the batch with it.
+ * gets extracted, one bad item does not take the batch with it, and — MEAL-91 —
+ * **a run never publishes**. The last one is tested by asserting the publisher
+ * and the notifier were not reached, not merely that the item says `drafted`.
  */
 
 const CREATOR = {
@@ -58,8 +63,9 @@ function item(overrides: Partial<SyncItem> = {}): SyncItem {
     publishedAt: '2026-07-29T09:00:00.000Z',
     status: 'pending',
     detail: null,
-    mealId: null,
+    draftId: null,
     mealName: null,
+    needALook: null,
     costUsd: 0,
     ...overrides,
   };
@@ -72,10 +78,7 @@ function run(items: SyncItem[], overrides: Partial<SyncRun> = {}): SyncRun {
     source: 'website',
     mode: 'catalog',
     status: 'queued',
-    notifyCreator: true,
     items,
-    notifiedAt: null,
-    notifyError: null,
     createdAt: null,
     finishedAt: null,
     ...overrides,
@@ -90,10 +93,7 @@ function runRow(items: SyncItem[], overrides: Record<string, unknown> = {}) {
     source: 'website',
     mode: 'catalog',
     status: 'queued',
-    notify_creator: true,
     items,
-    notified_at: null,
-    notify_error: null,
     started_at: null,
     created_at: '2026-08-02T10:00:00.000Z',
     ...overrides,
@@ -119,7 +119,7 @@ const rejection = (stage: ImportResult extends never ? never : 'fetch' | 'gate' 
 function deps(overrides: Partial<SyncDeps> = {}): SyncDeps {
   return {
     supabase,
-    publisher: vi.fn(async () => ({ id: 'meal-1', name: 'Guacamole' })) as unknown as SyncDeps['publisher'],
+    queue: vi.fn(async () => 'draft-1') as unknown as SyncDeps['queue'],
     now: () => 1_800_000_000_000,
     ...overrides,
   };
@@ -128,7 +128,7 @@ function deps(overrides: Partial<SyncDeps> = {}): SyncDeps {
 beforeEach(() => {
   fakeDb.reset();
   sendCreatorSyncPublishedEmail.mockReset();
-  sendMarketingEmail.mockReset();
+  publishCreatorMeal.mockReset();
 });
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
@@ -202,27 +202,74 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
   let success: ImportSuccess;
   beforeEach(async () => { success = await importedGuacamole(); });
 
-  it('publishes a recipe and records it as imported', async () => {
-    const publisher = vi.fn(async () => ({ id: 'meal-1', name: 'Best Guacamole' }));
+  it('queues a recipe for review instead of publishing it', async () => {
+    const queue = vi.fn(async () => 'draft-9');
     const result = await processSyncItem(
-      deps({ importer: async () => success, publisher: publisher as unknown as SyncDeps['publisher'] }),
+      deps({ importer: async () => success, queue: queue as unknown as SyncDeps['queue'] }),
       run([item()]),
       CREATOR,
       item(),
     );
 
-    expect(result).toMatchObject({ status: 'imported', mealId: 'meal-1', mealName: 'Best Guacamole' });
+    expect(result).toMatchObject({ status: 'drafted', draftId: 'draft-9', mealName: 'Best Guacamole' });
     expect(result.costUsd).toBeGreaterThan(0);
+    // The point of the ticket: nothing reached Discover, and nobody was told a
+    // recipe went live. Asserting the status alone would pass on a version that
+    // published as well as queued.
+    expect(publishCreatorMeal).not.toHaveBeenCalled();
+    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
+  });
+
+  it('stores the field-level confidence rather than discarding it', async () => {
+    // `processSyncItem` computed `result.confidence` and never passed it on, so
+    // the MEAL-72 assessment protected nothing on this path. That is the bug.
+    const queue = vi.fn(async (_supabase: unknown, input: unknown) => { void input; return 'draft-9'; });
+    await processSyncItem(
+      deps({ importer: async () => success, queue: queue as unknown as SyncDeps['queue'] }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
+
+    const queued = queue.mock.calls[0][1] as { confidence: unknown; reviewBy: string; draft: { name: string } };
+    expect(queued.confidence).toEqual(success.confidence);
+    expect(queued.reviewBy).toBe('admin');
+    expect(queued.draft.name).toBe('Best Guacamole');
+  });
+
+  it('counts the flagged fields so the run says how much reading is waiting', async () => {
+    const result = await processSyncItem(
+      deps({ importer: async () => success }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
+    // The guacamole fixture lands fields on every level on purpose, including a
+    // deliberate hallucination, so this is a real count and not a constant.
+    expect(result.needALook).toBeGreaterThan(0);
+  });
+
+  it('records the item as imported the moment the draft exists, so a decline sticks', async () => {
+    // `creator_source_items` is what the next sync and the poller read. Writing
+    // it only on publish would mean a declined recipe comes back next cycle.
+    await processSyncItem(
+      deps({ importer: async () => success, queue: (async () => 'draft-9') as unknown as SyncDeps['queue'] }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
     const record = fakeDb.calls.find((c) => c.table === 'creator_source_items' && c.method === 'upsert');
-    expect(record?.args[0]).toMatchObject({ creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'imported' });
+    expect(record?.args[0]).toMatchObject({
+      creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'imported', draft_id: 'draft-9',
+    });
   });
 
   it('drops a selected post the gate says is not a recipe — and says so', async () => {
-    const publisher = vi.fn();
+    const queue = vi.fn();
     const result = await processSyncItem(
       deps({
         importer: async () => rejection('gate', 'Not a recipe: this is a kitchen-tour post.'),
-        publisher: publisher as unknown as SyncDeps['publisher'],
+        queue: queue as unknown as SyncDeps['queue'],
       }),
       run([item()]),
       CREATOR,
@@ -231,7 +278,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
     expect(result.status).toBe('rejected');
     expect(result.detail).toMatch(/not a recipe/i);
-    expect(publisher).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
   });
 
   it('calls a fetch failure failed, not rejected, so it stays retryable', async () => {
@@ -246,7 +293,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     expect(result.status).toBe('failed');
   });
 
-  it('skips an item already imported rather than publishing it twice', async () => {
+  it('skips an item already imported rather than queuing it twice', async () => {
     fakeDb.queue('creator_source_items', { data: { status: 'imported' } });
     const importer = vi.fn();
     const result = await processSyncItem(
@@ -271,11 +318,11 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     expect(result.detail).toMatch(/boom/);
   });
 
-  it('keeps the cost when extraction succeeded but publishing did not', async () => {
+  it('keeps the cost when extraction succeeded but queuing did not', async () => {
     const result = await processSyncItem(
       deps({
         importer: async () => success,
-        publisher: (async () => { throw new Error('duplicate key'); }) as unknown as SyncDeps['publisher'],
+        queue: (async () => { throw new Error('duplicate key'); }) as unknown as SyncDeps['queue'],
       }),
       run([item()]),
       CREATOR,
@@ -292,7 +339,7 @@ describe('advanceRun', () => {
   let success: ImportSuccess;
   beforeEach(async () => { success = await importedGuacamole(); });
 
-  it('publishes what passes, explains what did not, and finishes', async () => {
+  it('queues what passes, explains what did not, and finishes', async () => {
     const items = [
       item({ itemId: 'a', url: 'https://chefsarah.test/a' }),
       item({ itemId: 'b', url: 'https://chefsarah.test/b' }),
@@ -310,65 +357,32 @@ describe('advanceRun', () => {
 
     expect(result?.status).toBe('done');
     // "I selected 3 and got 1" has to add up on screen.
-    expect(summariseRun(result!)).toMatchObject({ selected: 3, imported: 1, rejected: 1, failed: 1, pending: 0 });
+    expect(summariseRun(result!)).toMatchObject({ selected: 3, drafted: 1, rejected: 1, failed: 1, pending: 0 });
   });
 
-  it('sends exactly one email listing every published title, linked by meal id', async () => {
+  it('publishes nothing and tells nobody, however many items succeed', async () => {
+    // MEAL-90 published here and emailed the creator from the run. Both are gone:
+    // a finished run has put nothing on Discover, so an email announcing live
+    // recipes would be false. The announcement moved to Approve.
     const items = [
       item({ itemId: 'a', url: 'https://chefsarah.test/a' }),
       item({ itemId: 'b', url: 'https://chefsarah.test/b' }),
     ];
     queueRun(runRow(items));
 
-    let published = 0;
-    await advanceRun(
-      deps({
-        importer: async () => success,
-        publisher: (async () => {
-          published += 1;
-          return { id: `meal-${published}`, name: `Recipe ${published}` };
-        }) as unknown as SyncDeps['publisher'],
-      }),
-      'r1',
-    );
-
-    expect(sendCreatorSyncPublishedEmail).toHaveBeenCalledTimes(1);
-    const [to, name, meals] = sendCreatorSyncPublishedEmail.mock.calls[0];
-    expect(to).toBe('sarah@chefsarah.test');
-    expect(name).toBe('Chef Sarah');
-    expect(meals).toEqual([
-      { id: 'meal-1', name: 'Recipe 1' },
-      { id: 'meal-2', name: 'Recipe 2' },
-    ]);
-    // Transactional, not marketing: marketing_opt_out must never suppress this.
-    expect(sendMarketingEmail).not.toHaveBeenCalled();
-  });
-
-  it('sends nothing when nothing published', async () => {
-    queueRun(runRow([item()]));
-    await advanceRun(deps({ importer: async () => rejection('gate', 'Not a recipe.') }), 'r1');
-    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
-  });
-
-  it('sends nothing when the operator turned notification off', async () => {
-    queueRun(runRow([item()], { notify_creator: false }));
-    await advanceRun(deps({ importer: async () => success }), 'r1');
-    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
-  });
-
-  it('keeps the run retryable when the email fails, rather than swallowing it', async () => {
-    queueRun(runRow([item()]));
-    sendCreatorSyncPublishedEmail.mockRejectedValueOnce(new Error('Resend is down'));
-
     const result = await advanceRun(deps({ importer: async () => success }), 'r1');
 
-    expect(result?.status).toBe('done');
-    const update = fakeDb.calls
-      .filter((c) => c.table === 'creator_sync_runs' && c.method === 'update')
-      .at(-1);
-    expect(update?.args[0].notify_error).toMatch(/NOT told/);
-    // The claim is rolled back, so the next attempt still has something to send.
-    expect(update?.args[0].items[0].notified).toBeFalsy();
+    expect(summariseRun(result!)).toMatchObject({ selected: 2, drafted: 2 });
+    expect(publishCreatorMeal).not.toHaveBeenCalled();
+    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
+    // And no preset_meals row was written by any other route either.
+    expect(fakeDb.calls.some((c) => c.table === 'preset_meals')).toBe(false);
+  });
+
+  it('reports how many fields the queue will ask a human to check', async () => {
+    queueRun(runRow([item()]));
+    const result = await advanceRun(deps({ importer: async () => success }), 'r1');
+    expect(summariseRun(result!).needALook).toBeGreaterThan(0);
   });
 
   it('refuses to work on a run another worker holds the lease on', async () => {
@@ -395,8 +409,7 @@ describe('advanceRun', () => {
     expect(result?.status).toBe('queued');
     const totals = summariseRun(result!);
     expect(totals.pending).toBeGreaterThan(0);
-    expect(totals.imported).toBeLessThan(6);
-    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
+    expect(totals.drafted).toBeLessThan(6);
   });
 
   it('returns null for a run that does not exist', async () => {
@@ -418,8 +431,8 @@ describe('retrySyncItem', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('refuses to retry something already published', async () => {
-    fakeDb.queue('creator_sync_runs', { data: runRow([item({ status: 'imported', mealId: 'm1' })]) });
+  it('refuses to retry something already drafted', async () => {
+    fakeDb.queue('creator_sync_runs', { data: runRow([item({ status: 'drafted', draftId: 'd1' })]) });
     const result = await retrySyncItem(deps(), 'r1', 'guid-1');
     expect(result.ok).toBe(false);
   });

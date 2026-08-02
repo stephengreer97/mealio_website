@@ -133,7 +133,15 @@ export interface ImportedFormValues {
   provided: Record<ImportField, boolean>;
 }
 
-export function importedFormValues(result: ImportSuccess): ImportedFormValues {
+/**
+ * Narrowed to the two members this needs, so a stored draft can be presented by
+ * the same rules as a live import. The admin review queue (MEAL-91) reads a
+ * `creator_import_drafts` row, which carries the draft and the URL it came from
+ * but none of the rest of an `ImportSuccess`.
+ */
+export type FormFillSource = Pick<ImportSuccess, 'draft' | 'url'>;
+
+export function importedFormValues(result: FormFillSource): ImportedFormValues {
   const draft = result.draft;
   const allTags = draft.tags ?? [];
   const tags = allTags.slice(0, 3);

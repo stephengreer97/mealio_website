@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { advanceRun, summariseRun } from '@/lib/admin-sync';
@@ -19,6 +18,10 @@ import { advanceRun, summariseRun } from '@/lib/admin-sync';
  * Request:  { runId: string }
  * Response: 200 with the run and its totals — including the per-item gate
  *           rejections, which are what make "I selected 12 and got 9" legible.
+ *
+ * Nothing here reaches Discover (MEAL-91), so there is no cache to invalidate:
+ * a chunk produces drafts waiting on a human, and `revalidateTag` moved to the
+ * approve action where a meal actually becomes visible.
  */
 
 // Two imports per chunk, each a fetch plus a gate call plus an extraction.
@@ -48,10 +51,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Run not found' }, { status: 404 });
   }
 
-  const totals = summariseRun(run);
-  // Once per chunk rather than once per meal: the Discover feed is cached for
-  // ten minutes and a 200-item run would otherwise invalidate it 200 times.
-  if (totals.imported > 0) revalidateTag('trending-meals', 'max');
-
-  return NextResponse.json({ run, totals });
+  return NextResponse.json({ run, totals: summariseRun(run) });
 }

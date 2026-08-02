@@ -20,15 +20,18 @@
  *   3. **One failure does not sink the batch.** Every item has its own outcome
  *      in `creator_source_items`; a failure stays retryable on its own.
  *
- * Admin sync publishes **directly** — it never writes `creator_import_drafts`.
- * MEAL-77 forbids acting on a creator's behalf *without their knowledge*, and
- * what keeps this on the right side of that is the email at the bottom of this
- * file, not an approval queue.
+ * **Nothing here publishes** (MEAL-91). A run produces `creator_import_drafts`
+ * rows waiting on an operator, and `lib/import-drafts.ts` owns what happens
+ * next. MEAL-90 justified publishing directly on the grounds that "a human
+ * operator has read the extraction in the admin UI before triggering it" — but
+ * the operator reads a *title in an RSS feed*, and between the model's
+ * extraction and a live recipe under a creator's name no human saw the
+ * ingredients. The email that made that arrangement honest now fires from
+ * Approve, where there is something true to announce.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { publishCreatorMeal } from '@/lib/creator-meals';
-import { sendCreatorSyncPublishedEmail } from '@/lib/email';
+import { createImportDraft, reviewDraft, type ImportDraft } from '@/lib/import-drafts';
 import { log } from '@/lib/logger';
 import { SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
@@ -44,12 +47,16 @@ import type { ImportResult } from '@/lib/import/types';
 /**
  * Per-item outcome inside a run.
  *
+ * `drafted` — not `imported` — is what a successful item reaches now: the recipe
+ * is extracted and waiting in the review queue, and calling it "published" on
+ * screen would restate the exact untruth MEAL-91 exists to remove.
+ *
  * `rejected` and `failed` mean different things to an operator and must not be
  * merged: rejected is the gate saying this is not a recipe (a correct answer,
  * retrying changes nothing), failed is us not managing to read it (a timeout, a
  * 503, a classifier outage — worth another go).
  */
-export type SyncItemStatus = 'pending' | 'imported' | 'rejected' | 'failed' | 'skipped';
+export type SyncItemStatus = 'pending' | 'drafted' | 'rejected' | 'failed' | 'skipped';
 
 export interface SyncItem {
   /** Feed guid / video id / the URL itself. Half of the `creator_source_items` key. */
@@ -60,15 +67,13 @@ export interface SyncItem {
   status: SyncItemStatus;
   /** The gate's sentence, the fetch failure, or why it was skipped. */
   detail: string | null;
-  mealId: string | null;
+  /** The queued draft. Where the run hands over to the review queue. */
+  draftId: string | null;
+  /** The extracted recipe's name, so the run reads as recipes rather than URLs. */
   mealName: string | null;
+  /** How many fields the review card will flag. The reason to look at this one first. */
+  needALook: number | null;
   costUsd: number;
-  /**
-   * True once this item has appeared in an email to the creator. Per item rather
-   * than per run so a retry that publishes later still gets announced, without
-   * re-announcing the nine that already went out.
-   */
-  notified?: boolean;
 }
 
 export type SyncRunStatus = 'queued' | 'running' | 'done';
@@ -80,23 +85,22 @@ export interface SyncRun {
   source: PlatformSource;
   mode: SyncRunMode;
   status: SyncRunStatus;
-  notifyCreator: boolean;
   items: SyncItem[];
-  notifiedAt: string | null;
-  notifyError: string | null;
   createdAt: string | null;
   finishedAt: string | null;
 }
 
-/** Counts the sync screen shows, so "selected 12, published 9" adds up on screen. */
+/** Counts the sync screen shows, so "selected 12, queued 9" adds up on screen. */
 export interface SyncRunTotals {
   selected: number;
   pending: number;
-  imported: number;
+  drafted: number;
   rejected: number;
   failed: number;
   skipped: number;
   costUsd: number;
+  /** Across every drafted item. What the queue is about to ask a human to read. */
+  needALook: number;
 }
 
 export function summariseRun(run: SyncRun): SyncRunTotals {
@@ -104,11 +108,12 @@ export function summariseRun(run: SyncRun): SyncRunTotals {
   return {
     selected: run.items.length,
     pending: count('pending'),
-    imported: count('imported'),
+    drafted: count('drafted'),
     rejected: count('rejected'),
     failed: count('failed'),
     skipped: count('skipped'),
     costUsd: run.items.reduce((total, item) => total + (item.costUsd || 0), 0),
+    needALook: run.items.reduce((total, item) => total + (item.needALook ?? 0), 0),
   };
 }
 
@@ -120,10 +125,7 @@ export function toSyncRun(row: Record<string, any>): SyncRun {
     source: row.source,
     mode: row.mode,
     status: row.status,
-    notifyCreator: Boolean(row.notify_creator),
     items: Array.isArray(row.items) ? (row.items as SyncItem[]) : [],
-    notifiedAt: row.notified_at ?? null,
-    notifyError: row.notify_error ?? null,
     createdAt: row.created_at ?? null,
     finishedAt: row.finished_at ?? null,
   };
@@ -146,8 +148,8 @@ export interface SyncDeps {
   fetchOptions?: SafeFetchOptions;
   /** The import pipeline seam. Tests substitute a stub; production runs the real thing. */
   importer?: (url: string, options: RunImportOptions) => Promise<ImportResult>;
-  publisher?: typeof publishCreatorMeal;
-  notifier?: typeof sendCreatorSyncPublishedEmail;
+  /** Where an extraction lands. There is no publisher seam here any more — a run cannot publish. */
+  queue?: typeof createImportDraft;
   now?: () => number;
 }
 
@@ -294,7 +296,7 @@ function isTerminal(item: SyncItem): boolean {
 }
 
 /**
- * Runs one item: gate, extract, publish, record.
+ * Runs one item: gate, extract, queue for review, record.
  *
  * Never throws. An item that blows up is a failed item, because the alternative
  * is one bad post taking the other 199 with it.
@@ -307,7 +309,7 @@ export async function processSyncItem(
 ): Promise<SyncItem> {
   const supabase = deps.supabase;
   const importer = deps.importer ?? runImport;
-  const publisher = deps.publisher ?? publishCreatorMeal;
+  const queue = deps.queue ?? createImportDraft;
 
   // Already in, from an earlier run or the poller. Skipped rather than
   // re-imported: an operator ticking a row they were warned about should not be
@@ -324,7 +326,7 @@ export async function processSyncItem(
     return {
       ...item,
       status: 'skipped',
-      detail: 'Already imported — skipped so the same recipe is not published twice.',
+      detail: 'Already imported — skipped so the same recipe is not queued twice.',
     };
   }
 
@@ -371,17 +373,39 @@ export async function processSyncItem(
   const costUsd = (result.meta.usage?.costUsd ?? 0) + (result.meta.gateUsage?.costUsd ?? 0);
 
   try {
-    const meal = await publisher(
-      supabase,
-      { id: creator.id, display_name: creator.display_name, user_id: creator.user_id },
-      result.draft,
-    );
+    const draftId = await queue(supabase, {
+      creatorId: creator.id,
+      sourceUrl: result.url,
+      source: run.source,
+      itemId: item.itemId,
+      syncRunId: run.id,
+      draft: result.draft,
+      // Stored, not discarded. Passing the draft on without this is the bug
+      // MEAL-91 was written about: the field-level assessment was computed on
+      // every import and then dropped on the floor, so the greens on this path
+      // were claims nobody had ever looked at.
+      confidence: result.confidence,
+      reviewBy: 'admin',
+    });
+
+    // Counted here rather than on the review screen so an operator watching a
+    // 40-item run already knows how much reading is waiting for them.
+    const { summary } = reviewDraft({
+      ...EMPTY_DRAFT_FIELDS,
+      id: draftId,
+      creatorId: creator.id,
+      sourceUrl: result.url,
+      draft: result.draft,
+      confidence: result.confidence,
+    });
+
     return await recordItem(deps, creator, run, {
       ...item,
-      status: 'imported',
+      status: 'drafted',
       detail: null,
-      mealId: meal.id,
-      mealName: meal.name,
+      draftId,
+      mealName: result.draft.name,
+      needALook: summary.needALook,
       costUsd,
     });
   } catch (err) {
@@ -390,11 +414,26 @@ export async function processSyncItem(
     return await recordItem(deps, creator, run, {
       ...item,
       status: 'failed',
-      detail: `Extracted, but publishing failed: ${err instanceof Error ? err.message : String(err)}`,
+      detail: `Extracted, but queuing it for review failed: ${err instanceof Error ? err.message : String(err)}`,
       costUsd,
     });
   }
 }
+
+/** The members of `ImportDraft` `reviewDraft` does not read. Kept out of the call site. */
+const EMPTY_DRAFT_FIELDS = {
+  creatorName: null,
+  source: null,
+  itemId: null,
+  syncRunId: null,
+  status: 'pending_review',
+  reviewBy: 'admin',
+  editedAt: null,
+  decidedAt: null,
+  decidedBy: null,
+  publishedMealId: null,
+  createdAt: null,
+} satisfies Omit<ImportDraft, 'id' | 'creatorId' | 'sourceUrl' | 'draft' | 'confidence'>;
 
 /**
  * Writes the durable per-item record.
@@ -408,10 +447,16 @@ async function recordItem(
   deps: SyncDeps,
   creator: SyncCreator,
   run: SyncRun,
-  // Narrowed to the three the table's CHECK constraint accepts, so a new item
-  // status can never quietly become an invalid record write.
-  item: SyncItem & { status: 'imported' | 'rejected' | 'failed' },
+  // Narrowed to the three outcomes worth recording, so a new item status can
+  // never quietly become an invalid record write.
+  item: SyncItem & { status: 'drafted' | 'rejected' | 'failed' },
 ): Promise<SyncItem> {
+  // `imported` in the record means "produced a draft or a published meal" — the
+  // sense `add-creator-sources.sql` already gives it. Writing it the moment the
+  // draft exists rather than when it publishes is what makes a declined recipe
+  // stay declined: the next sync or poll sees the record and skips the post.
+  const recordStatus = item.status === 'drafted' ? 'imported' : item.status;
+
   try {
     await deps.supabase.from('creator_source_items').upsert(
       {
@@ -421,8 +466,9 @@ async function recordItem(
         url: item.url,
         title: item.title,
         published_at: item.publishedAt,
-        status: item.status,
+        status: recordStatus,
         detail: item.detail,
+        draft_id: item.draftId,
         updated_at: new Date(deps.now?.() ?? Date.now()).toISOString(),
       },
       { onConflict: 'creator_id,source,item_id' },
@@ -440,7 +486,7 @@ async function recordItem(
  * long-running: it takes a lease, works until its budget is spent, writes what
  * it did and lets go. The admin screen calls it in a loop while a run is
  * unfinished, and the daily cron sweeps anything an operator walked away from —
- * so a closed tab delays a run rather than abandoning it half-published.
+ * so a closed tab delays a run rather than abandoning it half-imported.
  */
 export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun | null> {
   const supabase = deps.supabase;
@@ -512,11 +558,9 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
   const finished = items.every(isTerminal);
   run = { ...run, items, status: finished ? 'done' : 'running' };
 
-  // The email goes out inside the lease, so "did we already tell them?" is never
-  // a race between two workers.
-  const notified = finished && run.notifyCreator ? await notifyCreator(deps, run, creator) : null;
-  if (notified) items = notified.items;
-
+  // No email here any more. A finished run has published nothing, so there is
+  // nothing true to tell a creator yet; the announcement fires from Approve
+  // (`notifyApproved`), where the meals are actually live.
   await supabase
     .from('creator_sync_runs')
     .update({
@@ -525,7 +569,6 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
       finished_at: finished ? new Date(now()).toISOString() : null,
       lease_until: null,
       updated_at: new Date(now()).toISOString(),
-      ...(notified ? { notified_at: notified.notifiedAt, notify_error: notified.notifyError } : {}),
     })
     .eq('id', runId);
 
@@ -536,21 +579,19 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
     userId: creator.id,
     detail:
       `run=${runId} source=${run.source} ${finished ? 'done' : 'partial'} ` +
-      `selected=${totals.selected} imported=${totals.imported} rejected=${totals.rejected} ` +
-      `failed=${totals.failed} skipped=${totals.skipped} cost=$${totals.costUsd.toFixed(4)}`,
+      `selected=${totals.selected} drafted=${totals.drafted} rejected=${totals.rejected} ` +
+      `failed=${totals.failed} skipped=${totals.skipped} flagged=${totals.needALook} ` +
+      `cost=$${totals.costUsd.toFixed(4)}`,
   });
 
-  return { ...run, items, status: finished ? 'done' : 'queued', notifiedAt: notified?.notifiedAt ?? run.notifiedAt };
+  return { ...run, items, status: finished ? 'done' : 'queued' };
 }
 
-/** Reads the creator fields the engine needs, including the address to notify. */
-async function loadSyncCreator(
-  supabase: SupabaseClient,
-  creatorId: string,
-): Promise<(SyncCreator & { email: string | null }) | null> {
+/** Reads the creator fields the engine needs. */
+async function loadSyncCreator(supabase: SupabaseClient, creatorId: string): Promise<SyncCreator | null> {
   const { data } = await supabase
     .from('creators')
-    .select('id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url, user_profiles!user_id ( email )')
+    .select('id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url')
     .eq('id', creatorId)
     .maybeSingle();
 
@@ -565,66 +606,15 @@ async function loadSyncCreator(
     instagram_url: row.instagram_url ?? null,
     tiktok_url: row.tiktok_url ?? null,
     feed_url: row.feed_url ?? null,
-    email: (row.user_profiles as { email?: string } | null)?.email ?? null,
   };
-}
-
-/**
- * Tells the creator what went live under their name.
- *
- * Only what published — a creator who did not ask for this sync does not need a
- * list of the operator's gate rejections. Nothing published means nothing sent.
- *
- * The `notified` flag is set per item *before* the send and rolled back if the
- * send throws, so the failure mode is "we try again", never "nobody was told".
- * That is also why a retried item that publishes later produces its own short
- * follow-up instead of being folded silently into a message already delivered.
- */
-async function notifyCreator(
-  deps: SyncDeps,
-  run: SyncRun,
-  creator: SyncCreator & { email: string | null },
-): Promise<{ items: SyncItem[]; notifiedAt: string | null; notifyError: string | null } | null> {
-  const notifier = deps.notifier ?? sendCreatorSyncPublishedEmail;
-  const now = deps.now ?? Date.now;
-
-  const fresh = run.items.filter((item) => item.status === 'imported' && item.mealId && !item.notified);
-  if (fresh.length === 0) return null;
-
-  if (!creator.email) {
-    log({ event: 'ADMIN:SYNC_NOTIFY', status: 'error', userId: creator.id, detail: `run=${run.id}`, reason: 'creator has no email address' });
-    return { items: run.items, notifiedAt: run.notifiedAt, notifyError: 'This creator has no email address on file, so nobody was told.' };
-  }
-
-  const claimedIds = new Set(fresh.map((item) => item.itemId));
-  const items = run.items.map((item) => (claimedIds.has(item.itemId) ? { ...item, notified: true } : item));
-
-  try {
-    await notifier(
-      creator.email,
-      creator.display_name,
-      fresh.map((item) => ({ id: item.mealId as string, name: item.mealName || item.title || 'Untitled recipe' })),
-    );
-    log({ event: 'ADMIN:SYNC_NOTIFY', status: 'success', userId: creator.id, detail: `run=${run.id} meals=${fresh.length}` });
-    return { items, notifiedAt: new Date(now()).toISOString(), notifyError: null };
-  } catch (err) {
-    log({ event: 'ADMIN:SYNC_NOTIFY', status: 'error', userId: creator.id, detail: `run=${run.id} meals=${fresh.length}`, error: err });
-    return {
-      items: run.items,
-      notifiedAt: run.notifiedAt,
-      notifyError:
-        `The creator was NOT told about ${fresh.length} published ${fresh.length === 1 ? 'recipe' : 'recipes'}: ` +
-        `${err instanceof Error ? err.message : String(err)}. Press Retry notification.`,
-    };
-  }
 }
 
 /**
  * Puts one failed item back in the queue.
  *
  * Only `failed` is retryable. Retrying a gate rejection would just pay for the
- * same "no" again, and retrying something already imported is how a recipe gets
- * published twice.
+ * same "no" again, and retrying something already drafted is how the same recipe
+ * ends up in the review queue twice.
  */
 export async function retrySyncItem(
   deps: SyncDeps,
