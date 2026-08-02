@@ -42,6 +42,8 @@ export type Platform =
   | 'substack'
   | 'medium'
   | 'link-in-bio'
+  /** Not sniffed from markup: set by the YouTube reader, which knows (MEAL-74). */
+  | 'youtube'
   | 'unknown';
 
 /** Cleaned, source-agnostic view of a page. Blogs and videos both reduce to this. */

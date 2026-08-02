@@ -6,6 +6,7 @@ import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import ImportLinkBar from '@/components/ImportLinkBar';
 import ImportFieldNotice, { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
+import YouTubeConnectCard from '@/components/YouTubeConnectCard';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import {
   appendIngredientState,
@@ -1385,6 +1386,9 @@ export default function CreatorPortal() {
               </div>
             )}
           </div>
+
+          {/* ── Where they publish (MEAL-74) ── */}
+          <YouTubeConnectCard />
 
           {/* ── Stats ── */}
           {stats && (

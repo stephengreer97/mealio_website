@@ -192,7 +192,6 @@ describe('import/viability — cannot check is not the same as failed', () => {
 
 describe('import/viability — platforms that are not connected yet', () => {
   it.each<[PlatformSource, string]>([
-    ['youtube', 'MEAL-74'],
     ['instagram', 'MEAL-82'],
     ['tiktok', 'MEAL-83'],
   ])('%s reports unavailable and names the ticket', async (source, ticket) => {
@@ -276,5 +275,113 @@ describe('import/viability — only the creator’s own pages are read', () => {
     expect(report.outcome).toBe('unavailable');
     expect(report.summary).toMatch(/not on https:\/\/chefsarah\.test/);
     expect(calls).toEqual([]);
+  });
+});
+
+// ── YouTube (MEAL-74) ────────────────────────────────────────────────────────
+
+describe('import/viability — the YouTube probe measures a channel for free', () => {
+  const CHANNEL_ID = 'UCabcdefghijklmnopqrstuv';
+  const UPLOADS_FEED = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
+
+  /** A description long enough that the gate would judge it rather than call it thin. */
+  const RECIPE_DESCRIPTION = `Ingredients:\n2 ripe avocados\n1 lime\n${'Mash them together and season well. '.repeat(8)}`;
+
+  function uploadsFeed(entries: Array<{ id: string; title: string; description: string }>): string {
+    const xml = entries
+      .map(
+        (entry) =>
+          `<entry><id>yt:video:${entry.id}</id><yt:videoId>${entry.id}</yt:videoId>` +
+          `<title>${entry.title}</title>` +
+          `<published>2026-07-29T09:00:00+00:00</published>` +
+          `<media:group><media:description>${entry.description}</media:description>` +
+          `<media:thumbnail url="https://i.ytimg.com/vi/${entry.id}/hqdefault.jpg"/></media:group></entry>`,
+      )
+      .join('');
+    return `<feed xmlns:yt="y" xmlns:media="m">${xml}</feed>`;
+  }
+
+  function channelRoutes(body: string): Record<string, StubRoute> {
+    return { [UPLOADS_FEED]: { body, headers: { 'content-type': 'text/xml' } } };
+  }
+
+  it('gates each video on its title and description, fetching only the feed', async () => {
+    const { calls, fetchOptions: opts } = fetchOptions(
+      channelRoutes(
+        uploadsFeed([
+          { id: 'vid0000000A', title: 'Best Guacamole', description: RECIPE_DESCRIPTION },
+          { id: 'vid0000000B', title: 'Grocery haul', description: RECIPE_DESCRIPTION },
+        ]),
+      ),
+    );
+    const call = stubCaller((request) =>
+      request.prompt.includes('TITLE: Best Guacamole')
+        ? { verdict: 'yes', reason: 'Lists ingredients and steps.' }
+        : { verdict: 'no', reason: 'A haul, not a recipe.' },
+    );
+
+    const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
+      call,
+      fetchOptions: opts,
+      grant: { externalId: CHANNEL_ID, accessToken: null },
+    });
+
+    expect(report.checked).toBe(2);
+    expect(report.passed).toBe(1);
+    // One request for the whole measurement. No video page, no API quota — which
+    // is what lets this run before the creator has connected anything.
+    expect(calls).toEqual([UPLOADS_FEED]);
+  });
+
+  it('measures a channel with no OAuth grant at all, from the public feed', async () => {
+    const { calls, fetchOptions: opts } = fetchOptions({
+      'https://youtube.com/@sarah': {
+        body: `<html><link rel="canonical" href="https://www.youtube.com/channel/${CHANNEL_ID}"></html>`,
+      },
+      ...channelRoutes(uploadsFeed([{ id: 'vid0000000A', title: 'Best Guacamole', description: RECIPE_DESCRIPTION }])),
+    });
+
+    const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
+      call: stubCaller(() => ({ verdict: 'yes', reason: 'Lists ingredients and steps.' })),
+      fetchOptions: opts,
+    });
+
+    // Application review happens before anyone has connected a channel, so a
+    // probe that needed a grant would never run when it is actually wanted.
+    expect(report.outcome).toBe('viable');
+    expect(calls).toEqual(['https://youtube.com/robots.txt', 'https://youtube.com/@sarah', UPLOADS_FEED]);
+  });
+
+  it('reports a video with no description and no captions rather than gating it', async () => {
+    const { fetchOptions: opts } = fetchOptions(
+      channelRoutes(uploadsFeed([{ id: 'vid0000000A', title: 'Sunday vlog', description: '' }])),
+    );
+    const call = stubCaller(() => ({ verdict: 'yes', reason: 'x' }));
+
+    const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
+      call,
+      fetchOptions: opts,
+      grant: { externalId: CHANNEL_ID, accessToken: null },
+    });
+
+    // Counting it as "not a recipe" would measure our access rather than the
+    // creator, which is exactly the confusion this whole check exists to avoid.
+    expect(report.items[0].verdict).toBe('error');
+    expect(report.checked).toBe(0);
+    expect(report.outcome).toBe('unavailable');
+    expect(call.requests).toEqual([]);
+  });
+
+  it('reports unavailable when the channel id cannot be worked out', async () => {
+    const { fetchOptions: opts } = fetchOptions({ 'https://youtube.com/@sarah': { body: '<html></html>' } });
+
+    const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
+      call: stubCaller(() => ({ verdict: 'yes', reason: 'x' })),
+      fetchOptions: opts,
+    });
+
+    expect(report.outcome).toBe('unavailable');
+    expect(report.outcome).not.toBe('viable');
+    expect(report.summary).toMatch(/did not name a channel id/);
   });
 });

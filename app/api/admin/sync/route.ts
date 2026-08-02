@@ -121,8 +121,14 @@ export async function POST(request: NextRequest) {
     // from their feed, so a cross-host entry means either a hijacked feed or a
     // hand-edited request — and publishing a stranger's recipe under a creator's
     // name is precisely the outcome MEAL-77 exists to prevent.
+    //
+    // YouTube is exempt from the *link* requirement because the channel comes
+    // from the OAuth grant, so a connected creator can be synced with no
+    // `youtube_url` on their row at all. It is not exempt from the check: the
+    // rule below is stricter, and the worker reads each video out of the
+    // creator's own uploads feed by id whatever the URL claims.
     const site = (creator[SOURCE_COLUMNS[source] as keyof typeof creator] as string | null) || creator.feed_url;
-    if (!site) {
+    if (!site && source !== 'youtube') {
       return NextResponse.json({ error: 'This creator has no link for that source.' }, { status: 400 });
     }
 
@@ -133,9 +139,19 @@ export async function POST(request: NextRequest) {
       if (!url || !itemId) {
         return NextResponse.json({ error: 'Every selected item needs a URL.' }, { status: 400 });
       }
-      if (source === 'website' && !isSameSite(site, url)) {
+      if (source === 'website' && !isSameSite(site!, url)) {
         return NextResponse.json(
           { error: `${url} is not on this creator's own site. Refusing the whole selection.` },
+          { status: 400 },
+        );
+      }
+      // The recorded URL has to be the watch page for the very video id being
+      // recorded. Otherwise `creator_source_items` ends up describing one video
+      // with another's link, which is what MEAL-79 later reads to decide which
+      // video a published meal came from.
+      if (source === 'youtube' && url !== `https://www.youtube.com/watch?v=${itemId}`) {
+        return NextResponse.json(
+          { error: `${url} is not the watch page for video ${itemId}. Refusing the whole selection.` },
           { status: 400 },
         );
       }

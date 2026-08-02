@@ -45,7 +45,37 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ creators: data ?? [] });
+  // Which platforms each creator has connected, and which of those connections
+  // have stopped working (MEAL-74). Two reasons this belongs on the list an
+  // operator already reads: a connected channel can be synced with no link on
+  // the row at all, and a broken grant is otherwise indistinguishable from a
+  // creator who simply published nothing.
+  //
+  // Deliberately selected column by column: `select *` on this table would
+  // carry refresh tokens into an admin response.
+  const { data: accounts } = await supabase
+    .from('creator_platform_accounts')
+    .select('creator_id, platform, external_id, external_name, broken_reason, broken_at');
+
+  const byCreator = new Map<string, Array<Record<string, unknown>>>();
+  for (const row of (accounts ?? []) as Array<Record<string, any>>) {
+    const list = byCreator.get(row.creator_id) ?? [];
+    list.push({
+      platform: row.platform,
+      externalId: row.external_id ?? null,
+      externalName: row.external_name ?? null,
+      brokenReason: row.broken_reason ?? null,
+      brokenAt: row.broken_at ?? null,
+    });
+    byCreator.set(row.creator_id, list);
+  }
+
+  const creators = ((data ?? []) as Array<Record<string, any>>).map((creator) => ({
+    ...creator,
+    connections: byCreator.get(creator.id) ?? [],
+  }));
+
+  return NextResponse.json({ creators });
 }
 
 export async function PATCH(request: NextRequest) {

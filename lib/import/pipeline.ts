@@ -49,6 +49,7 @@ import type {
   ImportTelemetry,
   ImportUsage,
   Platform,
+  SourceDocument,
 } from './types';
 
 export interface RunImportOptions {
@@ -62,6 +63,17 @@ export interface RunImportOptions {
   cache?: ImportCache;
   /** DNS/fetch/timeout injection for the SSRF-safe fetcher. */
   fetchOptions?: SafeFetchOptions;
+  /**
+   * A source document the caller already has, which replaces the fetch.
+   *
+   * Not every source is a page. A YouTube video's document is its title,
+   * description and captions, assembled from the uploads feed and the channel
+   * owner's grant (MEAL-74) — fetching `watch?v=…` would get a JavaScript shell
+   * with no recipe in it, and the gate would truthfully report that it is not a
+   * recipe. Everything after this point is unchanged: same gate, same
+   * extraction, same confidence assessment.
+   */
+  document?: SourceDocument;
   /** Set false only in tests; production must honour robots.txt. */
   honourRobots?: boolean;
   /** Skips both cache reads and writes. */
@@ -197,30 +209,42 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     }
   }
 
-  // ── robots.txt ────────────────────────────────────────────────────────────
-  stage = 'robots';
-  if (honourRobots) {
-    const robots = await checkRobots(url, options.fetchOptions);
-    if (!robots.allowed) {
-      const result = rejection(url, 'robots', 'blocked-by-robots', robots.detail);
-      if (useCache) await cacheSet(importKey(url), result, IMPORT_TTL_MS);
-      return finish(result, {});
-    }
-  }
+  let document: SourceDocument;
+  /** Empty for a caller-supplied document: nothing was fetched, so nothing redirected. */
+  let redirects: string[] = [];
 
-  // ── fetch ─────────────────────────────────────────────────────────────────
-  stage = 'fetch';
-  const fetched = await safeFetch(url, options.fetchOptions);
-  if (!fetched.ok) {
-    // Not cached: fetch failures are usually transient (timeout, 5xx, bot
-    // challenge) and a creator retrying immediately deserves a fresh attempt.
-    // `blocked-by-site` in particular means we never saw the page — it must
-    // never be reported as an extraction failure.
-    return finish(rejection(url, 'fetch', fetched.reason, fetched.detail), {});
+  // A caller-supplied document is content we already hold, obtained through an
+  // API the creator authorised rather than by crawling a page — so there is no
+  // request for robots.txt to have an opinion about, and nothing to fetch.
+  if (options.document) {
+    document = options.document;
+  } else {
+    // ── robots.txt ──────────────────────────────────────────────────────────
+    stage = 'robots';
+    if (honourRobots) {
+      const robots = await checkRobots(url, options.fetchOptions);
+      if (!robots.allowed) {
+        const result = rejection(url, 'robots', 'blocked-by-robots', robots.detail);
+        if (useCache) await cacheSet(importKey(url), result, IMPORT_TTL_MS);
+        return finish(result, {});
+      }
+    }
+
+    // ── fetch ───────────────────────────────────────────────────────────────
+    stage = 'fetch';
+    const fetched = await safeFetch(url, options.fetchOptions);
+    if (!fetched.ok) {
+      // Not cached: fetch failures are usually transient (timeout, 5xx, bot
+      // challenge) and a creator retrying immediately deserves a fresh attempt.
+      // `blocked-by-site` in particular means we never saw the page — it must
+      // never be reported as an extraction failure.
+      return finish(rejection(url, 'fetch', fetched.reason, fetched.detail), {});
+    }
+    document = toSourceDocument(fetched.url, fetched.html);
+    redirects = fetched.redirects;
   }
 
   stage = 'gate';
-  const document = toSourceDocument(fetched.url, fetched.html);
   const platform = document.platform;
 
   // Link-in-bio pages are unsupported, not merely hard. The MEAL-69 spike's
@@ -338,7 +362,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       path: extraction.path,
       platform,
       cached: false,
-      redirects: fetched.redirects,
+      redirects,
       usage: toImportUsage(extraction.usage),
       gateUsage: toImportUsage(gateUsage),
     },

@@ -38,9 +38,18 @@ import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/f
 import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
 import { robotsPerOrigin } from '@/lib/import/robots';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
+import {
+  channelIdForCreator,
+  readUploadsFeed,
+  uploadsFeedUrl,
+  youtubeAccessToken,
+  youtubeSourceDocument,
+  UPLOADS_FEED_MAX,
+  type YouTubeVideo,
+} from '@/lib/youtube';
 import { formatTelemetry } from '@/lib/import/telemetry';
 import type { FeedKind } from '@/lib/import/feed';
-import type { ImportResult } from '@/lib/import/types';
+import type { ImportResult, SourceDocument } from '@/lib/import/types';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -150,7 +159,57 @@ export interface SyncDeps {
   importer?: (url: string, options: RunImportOptions) => Promise<ImportResult>;
   /** Where an extraction lands. There is no publisher seam here any more — a run cannot publish. */
   queue?: typeof createImportDraft;
+  /**
+   * Builds the source document for a source that is not a web page.
+   *
+   * `advanceRun` fills this in with a resolver memoised per run, so a 40-video
+   * selection reads the channel's uploads feed once rather than forty times.
+   */
+  sourceDocument?: SourceDocumentResolver;
   now?: () => number;
+}
+
+/** Null means "this source is a page — fetch it the normal way". */
+export type SourceDocumentResolver = (
+  creator: SyncCreator,
+  source: PlatformSource,
+  item: SyncItem,
+) => Promise<SourceDocument | null>;
+
+/**
+ * Source documents for a YouTube run (MEAL-74).
+ *
+ * A video is not a page: `watch?v=…` serves a JavaScript shell, so the document
+ * is assembled from the uploads feed's title and description, with captions
+ * behind the creator's grant when the description is too thin to judge. The feed
+ * read and the token refresh happen once per run, whatever the selection size.
+ */
+export function createSourceDocumentResolver(deps: SyncDeps): SourceDocumentResolver {
+  let channel: Promise<{ videos: Map<string, YouTubeVideo>; accessToken: string | null }> | null = null;
+
+  return async (creator, source, item) => {
+    if (source !== 'youtube') return null;
+
+    channel ??= (async () => {
+      const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
+      if (!resolved.ok) return { videos: new Map<string, YouTubeVideo>(), accessToken: null };
+      const [feed, accessToken] = await Promise.all([
+        readUploadsFeed(resolved.channelId, deps.fetchOptions),
+        // Null when they have not connected: description-only import still
+        // works, it just cannot fall back to captions.
+        youtubeAccessToken({ supabase: deps.supabase }, resolved.connection),
+      ]);
+      return {
+        videos: new Map(feed.ok ? feed.videos.map((video) => [video.videoId, video] as const) : []),
+        accessToken,
+      };
+    })();
+
+    const { videos, accessToken } = await channel;
+    const video = videos.get(item.itemId);
+    if (!video) return null;
+    return youtubeSourceDocument(video, { accessToken });
+  };
 }
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
@@ -198,11 +257,14 @@ export async function buildCatalog(
   creator: SyncCreator,
   source: PlatformSource,
 ): Promise<CatalogResult> {
+  if (source === 'youtube') {
+    return buildYouTubeCatalog(deps, creator);
+  }
   if (source !== 'website') {
     // Same rule as the viability probe: a source we cannot enumerate reports
     // that plainly and names the ticket. An empty list would read as "this
     // creator publishes nothing", which is the one thing it must not mean.
-    const ticket = { youtube: 'MEAL-74', instagram: 'MEAL-82', tiktok: 'MEAL-83' }[source];
+    const ticket = { instagram: 'MEAL-82', tiktok: 'MEAL-83' }[source];
     return {
       ok: false,
       reason: 'not-connected',
@@ -236,8 +298,41 @@ export async function buildCatalog(
     return { ok: false, reason: discovery.reason, detail: discovery.detail };
   }
 
-  // One query for the whole catalog, keyed the way the record is keyed. This and
-  // the feed read are the entire cost of drawing the screen.
+  const entries = await withImportRecords(
+    deps,
+    creator,
+    source,
+    discovery.feed.entries.map((entry) => ({
+      itemId: entry.id,
+      url: entry.url,
+      title: entry.title,
+      publishedAt: entry.publishedAt,
+    })),
+  );
+
+  return {
+    ok: true,
+    source,
+    feed: { url: discovery.feed.url, kind: discovery.feed.kind, via: discovery.feed.via },
+    entries,
+    truncated: entries.length >= CATALOG_MAX_ENTRIES,
+  };
+}
+
+/**
+ * Marks each listed item with what already happened to it.
+ *
+ * One query for the whole catalog, keyed the way the record is keyed. This and
+ * the feed read are the entire cost of drawing the screen — the property that
+ * lets an operator open a 200-post blog, or a channel, without spending
+ * anything.
+ */
+async function withImportRecords(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  source: PlatformSource,
+  entries: Array<Omit<CatalogEntry, 'record'>>,
+): Promise<CatalogEntry[]> {
   const { data: records } = await deps.supabase
     .from('creator_source_items')
     .select('item_id, status, detail, updated_at')
@@ -253,20 +348,52 @@ export async function buildCatalog(
     });
   }
 
-  const entries: CatalogEntry[] = discovery.feed.entries.map((entry) => ({
-    itemId: entry.id,
-    url: entry.url,
-    title: entry.title,
-    publishedAt: entry.publishedAt,
-    record: byItemId.get(entry.id) ?? null,
-  }));
+  return entries.map((entry) => ({ ...entry, record: byItemId.get(entry.itemId) ?? null }));
+}
+
+/**
+ * Lists a creator's YouTube channel from the uploads feed (MEAL-74).
+ *
+ * Feed metadata only: ids, titles and dates, one unauthenticated request, no API
+ * quota. The same rule the website path follows — nothing here fetches a video
+ * or calls a model to draw a list — and the reason a channel can be listed at
+ * all before its owner has connected anything.
+ *
+ * `item_id` is the bare video id. MEAL-79's "this meal came from *that* video"
+ * relationship is keyed on it, so it has to be the id YouTube's own API uses.
+ */
+async function buildYouTubeCatalog(deps: SyncDeps, creator: SyncCreator): Promise<CatalogResult> {
+  const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
+  if (!resolved.ok) {
+    return { ok: false, reason: 'not-connected', detail: resolved.detail };
+  }
+
+  const feed = await readUploadsFeed(resolved.channelId, deps.fetchOptions);
+  if (!feed.ok) {
+    return { ok: false, reason: 'unreachable', detail: feed.detail };
+  }
+
+  const entries = await withImportRecords(
+    deps,
+    creator,
+    'youtube',
+    feed.videos.map((video) => ({
+      itemId: video.videoId,
+      url: video.url,
+      title: video.title,
+      publishedAt: video.publishedAt,
+    })),
+  );
 
   return {
     ok: true,
-    source,
-    feed: { url: discovery.feed.url, kind: discovery.feed.kind, via: discovery.feed.via },
+    source: 'youtube',
+    feed: { url: uploadsFeedUrl(resolved.channelId), kind: 'atom', via: 'uploads-feed' },
     entries,
-    truncated: entries.length >= CATALOG_MAX_ENTRIES,
+    // The uploads feed only ever carries the most recent uploads, so a full one
+    // means there is older material this screen is not showing. Saying so beats
+    // an operator concluding the channel is smaller than it is.
+    truncated: entries.length >= UPLOADS_FEED_MAX,
   };
 }
 
@@ -330,9 +457,31 @@ export async function processSyncItem(
     };
   }
 
+  // A video's document comes from the channel, not from its watch page. A
+  // selected video that is no longer in the uploads feed fails rather than
+  // falling back to a page fetch: fetching `watch?v=…` returns a JavaScript
+  // shell, the gate would correctly call it not-a-recipe, and the operator would
+  // read that as a verdict on the video instead of on our reach.
+  let document: SourceDocument | undefined;
+  if (run.source === 'youtube') {
+    const resolve = deps.sourceDocument ?? createSourceDocumentResolver(deps);
+    const built = await resolve(creator, run.source, item);
+    if (!built) {
+      return await recordItem(deps, creator, run, {
+        ...item,
+        status: 'failed',
+        detail:
+          'This video is no longer in the channel\'s recent uploads, so its description could not be read. ' +
+          'Re-open the catalog and select it again if it is still listed.',
+      });
+    }
+    document = built;
+  }
+
   let result: ImportResult;
   try {
     result = await importer(item.url, {
+      document,
       // The operator picked this URL and is watching it, which is exactly the
       // condition `manual` describes: an `unsure` verdict is attempted rather
       // than silently skipped. A `no` still stops it — that is the gate doing
@@ -530,6 +679,10 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
   const deadline = now() + CHUNK_BUDGET_MS;
   let items = [...run.items];
 
+  // Built once per invocation rather than per item, so a 40-video selection
+  // reads the uploads feed once and refreshes the grant once.
+  const chunkDeps: SyncDeps = { ...deps, sourceDocument: deps.sourceDocument ?? createSourceDocumentResolver(deps) };
+
   while (items.some((item) => !isTerminal(item)) && now() < deadline) {
     const wave: number[] = [];
     for (let i = 0; i < items.length && wave.length < CHUNK_CONCURRENCY; i++) {
@@ -537,7 +690,7 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
     }
 
     const processed = await Promise.all(
-      wave.map((index) => processSyncItem(deps, { ...run, items }, creator, items[index])),
+      wave.map((index) => processSyncItem(chunkDeps, { ...run, items }, creator, items[index])),
     );
     wave.forEach((index, position) => {
       items[index] = processed[position];

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { log } from '@/lib/logger';
 import { runCreatorReminders, runUserUpsellDrip } from '@/lib/email-campaigns';
 import { resumeStalledSyncRuns } from '@/lib/admin-sync';
+import { refreshExpiringTokens } from '@/lib/platform-tokens';
 import { createServerSupabaseClient } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
@@ -25,7 +26,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const results = { creatorReminders: 0, userUpsell: 0, syncRunsResumed: 0 };
+  const results = { creatorReminders: 0, userUpsell: 0, syncRunsResumed: 0, tokensRefreshed: 0, tokensBroken: 0 };
 
   // Isolate the passes so one failing doesn't drop the other.
   try {
@@ -46,6 +47,18 @@ export async function GET(request: NextRequest) {
     results.syncRunsResumed = await resumeStalledSyncRuns({ supabase: createServerSupabaseClient() });
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'syncRuns', reason: err.message });
+  }
+
+  // Creator platform grants (MEAL-74, shared with MEAL-82/83). Every one of the
+  // three platforms fails the same silent way — an expired or revoked token
+  // produces a poller that finds nothing rather than an error — so this pass
+  // exists to turn that into a `broken_reason` an operator can list.
+  try {
+    const sweep = await refreshExpiringTokens({ supabase: createServerSupabaseClient() });
+    results.tokensRefreshed = sweep.refreshed;
+    results.tokensBroken = sweep.broken;
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'tokenRefresh', reason: err.message });
   }
 
   log({ event: 'CRON:DAILY', status: 'success', detail: JSON.stringify(results) });

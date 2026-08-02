@@ -33,10 +33,29 @@ export interface SyncPanelCreator {
   instagram_url: string | null;
   tiktok_url: string | null;
   feed_url: string | null;
+  /**
+   * OAuth grants this creator has (MEAL-74). A connected channel is listable
+   * with no link on the row at all, so the source picker below has to consider
+   * both — the channel id comes from the grant, not from anything typed.
+   */
+  connections?: Array<{ platform: string; brokenReason: string | null }>;
 }
 
 export interface AdminSyncPanelProps {
   creators: SyncPanelCreator[];
+}
+
+/**
+ * Is there anything to list for this source?
+ *
+ * A stored link, or an OAuth grant. The second half matters because
+ * `youtube_url` is optional on the application form, so a creator who connected
+ * their channel properly could otherwise find YouTube greyed out.
+ */
+function listableSource(creator: SyncPanelCreator | null | undefined, source: PlatformSource): boolean {
+  if (!creator) return false;
+  if (creator[SOURCE_COLUMNS[source] as keyof SyncPanelCreator]) return true;
+  return (creator.connections ?? []).some(connection => connection.platform === source);
 }
 
 const ITEM_STYLES: Record<SyncItem['status'], { fg: string; bg: string; label: string }> = {
@@ -335,7 +354,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
                 style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '13px', background: 'white', cursor: 'pointer' }}
               >
                 {PLATFORM_SOURCES.map(s => (
-                  <option key={s} value={s} disabled={!creator?.[SOURCE_COLUMNS[s] as keyof SyncPanelCreator]}>
+                  <option key={s} value={s} disabled={!listableSource(creator, s)}>
                     {SOURCE_LABELS[s]}
                   </option>
                 ))}

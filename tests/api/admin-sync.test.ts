@@ -182,6 +182,47 @@ describe('POST /api/admin/sync', () => {
     expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
   });
 
+  it('starts a YouTube run for a connected creator with no youtube_url on their row', async () => {
+    // The channel comes from the OAuth grant (MEAL-74), so requiring the link as
+    // well would refuse exactly the creators who did the connecting properly.
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+    fakeDb.queue('creator_sync_runs', { data: insertedRun([], { source: 'youtube' }) });
+
+    const res = await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: {
+        creatorId: 'c1',
+        mode: 'catalog',
+        source: 'youtube',
+        items: [{ itemId: 'vid0000000A', url: 'https://www.youtube.com/watch?v=vid0000000A' }],
+      },
+    }));
+
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses a YouTube item whose URL is not the watch page for its video id', async () => {
+    // `creator_source_items` is what MEAL-79 reads to decide which video a
+    // published meal came from, so a row describing one video with another's
+    // link is a link written to the wrong channel later.
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+
+    const res = await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: {
+        creatorId: 'c1',
+        mode: 'catalog',
+        source: 'youtube',
+        items: [{ itemId: 'vid0000000A', url: 'https://www.youtube.com/watch?v=somebodyelse' }],
+      },
+    }));
+
+    expect(res.status).toBe(400);
+    expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
   it('accepts a subdomain of the creator’s site', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: CREATOR });

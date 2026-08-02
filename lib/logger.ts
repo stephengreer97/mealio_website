@@ -53,6 +53,13 @@ export type EventType =
   | 'CREATOR:MEAL_IMPORT'    // paste-a-link import pipeline (MEAL-67)
   | 'CREATOR:PROFILE_UPDATE'
   | 'CREATOR:FOLLOW'
+  // Connecting a publishing account by OAuth (MEAL-74, and MEAL-82/83 after it).
+  | 'CREATOR:SOURCE_CONNECT'
+  | 'CREATOR:SOURCE_DISCONNECT'
+  // Consent to let Mealio edit the creator's own YouTube descriptions. Separate
+  // from `import_opt_in` on purpose: reading and writing are different
+  // permissions over different property (MEAL-77).
+  | 'CREATOR:APPEND_OPT_IN'
   // ── Payments ──────────────────────────────────────────────────────────────
   | 'PAYMENT:CHECKOUT'
   | 'PAYMENT:WEBHOOK'
@@ -92,6 +99,7 @@ export type EventType =
   | 'EMAIL:WEBHOOK'
   // ── Cron ──────────────────────────────────────────────────────────────────
   | 'CRON:DAILY'
+  | 'CRON:TOKEN_REFRESH'      // the shared platform-grant refresh sweep (MEAL-74)
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'
