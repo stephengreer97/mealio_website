@@ -205,24 +205,62 @@ export const SCALAR_FIELDS: ScalarField[] =
   ['name', 'recipe', 'story', 'photoUrl', 'difficulty', 'tags', 'serves'];
 
 /**
+ * Stand-in confidence for a row `confidence.ingredients` has no entry for.
+ *
+ * The two lists are index-aligned when they leave the pipeline, but results are
+ * persisted in the idempotency cache, so an entry written by an older build can
+ * come back shorter than the rows it describes. Silence is a claim here — it
+ * says "we checked this and it held up" — so a row we cannot account for is
+ * flagged rather than quietly left clean.
+ */
+const UNMATCHED_INGREDIENT: FieldConfidence = {
+  level: 'red',
+  derivation: 'absent',
+  match: 'none',
+  score: 0,
+  evidence: null,
+  reason: 'We could not match this row back to anything we read.',
+};
+
+export interface FieldStatesInput {
+  confidence: ImportConfidence;
+  values: ImportedFormValues;
+  /** Which fields this import actually wrote into the form. */
+  written: Partial<Record<ImportField, boolean>>;
+  /** True for a scalar field whose box was empty just before this import landed. */
+  empty: Record<ScalarField, boolean>;
+  /** States from an earlier import, for the boxes this one left alone. */
+  previous: FormFieldStates | null;
+}
+
+/**
  * Builds the field states from an import.
+ *
+ * Every state here is a claim about **the value that is on screen**, which is
+ * the rule the three branches below fall out of:
+ *
+ *  - We wrote the box, so our assessment of what we wrote describes it.
+ *  - The source had nothing *and* the box is empty, so "add this" is true.
+ *  - Otherwise the box holds something we did not just put there — the
+ *    creator's typing, or a previous import's value we had no replacement for —
+ *    and whatever was true of it before is still true of it now. Replacing that
+ *    with this import's state is how a second import came to hang "Not found in
+ *    the source" on a box still showing the first import's value, and how it
+ *    came to strip the callouts off ingredient rows it never touched.
  *
  * `written` is not the same as `provided`: a field the import had a value for
  * can still be skipped because the creator typed in that box while the request
- * was in flight, and their work wins. A skipped field gets no state at all —
- * we have nothing to say about a value we did not put there.
+ * was in flight, and their work wins.
  */
-export function fieldStatesFor(
-  confidence: ImportConfidence,
-  values: ImportedFormValues,
-  written: Partial<Record<ImportField, boolean>>,
-): FormFieldStates {
+export function fieldStatesFor(input: FieldStatesInput): FormFieldStates {
+  const { confidence, values, written, empty, previous } = input;
+
   const state = (field: ScalarField): FieldState | null => {
     if (written[field]) return { confidence: confidence[field], written: true };
-    // Not written and not provided means the source had nothing — worth saying.
-    // Not written but provided means the creator was mid-edit — say nothing.
-    if (!values.provided[field]) return { confidence: confidence[field], written: false };
-    return null;
+    if (!values.provided[field] && empty[field]) {
+      return { confidence: confidence[field], written: false };
+    }
+    return previous?.[field] ?? null;
   };
 
   return {
@@ -233,9 +271,15 @@ export function fieldStatesFor(
     difficulty: state('difficulty'),
     tags: state('tags'),
     serves: state('serves'),
+    // Zipped to the rows we put on screen, not simply copied: a confidence list
+    // shorter than the draft would otherwise leave its tail of rows unflagged,
+    // and one longer would count levels against rows that do not exist.
     ingredients: written.ingredients
-      ? (confidence.ingredients ?? []).map(c => ({ confidence: c, written: true }))
-      : [],
+      ? values.ingredients.map((_, i) => ({
+          confidence: confidence.ingredients?.[i] ?? UNMATCHED_INGREDIENT,
+          written: true,
+        }))
+      : (previous?.ingredients ?? []),
   };
 }
 
@@ -305,24 +349,35 @@ export interface FieldNotice {
 export function noticeFor(state: FieldState | null): FieldNotice | null {
   if (!state) return null;
 
-  if (!state.written) {
-    return { kind: 'absent', text: 'Not found in the source — add this', evidence: null };
-  }
-
   const { level, evidence, derivation, reason } = state.confidence;
-  if (level === 'green') return null;
-
   const quote = evidence ? truncateEvidence(evidence) : null;
 
-  // A `generated` value — today only a Pixabay stand-in photo — was not read
-  // off the page at all, so there is no span to quote and nothing a quote could
-  // honestly say. The pipeline's own `reason` is written to be shown, and this
-  // is the one field where our value is a placeholder we chose rather than
-  // something we found; a creator publishing a stock photo they never looked at
-  // is worse than an empty photo slot.
+  if (!state.written) {
+    // An empty box does not mean an empty page. `extract.ts` deliberately keeps
+    // the span for a value it rejected "so the reason can explain what we saw",
+    // and dropping it here told the creator we found nothing in exactly the
+    // case the guacamole fixture was built around: Serves is empty because the
+    // page's only yield is "2 1/2 cups guacamole", which is a volume rather
+    // than a head count. The span is the part they can act on.
+    return quote
+      ? { kind: 'absent', text: 'We found this but couldn’t use it — add this.', evidence: quote }
+      : { kind: 'absent', text: 'Not found in the source — add this', evidence: null };
+  }
+
+  // Checked before the green shortcut below. A generated value is one we chose
+  // rather than one we read, and that is worth saying whatever level it carries
+  // — the pipeline pins generated to amber or red today, and if that ever
+  // changes this must not start silently vouching for a stand-in.
+  //
+  // There is no span to quote and nothing a quote could honestly say. The
+  // pipeline's own `reason` is written to be shown, and this is the one field
+  // where our value is a placeholder; a creator publishing a stock photo they
+  // never looked at is worse than an empty photo slot.
   if (derivation === 'generated') {
     return { kind: 'generated', text: reason, evidence: null };
   }
+
+  if (level === 'green') return null;
 
   if (level === 'amber') {
     // With a span, the quote is the whole message. Without one, the pipeline's
@@ -438,6 +493,14 @@ export interface RejectionCopy {
   next: string;
 }
 
+/**
+ * Marks a rejection this UI synthesised from a failed request rather than one
+ * the pipeline returned. `rejectionCopy` keys off it, because `stage` cannot
+ * tell the two apart — that field is typed to the pipeline's four stages, and
+ * none of them happened.
+ */
+export const TRANSPORT_REASON = 'request-failed';
+
 const STAGE_HEADINGS: Record<ImportRejection['stage'], string> = {
   fetch: 'We couldn’t open that link',
   robots: 'That site asks us not to read it automatically',
@@ -457,6 +520,19 @@ const STAGE_HEADINGS: Record<ImportRejection['stage'], string> = {
  * failed, the reason as written, and a next step that costs nothing.
  */
 export function rejectionCopy(rejection: ImportRejection): RejectionCopy {
+  // A transport failure never reached the pipeline, so none of the stage
+  // headings describe it. `transportRejection` has to pick some stage to
+  // satisfy the shared shape, and the one it picks used to put "We couldn't
+  // open that link" above a 403 from our *own* endpoint — sending the creator
+  // off to check a URL that is perfectly fine.
+  if (rejection.reason === TRANSPORT_REASON) {
+    return {
+      heading: 'We couldn’t complete that import',
+      detail: rejection.detail,
+      next: 'Nothing has been changed. Try again in a moment, or fill the form in below — your link is already in the Recipe URL box.',
+    };
+  }
+
   return {
     heading: STAGE_HEADINGS[rejection.stage] ?? 'That import didn’t work',
     detail: rejection.detail,
@@ -473,7 +549,7 @@ export function transportRejection(url: string, detail: string): ImportRejection
     status: 'rejected',
     url,
     stage: 'fetch',
-    reason: 'request-failed',
+    reason: TRANSPORT_REASON,
     detail,
     meta: { cached: false },
   };

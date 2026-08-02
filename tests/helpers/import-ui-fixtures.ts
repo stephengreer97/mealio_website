@@ -97,6 +97,68 @@ export function guacamoleExtraction() {
   });
 }
 
+// ── A long recipe ────────────────────────────────────────────────────────────
+
+export const SOUP_URL = 'https://minimalistbaker.com/easy-1-pot-black-bean-soup';
+
+/**
+ * Eight ingredients rather than three, and a real Serves.
+ *
+ * Every UI test used to run on the guacamole fixture, which is a three-row
+ * recipe — so nothing exercised the case the flagging scheme was designed for,
+ * where a wall of rows is the failure mode and the difference between "flag
+ * everything" and "flag the exceptions" is the whole point. The spans below are
+ * verbatim from the recorded page's structured data, apart from the last, which
+ * is not on the page at all and has to come back red on its own.
+ */
+export function blackBeanSoupExtraction() {
+  return extractionFixture({
+    name: { value: 'Easy 1-Pot Black Bean Soup', evidence: 'Easy 1-Pot Black Bean Soup', derivation: 'json-ld' },
+    ingredients: [
+      { productName: 'white onion', measure: '1', unit: 'cups', qty: 1, evidence: '1 cup diced white or yellow onion', derivation: 'json-ld' },
+      { productName: 'garlic', measure: '3', unit: 'qty', qty: 3, evidence: '3 cloves garlic ((minced))', derivation: 'json-ld' },
+      { productName: 'black beans', measure: '2', unit: 'qty', qty: 2, evidence: '2 15-ounce cans black beans* ((slightly drained))', derivation: 'json-ld' },
+      { productName: 'vegetable broth', measure: '2', unit: 'cups', qty: 1, evidence: '2 cups vegetable broth   ((or store bought))', derivation: 'json-ld' },
+      { productName: 'ground cumin', measure: '2', unit: 'tsp', qty: 1, evidence: '2 tsp ground cumin  ((for smokiness))', derivation: 'normalized' },
+      { productName: 'chili powder', measure: '1.5', unit: 'tsp', qty: 1, evidence: '1 ½ tsp chili powder', derivation: 'normalized' },
+      { productName: 'dark chocolate', measure: '3', unit: 'tbsp', qty: 1, evidence: '3 Tbsp chopped vegan dark chocolate  ((for depth of flavor // we like Theo Dark Chocolate Sea Salt // or sub with 1 Tbsp cacao powder))', derivation: 'json-ld' },
+      // Nowhere on the page, as with the guacamole fixture's paprika.
+      { productName: 'star anise', measure: '2', unit: 'qty', qty: 2, evidence: '2 whole star anise', derivation: 'page-text' },
+    ],
+    recipe: {
+      value: '1. Heat the oil.\n2. Add the onion and garlic.\n3. Simmer.',
+      evidence: 'Heat a large pot over medium heat',
+      derivation: 'normalized',
+    },
+    story: { value: '', evidence: null, derivation: 'absent' },
+    difficulty: { value: 1, evidence: 'A 30-minute meal', derivation: 'inferred' },
+    tags: { value: ['Mexican', 'Vegan', 'Soup', 'Under 30 Min', 'Gluten Free'], evidence: 'Mexican-Inspired', derivation: 'inferred' },
+    // A real head count this time, unlike the guacamole page's volume yield.
+    serves: { value: '4', evidence: '4 (Large bowls)', derivation: 'json-ld' },
+  });
+}
+
+export async function importedBlackBeanSoup(
+  extraction: Record<string, unknown> = blackBeanSoupExtraction(),
+): Promise<ImportSuccess> {
+  const { impl } = stubFetch({
+    'https://minimalistbaker.com/robots.txt': { body: 'User-agent: *\nDisallow: /wp-admin/' },
+    [SOUP_URL]: { body: readHtmlFixture('minimalistbaker-black-bean-soup.html') },
+  });
+
+  const result = await runImport(SOUP_URL, {
+    cache: new MemoryImportCache(),
+    call: stubCaller(() => extraction),
+    resolvePhoto: copiedPhotoResolver,
+    fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+  });
+
+  if (result.status !== 'ok') {
+    throw new Error(`fixture import unexpectedly rejected: ${result.stage} ${result.reason}`);
+  }
+  return result;
+}
+
 export async function importedGuacamole(
   extraction: Record<string, unknown> = guacamoleExtraction(),
   resolvePhoto: PhotoResolver = copiedPhotoResolver,
