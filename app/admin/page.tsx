@@ -811,6 +811,14 @@ export default function AdminPage() {
                       const link = links[source];
                       const report = reports[source];
                       const busy = actionLoading === 'viability' + creator.id + source;
+                      // Three of the four sources can only be measured through a
+                      // grant now — YouTube joined Instagram and TikTok when the
+                      // uploads feed went (MEAL-79). A creator who connected
+                      // their channel but never pasted a link is exactly the one
+                      // the check applies to, so a link cannot be what unlocks
+                      // the button.
+                      const connected = (creator.connections ?? []).some(c => c.platform === source);
+                      const checkable = Boolean(link) || connected;
                       return (
                         <div key={source} style={{ border: '1px solid #f0f0f0', borderRadius: '10px', padding: '12px 14px', background: creator.primary_source === source ? '#fffdf7' : 'white' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
@@ -830,9 +838,11 @@ export default function AdminPage() {
                                 {link}
                               </a>
                             ) : (
-                              <span style={{ fontSize: '12px', color: '#bbb', flex: 1 }}>no link</span>
+                              <span style={{ fontSize: '12px', color: '#bbb', flex: 1 }}>
+                                {connected ? 'no link — read through the connection' : 'no link'}
+                              </span>
                             )}
-                            {link && (
+                            {checkable && (
                               <button
                                 onClick={() => runViability(creator.id, source)}
                                 disabled={busy}
