@@ -5,7 +5,7 @@ import ImportFieldNotice from '@/components/ImportFieldNotice';
 import { MealDetailBody, type MealNotices, type PresetMeal } from '@/components/MealCard';
 import { noticesFor, summaryLine, type ImportSummary } from '@/lib/import/draft-form';
 import { UNITS } from '@/lib/import/ingredients';
-import { MAX_MEAL_TAGS, MEAL_TAGS, tagCapError } from '@/lib/import/vocab';
+import { canonicalizeTags, MAX_MEAL_TAGS, MEAL_TAGS, tagCapError, toggleTag } from '@/lib/import/vocab';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
 // Type-only: `lib/import-drafts` reaches Supabase, Resend and the photo copier,
 // and must never be bundled into the client. Erased at compile time.
@@ -547,15 +547,12 @@ function DraftEditor({
       ingredients: [...prev.ingredients, { ingredientName: '', qty: 1, productQty: 1, unit: 'qty', measure: null, searchTerm: null }],
     }));
 
-  const toggleTag = (tag: string) =>
-    setForm(prev => {
-      const tags = prev.tags ?? [];
-      if (tags.includes(tag)) return { ...prev, tags: tags.filter(t => t !== tag) };
-      // The cap the publish form accepts, and a tag over it is refused by the
-      // PATCH rather than silently dropped, so stopping here is what keeps the
-      // Save button from failing on something the picker let them do.
-      return tags.length >= MAX_MEAL_TAGS ? prev : { ...prev, tags: [...tags, tag] };
-    });
+  // The cap the publish form accepts, and a tag over it is refused by the PATCH
+  // rather than silently dropped, so stopping at it is what keeps the Save
+  // button from failing on something the picker let them do. The rule itself
+  // lives in `vocab.ts` — three pickers were carrying their own copy of it.
+  const onTagClick = (tag: string) =>
+    setForm(prev => ({ ...prev, tags: toggleTag(prev.tags ?? [], tag) }));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }} data-testid="draft-editor">
@@ -592,10 +589,14 @@ function DraftEditor({
         <label style={label}>Tags (up to {MAX_MEAL_TAGS})</label>
         {/* An import may suggest up to eight, and this editor opens on whatever
             the draft carries. Saying so is what turns a Save that comes back
-            400 into a thing the operator can see and undo before pressing it. */}
-        {tagCapError(form.tags ?? []) && (
+            400 into a thing the operator can see and undo before pressing it.
+            Counted over the canonicalised list because that is the list the
+            PATCH counts: a draft carrying three in-vocabulary tags and two the
+            picker has no chip for would otherwise read "deselect 2" while
+            offering nothing to deselect, about a Save that would have worked. */}
+        {tagCapError(canonicalizeTags(form.tags ?? [])) && (
           <p style={{ fontSize: '11px', color: '#b91c1c', margin: '0 0 4px' }} data-testid="tag-cap-note">
-            {tagCapError(form.tags ?? [])} Deselect {(form.tags ?? []).length - MAX_MEAL_TAGS} before saving.
+            {tagCapError(canonicalizeTags(form.tags ?? []))} Deselect {canonicalizeTags(form.tags ?? []).length - MAX_MEAL_TAGS} before saving.
           </p>
         )}
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '110px', overflowY: 'auto' }} data-testid="tag-picker">
@@ -605,7 +606,7 @@ function DraftEditor({
               <button
                 key={tag}
                 type="button"
-                onClick={() => toggleTag(tag)}
+                onClick={() => onTagClick(tag)}
                 style={{
                   fontSize: '11px', padding: '2px 8px', borderRadius: '99px', cursor: 'pointer',
                   background: on ? '#dd0031' : 'white', color: on ? 'white' : '#6b7280',

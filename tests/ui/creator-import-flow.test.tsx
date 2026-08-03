@@ -31,12 +31,17 @@ interface Routes {
   import?: () => Response | Promise<Response>;
   /** Pixabay suggestions for the Generate photo button. */
   photos?: string[];
+  /** Meals the portal lists, which are the meals the edit modal can open on. */
+  meals?: Record<string, unknown>[];
 }
 
 let published: Record<string, unknown> | null;
+/** The body of the last PUT, which is what the edit modal sent. */
+let edited: Record<string, unknown> | null;
 
 function stubApi(routes: Routes = {}) {
   published = null;
+  edited = null;
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes('/api/auth/verify')) return json({ ok: true });
@@ -44,7 +49,12 @@ function stubApi(routes: Routes = {}) {
       return json({ thumbs: routes.photos ?? [], fulls: routes.photos ?? [] });
     }
     if (url.includes('/api/creator/meals')) {
-      published = JSON.parse(String(init?.body));
+      const body = JSON.parse(String(init?.body));
+      if (String(init?.method).toUpperCase() === 'PUT') {
+        edited = body;
+        return json({ meal: { id: 'm1', ...body } });
+      }
+      published = body;
       return json({ meal: { id: 'm1', name: published!.name } }, 201);
     }
     // Checked after /meals: '/api/creator/meals'.includes('/api/creator/me').
@@ -54,7 +64,7 @@ function stubApi(routes: Routes = {}) {
           id: 'c1', display_name: 'Kate', bio: null, social_handle: null,
           photo_url: null, approved_at: '2026-01-01', handle: null,
         },
-        meals: [],
+        meals: routes.meals ?? [],
         stats: null,
       });
     }
@@ -936,5 +946,189 @@ describe('creator portal — The One Tap Rule', () => {
     // MEAL-73. The flags deliberately use no red at all, so nothing this work
     // added depends on telling the two apart.
     expect(publish.className).toContain('bg-red-600');
+  });
+});
+
+/**
+ * The tag cap, on the two forms a creator actually types into.
+ *
+ * The publish form's picker is the only thing keeping the route's new 400
+ * unreachable from the web, and it had no test at all: gutting its cap left the
+ * whole suite green, because the chip it would have let through is `disabled`
+ * and no click reaches a disabled button. The rule itself is now `toggleTag` in
+ * `lib/import/vocab.ts` and is tested there; what these assert is that this form
+ * is wired to it, and that the chips say so on screen.
+ */
+describe('creator portal — the tag cap on the publish form', () => {
+  const chip = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
+
+  async function fillPublishable() {
+    fireEvent.change(nameBox(), { target: { value: 'Guacamole' } });
+    fireEvent.change(rows()[0], { target: { value: 'avocados' } });
+  }
+
+  it('publishes the three tags the picker took, and no fourth', async () => {
+    stubApi();
+    await openPublishForm();
+    await fillPublishable();
+
+    fireEvent.click(chip('Mexican'));
+    fireEvent.click(chip('No Cook'));
+    fireEvent.click(chip('Vegan'));
+    // The fourth is inert. Clicking it is what a creator does next, and the
+    // list must come back with three on it — this is the assertion that fails
+    // if the chips stop being disabled.
+    fireEvent.click(chip('Healthy'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
+    await waitFor(() => expect(published).not.toBeNull());
+    expect(published!.tags).toEqual(['Mexican', 'No Cook', 'Vegan']);
+  });
+
+  it('fades the tags it will not take, and leaves the chosen ones live', async () => {
+    stubApi();
+    await openPublishForm();
+
+    fireEvent.click(chip('Mexican'));
+    fireEvent.click(chip('No Cook'));
+    fireEvent.click(chip('Vegan'));
+
+    expect(chip('Healthy').disabled).toBe(true);
+    // A chosen tag stays pressable, because deselecting is the way back.
+    expect(chip('Mexican').disabled).toBe(false);
+    fireEvent.click(chip('Mexican'));
+    expect(chip('Healthy').disabled).toBe(false);
+  });
+
+  it('says nothing about a cap the form cannot reach', async () => {
+    stubApi();
+    await openPublishForm();
+    fireEvent.click(chip('Mexican'));
+    expect(screen.queryByTestId('tag-cap-note')).toBeNull();
+  });
+
+  /**
+   * A chip is disabled *because* its click would do nothing — one rule, not two.
+   *
+   * This is the assertion that stands on the picker being wired to `toggleTag`.
+   * It used to be two independent mechanisms, the `disabled` attribute and the
+   * handler's own guard, and only the attribute was reachable from a test: React
+   * never dispatches a click to an element it rendered disabled, so replacing
+   * the `toggleTag` call with a plain append left the whole suite green. The
+   * disabled state is now derived from what `toggleTag` returns, so there is no
+   * longer a second copy of the rule to drift — and this test fails if the
+   * picker stops asking it.
+   */
+  it('disables exactly the chips whose click would change nothing', async () => {
+    stubApi();
+    await openPublishForm();
+
+    // Below the cap: nothing is disabled, because every click would do something.
+    expect(chip('Healthy').disabled).toBe(false);
+
+    fireEvent.click(chip('Mexican'));
+    fireEvent.click(chip('No Cook'));
+    fireEvent.click(chip('Vegan'));
+
+    // At the cap the unchosen chips would add a fourth, which `toggleTag`
+    // refuses — so they are inert, and say so.
+    expect(chip('Healthy').disabled).toBe(true);
+    expect(chip('Keto').disabled).toBe(true);
+    // The chosen ones would still remove, so they stay live.
+    expect(chip('Mexican').disabled).toBe(false);
+  });
+});
+
+/**
+ * Editing a meal published before the cap existed.
+ *
+ * Sixteen of them carry more than three tags. The modal posts every field on
+ * every save, so the route grandfathers what a save does not change — and the
+ * client must not be stricter than the route it posts to, or the 400 it was
+ * meant to explain becomes a refusal to send the request at all.
+ */
+describe('creator portal — editing a meal from before the cap', () => {
+  const LEGACY = {
+    id: 'm1',
+    name: 'Guacamol',
+    photo_url: null,
+    difficulty: null,
+    trending_score: 10,
+    saves_all: 4,
+    ingredients: [{ ingredientName: 'avocados', qty: 4, unit: 'qty', measure: null, searchTerm: null }],
+    recipe: null,
+    source: null,
+    story: null,
+    serves: '2 1/2 cups',
+    tags: ['Mexican', 'No Cook', 'Vegan', 'Healthy', 'Snack'],
+  };
+
+  async function openEditModal(meal: Record<string, unknown> = LEGACY) {
+    stubApi({ meals: [meal] });
+    render(<CreatorPortal />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    return await screen.findByText('Edit Meal');
+  }
+
+  it('says how many tags to drop, instead of greying the picker out unexplained', async () => {
+    await openEditModal();
+
+    const note = await screen.findByTestId('tag-cap-note');
+    expect(note.textContent).toMatch(/That is 5 tags\. A meal takes at most 3\./);
+    expect(note.textContent).toMatch(/Deselect 2/);
+
+    // And it goes once they are back at the cap — the message is about now, not
+    // about how the meal arrived.
+    fireEvent.click(screen.getByRole('button', { name: 'Snack' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Healthy' }));
+    await waitFor(() => expect(screen.queryByTestId('tag-cap-note')).toBeNull());
+  });
+
+  it('sends a name-only fix rather than refusing it on the client', async () => {
+    await openEditModal();
+
+    const name = screen.getByDisplayValue('Guacamol');
+    fireEvent.change(name, { target: { value: 'Guacamole' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(edited).not.toBeNull());
+    expect(edited!.name).toBe('Guacamole');
+    // Posted back exactly as they were: the route reads these to decide the
+    // save changed neither of them.
+    expect(edited!.tags).toEqual(LEGACY.tags);
+    expect(edited!.serves).toBe('2 1/2 cups');
+  });
+
+  it('refuses a serves the creator is actually changing, in the route\'s own words', async () => {
+    await openEditModal();
+
+    fireEvent.change(screen.getByDisplayValue('2 1/2 cups'), { target: { value: '3 loaves' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    expect(await screen.findByText('Serves must be a number or a range, like 4 or 2-4.')).toBeTruthy();
+    expect(edited).toBeNull();
+  });
+
+  it('lets a legacy serves be replaced with a head count', async () => {
+    await openEditModal();
+
+    fireEvent.change(screen.getByDisplayValue('2 1/2 cups'), { target: { value: '4' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(edited).not.toBeNull());
+    expect(edited!.serves).toBe('4');
+  });
+
+  it('offers a chip for a tag the vocabulary has since dropped, so it can be deselected', async () => {
+    // Otherwise "deselect 2" is an instruction with nothing to click: the tag is
+    // selected, invisible, and posted back on every save.
+    await openEditModal({ ...LEGACY, tags: ['Mexican', 'Homemade', 'Vegan', 'Healthy'] });
+
+    const custom = screen.getByRole('button', { name: 'Homemade' });
+    fireEvent.click(custom);
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(edited).not.toBeNull());
+    expect(edited!.tags).toEqual(['Mexican', 'Vegan', 'Healthy']);
   });
 });

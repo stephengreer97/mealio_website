@@ -2,6 +2,9 @@
 
 import { useRef, useState } from 'react';
 import ImportFieldNotice from '@/components/ImportFieldNotice';
+// The render the cap exists for: a tag past this one is invisible on the card
+// and still matches a Discover filter.
+import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
 import type { FieldNotice } from '@/lib/import/draft-form';
 
 /**
@@ -116,7 +119,7 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
           <img src={meal.photo_url} alt={meal.name} className="w-full rounded-xl object-cover" style={{ maxHeight: '220px' }} />
           {meal.tags && meal.tags.length > 0 && (
             <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              {meal.tags.slice(0, 3).map(tag => (
+              {meal.tags.slice(0, MAX_MEAL_TAGS).map(tag => (
                 <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
                   style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', color: '#fff', border: 'none' }}>
                   {tag}
@@ -127,7 +130,7 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
         </div>
       ) : meal.tags && meal.tags.length > 0 ? (
         <div className="flex items-center gap-1.5 flex-wrap">
-          {meal.tags.slice(0, 3).map(tag => (
+          {meal.tags.slice(0, MAX_MEAL_TAGS).map(tag => (
             <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
               {tag}
@@ -373,7 +376,7 @@ export default function MealCard({
 
           {meal.tags && meal.tags.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap mt-1.5">
-              {meal.tags.slice(0, 3).map(tag => (
+              {meal.tags.slice(0, MAX_MEAL_TAGS).map(tag => (
                 <span key={tag} className="text-xs px-2 py-0.5 rounded-full font-medium"
                   style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                   {tag}

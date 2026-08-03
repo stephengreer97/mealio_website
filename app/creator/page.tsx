@@ -27,7 +27,7 @@ import {
   type ScalarField,
 } from '@/lib/import/draft-form';
 import PublishedLinkModal from '@/components/PublishedLinkModal';
-import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
+import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, tagCapError, toggleTag } from '@/lib/import/vocab';
 
 interface Creator {
   id: string;
@@ -173,16 +173,15 @@ const ALL_TAGS = [
 
 function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags: string[]) => void }) {
   const [search, setSearch] = useState('');
-  const filtered = ALL_TAGS
+  // A meal published before the cap existed can carry a tag this vocabulary no
+  // longer lists. Rendering only `ALL_TAGS` left it selected, invisible and
+  // impossible to deselect — which made "deselect 2" an instruction the creator
+  // could not follow.
+  const customSelected = selected.filter(tag => !ALL_TAGS.includes(tag));
+  const filtered = [...customSelected, ...ALL_TAGS]
     .filter(tag => !search || tag.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => Number(selected.includes(b)) - Number(selected.includes(a)));
-  const toggle = (tag: string) => {
-    if (selected.includes(tag)) {
-      onChange(selected.filter(t => t !== tag));
-    } else if (selected.length < MAX_MEAL_TAGS) {
-      onChange([...selected, tag]);
-    }
-  };
+  const over = selected.length - MAX_MEAL_TAGS;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
       <input
@@ -201,15 +200,35 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
           background: '#fafafa',
         }}
       />
+      {/* The publish form can never reach this — the picker stops at the cap. An
+          edit modal opens on whatever the meal carries, and meals published
+          before the cap carry more, so this is where it is said. It says
+          "changing" rather than "saving" because an untouched over-cap list does
+          save: the routes check the fields an edit changed, not the fields it
+          posted. The admin draft editor's note says "before saving" because
+          there the PATCH really does refuse. */}
+      {over > 0 && (
+        <p style={{ fontSize: '11px', color: '#b91c1c', margin: 0 }} data-testid="tag-cap-note">
+          {tagCapError(selected)} Deselect {over} before changing them.
+        </p>
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', maxHeight: '90px', overflowY: 'auto', paddingRight: '2px' }}>
         {filtered.map(tag => {
           const isSelected = selected.includes(tag);
-          const isDisabled = !isSelected && selected.length >= MAX_MEAL_TAGS;
+          // What this chip's click would produce, asked once and used for both
+          // the click and the disabled state. A chip that would hand back the
+          // selection it already has is a chip with nothing to do, which is
+          // exactly what `disabled` means — so the cap is written in one place
+          // rather than copied into a length comparison beside it. React never
+          // dispatches a click to a disabled button, so a second copy here
+          // would be unreachable from any test and free to drift.
+          const after = toggleTag(selected, tag);
+          const isDisabled = !isSelected && after.length === selected.length;
           return (
             <button
               key={tag}
               type="button"
-              onClick={() => toggle(tag)}
+              onClick={() => onChange(after)}
               disabled={isDisabled}
               style={{
                 padding: '3px 9px',
@@ -416,6 +435,16 @@ function EditPresetMealModal({
 
   const handleSave = async () => {
     if (!name.trim()) { setError('Meal name is required.'); return; }
+    // Checked only when this edit is changing it, exactly as the route does. A
+    // meal published before the rule existed can carry "2 1/2 cups", and
+    // refusing to save the name because of a field they never opened is the bug
+    // the route's grandfathering exists to avoid — a client that refuses first
+    // would reinstate it.
+    if (serves.trim() !== (meal.serves ?? '').trim()
+        && serves.trim() && !SERVES_PATTERN.test(serves.trim())) {
+      setError(SERVES_ERROR);
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -1305,8 +1334,11 @@ export default function CreatorPortal() {
       return;
     }
 
-    if (mealServes.trim() && !/^\d+(-\d+)?$/.test(mealServes.trim())) {
-      setPublishError('Serves must be a number or range (e.g. 4 or 2-4).');
+    // One rule, one sentence: the pattern and the wording are the server's own,
+    // so a creator who hits this here and again in the admin editor is not left
+    // working out whether they are two different rules.
+    if (mealServes.trim() && !SERVES_PATTERN.test(mealServes.trim())) {
+      setPublishError(SERVES_ERROR);
       return;
     }
 

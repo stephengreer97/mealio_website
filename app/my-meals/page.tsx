@@ -8,6 +8,7 @@ import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import CreatorPopup from '@/components/CreatorPopup';
 import KrogerStorePickerModal from '@/components/KrogerStorePickerModal';
+import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, toggleTag } from '@/lib/import/vocab';
 
 interface User {
   id: string;
@@ -382,21 +383,21 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
     .filter(tag => !search || tag.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => Number(selected.includes(b)) - Number(selected.includes(a)));
   const allPills = [...customSelected, ...filtered];
-  const toggle = (tag: string) => {
-    if (selected.includes(tag)) {
-      onChange(selected.filter(t => t !== tag));
-    } else if (selected.length < 3) {
-      onChange([...selected, tag]);
-    }
-  };
+  // The same rule as the creator portal's picker and the admin draft editor,
+  // out of the same function: this one counted to a literal `3` while claiming
+  // to be the same cap, and a personal meal's tags are rendered and filtered
+  // exactly the way a published meal's are.
   const canAddCustom = trimmed.length > 0 && trimmed.length <= 20 &&
     !ALL_TAGS.some(t => t.toLowerCase() === trimmed.toLowerCase()) &&
     !selected.some(t => t.toLowerCase() === trimmed.toLowerCase());
   const addCustom = () => {
-    if (canAddCustom && selected.length < 3) {
-      onChange([...selected, trimmed]);
-      setSearch('');
-    }
+    if (!canAddCustom) return;
+    const next = toggleTag(selected, trimmed);
+    // Unchanged means the cap refused it; the search box is only cleared when
+    // the tag it holds actually became a tag.
+    if (next.length === selected.length) return;
+    onChange(next);
+    setSearch('');
   };
   return (
     <div className="flex flex-col gap-1.5">
@@ -410,7 +411,7 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
           className="flex-1 px-2 py-1 text-xs rounded-lg outline-none"
           style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
         />
-        {canAddCustom && selected.length < 3 && (
+        {canAddCustom && selected.length < MAX_MEAL_TAGS && (
           <button
             type="button"
             onClick={addCustom}
@@ -429,12 +430,19 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
       <div className="flex flex-wrap gap-1.5 overflow-y-auto pr-0.5" style={{ maxHeight: '90px' }}>
         {allPills.map(tag => {
           const isSelected = selected.includes(tag);
-          const isDisabled = !isSelected && selected.length >= 3;
+          // Asked once and used for both the click and the disabled state — see
+          // the note on the creator portal's picker. A chip that would hand back
+          // the selection it already has has nothing to do, which is what
+          // `disabled` means; a second copy of the cap beside it would be
+          // unreachable from a test, because React never dispatches a click to
+          // a disabled button.
+          const after = toggleTag(selected, tag);
+          const isDisabled = !isSelected && after.length === selected.length;
           return (
             <button
               key={tag}
               type="button"
-              onClick={() => toggle(tag)}
+              onClick={() => onChange(after)}
               disabled={isDisabled}
               className="px-2 py-0.5 rounded-full text-xs transition disabled:opacity-40 disabled:cursor-not-allowed"
               style={isSelected
@@ -985,7 +993,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to {MAX_MEAL_TAGS}, optional)</span></label>
             <TagPicker selected={selectedTags} onChange={setSelectedTags} />
           </div>
 
@@ -1194,7 +1202,10 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     if (validIngredients.length === 0) { setError('Add at least one ingredient.'); return; }
     const ingKeys = validIngredients.map(i => i.ingredientName.toLowerCase());
     if (new Set(ingKeys).size !== ingKeys.length) { setError('Two or more ingredients have the same name. Please make each name unique.'); return; }
-    if (serves.trim() && !/^\d+(-\d+)?$/.test(serves.trim())) { setError('Serves must be a number or range (e.g. 4 or 2-4).'); return; }
+    // The rule and the sentence are the server's own — a fourth copy of the
+    // pattern is a fourth thing to keep in step. (It stays a client-side check:
+    // `/api/meals` does not enforce `serves`, see the note there.)
+    if (serves.trim() && !SERVES_PATTERN.test(serves.trim())) { setError(SERVES_ERROR); return; }
     setSaving(true); setError('');
     try {
       const finalPhotoUrl = await uploadPendingPhoto();
@@ -1450,7 +1461,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to 3, optional)</span></label>
+            <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to {MAX_MEAL_TAGS}, optional)</span></label>
             <TagPicker selected={selectedTags} onChange={setSelectedTags} />
           </div>
 
@@ -1636,7 +1647,7 @@ function MealDetailModal({
               <img src={meal.photo_url} alt={meal.name} className="w-full rounded-xl object-cover" style={{ maxHeight: '220px' }} />
               {meal.tags && meal.tags.length > 0 && (
                 <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  {meal.tags.slice(0, 3).map(tag => (
+                  {meal.tags.slice(0, MAX_MEAL_TAGS).map(tag => (
                     <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
                       style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', color: '#fff', border: 'none' }}>
                       {tag}
@@ -1647,7 +1658,7 @@ function MealDetailModal({
             </div>
           ) : meal.tags && meal.tags.length > 0 ? (
             <div className="flex items-center gap-1.5 flex-wrap">
-              {meal.tags.slice(0, 3).map(tag => (
+              {meal.tags.slice(0, MAX_MEAL_TAGS).map(tag => (
                 <span key={tag} className="text-xs px-2 py-0.5 rounded-full"
                   style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                   {tag}
@@ -2897,7 +2908,7 @@ function DashboardMealCard({
 
           {meal.tags && meal.tags.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap mt-1">
-              {meal.tags.slice(0, 3).map(tag => (
+              {meal.tags.slice(0, MAX_MEAL_TAGS).map(tag => (
                 <span key={tag} className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
                   {tag}
                 </span>

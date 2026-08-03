@@ -396,4 +396,20 @@ describe('AdminReviewQueue — editing', () => {
     fireEvent.click(within(picker).getByRole('button', { name: 'Healthy' }));
     await waitFor(() => expect(screen.queryByTestId('tag-cap-note')).toBeNull());
   });
+
+  it('counts the tags the PATCH counts, not the strings on the row', async () => {
+    // The note counted `form.tags` raw while the validator counts the
+    // canonicalised list, so a draft carrying three in-vocabulary tags and two
+    // the picker has no chip for read "That is 5 tags … Deselect 2" — an
+    // instruction with nothing to click, about a Save that would have worked.
+    const outOfVocab = draft({
+      draft: { ...guacamole.draft, tags: ['Mexican', 'No Cook', 'Appetizer', 'Artisanal', 'Farm To Table'] },
+    });
+    harness([outOfVocab]);
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await screen.findByTestId('draft-editor');
+
+    expect(screen.queryByTestId('tag-cap-note')).toBeNull();
+  });
 });
