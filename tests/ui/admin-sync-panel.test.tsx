@@ -119,10 +119,10 @@ describe('AdminSyncPanel — the checklist', () => {
     await loadCatalog();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Guacamole' }));
-    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.07');
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.02');
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Black bean soup' }));
-    expect(screen.getByTestId('cost-estimate').textContent).toBe('2 selected · about $0.13');
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('2 selected · about $0.03');
   });
 
   it('reads the feed without opening a single post', async () => {

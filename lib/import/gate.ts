@@ -166,6 +166,7 @@ export async function classifySource(
   try {
     const response = await call({
       model: GATE_MODEL,
+      purpose: 'gate',
       system: GATE_SYSTEM,
       prompt,
       schema: GateSchema,

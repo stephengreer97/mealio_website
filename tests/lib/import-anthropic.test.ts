@@ -36,6 +36,7 @@ describe('import/anthropic — request shape', () => {
     const call = createStructuredCaller(client);
     const result = await call({
       model: GATE_MODEL,
+      purpose: 'gate',
       system: 'You classify things.',
       prompt: 'TITLE: x',
       schema: Schema,
@@ -55,16 +56,22 @@ describe('import/anthropic — request shape', () => {
     expect(params.thinking).toBeUndefined();
   });
 
+  // Names a thinking-capable model outright rather than reaching for
+  // `EXTRACTION_MODEL`. That constant is a product decision and it has already
+  // moved once: pointing it at Haiku turned this into a test that asserted
+  // thinking is sent, on a model that cannot receive it.
   it('enables adaptive thinking when requested', async () => {
+    const THINKING_MODEL = 'claude-opus-5';
     const { client, parse } = stubClient({
       parsed_output: { verdict: 'no', reason: 'r' },
       stop_reason: 'end_turn',
-      model: EXTRACTION_MODEL,
+      model: THINKING_MODEL,
       usage: { input_tokens: 3000, output_tokens: 1500 },
     });
 
     await createStructuredCaller(client)({
-      model: EXTRACTION_MODEL,
+      model: THINKING_MODEL,
+      purpose: 'extract',
       system: 's',
       prompt: 'p',
       schema: Schema,
@@ -81,21 +88,21 @@ describe('import/anthropic — failure modes surface as typed errors', () => {
   it('turns a refusal into an actionable error rather than an empty draft', async () => {
     const { client } = stubClient({ stop_reason: 'refusal', parsed_output: null, model: EXTRACTION_MODEL });
     await expect(
-      createStructuredCaller(client)({ model: EXTRACTION_MODEL, system: 's', prompt: 'p', schema: Schema, maxTokens: 100 }),
+      createStructuredCaller(client)({ model: EXTRACTION_MODEL, purpose: 'extract', system: 's', prompt: 'p', schema: Schema, maxTokens: 100 }),
     ).rejects.toBeInstanceOf(AnthropicUnavailableError);
   });
 
   it('turns a truncated response into an error rather than a half-parsed draft', async () => {
     const { client } = stubClient({ stop_reason: 'max_tokens', parsed_output: null, model: EXTRACTION_MODEL });
     await expect(
-      createStructuredCaller(client)({ model: EXTRACTION_MODEL, system: 's', prompt: 'p', schema: Schema, maxTokens: 100 }),
+      createStructuredCaller(client)({ model: EXTRACTION_MODEL, purpose: 'extract', system: 's', prompt: 'p', schema: Schema, maxTokens: 100 }),
     ).rejects.toThrow(/max_tokens/);
   });
 
   it('errors when the response carries no parsed output', async () => {
     const { client } = stubClient({ stop_reason: 'end_turn', parsed_output: null, model: EXTRACTION_MODEL });
     await expect(
-      createStructuredCaller(client)({ model: EXTRACTION_MODEL, system: 's', prompt: 'p', schema: Schema, maxTokens: 100 }),
+      createStructuredCaller(client)({ model: EXTRACTION_MODEL, purpose: 'extract', system: 's', prompt: 'p', schema: Schema, maxTokens: 100 }),
     ).rejects.toThrow(/no parseable output/);
   });
 });
@@ -150,6 +157,7 @@ describe('import/anthropic — cost model (MEAL-68)', () => {
     };
     const { usage } = await createStructuredCaller(client)({
       model: 'claude-haiku-4-5',
+      purpose: 'extract',
       system: 's',
       prompt: 'p',
       schema: z.object({ ok: z.boolean() }),
@@ -178,7 +186,7 @@ describe('import/anthropic — the client the pipeline actually constructs', () 
     const anthropic = await import('@/lib/import/anthropic');
     anthropic.__setAnthropicClient(null);
     await anthropic.createStructuredCaller()({
-      model: anthropic.GATE_MODEL, system: 's', prompt: 'p', schema: Schema, maxTokens: 100,
+      model: anthropic.GATE_MODEL, purpose: 'gate', system: 's', prompt: 'p', schema: Schema, maxTokens: 100,
     });
 
     expect(construct).toHaveBeenCalledWith(

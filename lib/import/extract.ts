@@ -314,6 +314,7 @@ export async function extractDraft(
 
   const response = await options.call({
     model,
+    purpose: 'extract',
     system: SYSTEM_PROMPT,
     prompt: usedJsonLd ? jsonLdPrompt(document) : pageTextPrompt(document),
     schema: ExtractionSchema,

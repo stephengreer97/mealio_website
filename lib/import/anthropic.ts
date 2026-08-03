@@ -21,14 +21,57 @@ export const MODEL_PRICING: Record<string, { inputPerMTok: number; outputPerMTok
   'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5 },
 };
 
-/** Extraction model. MEAL-71 asks for an opus-vs-sonnet A/B on measured accuracy. */
-export const EXTRACTION_MODEL = 'claude-opus-5';
+/**
+ * Extraction model. MEAL-71 asked for an A/B on measured accuracy; this is its
+ * answer, run 2026-08-03 over the 12-item eval set.
+ *
+ * | | ingredient match | $/import | mean | median |
+ * | --- | --- | --- | --- | --- |
+ * | haiku-4-5  | 100% | $0.0090 |  6.1s |  4.4s |
+ * | opus-5     | 100% | $0.0599 | 10.9s | 11.2s |
+ * | sonnet-5   | 100% | $0.0580 | 28.8s | 25.2s |
+ *
+ * Haiku is 6.7× cheaper and ~1.8× faster than Opus at identical ingredient
+ * accuracy, and it was the only one of the three that never invented a serving
+ * count — Opus returned a `serves` for a page that states only a volume yield on
+ * all three full runs (MEAL-95). Sonnet is out on latency: two of its twelve
+ * items exceeded `REQUEST_TIMEOUT_MS` outright.
+ *
+ * Note that Haiku does not accept adaptive thinking, so extraction now runs
+ * without it — which is exactly the configuration those numbers were measured
+ * in. See `supportsAdaptiveThinking`.
+ *
+ * The eval set is 12 items. Widen it before treating this as settled.
+ */
+export const EXTRACTION_MODEL = 'claude-haiku-4-5';
 
-/** Gate model — the cheap yes/no that runs before we pay extraction rates. */
+/**
+ * Gate model — the cheap yes/no that runs before we pay extraction rates.
+ *
+ * Now the same model as extraction. The gate still earns its place: it runs on a
+ * much shorter prompt and rejects non-recipe pages before we send the full
+ * document, so the saving is in tokens rather than in rate.
+ */
 export const GATE_MODEL = 'claude-haiku-4-5';
+
+/**
+ * Which stage of the pipeline a call belongs to.
+ *
+ * The model used to say this implicitly — the gate was Haiku and extraction was
+ * Opus, so a usage record could be attributed to a stage by its model alone.
+ * Now both are Haiku and that inference is gone, taking with it the ability to
+ * answer "how much of this bill is the gate?" — which is the whole argument for
+ * having a gate.
+ *
+ * It is a required field rather than an optional one because the failure mode of
+ * forgetting it is silent: an unlabelled call is invisible to attribution rather
+ * than obviously wrong.
+ */
+export type CallPurpose = 'gate' | 'extract';
 
 export interface StructuredRequest<T> {
   model: string;
+  purpose: CallPurpose;
   system: string;
   prompt: string;
   schema: z.ZodType<T>;
