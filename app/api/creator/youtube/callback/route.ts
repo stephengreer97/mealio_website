@@ -56,6 +56,13 @@ export async function GET(request: NextRequest) {
     return back('failed', 'That connection could not be verified. Start again from the creator portal.');
   }
 
+  // Two known, accepted properties of this comparison, recorded so they are not
+  // rediscovered as findings. It is not constant-time: the value it is checked
+  // against lives in an httpOnly cookie the attacker cannot read, so there is
+  // no oracle to time. And there is no server-side nonce store, so a *captured*
+  // cookie stays usable for its full 15 minutes — the code itself is single-use
+  // at Google and this cookie is cleared on every exit, which bounds the replay
+  // to an attacker who already has the creator's cookie jar.
   if (searchParams.get('state') !== nonce) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, reason: 'state mismatch (csrf)' });
     return back('failed', 'That connection could not be verified. Start again from the creator portal.');
@@ -87,6 +94,34 @@ export async function GET(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
 
+  /** Writes the consent flag and says whether it landed. Never assumed. */
+  const writeAppendOptIn = async (value: boolean): Promise<boolean> => {
+    const { error } = await supabase
+      .from('creators')
+      .update({ youtube_append_opt_in: value })
+      .eq('id', creatorId);
+    if (error) {
+      log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=youtube consent', error });
+    }
+    return !error;
+  };
+
+  // Consent is withdrawn *before* the grant is stored and granted only after.
+  //
+  // Both halves matter. Withdrawal has to happen first because the alternative
+  // leaves a window in which a fresh write-scoped token sits beside a `true`
+  // the creator has just unticked, and `assertAppendAllowed` would say yes in
+  // it. It also has to happen unconditionally: writing the connection first and
+  // returning early when that write fails abandoned the withdrawal entirely,
+  // leaving us permitted to edit descriptions on the strength of a tick the
+  // creator had just removed, while the screen said the attempt had failed.
+  if (!appendOptIn && !(await writeAppendOptIn(false))) {
+    return back(
+      'failed',
+      'We could not record that you no longer want Mealio editing your descriptions, so nothing was changed. Try again.',
+    );
+  }
+
   try {
     await saveConnection(supabase, {
       creatorId,
@@ -103,11 +138,15 @@ export async function GET(request: NextRequest) {
     return back('failed', 'We could not store that connection. Try again.');
   }
 
-  // Written from the state cookie, so the flag records what the creator ticked
-  // on our own screen — not anything a client could send later. Always written,
-  // including the `false` case: re-connecting without ticking the box has to
-  // *withdraw* consent given last time, not leave it standing.
-  await supabase.from('creators').update({ youtube_append_opt_in: appendOptIn }).eq('id', creatorId);
+  // Granting comes last, and its result is checked like any other. Reporting
+  // `connected` on a failed consent write logged an audit line asserting a
+  // permission change that never happened.
+  if (appendOptIn && !(await writeAppendOptIn(true))) {
+    return back(
+      'failed',
+      'Your channel is connected, but we could not save your choice about editing descriptions. It is off — set it from the card below.',
+    );
+  }
 
   log({
     event: 'CREATOR:SOURCE_CONNECT',

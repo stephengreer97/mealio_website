@@ -141,6 +141,29 @@ describe('import/ssrf — redirects', () => {
     expect(result.redirects).toEqual(['https://a.example.com/x', 'https://a.example.com/y']);
   });
 
+  it('does not carry caller-supplied credentials across an origin', async () => {
+    const sent: Array<Record<string, string>> = [];
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({ ...(init?.headers as Record<string, string>) });
+      const url = String(input);
+      return url.endsWith('/track')
+        ? new Response(null, { status: 302, headers: { location: 'https://cdn.other.example/signed' } })
+        : new Response('1\n00:00:01,000 --> 00:00:02,000\nhello\n', { headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    await safeFetch('https://api.example.com/track', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+      headers: { authorization: 'Bearer ya29-creator-token' },
+      accept: /text\//i,
+    });
+
+    // Redirect targets are attacker-influenced by construction, and the header
+    // being carried here is a creator's OAuth token for their own channel.
+    expect(sent[0].authorization).toBe('Bearer ya29-creator-token');
+    expect(sent[1].authorization).toBeUndefined();
+  });
+
   it('gives up after too many redirects', async () => {
     const { impl } = stubFetch({
       'https://loop.example.com/': { status: 302, headers: { location: 'https://loop.example.com/' } },

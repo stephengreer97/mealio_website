@@ -48,7 +48,13 @@ export default function YouTubeConnectCard() {
   const load = async () => {
     try {
       const res = await fetch('/api/creator/youtube', { headers: { Authorization: `Bearer ${token()}` } });
-      if (res.ok) setStatus(await res.json());
+      if (!res.ok) return;
+      const next: Status = await res.json();
+      setStatus(next);
+      // Seeded from the stored flag rather than from `false`. The tick on the
+      // connect form is a *current* permission, and showing a granted one as
+      // off both misreports it and quietly withdraws it on the next reconnect.
+      setAppendConsent(next.appendOptIn === true);
     } finally {
       setLoading(false);
     }
@@ -95,6 +101,9 @@ export default function YouTubeConnectCard() {
         return;
       }
       setStatus(prev => (prev ? { ...prev, appendOptIn: next } : prev));
+      // Kept in step so a reconnect from a broken connection carries the choice
+      // the creator has just made rather than the one they made last time.
+      setAppendConsent(next);
     } finally {
       setBusy(false);
     }
@@ -104,14 +113,36 @@ export default function YouTubeConnectCard() {
     setBusy(true);
     setError('');
     try {
-      await fetch('/api/creator/youtube', { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
+      const res = await fetch('/api/creator/youtube', { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
+      // Never assumed. "Your channel is disconnected" is the last thing a
+      // creator will check up on, so it is said only once the server says so.
+      if (!res.ok) {
+        setError((await res.json().catch(() => null))?.error || 'Could not disconnect that channel.');
+        return;
+      }
       await load();
+    } catch {
+      setError('Could not disconnect that channel.');
     } finally {
       setBusy(false);
     }
   };
 
   if (loading || !status) return null;
+
+  /**
+   * A grant row exists — healthy or broken. Broken still needs reconnecting,
+   * but it is a connection: the consent attached to it is real, revocable, and
+   * the channel can still be disconnected. Rendering a broken connection as if
+   * nothing were connected showed a granted permission as off and offered no
+   * way to withdraw it, which is the opposite of what a broken grant needs.
+   */
+  const hasConnection = status.connected;
+  const needsConnect = !status.connected || Boolean(status.brokenReason);
+  const consent = hasConnection ? status.appendOptIn : appendConsent;
+  // Turning it on needs the write scope; turning it off must work from every
+  // state there is, or it is not revocation.
+  const consentLocked = hasConnection && !status.canWriteDescriptions && !status.appendOptIn;
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
@@ -145,77 +176,71 @@ export default function YouTubeConnectCard() {
         </p>
       )}
 
-      {!status.connected || status.brokenReason ? (
+      <p className="text-sm text-gray-600 leading-relaxed mb-4">
+        {needsConnect
+          ? 'Connecting lets Mealio read your videos’ titles and descriptions — and their captions, which YouTube only shares with the channel owner — so a recipe can be imported from a video instead of typed out again.'
+          : 'Mealio can read this channel’s videos to import recipes from them.'}
+      </p>
+
+      {/* One control, whichever state the card is in. On a connection that
+          exists it writes through immediately, so consent can be withdrawn
+          while the grant is broken; with nothing connected it is a local tick
+          that travels with the request that starts the OAuth round trip. */}
+      <label className="flex items-start gap-3 mb-4 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={consent}
+          disabled={busy || consentLocked}
+          onChange={e => (hasConnection ? setAppendOptIn(e.target.checked) : setAppendConsent(e.target.checked))}
+          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500 disabled:opacity-50"
+        />
+        <span className="text-sm text-gray-600 leading-relaxed">
+          <span className="font-semibold text-gray-800">
+            {needsConnect ? 'Also let' : 'Let'} Mealio add the Mealio link to a video&rsquo;s description
+          </span>{' '}
+          once a recipe from that video is live. Only for videos a Mealio recipe came from, and always shown to
+          you first.{' '}
+          {needsConnect
+            ? 'You can switch this off at any time, and left unticked nothing on your channel is ever edited.'
+            : 'Switching this off stops any future edits; links already added stay where they are.'}
+        </span>
+      </label>
+
+      {hasConnection && !status.canWriteDescriptions && (
+        <p className="text-xs text-gray-500 mb-4">
+          This connection was made without permission to edit descriptions. Reconnect YouTube if you want to
+          allow it.
+        </p>
+      )}
+
+      {needsConnect && (
         <>
-          <p className="text-sm text-gray-600 leading-relaxed mb-4">
-            Connecting lets Mealio read your videos&rsquo; titles and descriptions — and their captions, which
-            YouTube only shares with the channel owner — so a recipe can be imported from a video instead of
-            typed out again.
-          </p>
-
-          <label className="flex items-start gap-3 mb-4 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={appendConsent}
-              onChange={e => setAppendConsent(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
-            />
-            <span className="text-sm text-gray-600 leading-relaxed">
-              <span className="font-semibold text-gray-800">Also let Mealio add the Mealio link to a video&rsquo;s description</span>{' '}
-              once a recipe from that video is live. Only for videos a Mealio recipe came from, always shown to you
-              first, and you can switch this off at any time. Leave it unticked and nothing on your channel is
-              ever edited.
-            </span>
-          </label>
-
           <button
             onClick={connect}
             disabled={busy}
             className="w-full sm:w-auto bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl px-5 py-2.5 transition-colors"
           >
-            {busy ? 'Opening Google…' : 'Connect YouTube — read my videos' + (appendConsent ? ' and edit their descriptions' : '')}
+            {busy ? 'Opening Google…' : 'Connect YouTube — read my videos' + (consent ? ' and edit their descriptions' : '')}
           </button>
           <p className="text-[11px] text-gray-400 mt-2">
             Google will ask for permission to manage your YouTube account. We use it to read your videos, and — only
             if you ticked the box above — to add a link to a description.
           </p>
         </>
-      ) : (
-        <>
-          <p className="text-sm text-gray-600 leading-relaxed mb-4">
-            Mealio can read this channel&rsquo;s videos to import recipes from them.
-          </p>
+      )}
 
-          <label className="flex items-start gap-3 mb-4 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={status.appendOptIn}
-              disabled={busy || !status.canWriteDescriptions}
-              onChange={e => setAppendOptIn(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500 disabled:opacity-50"
-            />
-            <span className="text-sm text-gray-600 leading-relaxed">
-              <span className="font-semibold text-gray-800">Let Mealio add the Mealio link to a video&rsquo;s description</span>{' '}
-              when a recipe from that video goes live. Switching this off stops any future edits; links already
-              added stay where they are.
-            </span>
-          </label>
-
-          {!status.canWriteDescriptions && (
-            <p className="text-xs text-gray-500 mb-4">
-              This connection was made without permission to edit descriptions. Reconnect YouTube if you want to
-              allow it.
-            </p>
-          )}
-
-          <button
-            onClick={disconnect}
-            disabled={busy}
-            className="text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-60 transition-colors"
-          >
-            Disconnect YouTube
-          </button>
-        </>
+      {/* Offered whenever a grant exists, broken included. A creator who cannot
+          reconnect must still be able to take the stored token away. */}
+      {hasConnection && (
+        <button
+          onClick={disconnect}
+          disabled={busy}
+          className={`text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-60 transition-colors${
+            needsConnect ? ' mt-3 block' : ''
+          }`}
+        >
+          Disconnect YouTube
+        </button>
       )}
 
       {error && <p className="text-sm text-red-600 mt-3">{error}</p>}

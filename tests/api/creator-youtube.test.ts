@@ -33,9 +33,11 @@ import { YOUTUBE_WRITE_SCOPE } from '@/lib/youtube';
  * `youtube_append_opt_in` is written from the creator's own tick — never from a
  * later request, and never left standing when the connection goes away.
  *
- * `tests/helpers/supabase-mock.ts` pops queued results FIFO per table and
- * ignores `.eq()`, so assertions on the update calls below are about the columns
- * and values sent, not about which rows a filter would have matched.
+ * `tests/helpers/supabase-mock.ts` serves queued results FIFO per table and
+ * runs real filters against seeded rows. The consent tests below use seeded
+ * rows deliberately: what a permission write *sent* is not the property worth
+ * defending — what the row says afterwards, on the path where something else
+ * failed, is.
  */
 
 const CHANNEL_ID = 'UCabcdefghijklmnopqrstuv';
@@ -221,6 +223,60 @@ describe('GET /api/creator/youtube/callback', () => {
     expect(update).toEqual({ youtube_append_opt_in: false });
   });
 
+  /** A grant Google was happy with, for the callback tests that get that far. */
+  function googleSaidYes() {
+    exchangeYouTubeCode.mockResolvedValue({
+      ok: true,
+      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_WRITE_SCOPE], expiresAt: null },
+    });
+    fetchOwnChannel.mockResolvedValue({ ok: true, channel: { id: CHANNEL_ID, title: 'Chef Sarah' } });
+  }
+
+  it('withdraws the append consent even when the grant cannot be stored', async () => {
+    googleSaidYes();
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', youtube_url: null, youtube_append_opt_in: true }]);
+    fakeDb.queue('creator_platform_accounts', { error: { message: 'connection refused' } });
+
+    const res = await CALLBACK(callbackRequest({ code: 'c', state: 'nonce-1' }, await stateCookie({ appendOptIn: false })));
+
+    expect(res.headers.get('location')).toContain('youtube=failed');
+    // Reconnecting without ticking the box is a withdrawal. Returning early on
+    // a failed grant write abandoned it: the previous `true` stood over the
+    // previous, still-working grant, `assertAppendAllowed` kept permitting
+    // description edits, and the creator was told the attempt had failed and
+    // reasonably concluded nothing had changed.
+    expect(fakeDb.row('creators', 'c1')?.youtube_append_opt_in).toBe(false);
+  });
+
+  it('withdraws it before the new grant is stored, not after', async () => {
+    googleSaidYes();
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', youtube_append_opt_in: true }]);
+
+    await CALLBACK(callbackRequest({ code: 'c', state: 'nonce-1' }, await stateCookie({ appendOptIn: false })));
+
+    const consentAt = fakeDb.calls.findIndex((c) => c.table === 'creators' && c.method === 'update');
+    const grantAt = fakeDb.calls.findIndex((c) => c.table === 'creator_platform_accounts' && c.method === 'upsert');
+    // Otherwise there is a window in which a fresh write-scoped token sits
+    // beside a `true` the creator has just unticked, and a concurrent
+    // `assertAppendAllowed` says yes in it.
+    expect(consentAt).toBeGreaterThanOrEqual(0);
+    expect(consentAt).toBeLessThan(grantAt);
+  });
+
+  it('does not report a connection when the consent write failed', async () => {
+    googleSaidYes();
+    fakeDb.queue('creator_platform_accounts', { error: null });
+    fakeDb.queue('creators', { error: { message: 'permission denied' } });
+
+    const res = await CALLBACK(callbackRequest({ code: 'c', state: 'nonce-1' }, await stateCookie({ appendOptIn: true })));
+
+    // The result used to be discarded, so a failed consent write still returned
+    // `youtube=connected` and logged `appendOptIn=false` — an audit line
+    // asserting a permission change that never happened.
+    expect(res.headers.get('location')).toContain('youtube=failed');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('appendOptIn=true');
+  });
+
   it('stores nothing when the creator cancels on Google’s screen', async () => {
     const res = await CALLBACK(callbackRequest({ error: 'access_denied', state: 'nonce-1' }, await stateCookie({ appendOptIn: true })));
 
@@ -264,15 +320,16 @@ describe('/api/creator/youtube', () => {
 
   it('turns the append consent off from any state, including a broken connection', async () => {
     asUser();
-    fakeDb.queue('creators', { data: { id: 'c1', youtube_append_opt_in: true } });
+    // A real broken grant, not an absent one: revocation that only works while
+    // everything else is healthy is not revocation, and this is the state a
+    // creator is most likely to be in when they want to withdraw.
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', youtube_url: null, youtube_append_opt_in: true }]);
+    fakeDb.seed('creator_platform_accounts', [grantRow({ broken_reason: 'Token has been expired or revoked.' })]);
 
     const res = await PATCH(jsonRequest('/api/creator/youtube', { method: 'PATCH', token, body: { appendOptIn: false } }));
 
     expect(res.status).toBe(200);
-    // Revocation that only works while everything else is healthy is not
-    // revocation. No connection was queued here at all.
-    const update = fakeDb.calls.filter((c) => c.table === 'creators' && c.method === 'update').at(-1)?.args[0];
-    expect(update).toEqual({ youtube_append_opt_in: false });
+    expect(fakeDb.row('creators', 'c1')?.youtube_append_opt_in).toBe(false);
   });
 
   it('refuses to turn it on without a channel to write to', async () => {
@@ -317,5 +374,34 @@ describe('/api/creator/youtube', () => {
     const update = fakeDb.calls.filter((c) => c.table === 'creators' && c.method === 'update').at(-1)?.args[0];
     expect(update).toEqual({ youtube_append_opt_in: false });
     expect(everythingWritten()).not.toContain('super-secret-refresh');
+  });
+
+  it('does not report a disconnect that did not happen', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_append_opt_in: true } });
+    fakeDb.queue('creators', { error: null });
+    fakeDb.queue('creator_platform_accounts', { error: { message: 'permission denied' } });
+
+    const res = await DELETE(jsonRequest('/api/creator/youtube', { method: 'DELETE', token }));
+
+    // The error was never destructured, never checked and never surfaced: a
+    // failed delete left the refresh token stored and the grant live at Google
+    // while the creator was told the channel was disconnected. Of everything
+    // here this is the one action that must not report success optimistically.
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/still stored/i);
+  });
+
+  it('does not remove the grant when the consent could not be withdrawn', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_append_opt_in: true } });
+    fakeDb.queue('creators', { error: { message: 'permission denied' } });
+
+    const res = await DELETE(jsonRequest('/api/creator/youtube', { method: 'DELETE', token }));
+
+    expect(res.status).toBe(500);
+    // Consent off with a token still stored blocks every append. A deleted
+    // token with consent still standing would not, so the order matters.
+    expect(fakeDb.calls.some((c) => c.table === 'creator_platform_accounts' && c.method === 'delete')).toBe(false);
   });
 });

@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fakeDb } from '../helpers/supabase-mock';
-import { publicLookup, stubFetch } from '../helpers/import-stubs';
+import { endlessBody, publicLookup, stubFetch } from '../helpers/import-stubs';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
+
+import { MAX_TEXT_CHARS } from '@/lib/import/html';
 
 import {
   assertAppendAllowed,
@@ -15,6 +17,7 @@ import {
   resolveChannelId,
   srtToText,
   uploadsFeedUrl,
+  MAX_CAPTION_BYTES,
   youtubeAuthUrl,
   youtubeSourceDocument,
   YOUTUBE_WRITE_SCOPE,
@@ -168,6 +171,20 @@ describe('youtube — resolving a channel id from a creator link', () => {
     const result = await resolveChannelId('https://youtube.com/@sarah', { fetchImpl: impl, lookup: publicLookup });
     expect(result.ok).toBe(false);
   });
+
+  it('reads a channel id only off youtube.com, and fetches nothing else', async () => {
+    const { impl, calls } = stubFetch({
+      'https://sarahcooks.example/links': { body: `<html>{"channelId":"${CHANNEL_ID}"}</html>` },
+    });
+
+    const result = await resolveChannelId('https://sarahcooks.example/links', { fetchImpl: impl, lookup: publicLookup });
+
+    // `creators.youtube_url` is a link a creator typed. Without a host check,
+    // one pointing at a page they control can name somebody else's channel and
+    // the catalog lists that person's videos under their name.
+    expect(result.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
 });
 
 // ── The uploads feed ─────────────────────────────────────────────────────────
@@ -218,6 +235,26 @@ describe('youtube — the uploads feed is the free list', () => {
     expect(result.ok).toBe(false);
     expect(calls).toEqual([]);
   });
+
+  it('keeps its own content-type allowlist whatever a caller passes', async () => {
+    const { impl } = stubFetch({
+      [uploadsFeedUrl(CHANNEL_ID)]: { body: '<html>not a feed</html>', headers: { 'content-type': 'text/html' } },
+    });
+
+    const result = await readUploadsFeed(CHANNEL_ID, {
+      fetchImpl: impl,
+      lookup: publicLookup,
+      accept: /text\/html/i,
+      expected: 'whatever the caller felt like',
+    });
+
+    // `...fetchOptions` used to be spread *after* `accept`, so a caller-supplied
+    // option silently switched off the XML check this call is written around —
+    // and a page of HTML was handed to the feed parser as if it were a feed.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toMatch(/Expected a YouTube uploads feed/i);
+  });
 });
 
 // ── The source document ──────────────────────────────────────────────────────
@@ -263,6 +300,7 @@ describe('youtube — description first, captions second', () => {
     const document = await youtubeSourceDocument(video({ description: 'Full recipe below!' }), {
       accessToken: 'ya29-token',
       fetchImpl,
+      lookup: publicLookup,
     });
 
     expect(document.usedCaptions).toBe(true);
@@ -289,9 +327,85 @@ describe('youtube — description first, captions second', () => {
     const document = await youtubeSourceDocument(video({ description: 'short' }), {
       accessToken: 'ya29-token',
       fetchImpl,
+      lookup: publicLookup,
     });
     expect(document.usedCaptions).toBe(false);
     expect(document.text).toBe('short');
+  });
+
+  /** A caption list naming one uploaded English track, then `body` for the download. */
+  function captionFetch(body: string | (() => Response)) {
+    return (async (input: RequestInfo | URL) => {
+      if (String(input).includes('/captions?')) {
+        return new Response(JSON.stringify({ items: [{ id: 'real-1', snippet: { trackKind: 'standard', language: 'en' } }] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return typeof body === 'string' ? new Response(body, { headers: { 'content-type': 'text/plain' } }) : body();
+    }) as unknown as typeof fetch;
+  }
+
+  it('trims a long transcript to the same ceiling the fetched path enforces', async () => {
+    const srt = `1\n00:00:01,000 --> 00:00:03,000\n${'Add two ripe avocados and a squeeze of lime. '.repeat(2_000)}\n`;
+    expect(srt.length).toBeLessThan(MAX_CAPTION_BYTES);
+
+    const document = await youtubeSourceDocument(video({ description: 'Full recipe below!' }), {
+      accessToken: 'ya29-token',
+      fetchImpl: captionFetch(srt),
+      lookup: publicLookup,
+    });
+
+    expect(document.usedCaptions).toBe(true);
+    // `document.text` is interpolated into the extraction prompt verbatim.
+    // Skipping `toSourceDocument`'s cap because we skipped the fetch put the one
+    // path carrying a whole transcript outside the only limit there was.
+    expect(document.text.length).toBeLessThanOrEqual(MAX_TEXT_CHARS + 1);
+    expect(document.recipeText.length).toBeLessThanOrEqual(MAX_TEXT_CHARS + 1);
+  });
+
+  it('refuses a caption track that never ends rather than buffering it', async () => {
+    const { stream, chunksProduced } = endlessBody(256 * 1024, 40);
+
+    const document = await youtubeSourceDocument(video({ description: 'Full recipe below!' }), {
+      accessToken: 'ya29-token',
+      fetchImpl: captionFetch(() => new Response(stream, { headers: { 'content-type': 'text/plain' } })),
+      lookup: publicLookup,
+    });
+
+    // A measured 4 MB track produced a 4 MB extraction prompt, per video,
+    // concurrently across a 40-video sync. Counted while streaming, so the
+    // whole body is never held, and the import degrades to the description.
+    expect(chunksProduced()).toBeLessThan(10);
+    expect(document.usedCaptions).toBe(false);
+    expect(document.text).toBe('Full recipe below!');
+  });
+
+  it('sends the owner’s token with the download and takes it no further', async () => {
+    const seen: Array<{ url: string; authorization: string | undefined }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      seen.push({ url: String(input), authorization: headers.authorization });
+      if (String(input).includes('/captions?')) {
+        return new Response(JSON.stringify({ items: [{ id: 'real-1', snippet: { trackKind: 'standard', language: 'en' } }] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('1\n00:00:01,000 --> 00:00:03,000\nAdd two avocados.\n', {
+        headers: { 'content-type': 'text/plain' },
+      });
+    }) as unknown as typeof fetch;
+
+    const document = await youtubeSourceDocument(video({ description: 'Full recipe below!' }), {
+      accessToken: 'ya29-token',
+      fetchImpl,
+      lookup: publicLookup,
+    });
+
+    // Captions are owner-only, so the guarded fetcher has to be able to carry
+    // the grant — that is the whole reason this ticket exists.
+    expect(document.text).toContain('Add two avocados.');
+    expect(seen[1].url).toContain('/captions/real-1');
+    expect(seen[1].authorization).toBe('Bearer ya29-token');
   });
 
   it('strips SRT sequence numbers and timecodes', () => {

@@ -206,7 +206,13 @@ export function detectPlatform(html: string, url: string): Platform {
 
 // ── Assembly ─────────────────────────────────────────────────────────────────
 
-const MAX_TEXT_CHARS = 24_000;
+/**
+ * Exported because it is the pipeline's ceiling, not this file's. Anything that
+ * builds a `SourceDocument` without going through `toSourceDocument` — the
+ * `document` seam, which MEAL-74 uses for a video — has to enforce the same one
+ * or the cap is only load-bearing on the path that never needed it most.
+ */
+export const MAX_TEXT_CHARS = 24_000;
 
 /**
  * Every field on a `SourceDocument` is attacker-controlled and every one of them

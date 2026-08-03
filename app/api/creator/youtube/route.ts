@@ -115,12 +115,40 @@ export async function DELETE(request: NextRequest) {
   const creator = await loadCreator(supabase, user.userId);
   if (!creator) return NextResponse.json({ error: 'Not a creator' }, { status: 403 });
 
-  await deleteConnection(supabase, creator.id, 'youtube');
   // Consent to edit descriptions cannot outlive the connection it was given for.
   // Leaving it set would mean a creator who reconnected months later found us
   // already permitted to write, on the strength of a decision they made about a
   // channel they had since disconnected.
-  await supabase.from('creators').update({ youtube_append_opt_in: false }).eq('id', creator.id);
+  //
+  // Withdrawn before the grant is deleted, so the order of the two failure
+  // modes is the safe one: consent off with a token still stored blocks every
+  // append, where a deleted token with consent still standing would not.
+  const { error: consentError } = await supabase
+    .from('creators')
+    .update({ youtube_append_opt_in: false })
+    .eq('id', creator.id);
+
+  if (consentError) {
+    log({ event: 'CREATOR:SOURCE_DISCONNECT', status: 'error', userId: user.userId, email: user.email, error: consentError });
+    return NextResponse.json(
+      { error: 'We could not disconnect that channel. Nothing was changed — please try again.' },
+      { status: 500 },
+    );
+  }
+
+  // A revocation is the one action that must not report success optimistically.
+  // Telling a creator their channel is disconnected while the refresh token is
+  // still in the table — and the grant still live at Google — is the failure
+  // they are least likely to check up on.
+  try {
+    await deleteConnection(supabase, creator.id, 'youtube');
+  } catch (err) {
+    log({ event: 'CREATOR:SOURCE_DISCONNECT', status: 'error', userId: user.userId, email: user.email, error: err });
+    return NextResponse.json(
+      { error: 'We could not disconnect that channel. Mealio can no longer edit your descriptions, but the connection is still stored — please try again.' },
+      { status: 500 },
+    );
+  }
 
   log({
     event: 'CREATOR:SOURCE_DISCONNECT',
