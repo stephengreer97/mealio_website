@@ -3,6 +3,44 @@ import { Resend } from 'resend';
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 /**
+ * Turns Resend's `{ error }` into a thrown error.
+ *
+ * resend-node reports an API refusal — a bad key, a suppressed address, a
+ * rejected domain, a rate limit — in `{ error }` rather than by throwing, so a
+ * send that never happened returns exactly like one that did. Every `await
+ * resend.emails.send(...)` whose result is dropped on the floor therefore
+ * reports success no matter what the API said.
+ *
+ * Callers treat "returned without throwing" as "the mail is on its way", and
+ * every one of them already has handling that a throw is what reaches:
+ *
+ *   - `/api/auth/login` and `/api/auth/2fa/resend` log `AUTH:2FA_SENT` success
+ *     and tell the browser to ask for a code that was never sent. Throwing turns
+ *     that into the 500 their `catch` already returns — an error the person can
+ *     act on instead of a prompt they can never satisfy.
+ *   - `notifyApproved` counts `emailsSent` and puts a per-creator failure in the
+ *     response the review queue displays. Silence there means an operator
+ *     believes a creator was told that recipes went live under their name.
+ *   - `/api/creator/apply` logs `CREATOR:EMAIL_ADMIN` / `CREATOR:EMAIL_APPLICANT`
+ *     from a `.catch` and still returns 201, which is right: the application is
+ *     saved either way.
+ *   - `/api/bug-report` answers 500, which is also right — the email *is* the
+ *     bug report, nothing else stores it, so a refused send means the report is
+ *     gone and the reporter has to be told.
+ *
+ * The one exception is `/api/admin/applications`, which had `.catch(() => {})`.
+ * A throw there is not worse than the silence it replaces — the approval or
+ * rejection has already been written and must not 500 — but it was still
+ * nowhere. That caller now logs, so the throw lands somewhere.
+ */
+function throwIfRefused(result: { error?: { message?: string } | null } | null | undefined, what: string): void {
+  const error = result?.error;
+  if (error) {
+    throw new Error(`Resend refused the ${what} email: ${error.message ?? JSON.stringify(error)}`);
+  }
+}
+
+/**
  * Shared shell for marketing / lifecycle emails. Adds the Mealio header and a
  * CAN-SPAM-compliant footer (one-click unsubscribe + physical mailing address).
  * All marketing sends must go through this via lib/marketing-email.ts — the
@@ -26,7 +64,7 @@ export function marketingEmailLayout(bodyHtml: string, unsubscribeUrl: string): 
 }
 
 export async function sendCreatorAppliedEmail(to: string, displayName: string) {
-  await resend.emails.send({
+  const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to,
     subject: 'We received your creator application',
@@ -40,11 +78,12 @@ export async function sendCreatorAppliedEmail(to: string, displayName: string) {
       </div>
     `,
   });
+  throwIfRefused(sent, 'creator application received');
 }
 
 export async function sendCreatorApprovedEmail(to: string, displayName: string) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co';
-  await resend.emails.send({
+  const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to,
     subject: "You're approved — start publishing on Mealio!",
@@ -80,10 +119,11 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
       </div>
     `,
   });
+  throwIfRefused(sent, 'creator approved');
 }
 
 export async function sendCreatorRejectedEmail(to: string, displayName: string) {
-  await resend.emails.send({
+  const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to,
     subject: 'An update on your Mealio creator application',
@@ -97,11 +137,12 @@ export async function sendCreatorRejectedEmail(to: string, displayName: string) 
       </div>
     `,
   });
+  throwIfRefused(sent, 'creator declined');
 }
 
 export async function sendCreatorApplicationEmail(applicantName: string, applicantEmail: string, adminEmails: string[]) {
   if (adminEmails.length === 0) return;
-  await resend.emails.send({
+  const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to: adminEmails,
     subject: `New creator application: ${applicantName}`,
@@ -118,6 +159,7 @@ export async function sendCreatorApplicationEmail(applicantName: string, applica
       </div>
     `,
   });
+  throwIfRefused(sent, 'new creator application');
 }
 
 function escapeHtml(s: string): string {
@@ -143,7 +185,7 @@ export async function sendBugReportEmail(opts: {
     .map(([k, v]) => `<tr><td style="padding:6px 0;color:#999;width:120px;">${escapeHtml(k)}</td><td style="padding:6px 0;color:#222;">${escapeHtml(String(v))}</td></tr>`)
     .join('');
 
-  await resend.emails.send({
+  const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to: 'contact@mealio.co',
     subject: `Bug report (${source}): ${description.slice(0, 60)}${description.length > 60 ? '…' : ''}`,
@@ -160,6 +202,7 @@ export async function sendBugReportEmail(opts: {
       ? [{ filename: 'session-logs.txt', content: Buffer.from(logs, 'utf8').toString('base64') }]
       : undefined,
   });
+  throwIfRefused(sent, 'bug report');
 }
 
 export interface SyncedMealLink {
@@ -217,7 +260,7 @@ export async function sendCreatorSyncPublishedEmail(
     )
     .join('');
 
-  await resend.emails.send({
+  const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to,
     subject,
@@ -242,10 +285,14 @@ export async function sendCreatorSyncPublishedEmail(
       </div>
     `,
   });
+  // The one whose absence is silent on both sides: the operator's queue counts
+  // `emailsSent` and the creator is never told that recipes went live under
+  // their name — which is the whole bargain MEAL-90 rests on.
+  throwIfRefused(sent, 'published-under-your-name');
 }
 
 export async function sendOtpEmail(to: string, code: string) {
-  await resend.emails.send({
+  const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to,
     subject: 'Your Mealio login code',
@@ -261,4 +308,5 @@ export async function sendOtpEmail(to: string, code: string) {
       </div>
     `,
   });
+  throwIfRefused(sent, 'login code');
 }
