@@ -5,12 +5,13 @@
  * against pressing that by accident is a number on the screen before it happens
  * — far more effective than a confirmation dialog nobody reads.
  *
- * The figure is **derived, not typed in**. MEAL-71 measured ~$0.067 per import;
- * what it actually measured is a token shape — one cheap gate call and one
- * extraction call, with the sizes below. Multiplying that shape by
- * `MODEL_PRICING` means the day a rate changes, or the day `EXTRACTION_MODEL`
- * moves off Opus, the estimate moves with it instead of quietly rotting into a
- * lie an operator is trusting with someone's budget.
+ * The figure is **derived, not typed in**. What MEAL-71 measured is a token
+ * shape — one cheap gate call and one extraction call, with the sizes below —
+ * not a price. Multiplying that shape by `MODEL_PRICING` is what let the day
+ * `EXTRACTION_MODEL` moved from Opus to Haiku 4.5 carry the estimate with it:
+ * ~$0.067 an import became ~$0.016 without anyone editing a number here. A
+ * typed-in figure would have rotted into a lie an operator is trusting with
+ * someone's budget, which is the whole reason for the indirection.
  *
  * It is a ceiling, and deliberately so: a cached URL costs nothing, and a page
  * with clean JSON-LD skips the classifier. Being wrong low is what turns a
@@ -47,7 +48,7 @@ export function estimateSelectionCostUsd(count: number): number {
 }
 
 /**
- * The line under the checklist: `12 selected · about $0.80`.
+ * The line under the checklist: `12 selected · about $0.19`.
  *
  * "about" is load-bearing. The number is an estimate off a measured average and
  * saying so is the difference between an operator sanity-checking an order of

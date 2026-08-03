@@ -31,9 +31,9 @@
       },
       {
         "ingredientName": "garlic",
-        "qty": 4,
-        "unit": "qty",
-        "measure": null
+        "qty": 1,
+        "unit": "cloves",
+        "measure": "4"
       },
       {
         "ingredientName": "fresh ginger",

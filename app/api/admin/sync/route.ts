@@ -28,7 +28,7 @@ import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncI
  * what went live fires from Approve, which is the first moment anything has.
  */
 
-/** A selection this size is already a $13 run; beyond it, sync in batches. */
+/** A selection this size is already a ~$3 run; beyond it, sync in batches. */
 const MAX_SELECTION = CATALOG_MAX_ENTRIES;
 
 const CREATOR_FIELDS = 'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url';
