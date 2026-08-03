@@ -194,6 +194,23 @@ function fail(reason: FetchFailure['reason'], detail: string): FetchFailure {
   return { ok: false, reason, detail };
 }
 
+/**
+ * A timeout failure that arrives after `ms`, for racing a step that cannot be
+ * cancelled from the outside.
+ *
+ * `AbortSignal` covers the fetch; nothing covers `dns.lookup`, which takes no
+ * signal. The loser of the race keeps running to completion — there is no way to
+ * stop it — but it resolves into a promise nobody is holding, so it costs one
+ * pending resolution rather than the request.
+ */
+function expiresIn(ms: number, detail: string): { expired: Promise<FetchFailure>; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout>;
+  const expired = new Promise<FetchFailure>((resolve) => {
+    timer = setTimeout(() => resolve(fail('timeout', detail)), Math.max(0, ms));
+  });
+  return { expired, cancel: () => clearTimeout(timer) };
+}
+
 // ── Address classification ───────────────────────────────────────────────────
 
 function ipv4ToOctets(address: string): number[] | null {
@@ -321,6 +338,30 @@ export function normalizeUrl(input: string): string | null {
   if (url.pathname.length > 1 && url.pathname.endsWith('/')) {
     url.pathname = url.pathname.slice(0, -1);
   }
+  return url.toString();
+}
+
+/**
+ * The same URL's *identity*, for deciding whether we have seen it before.
+ *
+ * `normalizeUrl` has to stay a URL we can actually fetch, so it leaves the
+ * scheme and the `www.` alone — an apex that does not resolve, or a host that
+ * only serves http, is a hard failure and neither is ours to guess about. But
+ * `http://blog.test/x`, `https://blog.test/x` and `https://www.blog.test/x` are
+ * one post, and used as `item_id` they are three: three drafts in the review
+ * queue, three published meals under the creator's name, from an operator
+ * pasting the same link on two different days. Which is the ordinary case, not
+ * the adversarial one.
+ *
+ * So identity folds both and fetching does not. Used for the import cache key
+ * and for the `(creator_id, source, item_id)` record a pasted link lands under.
+ */
+export function urlIdentity(input: string): string | null {
+  const normalized = normalizeUrl(input);
+  if (!normalized) return null;
+  const url = new URL(normalized);
+  url.protocol = 'https:';
+  url.hostname = url.hostname.replace(/^www\./, '');
   return url.toString();
 }
 
@@ -498,7 +539,18 @@ export async function safeFetch(
     }
 
     // Re-validated on every hop. This is the whole point of manual redirects.
-    const blocked = await assertPublicUrl(current, lookup);
+    //
+    // Raced against the deadline, because it was outside it: the `AbortSignal`
+    // that bounds the request is created *after* this returns, and the DNS
+    // resolution inside it takes no signal at all. A hostname whose
+    // authoritative nameserver simply never answers held the fetch for the
+    // platform resolver's own timeout — 5 s per nameserver, retried, so 10 s of
+    // a 10 s budget spent before a byte moves — and once per hop, so a chain of
+    // such hostnames multiplied it by seven. Every one of them is a URL a
+    // creator pasted, or a redirect target chosen by the page.
+    const dns = expiresIn(remaining, `Timed out after ${timeoutMs}ms`);
+    const blocked = await Promise.race([assertPublicUrl(current, lookup), dns.expired]);
+    dns.cancel();
     if (blocked) {
       return hop === 0
         ? blocked

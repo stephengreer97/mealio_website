@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { canonicalizeIngredient, canonicalizeIngredients, canonicalUnit, parseAmount } from '@/lib/import/ingredients';
+import {
+  canonicalizeIngredient,
+  canonicalizeIngredients,
+  canonicalUnit,
+  cartAmount,
+  parseAmount,
+  statedAmounts,
+  statedUnits,
+} from '@/lib/import/ingredients';
 import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, SERVES_PATTERN } from '@/lib/import/vocab';
 import type { ExtractedIngredient } from '@/lib/import/types';
 
@@ -48,6 +56,63 @@ describe('import/ingredients — parseAmount', () => {
   });
 });
 
+/**
+ * The inverse of `parseAmount`, and the input to the amount half of MEAL-72's
+ * verification: a row saying `12 cups` cited to "1 teaspoon kosher salt" is a
+ * number nobody wrote down.
+ */
+describe('import/ingredients — statedAmounts', () => {
+  it.each([
+    ['1 teaspoon kosher salt, more to taste', [1]],
+    ['1 ½ cups all-purpose flour', [1.5]],
+    ['½ teaspoon fine sea salt', [0.5]],
+    ['2 1/2 cups guacamole', [2.5]],
+    ['1 (14 oz) can black beans, drained', [1, 14]],
+    ['2-3 cloves garlic', [2, 3]],
+    ['salt and pepper to taste', []],
+  ])('reads %s as %j', (line, expected) => {
+    const amounts = statedAmounts(line);
+    expect(amounts).toHaveLength(expected.length);
+    expected.forEach((value, i) => expect(amounts[i]).toBeCloseTo(value, 3));
+  });
+});
+
+describe('import/ingredients — statedUnits', () => {
+  it('canonicalises the units a line names, including the two-word ones', () => {
+    expect(statedUnits('1 teaspoon kosher salt')).toEqual(new Set(['tsp']));
+    expect(statedUnits('8 fl oz whole milk')).toEqual(new Set(['fl oz', 'oz']));
+    // A cook's unit is a unit the line named, so it is reported like any other.
+    expect(statedUnits('3 cloves garlic, minced')).toEqual(new Set(['cloves']));
+    // Still nothing for a line that names no unit at all.
+    expect(statedUnits('a knob of butter')).toEqual(new Set());
+  });
+});
+
+describe('import/ingredients — cartAmount', () => {
+  it('reports the amount a measured row will act on', () => {
+    const draft = canonicalizeIngredient(ing({ measure: '1', unit: 'teaspoon' }))!;
+    expect(cartAmount(draft, ing({ measure: '1', unit: 'teaspoon' }))).toEqual({ value: 1, unit: 'tsp' });
+  });
+
+  it('reports the count a countable row will act on', () => {
+    const extracted = ing({ productName: 'eggs', measure: '3', unit: 'qty', qty: 3 });
+    expect(cartAmount(canonicalizeIngredient(extracted)!, extracted)).toEqual({ value: 3, unit: null });
+  });
+
+  it('exempts the qty 1 we invented ourselves for a row with no stated amount', () => {
+    // "salt to taste" becomes one countable salt. That 1 is ours, not the
+    // page's — demanding it appear in the span would demote every honest
+    // to-taste row.
+    const extracted = ing({ productName: 'salt', measure: null, unit: 'qty', qty: 1 });
+    expect(cartAmount(canonicalizeIngredient(extracted)!, extracted)).toBeNull();
+  });
+
+  it('does not exempt a count the model supplied without an amount in the source', () => {
+    const extracted = ing({ productName: 'eggs', measure: null, unit: 'qty', qty: 12 });
+    expect(cartAmount(canonicalizeIngredient(extracted)!, extracted)).toEqual({ value: 12, unit: null });
+  });
+});
+
 describe('import/ingredients — canonicalUnit', () => {
   it.each([
     ['tablespoon', 'tbsp'],
@@ -69,8 +134,19 @@ describe('import/ingredients — canonicalUnit', () => {
     }
   });
 
-  it('returns null for units the editor cannot display', () => {
-    for (const input of ['clove', 'can', 'bunch', 'pinch', 'sprig', 'stalk']) {
+  it('keeps a cook\'s unit, singular or plural, on the plural spelling', () => {
+    // These convert to nothing and never needed to. Carrying the word is what
+    // stops "3 cloves garlic" reading as "garlic, 3".
+    expect(canonicalUnit('clove')).toBe('cloves');
+    expect(canonicalUnit('cloves')).toBe('cloves');
+    expect(canonicalUnit('can')).toBe('cans');
+    expect(canonicalUnit('tin')).toBe('cans');
+    expect(canonicalUnit('pinch')).toBe('pinches');
+    expect(canonicalUnit('grind')).toBe('grinds');
+  });
+
+  it('returns null for units the editor still cannot display', () => {
+    for (const input of ['stalk', 'knob', 'dollop', 'splash']) {
       expect(canonicalUnit(input)).toBeNull();
     }
   });
@@ -98,12 +174,25 @@ describe('import/ingredients — canonicalizeIngredient', () => {
     });
   });
 
-  it('folds a unit outside the picker vocabulary into a count', () => {
-    // "3 cloves garlic" — the editor has no "clove", and a cart cannot act on
-    // one. The original wording survives in the evidence span the UI shows.
+  it('keeps a cook\'s unit rather than folding it into a package count', () => {
+    // "3 cloves garlic" used to become qty 3 — which read as "garlic, 3" and,
+    // worse, told the cart to buy three heads of garlic for three cloves. The
+    // amount is now the measure and the package count drops back to one.
     expect(canonicalizeIngredient(ing({ productName: 'garlic', measure: '3', unit: 'cloves', qty: 3 }))).toMatchObject({
       ingredientName: 'garlic',
-      qty: 3,
+      qty: 1,
+      productQty: 1,
+      unit: 'cloves',
+      measure: '3',
+    });
+  });
+
+  it('still folds a unit nothing can display into a count', () => {
+    // "a knob of butter" has no amount and no unit we carry, so it falls back
+    // to a single countable item — one pack of butter.
+    expect(canonicalizeIngredient(ing({ productName: 'butter', measure: null, unit: 'knob', qty: 1 }))).toMatchObject({
+      ingredientName: 'butter',
+      qty: 1,
       unit: 'qty',
       measure: null,
     });
@@ -179,7 +268,7 @@ describe('import/vocab — canonicalizeServes', () => {
     ['4 servings', '4 servings', '4'],
     ['6', 'Feeds a family of 6', '6'],
     ['8', '8 people', '8'],
-    ['4', '4 (Large bowls)', '4'],
+    ['6', 'Serves 6 generously', '6'],
   ])('keeps %s from %s', (value, evidence, expected) => {
     expect(canonicalizeServes(value, evidence)).toBe(expected);
   });
@@ -196,6 +285,33 @@ describe('import/vocab — canonicalizeServes', () => {
   it('drops a serving count read off a batch of items', () => {
     expect(canonicalizeServes('12', 'Makes about 12 pancakes')).toBeNull();
     expect(canonicalizeServes('24', '24 cookies')).toBeNull();
+  });
+
+  it('drops a batch of an item nobody put on a list', () => {
+    // The reason this is an allowlist now. A denylist of yield nouns passes
+    // every noun nobody thought of, and the span really is on the page, so all
+    // of these read green. The set of things a recipe can yield is open; the
+    // set of ways to say "people" is not.
+    expect(canonicalizeServes('12', 'Makes 12 empanadas')).toBeNull();
+    expect(canonicalizeServes('24', 'Makes 24 arancini')).toBeNull();
+    expect(canonicalizeServes('30', 'Yields 30 dumplings')).toBeNull();
+    // A recorded page publishes this as its recipeYield. Four bowls is a yield
+    // in a vessel, not a statement about how many people eat — and guessing
+    // costs the creator a wrong number they never look at, where dropping it
+    // costs one keystroke. Same trade the extraction prompt already asks for.
+    expect(canonicalizeServes('4', '4 (Large bowls)')).toBeNull();
+  });
+
+  it('does not read a serving suggestion as a head count', () => {
+    // "Serve" the imperative is not "serves" the count. This sentence is
+    // genuinely on the guacamole page, which is what makes it dangerous.
+    expect(canonicalizeServes('48', 'Serve it with tortilla chips at your next party')).toBeNull();
+  });
+
+  it('drops a count with no span to place it against', () => {
+    expect(canonicalizeServes('4', null)).toBeNull();
+    expect(canonicalizeServes('4', '')).toBeNull();
+    expect(canonicalizeServes('4')).toBeNull();
   });
 
   it('keeps a count when the span says people even alongside an item word', () => {

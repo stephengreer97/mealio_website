@@ -6,10 +6,14 @@ import { log } from '@/lib/logger';
 import {
   approveDraft,
   cancelDraft,
+  CREATOR_REVIEW_QUEUE_EXISTS,
   editDraft,
   editableDraft,
+  HANDOFF_UNAVAILABLE,
   listDraftQueue,
+  listHandedOverDrafts,
   notifyApproved,
+  reclaimDraft,
   reviewDraft,
   sendDraftToCreator,
   type ApprovedMeal,
@@ -44,15 +48,22 @@ export async function GET(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const drafts = await listDraftQueue(supabase, 'admin');
+  // Anything an operator handed to a creator before that button was switched
+  // off. There is no creator queue to have received it, so these rows are in no
+  // queue at all — listing them is what keeps that recoverable instead of
+  // silent, and it is why nothing here can end up invisible.
+  const handedOver = await listHandedOverDrafts(supabase);
 
   // Rendered on the card, not recomputed there: the rules that decide which
   // fields get called out live in `lib/import/draft-form.ts`, and a second copy
   // of them in the browser is a second copy to keep true.
   return NextResponse.json({
     drafts: drafts.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
+    handedOver: handedOver.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
     totals: {
       waiting: drafts.length,
       flagged: drafts.filter((draft) => draft.summary.needALook > 0).length,
+      handedOver: handedOver.length,
     },
   });
 }
@@ -71,8 +82,17 @@ export async function POST(request: NextRequest) {
   }
 
   const action = body.action;
-  if (action !== 'approve' && action !== 'send-to-creator' && action !== 'delete') {
-    return NextResponse.json({ error: "action must be 'approve', 'send-to-creator' or 'delete'" }, { status: 400 });
+  if (action !== 'approve' && action !== 'send-to-creator' && action !== 'delete' && action !== 'reclaim') {
+    return NextResponse.json(
+      { error: "action must be 'approve', 'send-to-creator', 'reclaim' or 'delete'" },
+      { status: 400 },
+    );
+  }
+  // Refused here as well as inside `sendDraftToCreator`, so the whole request
+  // fails with the reason rather than returning 200 and a list of per-draft
+  // errors for something that cannot work for any draft.
+  if (action === 'send-to-creator' && !CREATOR_REVIEW_QUEUE_EXISTS) {
+    return NextResponse.json({ error: HANDOFF_UNAVAILABLE }, { status: 400 });
   }
 
   const targets = [...new Set([...ids(body.ids), ...ids(body.id)])];
@@ -99,7 +119,9 @@ export async function POST(request: NextRequest) {
     // to stay declined, or the next sync of the same post asks again.
     const result = action === 'send-to-creator'
       ? await sendDraftToCreator(deps, id, admin.userId)
-      : await cancelDraft(deps, id, admin.userId);
+      : action === 'reclaim'
+        ? await reclaimDraft(deps, id, admin.userId)
+        : await cancelDraft(deps, id, admin.userId);
     if (result.ok) done += 1;
     else errors.push(result.error);
   }

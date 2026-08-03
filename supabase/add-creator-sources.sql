@@ -223,17 +223,65 @@ CREATE INDEX IF NOT EXISTS idx_import_drafts_pending
 CREATE TABLE IF NOT EXISTS push_tokens (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id     uuid NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
-  token       text NOT NULL UNIQUE,
+  token       text NOT NULL,
   platform    text,
   device_name text,
   created_at  timestamptz DEFAULT now(),
-  last_seen_at timestamptz DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
   revoked_at  timestamptz
 );
+
+-- Unique on (user_id, token), NOT on token alone.
+--
+-- A handset changes hands, so registering a token another account already holds
+-- has to succeed. Under UNIQUE(token) the only way to do that is to overwrite
+-- the other account's row in place, which erases the fact that they were ever
+-- enrolled and makes a handover indistinguishable from a takeover by anyone who
+-- scraped a token out of a log. Keyed per account, the handover is the new row
+-- appearing and the old one being revoked — same outcome, both halves recorded.
+ALTER TABLE push_tokens DROP CONSTRAINT IF EXISTS push_tokens_token_key;
+CREATE UNIQUE INDEX IF NOT EXISTS push_tokens_user_token_key
+  ON push_tokens (user_id, token);
 
 CREATE INDEX IF NOT EXISTS idx_push_tokens_user
   ON push_tokens (user_id)
   WHERE revoked_at IS NULL;
+
+-- The revoke paths and the register handover both filter on token alone, which
+-- the (user_id, token) index above cannot serve.
+CREATE INDEX IF NOT EXISTS idx_push_tokens_token ON push_tokens (token);
+
+-- Expo only makes a delivery receipt available a few minutes AFTER the send, and
+-- only for about a day — so the request that sends cannot be the request that
+-- learns the device is gone. The ticket ids park here and the daily cron sweeps
+-- them (MEAL-88); without that hop `revoked_at` would only ever be written for
+-- the subset of dead devices Expo happens to reject synchronously, and every
+-- future send would keep paying for the rest forever.
+--
+-- Rows are deleted as soon as they are checked, including ones Expo no longer
+-- recognises, so a receipt that will never resolve is not retried forever.
+--
+-- That dequeue filters on ticket id, which travels in the URL, so it is chunked
+-- server-side and each chunk can fail on its own. The sweep selects
+-- OLDEST-FIRST, so rows a dequeue failed to remove would sit at the head of
+-- every future window and, once there were enough of them, no receipt written
+-- after would ever be read again. What actually makes that impossible is the
+-- TTL purge the sweep runs first: a delete by created_at RANGE, one short URL
+-- regardless of how many rows it clears.
+CREATE TABLE IF NOT EXISTS push_receipts (
+  ticket_id  text PRIMARY KEY,
+  -- Denormalised rather than a FK: the receipt is about THIS token, and the
+  -- token row may legitimately be gone by the time the receipt is read.
+  token      text NOT NULL,
+  -- NOT NULL because both the sweep's window and its TTL purge filter on it,
+  -- and a NULL would be skipped by `<` in silence — the one row shape neither
+  -- the sweep nor the purge could ever reach. It is also read as "when the send
+  -- happened", to avoid revoking a device that re-registered after it.
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- The sweep's query: oldest first, anything past the settle delay.
+CREATE INDEX IF NOT EXISTS idx_push_receipts_created ON push_receipts (created_at);
 
 -- ---------------------------------------------------------------------------
 -- 7. RLS
@@ -250,3 +298,4 @@ ALTER TABLE creator_source_items      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE creator_source_state      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE creator_import_drafts     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE push_tokens               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_receipts             ENABLE ROW LEVEL SECURITY;

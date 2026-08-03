@@ -4,16 +4,38 @@ import { runCreatorReminders, runUserUpsellDrip } from '@/lib/email-campaigns';
 import { resumeStalledSyncRuns } from '@/lib/admin-sync';
 import { refreshExpiringTokens } from '@/lib/platform-tokens';
 import { createServerSupabaseClient } from '@/lib/supabase';
+import { checkPushReceipts } from '@/lib/push';
 
 export const dynamic = 'force-dynamic';
 
-// Single daily cron for all lifecycle email passes — kept to one job so we stay
-// within Vercel Hobby's cron limits (see vercel.json). Vercel injects
-// `Authorization: Bearer <CRON_SECRET>` on scheduled invocations.
+/**
+ * Long enough for two email passes, the push-receipt sweep, and one bounded
+ * sweep of stalled sync runs.
+ *
+ * Without it this function ran at the platform default — 10s on Hobby — while
+ * the sync sweep alone could start 200s of sequential work. What actually
+ * happened was worse than slow: the function was killed mid-chunk *holding a
+ * lease it had just claimed*, so the run it was recovering became unavailable
+ * to everyone else until that lease expired. `SWEEP_BUDGET_MS` keeps the sweep
+ * inside this number; the two together are what make the backstop honest.
+ */
+export const maxDuration = 60;
+
+// Daily cron for the lifecycle passes that must run exactly once a day —
+// everything email. Kept to one job so we stay within Vercel Hobby's cron
+// limits (see vercel.json). Vercel injects `Authorization: Bearer <CRON_SECRET>`
+// on scheduled invocations.
 //
-// Both passes route through sendMarketingEmail() (suppression + dedup + the
-// physical-address gate handled there), so nothing sends until
+// The two email passes route through sendMarketingEmail() (suppression + dedup
+// + the physical-address gate handled there), so nothing sends until
 // MEALIO_MAILING_ADDRESS is set to a real address.
+//
+// The push pass sends nothing — it reads settled Expo delivery receipts and
+// prunes the tokens of uninstalled apps (MEAL-88). It rides along here so a
+// receipt written just after the other sweep still gets read the same day; the
+// second, offset pass lives at /api/cron/push-receipts, which explains why a
+// once-daily sweep is not enough. The pass is idempotent, so running it from
+// two schedules is free.
 export async function GET(request: NextRequest) {
   // Fail CLOSED if the cron secret isn't configured — never run unauthenticated.
   const secret = process.env.CRON_SECRET;
@@ -29,6 +51,7 @@ export async function GET(request: NextRequest) {
   const results = {
     creatorReminders: 0,
     userUpsell: 0,
+    pushTokensPruned: 0,
     syncRunsResumed: 0,
     tokensRefreshed: 0,
     tokensBroken: 0,
@@ -46,10 +69,20 @@ export async function GET(request: NextRequest) {
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'userUpsell', reason: err.message });
   }
+  try {
+    results.pushTokensPruned = (await checkPushReceipts()).revoked;
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'pushReceipts', reason: err.message });
+  }
   // Admin sync runs are driven by the admin screen, so closing the tab stops the
-  // loop. This is the backstop: a half-finished run gets finished, and — the
-  // part that actually matters — the creator still gets told what published
-  // under their name. Slow, but it means no run is abandoned silently.
+  // loop. This sweep is the backstop, and it is worth being exact about what it
+  // does and does not promise: one fire a day, bounded by `SWEEP_BUDGET_MS`,
+  // advances each stalled run by a chunk or two. A small abandoned run finishes
+  // here; a 200-item one does not — it takes weeks at a chunk a day, and the
+  // real recovery for that is an operator reopening the run and pressing Resume.
+  // What this guarantees is that no run is *forgotten*, not that every run
+  // finishes without anyone. Nothing publishes from a run either way, so nobody
+  // is mis-notified.
   try {
     results.syncRunsResumed = await resumeStalledSyncRuns({ supabase: createServerSupabaseClient() });
   } catch (err: any) {

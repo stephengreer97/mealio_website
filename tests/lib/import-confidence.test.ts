@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { assessField, findSpan, normalizeForMatch, verificationSourceFor } from '@/lib/import/confidence';
+import {
+  assessField,
+  findSpan,
+  FUZZY_THRESHOLD,
+  normalizeForMatch,
+  verificationSourceFor,
+} from '@/lib/import/confidence';
 import { toSourceDocument } from '@/lib/import/html';
 import { readHtmlFixture } from '../helpers/import-stubs';
 import type { VerificationSource } from '@/lib/import/confidence';
@@ -282,6 +288,145 @@ describe('import/confidence — comments are on the page but are not the recipe'
 
   it('still reads green for a value quoted from the recipe itself', () => {
     expect(assessField('a knob of butter', 'a knob of butter', 'page-text', source).level).toBe('green');
+  });
+});
+
+/**
+ * The product name is not the only thing that reaches the cart. Verifying it
+ * alone let `12 cups kosher salt` read green off a line that says `1 teaspoon` —
+ * green renders as no marker at all, so a 48× error shipped silently. The amount
+ * is inside the very span that was matched, so verification can ask for it.
+ */
+describe('import/confidence — the amount is verified against the span too', () => {
+  const salt = '¼ teaspoon fine sea salt';
+
+  it('demotes an amount that is nowhere in its own span', () => {
+    const result = assessField('fine sea salt', salt, 'json-ld', source, { value: 12, unit: 'cups' });
+    expect(result.level).toBe('amber');
+    // Both halves of value ⊆ span ⊆ source still hold — the amount is what failed.
+    expect(result.match).toBe('exact');
+    expect(result.reason).toMatch(/amount and unit are not stated/i);
+  });
+
+  it('accepts the amount the line actually states, spelled the way the picker spells it', () => {
+    // "¼ teaspoon" on the page, `0.25 tsp` in the draft: the same amount in the
+    // vocabulary IngredientEditor offers, not a different one.
+    expect(assessField('fine sea salt', salt, 'json-ld', source, { value: 0.25, unit: 'tsp' }).level)
+      .toBe('green');
+  });
+
+  it('demotes the right number attached to the wrong unit', () => {
+    expect(assessField('fine sea salt', salt, 'json-ld', source, { value: 0.25, unit: 'cups' }).level)
+      .toBe('amber');
+  });
+
+  it('demotes a restated amount with nothing behind it, not just a quoted one', () => {
+    // `normalized` is allowed to restate an amount. Restating is not inventing,
+    // and this reason has to say which half failed.
+    const result = assessField('fine sea salt', salt, 'normalized', source, { value: 9, unit: 'cups' });
+    expect(result.level).toBe('amber');
+    expect(result.reason).toMatch(/amount and unit are not stated/i);
+  });
+
+  it('leaves every non-ingredient field alone', () => {
+    // No amount is passed for name, story, serves, tags — nothing to check.
+    expect(assessField('a knob of butter', 'a knob of butter', 'page-text', source).level).toBe('green');
+  });
+});
+
+/**
+ * The narrowing that produces `recipeText` is pattern matching against `id` and
+ * `class`, and on a layout it does not recognise it returns the page unchanged.
+ * Nothing said so, so `region` stayed `recipe` and page furniture verified
+ * green — the demotion that exists precisely for furniture was inert on exactly
+ * the layouts that defeated the narrowing.
+ */
+describe('import/confidence — a recipe region that is the whole page is not one', () => {
+  /** What a page whose furniture we could not name looks like from here. */
+  const unnarrowed: VerificationSource = {
+    jsonLd: null,
+    recipeText: `${PAGE_BODY}\n${COMMENT_BODY}`,
+    pageText: `${PAGE_BODY}\n${COMMENT_BODY}`,
+  };
+
+  it('does not read green for a span it cannot place inside a recipe', () => {
+    const result = assessField('a knob of butter', 'a knob of butter', 'page-text', unnarrowed);
+    expect(result.match).toBe('exact');
+    expect(result.level).toBe('amber');
+    expect(result.reason).toMatch(/could not tell the recipe apart/i);
+  });
+
+  it('says so for the comment that would have read green', () => {
+    // The same span the narrowing exists to catch, on a page where it did not
+    // fire. Amber either way; only the explanation differs.
+    const result = assessField(
+      'roma tomatoes',
+      'Add two diced roma tomatoes, seeds removed, and stir',
+      'page-text',
+      unnarrowed,
+    );
+    expect(result.level).toBe('amber');
+    expect(result.reason).toMatch(/could not tell the recipe apart/i);
+  });
+
+  it('leaves a structured-data hit alone, which is narrow by construction', () => {
+    // JSON-LD is a Recipe node, not a region we guessed at, so nothing about a
+    // failed narrowing bears on it.
+    const withJsonLd: VerificationSource = { ...unnarrowed, jsonLd: source.jsonLd };
+    expect(
+      assessField('avocados', '3 medium ripe avocados, halved and pitted', 'json-ld', withJsonLd).level,
+    ).toBe('green');
+  });
+
+  it('still reads green when narrowing did remove something', () => {
+    expect(assessField('a knob of butter', 'a knob of butter', 'page-text', source).level).toBe('green');
+  });
+});
+
+describe('import/confidence — the span we keep is bounded', () => {
+  it('verifies the whole span but stores a line of it', () => {
+    // `evidence` is model output over attacker-controlled page text, and it is
+    // cached, returned to the browser and rendered as the thing to check.
+    const long = `a knob of butter ${'and more prose '.repeat(200)}`;
+    const result = assessField('a knob of butter', long, 'page-text', {
+      ...source,
+      recipeText: `${source.recipeText}\n${long}`,
+      pageText: `${source.pageText}\n${long}`,
+    });
+    // Trimming happens on the way out, so it cannot turn a real match into a miss.
+    expect(result.match).toBe('exact');
+    expect(result.evidence!.length).toBeLessThanOrEqual(601);
+    expect(result.evidence!.startsWith('a knob of butter')).toBe(true);
+  });
+
+  it('does not sweep a full corpus for a span the corpus cannot contain', () => {
+    // The shape a hallucinating model produces on every field at once, at the
+    // sizes the pipeline's own caps allow: a span just inside LONG_SPAN_CHARS
+    // against a corpus at MAX_TEXT_CHARS. A span that is *not* there never hits
+    // the `best === 1` early exit, so it used to cost a full ~4,000-window
+    // sweep — three per field, and a page can carry 25 ingredients plus 7 other
+    // fields. Measured at 27 s of blocked event loop for this one loop, against
+    // the route's 60 s budget for the whole import.
+    const corpus = 'the quick brown fox jumps over the lazy dog '.repeat(560);
+    const span = 'a completely unrelated sentence about saffron threads '.repeat(22).slice(0, 1_190);
+    expect(corpus.length).toBeGreaterThan(24_000);
+
+    const wide: VerificationSource = { jsonLd: corpus, recipeText: corpus, pageText: `${corpus} .` };
+    expect(findSpan(span, corpus).kind).toBe('none');
+
+    const startedAt = Date.now();
+    for (let field = 0; field < 32; field++) {
+      expect(assessField('saffron threads', span, 'page-text', wide).level).toBe('red');
+    }
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
+  it('still finds a near match that is really there', () => {
+    // The prefilter is an upper bound on every window's score, so it must never
+    // reject a span the sweep would have matched.
+    const reworded = findSpan('Add a small knob of butter to the pan first', source.pageText);
+    expect(reworded.kind).toBe('fuzzy');
+    expect(reworded.score).toBeGreaterThan(FUZZY_THRESHOLD);
   });
 });
 

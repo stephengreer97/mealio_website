@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
-import { isSameSite, platformSourceForUrl, SOURCE_COLUMNS, type PlatformSource } from '@/lib/creator-sources';
-import { normalizeUrl } from '@/lib/import/ssrf';
+import { isOnSameSite, platformSourceForUrl, SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
+import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
 import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncItem } from '@/lib/admin-sync';
 
 /**
@@ -102,8 +102,10 @@ export async function POST(request: NextRequest) {
     source = platformSourceForUrl(url);
     // The URL is its own stable id here. A feed guid is better when we have one,
     // and a later catalog sync of the same post will match on it — but for a
-    // pasted link the normalised URL is the only identity available.
-    items = [newItem({ itemId: url, url })];
+    // pasted link the URL is the only identity available, so it is the *folded*
+    // one: `http://x/p`, `https://x/p` and `https://www.x/p` are one post, and
+    // three item_ids for it are three drafts and three published meals.
+    items = [newItem({ itemId: urlIdentity(url) ?? url, url })];
   } else {
     const requested = body.source;
     source = typeof requested === 'string' && requested in SOURCE_COLUMNS ? (requested as PlatformSource) : 'website';
@@ -127,7 +129,13 @@ export async function POST(request: NextRequest) {
     // `youtube_url` on their row at all. It is not exempt from the check: the
     // rule below is stricter, and the worker reads each video out of the
     // creator's own uploads feed by id whatever the URL claims.
-    const site = (creator[SOURCE_COLUMNS[source] as keyof typeof creator] as string | null) || creator.feed_url;
+    // The `feed_url` fallback is website-only. It is the confirmed feed for
+    // their *site*, so letting a YouTube or TikTok selection fall back to it
+    // would host-check videos against a blog — refusing every one of them, and
+    // for a reason no error message could sensibly explain.
+    const site =
+      (creator[SOURCE_COLUMNS[source] as keyof typeof creator] as string | null) ||
+      (source === 'website' ? creator.feed_url : null);
     if (!site && source !== 'youtube') {
       return NextResponse.json({ error: 'This creator has no link for that source.' }, { status: 400 });
     }
@@ -135,13 +143,24 @@ export async function POST(request: NextRequest) {
     items = [];
     for (const raw of body.items as Array<Record<string, unknown>>) {
       const url = toUrl(raw?.url);
-      const itemId = typeof raw?.itemId === 'string' && raw.itemId ? raw.itemId : url;
+      const itemId = typeof raw?.itemId === 'string' && raw.itemId ? raw.itemId : url && urlIdentity(url);
       if (!url || !itemId) {
         return NextResponse.json({ error: 'Every selected item needs a URL.' }, { status: 400 });
       }
-      if (source === 'website' && !isSameSite(site!, url)) {
+      // Checked for every source that has a link to check against — not just
+      // `website`, because "only for one source" is the kind of exemption that
+      // is still there when the source that needed it arrives, and the guard's
+      // whole value is that it holds for a hand-written request.
+      //
+      // `site` can only be absent for YouTube: the `!site` guard above already
+      // refused every other source without a link, and YouTube is exempt from
+      // the *link* requirement because the channel comes from the OAuth grant.
+      // It is not exempt from a check — the watch-page rule immediately below
+      // is the stricter one, and the worker reads each video out of the
+      // creator's own uploads feed by id whatever the URL claims.
+      if (site && !isOnSameSite(site, url)) {
         return NextResponse.json(
-          { error: `${url} is not on this creator's own site. Refusing the whole selection.` },
+          { error: `${url} is not on this creator's own ${SOURCE_LABELS[source]}. Refusing the whole selection.` },
           { status: 400 },
         );
       }

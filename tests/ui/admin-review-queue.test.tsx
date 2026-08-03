@@ -229,20 +229,68 @@ describe('AdminReviewQueue — deciding', () => {
     expect(bodies.find((b) => b.method === 'POST')!.body.notifyCreator).toBe(false);
   });
 
-  it('send to creator hands the decision over and says so', async () => {
-    const { bodies } = harness([], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
-    cleanup();
-    const { bodies: sent } = harness([draft()], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
+  it('cannot hand a draft to a queue that does not exist, and says why', async () => {
+    // The button used to work and the screen used to say "It is in their queue
+    // now, not yours." Nothing reads `review_by = 'creator'`: the draft left the
+    // admin queue for nothing, and `creator_source_items` said `imported` so no
+    // later sync brought the post back.
+    const { bodies } = harness([draft()]);
 
     await openFirstRow();
-    fireEvent.click(screen.getByRole('button', { name: 'Send to creator' }));
+    const send = screen.getByTestId('send-to-creator') as HTMLButtonElement;
 
-    await waitFor(() => expect(sent.some((b) => b.method === 'POST')).toBe(true));
-    expect(sent.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'send-to-creator', ids: ['d1'] });
-    // Nothing published, so nothing is announced as live.
-    expect(await screen.findByText(/Handed to the creator/)).toBeTruthy();
-    expect(screen.queryByText(/Published/)).toBeNull();
-    expect(bodies).toHaveLength(0);
+    expect(send.disabled).toBe(true);
+    fireEvent.click(send);
+    expect(bodies.some((b) => b.method === 'POST')).toBe(false);
+    // And the explanation names the missing piece rather than going quiet.
+    expect(screen.getByTestId('draft-actions-note').textContent).toMatch(/MEAL-89/);
+    expect(screen.queryByText(/in their queue now/)).toBeNull();
+  });
+
+  it('approves a selection in one request, so one creator gets one email', async () => {
+    // The batching in `notifyApproved` groups by creator and sends one message
+    // per batch. This screen only ever sent `ids: [id]`, so approving a 40-item
+    // sync sent that creator 40 separate emails.
+    const { bodies } = harness([draft(), cleanDraft()], {
+      post: { done: 2, published: [{ id: 'meal-1', name: 'Best Guacamole' }, { id: 'meal-2', name: 'Black bean soup' }], emailsSent: 1, errors: [] },
+    });
+
+    const rows = await screen.findAllByTestId('draft-row');
+    for (const row of rows) fireEvent.click(within(row).getByRole('checkbox'));
+    fireEvent.click(await screen.findByRole('button', { name: /Approve & publish 2/ }));
+
+    await waitFor(() => expect(bodies.some((b) => b.method === 'POST')).toBe(true));
+    const posts = bodies.filter((b) => b.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body).toMatchObject({ action: 'approve', ids: ['d1', 'd2'], notifyCreator: true });
+  });
+
+  it('lists drafts handed over before the button was switched off, and takes one back', async () => {
+    // Otherwise these rows are in no queue at all: out of the admin's by
+    // `review_by`, and into one that was never built.
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    const { bodies } = harness([], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
+    void bodies;
+    cleanup();
+
+    const posted: Array<{ method: string; body: any }> = [];
+    vi.stubGlobal('fetch', (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (init?.body) posted.push({ method, body: JSON.parse(String(init.body)) });
+      if (method === 'GET') {
+        const rendered = { ...stranded, summary: reviewDraft(stranded).summary, review: reviewDraft(stranded) };
+        return json({ drafts: [], handedOver: [rendered], totals: { waiting: 0, flagged: 0, handedOver: 1 } });
+      }
+      return json({ done: 1, published: [], emailsSent: 0, errors: [] });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    const section = await screen.findByTestId('handed-over');
+    expect(section.textContent).toMatch(/MEAL-89/);
+    fireEvent.click(within(section).getByRole('button', { name: 'Take it back' }));
+
+    await waitFor(() => expect(posted.some((b) => b.method === 'POST')).toBe(true));
+    expect(posted.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'reclaim', ids: ['d9'] });
   });
 
   it('delete declines it and says it will not come back', async () => {

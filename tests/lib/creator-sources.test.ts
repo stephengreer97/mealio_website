@@ -203,4 +203,30 @@ describe('creator-sources — is this on the creator\u2019s own site?', () => {
     expect(isOnSameSite('not a url', 'https://chefsarah.test/feed')).toBe(false);
     expect(isOnSameSite('https://chefsarah.test/', 'not a url')).toBe(false);
   });
+
+  it('refuses another creator’s handle on a platform where the path is the publisher', () => {
+    // Host equality is the wrong question on these: `medium.com/@sarah` and
+    // `medium.com/@bob` are two people behind one hostname, so a host-only
+    // check publishes another creator's recipe under this creator's name —
+    // the exact outcome the check exists to prevent.
+    expect(isOnSameSite('https://medium.com/@sarah', 'https://medium.com/@sarah/best-guacamole')).toBe(true);
+    expect(isOnSameSite('https://medium.com/@sarah', 'https://medium.com/@bob/best-guacamole')).toBe(false);
+    expect(isOnSameSite('https://substack.com/@sarah', 'https://substack.com/@bob/p/x')).toBe(false);
+    // A bare platform host names nobody, so nothing is on "their" site.
+    expect(isOnSameSite('https://medium.com', 'https://medium.com/@sarah/x')).toBe(false);
+  });
+
+  it('leaves a creator on their own subdomain of one alone', () => {
+    // `sarah.medium.com` is already told apart by the host rule, and the path
+    // on it is just a path.
+    expect(isOnSameSite('https://sarah.medium.com/', 'https://sarah.medium.com/best-guacamole')).toBe(true);
+    expect(isOnSameSite('https://sarah.medium.com/', 'https://bob.medium.com/x')).toBe(false);
+  });
+
+  it('does not let a creator on a subdomain claim the parent’s whole site', () => {
+    // `blog.example.com` accepting everything on `example.com` was the other
+    // direction of the same mistake: a shared parent is not the same site.
+    expect(isOnSameSite('https://blog.example.com/', 'https://example.com/anyones-post')).toBe(false);
+    expect(isOnSameSite('https://blog.example.com/', 'https://shop.example.com/x')).toBe(false);
+  });
 });

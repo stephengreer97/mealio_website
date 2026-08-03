@@ -31,6 +31,7 @@ import {
   type ImportCache,
 } from './cache';
 import { assessField, verificationSourceFor } from './confidence';
+import { cartAmount } from './ingredients';
 import { createPhotoResolver, nullPhotoResolver, type PhotoResolver } from './photo';
 import { extractDraft } from './extract';
 import { classifySource, resolveGate } from './gate';
@@ -339,10 +340,11 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
 
   const ingredientConfidence: FieldConfidence[] = extraction.keptIngredientIndices.map((index, position) => {
     const item = extraction.output.ingredients[index];
-    // The canonicalised product name, not the raw one: it is what reaches the
-    // cart, so it is what has to be traceable back into the evidence span.
-    const productName = extraction.draft.ingredients[position].ingredientName;
-    return assessField(productName, item.evidence, item.derivation, source);
+    // The canonicalised row, not the raw one: it is what reaches the cart, so it
+    // is what has to be traceable back into the evidence span — the amount as
+    // much as the product name.
+    const row = extraction.draft.ingredients[position];
+    return assessField(row.ingredientName, item.evidence, item.derivation, source, cartAmount(row, item));
   });
 
   const confidence: ImportConfidence = {

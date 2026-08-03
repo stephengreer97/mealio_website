@@ -40,7 +40,23 @@ import type { DraftReview, QueuedDraft } from '@/lib/import-drafts';
 /** What GET returns: the queue rows with their rendered review attached. */
 type ReviewRow = QueuedDraft & { review: DraftReview };
 
-type Action = 'approve' | 'send-to-creator' | 'delete';
+type Action = 'approve' | 'send-to-creator' | 'delete' | 'reclaim';
+
+/**
+ * Why **Send to creator** is a disabled button with an explanation rather than a
+ * working one.
+ *
+ * Nothing reads `review_by = 'creator'`: there is no creator endpoint and no
+ * creator screen (MEAL-89). Pressing it moved the draft out of the only queue
+ * anybody reads, into nothing, with `creator_source_items` saying `imported` so
+ * no later sync would bring the post back — while this screen said "It is in
+ * their queue now, not yours." Kept visible and disabled, because an operator
+ * looking for the escape hatch deserves to be told where it went rather than to
+ * find the button missing. The server refuses it too.
+ */
+const HANDOFF_DISABLED =
+  'Send to creator needs the creator’s own review queue (MEAL-89), which is not built yet. ' +
+  'Handing a draft over today would move it somewhere nobody can see it.';
 
 const card: React.CSSProperties = {
   background: 'white',
@@ -120,8 +136,10 @@ function asPresetMeal(row: ReviewRow): PresetMeal {
 
 export default function AdminReviewQueue() {
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
+  const [handedOver, setHandedOver] = useState<ReviewRow[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -143,19 +161,30 @@ export default function AdminReviewQueue() {
     if (!mountedRef.current) return;
     if (!res.ok) { setError(data.error || 'Could not read the queue.'); setRows([]); return; }
     setRows((data.drafts ?? []) as ReviewRow[]);
+    setHandedOver((data.handedOver ?? []) as ReviewRow[]);
+    setSelected([]);
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
-  const act = async (action: Action, id: string) => {
-    if (busy) return;
+  /**
+   * One request for however many drafts, which is what makes the batching in
+   * `notifyApproved` reachable.
+   *
+   * It groups approvals by creator and sends one email each — but this screen
+   * only ever sent `ids: [id]`, so approving a 40-item sync sent that creator 40
+   * separate emails. The server code was right and nothing in the product took
+   * the path.
+   */
+  const act = async (action: Action, ids: string[]) => {
+    if (busy || ids.length === 0) return;
     setBusy(true);
     setError('');
     setNotice('');
     const res = await fetch('/api/admin/import-drafts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-      body: JSON.stringify({ action, ids: [id], notifyCreator: notify }),
+      body: JSON.stringify({ action, ids, notifyCreator: notify }),
     });
     const data = await res.json().catch(() => ({}));
     if (!mountedRef.current) return;
@@ -165,10 +194,12 @@ export default function AdminReviewQueue() {
     if (action === 'approve' && data.published?.length > 0) {
       setNotice(
         `Published ${data.published.map((meal: { name: string }) => meal.name).join(', ')}.` +
-        (data.emailsSent > 0 ? ' The creator has been emailed.' : ''),
+        (data.emailsSent > 0
+          ? ` ${data.emailsSent === 1 ? 'One email' : `${data.emailsSent} emails`} sent — one per creator, listing everything of theirs that went live.`
+          : ''),
       );
     }
-    if (action === 'send-to-creator') setNotice('Handed to the creator. It is in their queue now, not yours.');
+    if (action === 'reclaim') setNotice('Back in your queue. It is yours to decide again.');
     if (action === 'delete') setNotice('Declined. It will not be imported again by a later sync or poll.');
     setOpenId(null);
     setEditingId(null);
@@ -200,6 +231,9 @@ export default function AdminReviewQueue() {
     return <p style={{ color: '#888', fontSize: '13px' }}>Reading the queue…</p>;
   }
 
+  const toggleSelected = (id: string) =>
+    setSelected(prev => (prev.includes(id) ? prev.filter(other => other !== id) : [...prev, id]));
+
   const group = (title: string, blurb: string, list: ReviewRow[]) =>
     list.length === 0 ? null : (
       <div style={card} key={title}>
@@ -214,11 +248,13 @@ export default function AdminReviewQueue() {
             open={openId === row.id}
             editing={editingId === row.id}
             busy={busy}
+            selected={selected.includes(row.id)}
+            onSelect={() => toggleSelected(row.id)}
             onToggle={() => { setOpenId(prev => (prev === row.id ? null : row.id)); setEditingId(null); }}
             onEdit={() => setEditingId(row.id)}
             onCancelEdit={() => setEditingId(null)}
             onSaveEdit={draft => saveEdit(row.id, draft)}
-            onAct={action => act(action, row.id)}
+            onAct={action => act(action, [row.id])}
           />
         ))}
       </div>
@@ -254,9 +290,39 @@ export default function AdminReviewQueue() {
               learns from a follower that nine recipes went live under their name
               is the failure this checkbox exists to keep one click away. */}
           <p style={{ margin: '6px 0 0 24px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-            One email per approval, listing what went live with a link to each and how to edit or unpublish.
+            One email per creator per approval — tick several and approve them together and they get one message
+            listing all of them, not one each. It links to every meal and says how to edit or unpublish.
             Turning this off means the creator finds out from a follower.
           </p>
+        </div>
+      )}
+
+      {/*
+        The reason multi-select exists. `notifyApproved` groups by creator and
+        sends one message per batch; approving one draft per request meant a
+        40-item sync sent that creator 40 separate emails, and the batching was
+        code no path in the product reached.
+      */}
+      {selected.length > 0 && (
+        <div
+          style={{ ...card, display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}
+          data-testid="bulk-bar"
+        >
+          <strong style={{ fontSize: '13px', color: '#222' }}>{selected.length} selected</strong>
+          <button onClick={() => act('approve', selected)} disabled={busy} style={primaryButton}>
+            Approve &amp; publish {selected.length}
+          </button>
+          <button
+            onClick={() => act('delete', selected)}
+            disabled={busy}
+            style={{ ...secondaryButton, color: '#c40029', borderColor: '#ffcccc' }}
+          >
+            Decline {selected.length}
+          </button>
+          <button onClick={() => setSelected([])} disabled={busy} style={secondaryButton}>Clear</button>
+          <span style={{ fontSize: '11px', color: '#888' }}>
+            One email per creator for the whole batch.
+          </span>
         </div>
       )}
 
@@ -273,6 +339,38 @@ export default function AdminReviewQueue() {
 
       {group('Needs a look', 'Something in these did not verify against the source. The card says which.', flagged)}
       {group('Verified clean', 'Every field we filled matched the page we read. Still worth a glance.', clean)}
+
+      {/*
+        Drafts an operator handed over while Send to creator still worked. There
+        is no creator queue that received them, so without this section they are
+        in no queue at all and nobody would ever know they existed. Take it back
+        puts one in front of the only person who can currently decide it.
+      */}
+      {handedOver.length > 0 && (
+        <div style={card} data-testid="handed-over">
+          <h3 style={{ margin: '0 0 2px', fontSize: '14px', fontWeight: 700, color: '#b45309' }}>
+            Handed over, waiting on nobody ({handedOver.length})
+          </h3>
+          <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
+            These were sent to their creator before that button was switched off. The creator’s review queue does not
+            exist yet (MEAL-89), so nothing is showing them to anyone — and a later sync will not re-import the post,
+            because it is already recorded as imported. Take one back to decide it here.
+          </p>
+          {handedOver.map(row => (
+            <div key={row.id} style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0', display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: '#222' }}>{row.draft.name || row.sourceUrl}</span>
+                <span style={{ display: 'block', fontSize: '11px', color: '#aaa' }}>
+                  {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
+                </span>
+              </span>
+              <button onClick={() => act('reclaim', [row.id])} disabled={busy} style={secondaryButton}>
+                Take it back
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -280,12 +378,14 @@ export default function AdminReviewQueue() {
 // ── One row ──────────────────────────────────────────────────────────────────
 
 function DraftRow({
-  row, open, editing, busy, onToggle, onEdit, onCancelEdit, onSaveEdit, onAct,
+  row, open, editing, busy, selected, onSelect, onToggle, onEdit, onCancelEdit, onSaveEdit, onAct,
 }: {
   row: ReviewRow;
   open: boolean;
   editing: boolean;
   busy: boolean;
+  selected: boolean;
+  onSelect: () => void;
   onToggle: () => void;
   onEdit: () => void;
   onCancelEdit: () => void;
@@ -296,18 +396,27 @@ function DraftRow({
 
   return (
     <div style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0' }} data-testid="draft-row">
-      <button
-        onClick={onToggle}
-        style={{ display: 'flex', gap: '10px', alignItems: 'baseline', width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}
-      >
-        <span style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: '#222' }}>{row.draft.name || row.sourceUrl}</span>
-          <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
+      <div style={{ display: 'flex', gap: '10px', alignItems: 'baseline' }}>
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onSelect}
+          aria-label={`Select ${row.draft.name || row.sourceUrl}`}
+          style={{ accentColor: '#dd0031', width: '15px', height: '15px', flexShrink: 0 }}
+        />
+        <button
+          onClick={onToggle}
+          style={{ display: 'flex', gap: '10px', alignItems: 'baseline', flex: 1, minWidth: 0, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}
+        >
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#222' }}>{row.draft.name || row.sourceUrl}</span>
+            <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
+            </span>
           </span>
-        </span>
-        <FlagBadge summary={row.summary} />
-      </button>
+          <FlagBadge summary={row.summary} />
+        </button>
+      </div>
 
       {open && (
         <div style={{ marginTop: '12px' }}>
@@ -345,7 +454,14 @@ function DraftRow({
 
               <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
                 <button onClick={() => onAct('approve')} disabled={busy} style={primaryButton}>Approve &amp; publish</button>
-                <button onClick={() => onAct('send-to-creator')} disabled={busy} style={secondaryButton}>Send to creator</button>
+                <button
+                  disabled
+                  title={HANDOFF_DISABLED}
+                  style={{ ...secondaryButton, color: '#aaa', cursor: 'not-allowed' }}
+                  data-testid="send-to-creator"
+                >
+                  Send to creator
+                </button>
                 <button onClick={onEdit} disabled={busy} style={secondaryButton}>Edit</button>
                 <button
                   onClick={() => onAct('delete')}
@@ -363,9 +479,8 @@ function DraftRow({
                   Open the source page
                 </a>
               </div>
-              <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#aaa', lineHeight: 1.6 }}>
-                Send to creator hands the decision to {row.creatorName ?? 'them'} instead of making it for them.
-                Delete declines it and stops a later sync re-importing the same post.
+              <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#aaa', lineHeight: 1.6 }} data-testid="draft-actions-note">
+                {HANDOFF_DISABLED} Delete declines it and stops a later sync re-importing the same post.
               </p>
             </>
           )}
