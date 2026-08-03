@@ -276,6 +276,30 @@ describe('platform-tokens — the refresh sweep', () => {
     expect(result.checked).toBeLessThanOrEqual(REFRESH_BATCH);
   });
 
+  it('reaches an Instagram grant a week out, and leaves the same YouTube row alone', async () => {
+    // The window means different things per platform. YouTube and TikTok hold a
+    // refresh token that outlives the access token, so a missed renewal costs
+    // nothing — tomorrow's pass succeeds with the same refresh token. Instagram
+    // has no refresh token: the long-lived access token IS the credential and
+    // renews only while still valid, so the window is not slack, it is the
+    // number of daily attempts before an unrecoverable disconnection. At two
+    // days, a two-day Instagram outage loses the creator permanently.
+    const weekOut = new Date(NOW + 7 * 86_400_000).toISOString();
+    fakeDb.seed(TABLE, [
+      row({ id: 'ig-week', platform: 'instagram', expires_at: weekOut }),
+      row({ id: 'yt-week', platform: 'youtube', expires_at: weekOut }),
+    ]);
+
+    await refreshExpiringTokens({
+      supabase, now, sleep,
+      refreshers: { youtube: working, instagram: working },
+    });
+
+    expect(fakeDb.row(TABLE, 'ig-week')?.access_token).toBe('fresh-token');
+    // Untouched: nothing is lost by catching it nearer the time.
+    expect(fakeDb.row(TABLE, 'yt-week')?.access_token).not.toBe('fresh-token');
+  });
+
   it('never writes a refresh token into a log line', async () => {
     fakeDb.seed(TABLE, [row()]);
     await refreshExpiringTokens({ supabase, now, sleep, refreshers: { youtube: revoked } });

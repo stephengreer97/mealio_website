@@ -805,6 +805,34 @@ export async function usableAccessToken(
  */
 export const REFRESH_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
+/**
+ * Instagram gets a wider one, because for Instagram this number is the count of
+ * attempts before a permanent loss.
+ *
+ * YouTube and TikTok hold a separate refresh token that outlives the access
+ * token, so a missed renewal costs nothing — tomorrow's pass uses the same
+ * refresh token and succeeds. Two days of slack is generous.
+ *
+ * Instagram has no refresh token. The long-lived access token **is** the
+ * credential, and it is renewed by trading a still-valid one for a new one
+ * (`ig_refresh_token`). Once it lapses there is nothing left to renew with and
+ * the creator has to reconnect by hand. So the window is not slack here, it is
+ * the number of daily chances we get: at two days, an Instagram outage lasting
+ * two days — or two failed crons — is an unrecoverable disconnection.
+ *
+ * Fourteen against a ~60-day token: two weeks of daily attempts, still only a
+ * quarter of the token's life, and the `updateUnchanged` predicate means a
+ * no-op renewal writes nothing.
+ */
+export const REFRESH_WINDOW_BY_PLATFORM: Partial<Record<ConnectedPlatform, number>> = {
+  instagram: 14 * 24 * 60 * 60 * 1000,
+};
+
+/** The window this platform is swept on. */
+export function refreshWindowFor(platform: ConnectedPlatform): number {
+  return REFRESH_WINDOW_BY_PLATFORM[platform] ?? REFRESH_WINDOW_MS;
+}
+
 /** One pass has to fit in a cron invocation alongside everything else it runs. */
 export const REFRESH_BATCH = 100;
 
@@ -838,7 +866,6 @@ export interface RefreshSweepResult {
 export async function refreshExpiringTokens(deps: RefreshDeps): Promise<RefreshSweepResult> {
   const now = deps.now ?? Date.now;
   const refreshers = deps.refreshers ?? TOKEN_REFRESHERS;
-  const horizon = new Date(now() + REFRESH_WINDOW_MS).toISOString();
   const result: RefreshSweepResult = { checked: 0, refreshed: 0, broken: 0, deferred: 0, skipped: 0 };
 
   // Only platforms something can actually refresh. Querying the others spends
@@ -849,6 +876,9 @@ export async function refreshExpiringTokens(deps: RefreshDeps): Promise<RefreshS
   const share = Math.max(1, Math.floor(REFRESH_BATCH / platforms.length));
 
   for (const platform of platforms) {
+    // Per platform, because the window means different things per platform —
+    // slack for a refresh-token platform, retry attempts for Instagram.
+    const horizon = new Date(now() + refreshWindowFor(platform)).toISOString();
     const { data } = await deps.supabase
       .from(TABLE)
       .select(CONNECTION_FIELDS)
