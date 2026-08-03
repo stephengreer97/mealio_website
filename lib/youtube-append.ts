@@ -69,13 +69,30 @@ export interface AppendDeps extends GoogleApiOptions {
  * them is a different thing for an operator to do: 403 is "the creator has not
  * agreed", 409 is "the connection cannot carry this", 404 is "no such meal".
  */
-export type AppendRefusal = { ok: false; status: number; error: string };
+export type AppendRefusal = {
+  ok: false;
+  status: number;
+  error: string;
+  /**
+   * Units already spent when the refusal happened.
+   *
+   * A refusal after the `videos.list` — a video on somebody else's channel, a
+   * description with no room left, a write YouTube turned down — has cost real
+   * quota, and reporting nothing is how the screen's running total ends up below
+   * Google's. Absent means nothing was sent: every gate before the first request
+   * refuses for free.
+   */
+  quotaUnits?: number;
+};
 
 /**
  * How many published meals one screen offers.
  *
  * Each append is a read plus a write — 51 quota units — so this is a bound on
- * the most expensive button on the screen as much as on the query.
+ * the most expensive button on the screen as much as on the query. There is no
+ * cursor past it, so the list says when it is standing on one: a creator with
+ * more than 200 approved video imports would otherwise have the older ones
+ * become unlinkable with the screen showing nothing at all about it.
  */
 export const APPENDABLE_LIMIT = 200;
 
@@ -92,7 +109,7 @@ export const APPENDABLE_LIMIT = 200;
 export async function listAppendableMeals(
   supabase: SupabaseClient,
   creatorId: string,
-): Promise<{ ok: true; meals: AppendableMeal[] } | AppendRefusal> {
+): Promise<{ ok: true; meals: AppendableMeal[]; truncated: boolean } | AppendRefusal> {
   // The consent gate first, and before any query that could put a video id on
   // screen. A screen that lists a creator's videos beside an Append button has
   // already implied we may write to them.
@@ -108,11 +125,21 @@ export async function listAppendableMeals(
     // offered as if it were a YouTube video id.
     .eq('source', 'youtube')
     .in('status', ['approved', 'edited'])
-    .order('decided_at', { ascending: false })
-    .limit(APPENDABLE_LIMIT);
+    // `nullsFirst: false` against Postgres' default, which puts NULLs *first* on
+    // a DESC order. A draft with no `decided_at` is an older or hand-fixed row,
+    // and leaving the default in place gives those rows the head of a 200-row
+    // window — so the meals an operator is most likely to want, the ones just
+    // approved, are the first ones the limit drops.
+    .order('decided_at', { ascending: false, nullsFirst: false })
+    // One more than we will show, purely to find out whether there is one. There
+    // is no cursor here; the extra row is what lets the screen say so.
+    .limit(APPENDABLE_LIMIT + 1);
+
+  const rows = (data ?? []) as Array<Record<string, any>>;
+  const truncated = rows.length > APPENDABLE_LIMIT;
 
   const meals: AppendableMeal[] = [];
-  for (const row of (data ?? []) as Array<Record<string, any>>) {
+  for (const row of rows.slice(0, APPENDABLE_LIMIT)) {
     const videoId = typeof row.item_id === 'string' ? row.item_id : '';
     const mealId = typeof row.published_meal_id === 'string' ? row.published_meal_id : '';
     // A draft that is approved but has no published meal is a publish that
@@ -129,7 +156,7 @@ export async function listAppendableMeals(
     });
   }
 
-  return { ok: true, meals };
+  return { ok: true, meals, truncated };
 }
 
 export type AppendOutcome =
@@ -155,6 +182,17 @@ export type AppendOutcome =
  * video's own `channelId` against the connected channel is what makes it
  * impossible to write to a channel this creator does not own, whatever any row
  * or any client says.
+ *
+ * **The read-modify-write is not protected against a lost update, and cannot
+ * be.** Between `fetchVideoSnippet` and `updateVideoDescription` — one HTTP
+ * round trip — the creator can edit that description in YouTube Studio, and the
+ * PUT reverts their edit without noticing. `videos.update` documents no
+ * conditional request: no `If-Match`, no etag precondition, nothing to send a
+ * version with, so there is no way to make the write fail instead. Named here
+ * rather than left silent, because a reader who assumes the concurrency this
+ * file *does* handle covers this one is wrong about which risk was taken. The
+ * concurrency it handles is two presses of our own button, and that one is
+ * genuinely benign: the second press reads the link and writes nothing.
  */
 export async function appendMealioLink(
   deps: AppendDeps,
@@ -210,13 +248,18 @@ export async function appendMealioLink(
   const apiOptions: GoogleApiOptions = { fetchImpl: deps.fetchImpl, now: deps.now, lookup: deps.lookup };
 
   const snapshot = await fetchVideoSnippet(accessToken, videoId, apiOptions);
-  if (!snapshot.ok) return { ok: false, status: 502, error: snapshot.detail };
+  // The read is charged whether or not it told us something usable, so every
+  // refusal from here down carries what it has already cost.
+  if (!snapshot.ok) {
+    return { ok: false, status: 502, error: snapshot.detail, quotaUnits: YOUTUBE_QUOTA.videosList };
+  }
 
   if (snapshot.snippet.channelId !== permission.channelId) {
     // Either the record is wrong or the request was hand-edited. Both end here.
     return {
       ok: false,
       status: 409,
+      quotaUnits: YOUTUBE_QUOTA.videosList,
       error:
         `Video ${videoId} is not on this creator’s connected channel, so nothing was written. Mealio only ` +
         'edits descriptions on the channel whose owner granted access.',
@@ -239,11 +282,18 @@ export async function appendMealioLink(
     };
   }
   if (edit.status === 'too-long') {
-    return { ok: false, status: 409, error: edit.detail };
+    return { ok: false, status: 409, error: edit.detail, quotaUnits: YOUTUBE_QUOTA.videosList };
   }
 
   const updated = await updateVideoDescription(accessToken, snapshot.snippet, edit.description, apiOptions);
-  if (!updated.ok) return { ok: false, status: 502, error: updated.detail };
+  if (!updated.ok) {
+    return {
+      ok: false,
+      status: 502,
+      error: updated.detail,
+      quotaUnits: YOUTUBE_QUOTA.videosList + updated.quotaUnits,
+    };
+  }
 
   // Logged here rather than in the route, so the line exists for every caller
   // and cannot be skipped by a second one arriving later.

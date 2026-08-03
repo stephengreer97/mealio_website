@@ -264,7 +264,10 @@ export function createSourceDocumentResolver(deps: SyncDeps, videoIds: string[] 
         // free (MEAL-74, robots.txt).
         const { connection, token } = await connectedGrant(deps, creator.id, 'youtube');
         if (!token) return empty;
-        const resolved = await channelIdForCreator(connection, creator.youtube_url ?? null, deps.fetchOptions);
+        // The grant's channel id, never one derived from `creator.youtube_url`.
+        // The filter below compares against this value, so an id taken from a
+        // link a creator supplied would only ever be checked against itself.
+        const resolved = channelIdForCreator(connection);
         if (!resolved.ok) return empty;
 
         // Read by id rather than by re-listing the channel. A selection made
@@ -431,6 +434,15 @@ export type CatalogResult =
        */
       reason: string;
       detail: string;
+      /**
+       * Units a *failed* listing still spent (YouTube, MEAL-79).
+       *
+       * `playlistItems.list` refusing after `channels.list` succeeded has cost a
+       * unit, and a screen that only adds up successes reports less than Google
+       * charged — which is the wrong direction for a number whose job is to make
+       * somebody stop before the budget does.
+       */
+      quotaUnits?: number;
     };
 
 export interface CatalogOptions {
@@ -594,9 +606,11 @@ async function withImportRecords(
  *     unconnected Instagram account is. The uploads feed used to make this work
  *     with no connection at all; `youtube.com/robots.txt` disallows that feed,
  *     and the sanctioned replacement is authenticated.
- *   - **It pages, and one press lists one page.** 50 videos for 2 units. The
- *     operator asks for the next window, so a 300-video channel costs 7 units
- *     when somebody wants all of it and 2 when they opened the screen to look.
+ *   - **It pages, and one press lists one page.** 50 videos for 2 units, or 1
+ *     once the uploads playlist id is memoised for this channel. The operator
+ *     asks for the next window, so a 300-video channel costs 7 units when
+ *     somebody wants all of it and one instance served every press, 12 if none
+ *     of them hit a warm memo, and 2 when they opened the screen to look.
  *
  * `item_id` is the bare video id. MEAL-79's "this meal came from *that* video"
  * relationship is keyed on it, so it has to be the id YouTube's own API uses.
@@ -609,7 +623,7 @@ async function buildYouTubeCatalog(
   const { connection, token, brokenReason } = await connectedGrant(deps, creator.id, 'youtube');
   if (!token) return notConnectedCatalog('youtube', brokenReason);
 
-  const resolved = await channelIdForCreator(connection, creator.youtube_url ?? null, deps.fetchOptions);
+  const resolved = channelIdForCreator(connection);
   if (!resolved.ok) {
     return { ok: false, reason: 'not-connected', detail: resolved.detail };
   }
@@ -620,9 +634,16 @@ async function buildYouTubeCatalog(
     fetchImpl: platformFetch(deps),
   });
   if (!listed.ok) {
-    return { ok: false, reason: 'unreachable', detail: listed.detail };
+    return { ok: false, reason: 'unreachable', detail: listed.detail, quotaUnits: listed.quotaUnits };
   }
-  if (listed.videos.length === 0 && !pageToken) return emptyAccountCatalog('youtube');
+  // An empty page is not an empty account when there is a cursor behind it.
+  // `listUploads` drops private and deleted placeholders, so a channel whose 50
+  // most recent uploads are private lists nothing on page one — and reporting
+  // that as "this account has nothing posted" is both the one thing an empty
+  // list must never be allowed to mean and a dead end: `emptyAccountCatalog`
+  // carries no cursor, so the public back catalogue behind page one can never be
+  // asked for. With a cursor this is an ordinary short page.
+  if (listed.videos.length === 0 && !pageToken && !listed.nextPageToken) return emptyAccountCatalog('youtube');
 
   const entries = await withImportRecords(
     deps,
@@ -1222,11 +1243,17 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
   let items = [...run.items];
 
   // Built once per invocation rather than per item, so a 40-video selection is
-  // one `videos.list` call and one grant refresh. The whole selection's ids go
-  // in, because reading them in one batch is what makes that true.
+  // one `videos.list` call and one grant refresh. Only the items still to do go
+  // in: the memo cannot outlive the process, so a resumed run re-reads whatever
+  // it is handed, and handing it the terminal ones too meant a 200-video run
+  // spread over five invocations paid for all 200 five times — 20 units rather
+  // than the 14 it actually needs. One invocation that finishes the run still
+  // costs 4.
   const chunkDeps: SyncDeps = {
     ...deps,
-    sourceDocument: deps.sourceDocument ?? createSourceDocumentResolver(deps, items.map((entry) => entry.itemId)),
+    sourceDocument:
+      deps.sourceDocument ??
+      createSourceDocumentResolver(deps, items.filter((entry) => !isTerminal(entry)).map((entry) => entry.itemId)),
   };
 
   while (items.some((item) => !isTerminal(item)) && now() < deadline) {

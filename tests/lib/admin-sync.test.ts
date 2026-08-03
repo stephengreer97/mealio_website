@@ -32,6 +32,7 @@ import {
   type SyncItem,
   type SyncRun,
 } from '@/lib/admin-sync';
+import { __resetUploadsPlaylistCache } from '@/lib/youtube';
 
 /**
  * The engine behind both sync modes.
@@ -266,6 +267,10 @@ function deps(overrides: Partial<SyncDeps> = {}): SyncDeps {
 
 beforeEach(() => {
   fakeDb.reset();
+  // The uploads playlist id is memoised per channel for the life of the process,
+  // so a listing test that did not clear it would silently skip the
+  // `channels.list` a previous one paid for.
+  __resetUploadsPlaylistCache();
   sendCreatorSyncPublishedEmail.mockReset();
   publishCreatorMeal.mockReset();
 });
@@ -374,7 +379,7 @@ describe('buildCatalog — drawing the list is free', () => {
       [CHANNELS_URL]: channelsRoute(),
       [uploadsUrl()]: uploadsPage(['vid0000000A', 'vid0000000B']),
     });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
 
     const result = await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -402,8 +407,7 @@ describe('buildCatalog — drawing the list is free', () => {
       [uploadsUrl()]: uploadsPage(['vid0000000A'], { nextPageToken: 'CDIQAA' }),
       [uploadsUrl({ maxResults: '50', pageToken: 'CDIQAA' })]: uploadsPage(['vid0000000B']),
     });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
 
     const first = await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -428,6 +432,12 @@ describe('buildCatalog — drawing the list is free', () => {
     if (!second.ok) return;
     expect(second.entries.map((entry) => entry.itemId)).toEqual(['vid0000000B']);
     expect(second.nextPageToken).toBeNull();
+    // Three requests for two pages, not four: the uploads playlist id is a
+    // property of the channel and does not change, and it was being re-bought on
+    // every "Load 50 more" — which is what made a 300-video walk 12 units
+    // against the 7 claimed for it.
+    expect(calls).toEqual([CHANNELS_URL, uploadsUrl(), uploadsUrl({ maxResults: '50', pageToken: 'CDIQAA' })]);
+    expect(second.quotaUnits).toBe(1);
   });
 
   it('takes the channel id from the grant rather than the creator-supplied link', async () => {
@@ -435,7 +445,7 @@ describe('buildCatalog — drawing the list is free', () => {
       [CHANNELS_URL]: channelsRoute(),
       [uploadsUrl()]: uploadsPage(['vid0000000A']),
     });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
 
     await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -446,6 +456,81 @@ describe('buildCatalog — drawing the list is free', () => {
     );
 
     expect(calls).toEqual([CHANNELS_URL, uploadsUrl()]);
+  });
+
+  it('refuses to list at all when the grant carries no channel id (MEAL-77 / MEAL-79)', async () => {
+    const { impl, calls } = stubFetch({
+      [CHANNELS_URL]: channelsRoute(),
+      [uploadsUrl()]: uploadsPage(['vid0000000A']),
+    });
+    // A live, unbroken grant on a row stored before the channel id was recorded
+    // — the legacy case the fallback existed for — and a `youtube_url` naming
+    // somebody else's channel outright.
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ external_id: null })]);
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      { ...CREATOR, youtube_url: 'https://youtube.com/channel/UCzzzzzzzzzzzzzzzzzzzzzz' },
+      'youtube',
+    );
+
+    // The fallback listed `UCzzz…`'s uploads, and the run's ownership filter
+    // then compared each of the stranger's videos against the stranger's own id
+    // and passed every one — a stranger's recipes drafted under this creator's
+    // name. A check anchored to a creator-supplied link can only ever catch a
+    // wrong video id, never a wrong channel.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toMatch(/no channel id/i);
+    expect(result.detail).toMatch(/reconnect/i);
+    // And nothing is read, so not one unit is spent on the stranger's channel.
+    expect(calls).toEqual([]);
+  });
+
+  it('offers the next page rather than calling a channel empty when page one is all private', async () => {
+    const { impl } = stubFetch({
+      [CHANNELS_URL]: channelsRoute(),
+      // What `playlistItems.list` returns for 50 private uploads: placeholders
+      // `listUploads` drops, and a cursor pointing at the 250 public ones behind
+      // them.
+      [uploadsUrl()]: uploadsPage([], { nextPageToken: 'CDIQAA' }),
+    });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'youtube',
+    );
+
+    // Reported as "this account has nothing posted", this was both the one thing
+    // an empty list must never be allowed to mean and a permanent dead end —
+    // `emptyAccountCatalog` carries no cursor, so nothing could ask for page two.
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.entries).toEqual([]);
+    expect(result.nextPageToken).toBe('CDIQAA');
+    expect(result.truncated).toBe(true);
+  });
+
+  it('reports what a failed listing already spent', async () => {
+    const { impl } = stubFetch({
+      [CHANNELS_URL]: channelsRoute(),
+      [uploadsUrl()]: { status: 403, ...jsonRoute({ error: { message: 'quota exceeded' } }) },
+    });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'youtube',
+    );
+
+    // The `channels.list` in front of it succeeded and was charged. A screen that
+    // only totals successes shows less than Google did.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.quotaUnits).toBe(2);
   });
 
   it('says YouTube is not connected rather than listing it from a link (MEAL-79)', async () => {
@@ -472,7 +557,7 @@ describe('buildCatalog — drawing the list is free', () => {
 
   it('reports a connected channel with nothing on it as an answer, not a failure', async () => {
     const { impl } = stubFetch({ [CHANNELS_URL]: channelsRoute(), [uploadsUrl()]: uploadsPage([]) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
 
     const result = await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -487,7 +572,7 @@ describe('buildCatalog — drawing the list is free', () => {
 
   it('lists a connected Instagram account from /me/media, downloading no video (MEAL-82)', async () => {
     const { impl, calls } = stubFetch({ [IG_MEDIA_URL]: instagramMedia(['m1', 'm2']) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'instagram', access_token: 'IGQ-long' })]);
 
     const result = await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -511,7 +596,7 @@ describe('buildCatalog — drawing the list is free', () => {
 
   it('lists a connected TikTok account from /v2/video/list/ (MEAL-83)', async () => {
     const { impl, calls } = stubFetch({ [TT_LIST_URL]: tiktokVideos(['v1', 'v2']) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' })]);
 
     const result = await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -529,9 +614,9 @@ describe('buildCatalog — drawing the list is free', () => {
   });
 
   it('names a broken grant rather than showing an empty account', async () => {
-    fakeDb.queue('creator_platform_accounts', {
-      data: connectionRow({ platform: 'instagram', broken_reason: 'Instagram refused to refresh this grant' }),
-    });
+    fakeDb.seed('creator_platform_accounts', [
+      connectionRow({ platform: 'instagram', broken_reason: 'Instagram refused to refresh this grant' }),
+    ]);
 
     const result = await buildCatalog({ supabase }, CREATOR, 'instagram');
 
@@ -549,7 +634,7 @@ describe('buildCatalog — drawing the list is free', () => {
     // became one, labelled `unreachable`, which is what an operator reads as
     // "go and look at the grant or the network". The two facts are opposites.
     const { impl } = stubFetch({ [IG_MEDIA_URL]: jsonRoute({ data: [] }) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'instagram', access_token: 'IGQ-long' })]);
 
     const result = await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -570,7 +655,7 @@ describe('buildCatalog — drawing the list is free', () => {
     const { impl } = stubFetch({
       [IG_MEDIA_URL]: jsonRoute({ error: { message: 'Error validating access token: Session has expired', code: 190 } }),
     });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'instagram', access_token: 'IGQ-long' })]);
 
     const result = await buildCatalog(
       { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
@@ -611,7 +696,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
   it('imports a video from its description, never from its watch page (MEAL-74)', async () => {
     const { impl, calls } = stubFetch({ [videosUrl(['vid0000000A'])]: videosPage(['vid0000000A']) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
     const importer = vi.fn(async (_url: string, _options: RunImportOptions) => success);
 
     await processSyncItem(
@@ -635,7 +720,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
   it('reads a whole selection in one call, whichever page of the catalogue it came from', async () => {
     const ids = ['vid0000000A', 'vid0000000B', 'vid0000000C'];
     const { impl, calls } = stubFetch({ [videosUrl(ids)]: videosPage(ids) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
     const importer = vi.fn(async () => success);
 
     const resolve = createSourceDocumentResolver(
@@ -658,7 +743,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
       // somebody else entirely.
       [videosUrl(['vid0000000Z'])]: videosPage(['vid0000000Z'], 'UCzzzzzzzzzzzzzzzzzzzzzz'),
     });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
     const importer = vi.fn(async () => success);
 
     const result = await processSyncItem(
@@ -677,7 +762,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
   it('fails a video the connected channel cannot return rather than falling back to the page', async () => {
     const { impl } = stubFetch({ [videosUrl(['vid0000000Z'])]: jsonRoute({ items: [] }) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
     const importer = vi.fn(async () => success);
 
     const result = await processSyncItem(
@@ -694,7 +779,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
   it('imports an Instagram post from its caption, never from the permalink (MEAL-82)', async () => {
     const { impl, calls } = stubFetch({ [IG_MEDIA_URL]: instagramMedia(['m1']) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'instagram', access_token: 'IGQ-long' })]);
     const importer = vi.fn(async (_url: string, _options: RunImportOptions) => success);
 
     await processSyncItem(
@@ -715,7 +800,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
   it('imports a TikTok video from its description (MEAL-83)', async () => {
     const { impl, calls } = stubFetch({ [TT_LIST_URL]: tiktokVideos(['v1']) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' })]);
     const importer = vi.fn(async (_url: string, _options: RunImportOptions) => success);
 
     await processSyncItem(
@@ -733,7 +818,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
   it('reads a connected account once per run, not once per item', async () => {
     const { impl, calls } = stubFetch({ [IG_MEDIA_URL]: instagramMedia(['m1', 'm2']) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'instagram', access_token: 'IGQ-long' })]);
     const importer = vi.fn(async () => success);
     // One resolver, shared — which is what `advanceRun` builds per invocation.
     const shared = deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } });
@@ -750,7 +835,7 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
   it('fails an item the connected account no longer lists rather than fetching its page', async () => {
     const { impl } = stubFetch({ [TT_LIST_URL]: tiktokVideos(['v1']) });
-    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' }) });
+    fakeDb.seed('creator_platform_accounts', [connectionRow({ platform: 'tiktok', access_token: 'act.tiktok' })]);
     const importer = vi.fn(async () => success);
 
     const result = await processSyncItem(
@@ -972,6 +1057,27 @@ describe('advanceRun', () => {
     const totals = summariseRun(result!);
     expect(totals.pending).toBeGreaterThan(0);
     expect(totals.drafted).toBeLessThan(6);
+  });
+
+  it('re-reads only what a resumed run still has to do', async () => {
+    const items = [
+      item({ itemId: 'vid0000000A', url: 'https://www.youtube.com/watch?v=vid0000000A', status: 'drafted' }),
+      item({ itemId: 'vid0000000B', url: 'https://www.youtube.com/watch?v=vid0000000B' }),
+    ];
+    queueRun(runRow(items, { source: 'youtube' }));
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
+    const { impl, calls } = stubFetch({ [videosUrl(['vid0000000B'])]: videosPage(['vid0000000B']) });
+
+    await advanceRun(
+      deps({ importer: async () => success, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      'r1',
+    );
+
+    // The resolver is memoised per invocation and cannot outlive the process, so
+    // a run that resumes pays again for whatever it is handed. Handing it the
+    // terminal items too meant a 200-video run spread over five invocations
+    // bought all 200 five times — 20 `videos.list` units rather than 14.
+    expect(calls).toEqual([videosUrl(['vid0000000B'])]);
   });
 
   it('returns null for a run that does not exist', async () => {

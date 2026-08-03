@@ -260,7 +260,9 @@ describe('AdminSyncPanel — a paged back catalogue costs quota, so it is asked 
     // budget shared with every other creator, and nobody agreed to spend it by
     // opening a tab.
     expect(calls.filter(url => url.includes('/catalog'))).toHaveLength(1);
-    expect(screen.getByTestId('quota-spent').textContent).toMatch(/2 YouTube quota units spent of 10,000\/day/);
+    expect(screen.getByTestId('quota-spent').textContent).toMatch(
+      /2 YouTube quota units spent on this screen, of 10,000\/day/,
+    );
     expect(screen.getByRole('button', { name: 'Load 50 more' })).toBeTruthy();
   });
 
@@ -355,6 +357,56 @@ describe('AdminSyncPanel — offering to write the Mealio link back', () => {
     // Pressing twice is harmless, and the screen says so rather than showing a
     // failure an operator would try to fix.
     expect(await screen.findByText(/already in this description/)).toBeTruthy();
+  });
+
+  it('counts what an append spent, which is the expensive half of the budget', async () => {
+    harness({
+      creators: YT_CREATORS,
+      catalogs: [ytCatalog(['vid0000000A'], null)],
+      appendList: { body: { meals: APPENDABLE } },
+      appendWrite: { body: { written: true, detail: 'The Mealio link was added.', quotaUnits: 51 } },
+    });
+    await loadYouTubeCatalog(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' }));
+    await screen.findByText(/The Mealio link was added/);
+
+    // 2 for the listing, 51 for the write. The counter used to read `data.detail`
+    // and discard `data.quotaUnits`, so ten appends could spend 510 units — 25×
+    // a listing page each — without the number on screen moving at all. The
+    // argument for this screen is that the visible number is the guard rail.
+    expect(screen.getByTestId('quota-spent').textContent).toMatch(/^53 YouTube quota units/);
+  });
+
+  it('counts what a refused append spent before it refused', async () => {
+    harness({
+      creators: YT_CREATORS,
+      catalogs: [ytCatalog(['vid0000000A'], null)],
+      appendList: { body: { meals: APPENDABLE } },
+      appendWrite: {
+        status: 409,
+        body: { error: 'Video vid0000000A is not on this creator’s connected channel.', quotaUnits: 1 },
+      },
+    });
+    await loadYouTubeCatalog(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' }));
+    await screen.findByText(/not on this creator’s connected channel/);
+
+    // The `videos.list` in front of the refusal was charged. A total that only
+    // counts successes drifts below Google's, in the one direction that matters.
+    expect(screen.getByTestId('quota-spent').textContent).toMatch(/^3 YouTube quota units/);
+  });
+
+  it('says when there are more linkable meals than the list can reach', async () => {
+    harness({ creators: YT_CREATORS, appendList: { body: { meals: APPENDABLE, truncated: true } } });
+    chooseCreator();
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+
+    // There is no cursor past the 200-row ceiling, so saying so is the whole
+    // remedy — past it, meals silently became unlinkable with the screen showing
+    // nothing at all about it.
+    expect((await screen.findByTestId('append-truncated')).textContent).toMatch(/has more/i);
   });
 
   it('forgets the previous creator’s meals when another is chosen', async () => {

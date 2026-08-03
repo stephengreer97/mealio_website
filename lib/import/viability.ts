@@ -48,7 +48,7 @@ import { classifySource } from './gate';
 import { toSourceDocument } from './html';
 import { robotsPerOrigin } from './robots';
 import { safeFetch, type SafeFetchOptions } from './ssrf';
-import { isChannelId, listUploads, resolveChannelId, youtubeSourceDocument } from '@/lib/youtube';
+import { isChannelId, listUploads, youtubeSourceDocument } from '@/lib/youtube';
 import {
   fetchInstagramMedia,
   hasRecipeText as hasInstagramText,
@@ -318,17 +318,26 @@ export const websiteProbe: SourceProbe = {
 export const youtubeProbe: SourceProbe = {
   source: 'youtube',
 
-  async probe(link, context) {
+  async probe(_link, context) {
     const accessToken = context.grant?.accessToken;
     if (!accessToken) return notConnectedYet('youtube');
 
+    // The grant's channel id or nothing. Falling back to the id on `link` — a
+    // URL the creator typed into an application — measures whatever channel that
+    // page names, so a creator whose link points at a stranger gets the
+    // stranger's back catalogue reported as their viability. See
+    // `channelIdForCreator`, which is the same refusal for the same reason.
     const granted = context.grant?.externalId;
-    const channelId = isChannelId(granted)
-      ? { ok: true as const, channelId: granted }
-      : await resolveChannelId(link, context.fetchOptions);
-    if (!channelId.ok) return { ok: false, detail: channelId.detail };
+    if (!isChannelId(granted)) {
+      return {
+        ok: false,
+        detail:
+          'This connection carries no channel id, so there is no channel we can prove is theirs to measure. ' +
+          'Ask them to reconnect YouTube from the creator portal, then run this again.',
+      };
+    }
 
-    const listed = await listUploads(accessToken, channelId.channelId, {
+    const listed = await listUploads(accessToken, granted, {
       limit: context.maxItems,
       fetchImpl: context.fetchOptions?.fetchImpl as typeof fetch | undefined,
     });

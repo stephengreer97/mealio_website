@@ -8,7 +8,9 @@ vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 import { MAX_TEXT_CHARS } from '@/lib/import/html';
 
 import {
+  __resetUploadsPlaylistCache,
   assertAppendAllowed,
+  channelIdForCreator,
   channelIdFromUrl,
   exchangeYouTubeCode,
   fetchOwnChannel,
@@ -67,6 +69,10 @@ function video(overrides: Partial<YouTubeVideo> = {}): YouTubeVideo {
 
 beforeEach(() => {
   fakeDb.reset();
+  // The uploads playlist id is memoised per channel for the life of the process.
+  // Leaving it set between tests hides the `channels.list` a later one skipped,
+  // and a test asserting its own request count would then pass for that reason.
+  __resetUploadsPlaylistCache();
   process.env.GOOGLE_CLIENT_ID = 'client-id.apps.googleusercontent.com';
   process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
   process.env.NEXT_PUBLIC_APP_URL = 'https://mealio.co';
@@ -150,6 +156,14 @@ describe('youtube — resolving a channel id from a creator link', () => {
     expect(channelIdFromUrl('https://youtube.com/@sarah')).toBeNull();
     // Shape-checked, so a path segment that is not a channel id never becomes one.
     expect(channelIdFromUrl('https://youtube.com/channel/../../etc')).toBeNull();
+  });
+
+  it('reads a /channel/ id only off youtube.com — the path is one anybody can serve', async () => {
+    // The host used to be checked only *after* this had already answered, so a
+    // creator whose link points at a site they control could hand back a channel
+    // id for somebody else's channel without a request being made at all.
+    expect(channelIdFromUrl(`https://anything.test/channel/${CHANNEL_ID}`)).toBeNull();
+    expect(channelIdFromUrl(`https://m.youtube.com/channel/${CHANNEL_ID}`)).toBe(CHANNEL_ID);
   });
 
   it('reads it off the channel page for an @handle', async () => {
@@ -368,6 +382,51 @@ describe('youtube — listing a back catalogue costs quota, so it is bounded', (
     expect(result.videos).toEqual([]);
   });
 
+  it('buys the uploads playlist id once per channel, not once per page', async () => {
+    const { impl, calls } = stubFetch({
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({})]: jsonRoute({ items: [playlistItem('vid0000000A')], nextPageToken: 'CDIQAA' }),
+      [playlistUrl({ pageToken: 'CDIQAA' })]: jsonRoute({ items: [playlistItem('vid0000000B')] }),
+    });
+
+    const first = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
+    const second = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl, pageToken: 'CDIQAA' });
+
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    // A channel's uploads playlist does not change, so re-reading it is a unit
+    // spent to learn something already known — and it was being spent on every
+    // "Load 50 more", which made a 300-video walk 12 units against the 7 this
+    // file documents.
+    expect(calls).toEqual([channelsUrl(), playlistUrl({}), playlistUrl({ pageToken: 'CDIQAA' })]);
+    expect(first.quotaUnits).toBe(YOUTUBE_QUOTA.channelsList + YOUTUBE_QUOTA.playlistItemsList);
+    expect(second.quotaUnits).toBe(YOUTUBE_QUOTA.playlistItemsList);
+  });
+
+  it('reports what a failed listing already spent', async () => {
+    const { impl } = stubFetch({
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({})]: { status: 403, body: JSON.stringify({ error: { message: 'quota' } }), headers: { 'content-type': 'application/json' } },
+    });
+
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
+
+    // `channels.list` succeeded and was charged. A refusal reporting zero is how
+    // the operator's running total quietly drops below Google's.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.quotaUnits).toBe(YOUTUBE_QUOTA.channelsList + YOUTUBE_QUOTA.playlistItemsList);
+  });
+
+  it('spends nothing, and says so, on a channel id or cursor that is not one', async () => {
+    const { impl } = stubFetch({});
+    const badChannel = await listUploads('ya29-token', '../../etc/passwd', { fetchImpl: impl });
+    const badCursor = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl, pageToken: 'not a token' });
+    expect(badChannel.ok || badCursor.ok).toBe(false);
+    if (badChannel.ok || badCursor.ok) return;
+    expect([badChannel.quotaUnits, badCursor.quotaUnits]).toEqual([0, 0]);
+  });
+
   it('carries Google’s own sentence out of a refusal', async () => {
     const { impl } = stubFetch({
       [channelsUrl()]: {
@@ -475,6 +534,30 @@ describe('youtube — appending the Mealio link, once', () => {
     expect(edit.status).toBe('too-long');
   });
 
+  it('treats YouTube’s 5,000 characters as a length it may reach and not pass', () => {
+    // Both sides of the boundary, and only the boundary. The refusal above sits
+    // 137 characters clear of it, which exercises the branch and leaves the
+    // comparison itself untested — `>` and `>=` are indistinguishable there, and
+    // `>=` refuses a description that fits exactly.
+    const block = `\n\n${MEALIO_LINK_INTRO}\n${MEAL_URL}`;
+    const exactly = withMealioLink('x'.repeat(YOUTUBE_DESCRIPTION_MAX - block.length), MEAL_URL);
+    expect(exactly.status).toBe('append');
+    if (exactly.status !== 'append') return;
+    expect(exactly.description).toHaveLength(YOUTUBE_DESCRIPTION_MAX);
+
+    const oneOver = withMealioLink('x'.repeat(YOUTUBE_DESCRIPTION_MAX - block.length + 1), MEAL_URL);
+    expect(oneOver.status).toBe('too-long');
+  });
+
+  it('counts the characters the link actually needs, separator and all', () => {
+    // `block.length + 2` was assumed. A blank description gets no separator at
+    // all, so the sentence quoted a number two higher than the truth.
+    const edit = withMealioLink('x'.repeat(YOUTUBE_DESCRIPTION_MAX), MEAL_URL);
+    expect(edit.status).toBe('too-long');
+    if (edit.status !== 'too-long') return;
+    expect(edit.detail).toContain(`needs ${`\n\n${MEALIO_LINK_INTRO}\n${MEAL_URL}`.length} more`);
+  });
+
   it('sends the whole snippet back, because videos.update replaces the part', async () => {
     const bodies: string[] = [];
     const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -495,7 +578,8 @@ describe('youtube — appending the Mealio link, once', () => {
       defaultAudioLanguage: 'en-US',
     };
 
-    const result = await updateVideoDescription('ya29-token', snippet, 'new description', { fetchImpl: impl });
+    const next = `${snippet.description}\n\n${MEALIO_LINK_INTRO}\n${MEAL_URL}`;
+    const result = await updateVideoDescription('ya29-token', snippet, next, { fetchImpl: impl });
 
     expect(result).toEqual({ ok: true, quotaUnits: YOUTUBE_QUOTA.videosUpdate });
     const sent = JSON.parse(bodies[0]);
@@ -505,7 +589,109 @@ describe('youtube — appending the Mealio link, once', () => {
     expect(sent.snippet.title).toBe('Best Guacamole');
     expect(sent.snippet.categoryId).toBe('26');
     expect(sent.snippet.tags).toEqual(['guacamole', 'avocado']);
-    expect(sent.snippet.description).toBe('new description');
+    expect(sent.snippet.description).toBe(next);
+  });
+
+  it('refuses a body that is not the description it read, rather than deleting the difference', async () => {
+    const impl = vi.fn() as unknown as typeof fetch;
+    const snippet: VideoSnippet = {
+      videoId: 'vid0000000A',
+      channelId: CHANNEL_ID,
+      title: 'Best Guacamole',
+      description: 'Ingredients:\n2 avocados\n\nMy knives: example.test',
+      categoryId: '26',
+      tags: null,
+      defaultLanguage: null,
+      defaultAudioLanguage: null,
+    };
+
+    // An append adds and never removes, and `videos.update` replaces the part —
+    // so a body that is not a superset of the snapshot is a deletion off
+    // somebody's video. Refused before the request, not after.
+    const result = await updateVideoDescription('ya29-token', snippet, `Ingredients:\n2 avocados\n\n${MEAL_URL}`, {
+      fetchImpl: impl,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toMatch(/does not begin with the one that was read/i);
+    expect(impl).not.toHaveBeenCalled();
+  });
+
+  it('refuses to write when YouTube reported no category, rather than filing it under People & Blogs', async () => {
+    const impl = vi.fn() as unknown as typeof fetch;
+    const snippet: VideoSnippet = {
+      videoId: 'vid0000000A',
+      channelId: CHANNEL_ID,
+      title: 'Best Guacamole',
+      description: 'Ingredients:\n2 avocados',
+      // What a `videos.list` that omitted `snippet.categoryId` leaves behind.
+      categoryId: null,
+      tags: null,
+      defaultLanguage: null,
+      defaultAudioLanguage: null,
+    };
+
+    const result = await updateVideoDescription('ya29-token', snippet, `${snippet.description}\n\n${MEAL_URL}`, {
+      fetchImpl: impl,
+    });
+
+    // A read that came back without a category is not evidence the video has
+    // none, and `categoryId` is required on the update — so defaulting it
+    // re-files somebody's recipe video as People & Blogs on the strength of a
+    // missing field. The same principle as refusing at 5,000 characters.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toMatch(/People & Blogs/);
+    expect(impl).not.toHaveBeenCalled();
+  });
+
+  it('reports a write YouTube stored differently from the one it was sent', async () => {
+    const snippet: VideoSnippet = {
+      videoId: 'vid0000000A',
+      channelId: CHANNEL_ID,
+      title: 'Best Guacamole',
+      description: 'Ingredients:\n2 avocados',
+      categoryId: '26',
+      tags: null,
+      defaultLanguage: null,
+      defaultAudioLanguage: null,
+    };
+    const next = `${snippet.description}\n\n${MEAL_URL}`;
+    const impl = (async () =>
+      new Response(JSON.stringify({ snippet: { description: 'something else entirely' } }), {
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+    const result = await updateVideoDescription('ya29-token', snippet, next, { fetchImpl: impl });
+
+    // The echoed resource is the only look anything here gets at YouTube's own
+    // copy of the field, and a partial write is worth an operator knowing about
+    // now rather than never.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toMatch(/not the one that was sent/i);
+    expect(result.quotaUnits).toBe(YOUTUBE_QUOTA.videosUpdate);
+  });
+
+  it('refuses to write back a description that arrived at YouTube’s own maximum', async () => {
+    const atTheLimit = 'x'.repeat(YOUTUBE_DESCRIPTION_MAX);
+    const { impl } = stubFetch({
+      [`${API}/videos?${new URLSearchParams({ part: 'snippet', id: 'vid0000000A' })}`]: jsonRoute({
+        items: [{ id: 'vid0000000A', snippet: { title: 'x', description: atTheLimit, categoryId: '26', channelId: CHANNEL_ID } }],
+      }),
+    });
+
+    const result = await fetchVideoSnippet('ya29-token', 'vid0000000A', { fetchImpl: impl });
+
+    // The write PUTs this description back as the whole part, so a read that was
+    // cut short destroys everything past the cut. Nothing here can prove a read
+    // is whole — but a read arriving at exactly the documented ceiling is the one
+    // length where a whole one and a truncated one are indistinguishable, and it
+    // is refused rather than written.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toMatch(/cut short/i);
   });
 
   it('reads the snippet a write has to echo back', async () => {
@@ -756,6 +942,25 @@ describe('youtube — youtube_append_opt_in is enforced server-side', () => {
     expect(result.error).toMatch(/reconnect/i);
   });
 
+  it('refuses a connection carrying no channel id, which is the anchor the write hangs from', async () => {
+    // `appendMealioLink` compares the video's own `channelId` against this one
+    // before writing, so without it there is nothing to compare against and the
+    // ownership check has no anchor. Consent, a live grant and the write scope
+    // all hold here; the missing id alone has to be enough to stop it.
+    for (const externalId of [null, '', 'sarahcooks', 'UCtooshort']) {
+      fakeDb.reset();
+      fakeDb.queue('creators', { data: { id: 'c1', youtube_append_opt_in: true } });
+      fakeDb.queue('creator_platform_accounts', { data: { ...GRANT, external_id: externalId } });
+
+      const result = await assertAppendAllowed(supabase, 'c1');
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.status).toBe(409);
+      expect(result.error).toMatch(/no channel id/i);
+    }
+  });
+
   it('allows it only when consent, connection, scope and channel id all hold', async () => {
     fakeDb.queue('creators', { data: { id: 'c1', youtube_append_opt_in: true } });
     fakeDb.queue('creator_platform_accounts', { data: GRANT });
@@ -765,5 +970,47 @@ describe('youtube — youtube_append_opt_in is enforced server-side', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.channelId).toBe(CHANNEL_ID);
+  });
+});
+
+// ── The channel a creator may be listed under ────────────────────────────────
+
+describe('youtube — the channel to list comes from the grant and nowhere else', () => {
+  const connection = (externalId: string | null) => ({
+    id: 'pa1',
+    creatorId: 'c1',
+    platform: 'youtube' as const,
+    externalId,
+    externalName: 'Chef Sarah',
+    accessToken: 'ya29-token',
+    refreshToken: '1//refresh',
+    scopes: [YOUTUBE_WRITE_SCOPE],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    brokenReason: null,
+    brokenAt: null,
+    updatedAt: null,
+  });
+
+  it('takes it off the grant', () => {
+    expect(channelIdForCreator(connection(CHANNEL_ID))).toEqual({ ok: true, channelId: CHANNEL_ID });
+  });
+
+  it('refuses a grant carrying no channel id rather than deriving one from a link', () => {
+    // The read path's ownership filter compares each video against whatever this
+    // returns, so a value derived from `creators.youtube_url` would only ever be
+    // checked against itself: a legacy row plus a link naming a stranger listed
+    // the stranger's uploads and passed every one of their videos. Refused, the
+    // same way the write path refuses it.
+    for (const externalId of [null, 'sarahcooks', 'UCtooshort']) {
+      const result = channelIdForCreator(connection(externalId));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.detail).toMatch(/no channel id/i);
+      expect(result.detail).toMatch(/reconnect/i);
+    }
+  });
+
+  it('refuses when there is no connection at all', () => {
+    expect(channelIdForCreator(null).ok).toBe(false);
   });
 });

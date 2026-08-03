@@ -45,7 +45,9 @@ export async function GET(request: NextRequest) {
     // so it has to say which of the three gates was shut and what to do.
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
-  return NextResponse.json({ meals: result.meals });
+  // `truncated` travels with the list rather than being inferred from its
+  // length: 200 meals and "200 meals, and there are more" are different screens.
+  return NextResponse.json({ meals: result.meals, truncated: result.truncated });
 }
 
 export async function POST(request: NextRequest) {
@@ -79,7 +81,10 @@ export async function POST(request: NextRequest) {
       detail: `creator=${creatorId} draft=${draftId} status=${result.status}`,
       reason: result.error,
     });
-    return NextResponse.json({ error: result.error }, { status: result.status });
+    // The spend goes back on a refusal too. A screen that only totals successes
+    // shows less than Google charged, and the whole point of putting the number
+    // on screen is that somebody stops before the budget does.
+    return NextResponse.json({ error: result.error, quotaUnits: result.quotaUnits ?? 0 }, { status: result.status });
   }
 
   return NextResponse.json({

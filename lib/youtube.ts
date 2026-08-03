@@ -234,8 +234,17 @@ export function isYouTubeHost(link: string): boolean {
   }
 }
 
-/** A `/channel/UC…` link answers without a request. Every other shape does not. */
+/**
+ * A `/channel/UC…` link answers without a request. Every other shape does not.
+ *
+ * The host is checked **first**, and that ordering is the whole guard: a
+ * `/channel/UC…` path is one anybody can serve, so reading the id before asking
+ * whose site it is means `https://anything.test/channel/UC…` names a channel id
+ * for somebody else's channel. `resolveChannelId` checks the host too, and used
+ * to check it only after this had already answered.
+ */
 export function channelIdFromUrl(link: string): string | null {
+  if (!isYouTubeHost(link)) return null;
   try {
     const path = new URL(link).pathname.split('/').filter(Boolean);
     const index = path.indexOf('channel');
@@ -254,11 +263,16 @@ export function channelIdFromUrl(link: string): string | null {
  * chose, which is why it goes through `safeFetch` — the same treatment any other
  * creator-supplied link gets.
  *
- * The fallback, and only the fallback. A connected channel's id comes off the
- * grant, because a page can say anything and a token cannot — this runs for the
- * one case the grant cannot answer, a connection stored without a channel id on
- * it. It is no longer a way to list a channel nobody has connected: that needed
- * the uploads feed, and `youtube.com/robots.txt` disallows it (MEAL-79).
+ * **Never an ownership anchor, and nothing on the read or write path calls it.**
+ * A page can say anything and a token cannot, so the question "whose channel may
+ * we list, extract from and write to" is answered by the grant alone — see
+ * `channelIdForCreator`. This used to be its fallback for a connection stored
+ * without a channel id, and that made the ownership check self-consistent rather
+ * than grant-anchored: a legacy row plus a `youtube_url` pointing at a stranger
+ * listed the stranger's uploads under this creator's name, and the run's channel
+ * filter compared each video against the stranger's id and passed it. Removed
+ * from that path on the MEAL-79 review; kept here as the one way to read an id
+ * off a link a human is looking at, and it may not creep back.
  */
 export async function resolveChannelId(
   link: string,
@@ -356,9 +370,11 @@ export interface YouTubeVideo {
 /**
  * Items per `playlistItems.list` page, and the API's own maximum.
  *
- * One page is one unit — two with the playlist lookup in front of it — so this
- * is the granularity of the spend as much as of the screen: a window of 50 costs
- * 2, and a 300-video channel costs 7 to walk end to end.
+ * One page is one unit, plus one for the uploads playlist lookup the first time
+ * a channel is listed on this instance — so a window of 50 costs 2 cold and 1
+ * warm, and a 300-video channel costs 7 to walk end to end on one warm instance
+ * and 12 in the worst case, where every page lands somewhere the memo is cold.
+ * See `uploadsPlaylistId` for why that range exists and why it is not 12 flat.
  */
 export const UPLOADS_PAGE_SIZE = 50;
 
@@ -471,34 +487,82 @@ async function youtubeGet(
 }
 
 /**
- * The channel's uploads playlist id.
+ * Uploads playlist ids, memoised per channel for the life of the process.
+ *
+ * A channel's uploads playlist is a property of the channel and does not change,
+ * so re-reading it is a unit spent to learn something already known — and it was
+ * being spent on **every page**, including every "Load 50 more". That is what
+ * made a 300-video walk 12 units against the 7 this file claimed.
+ *
+ * Keyed on the channel id alone, which is safe because by the time an id reaches
+ * here it came off the grant (`channelIdForCreator`), so a hit can only ever
+ * answer for the channel that asked. The value is a playlist id YouTube gave us
+ * for that channel and nothing about a caller.
+ *
+ * Process-local and bounded, the same trade `MemoryImportCache` makes: per
+ * instance, lost on a cold start, and worth having for the case that actually
+ * happens — an operator pressing the button repeatedly within one session. It is
+ * a saving, not a guarantee, which is why the documented cost is a range.
+ */
+const UPLOADS_PLAYLIST_CACHE = new Map<string, string>();
+const UPLOADS_PLAYLIST_CACHE_MAX = 200;
+
+/**
+ * Test seam. A memo surviving into the next test hides the `channels.list` it
+ * skipped, and a listing test that asserts its own request count would then pass
+ * for the wrong reason.
+ */
+export function __resetUploadsPlaylistCache(): void {
+  UPLOADS_PLAYLIST_CACHE.clear();
+}
+
+/**
+ * The channel's uploads playlist id, and what finding it cost.
  *
  * Read from `contentDetails.relatedPlaylists.uploads` rather than derived by
  * rewriting `UC…` to `UU…`. The rewrite is true of every channel anyone has
  * looked at and saves a unit, and it is still an assumption about somebody
  * else's id scheme standing in for a field they publish. One unit is the price
- * of not making it.
+ * of not making it — once per channel per instance, not once per page.
+ *
+ * `quotaUnits` is reported on the failures too. A refused `channels.list` has
+ * already been counted against the budget by the time it comes back, and a
+ * refusal that reports zero is how a screen showing the spend understates it.
+ * Over-reporting a request that never reached Google is the safe direction for a
+ * number whose whole job is to make somebody stop.
  */
 async function uploadsPlaylistId(
   accessToken: string,
   channelId: string,
   options: GoogleApiOptions,
-): Promise<{ ok: true; playlistId: string } | { ok: false; detail: string }> {
+): Promise<{ ok: true; playlistId: string; quotaUnits: number } | { ok: false; detail: string; quotaUnits: number }> {
+  const memoised = UPLOADS_PLAYLIST_CACHE.get(channelId);
+  if (memoised) return { ok: true, playlistId: memoised, quotaUnits: 0 };
+
   const result = await youtubeGet('channels', { part: 'contentDetails', id: channelId }, accessToken, options);
-  if (!result.ok) return result;
+  if (!result.ok) return { ...result, quotaUnits: YOUTUBE_QUOTA.channelsList };
 
   const item = Array.isArray(result.payload.items) ? result.payload.items[0] : null;
   const playlistId = item?.contentDetails?.relatedPlaylists?.uploads;
   if (typeof playlistId !== 'string' || !playlistId) {
     return {
       ok: false,
+      quotaUnits: YOUTUBE_QUOTA.channelsList,
       detail:
         `YouTube returned no uploads playlist for channel ${channelId}. That is what a channel with no ` +
         'uploads looks like, and it is also what a grant for a different account looks like — ask the ' +
         'creator to reconnect if they do have videos.',
     };
   }
-  return { ok: true, playlistId };
+
+  // Oldest out first. Nothing here is hot enough to be worth reordering on read.
+  if (UPLOADS_PLAYLIST_CACHE.size >= UPLOADS_PLAYLIST_CACHE_MAX) {
+    const oldest = UPLOADS_PLAYLIST_CACHE.keys().next();
+    if (!oldest.done) UPLOADS_PLAYLIST_CACHE.delete(oldest.value);
+  }
+  UPLOADS_PLAYLIST_CACHE.set(channelId, playlistId);
+
+  return { ok: true, playlistId, quotaUnits: YOUTUBE_QUOTA.channelsList };
 }
 
 export interface UploadsOptions extends GoogleApiOptions {
@@ -518,7 +582,13 @@ export type UploadsResult =
       /** Units this call spent. Reported because the budget is shared and finite. */
       quotaUnits: number;
     }
-  | { ok: false; detail: string };
+  /**
+   * A failure reports its spend too. `playlistItems.list` refusing after
+   * `channels.list` succeeded has still cost a unit, and a refusal that says
+   * nothing is how the operator's running total quietly stops matching Google's.
+   * Zero when nothing was sent — a bad channel id or cursor is caught here.
+   */
+  | { ok: false; detail: string; quotaUnits: number };
 
 /**
  * One bounded window of a channel's back catalogue, newest first (MEAL-79).
@@ -537,15 +607,18 @@ export type UploadsResult =
  *
  * **One call lists one page.** There is no loop here, deliberately: a loop is how
  * a screen being opened turns into a crawl of somebody's entire YouTube history,
- * and nobody agreed to spend six units of a shared daily budget because a tab was
- * opened. The operator asks for the next window by pressing a button, and
+ * and nobody agreed to spend seven units of a shared daily budget because a tab
+ * was opened. The operator asks for the next window by pressing a button, and
  * `nextPageToken` is how they can. The cost of that choice is honest and small —
  * a page thinned by private videos comes back short rather than being topped up
  * from the next one.
  *
  * Private and deleted entries are dropped rather than listed. They sit in every
  * uploads playlist as placeholders with no readable title, and an operator
- * ticking one would spend a run on a video nothing can read.
+ * ticking one would spend a run on a video nothing can read. **An empty page is
+ * therefore not an empty channel:** fifty private uploads in a row list nothing
+ * and still carry a cursor, and a caller that reads `videos.length === 0` on its
+ * own reports a channel with a back catalogue as having posted nothing.
  */
 export async function listUploads(
   accessToken: string,
@@ -553,10 +626,10 @@ export async function listUploads(
   options: UploadsOptions = {},
 ): Promise<UploadsResult> {
   if (!isChannelId(channelId)) {
-    return { ok: false, detail: `"${channelId}" is not a YouTube channel id.` };
+    return { ok: false, detail: `"${channelId}" is not a YouTube channel id.`, quotaUnits: 0 };
   }
   if (options.pageToken != null && !isUploadsPageToken(options.pageToken)) {
-    return { ok: false, detail: 'That is not a page cursor YouTube issued.' };
+    return { ok: false, detail: 'That is not a page cursor YouTube issued.', quotaUnits: 0 };
   }
 
   const limit = Math.max(1, Math.min(options.limit ?? UPLOADS_PAGE_SIZE, UPLOADS_PAGE_SIZE));
@@ -575,7 +648,7 @@ export async function listUploads(
   if (options.pageToken) params.pageToken = options.pageToken;
 
   const result = await youtubeGet('playlistItems', params, accessToken, options);
-  if (!result.ok) return result;
+  if (!result.ok) return { ...result, quotaUnits: playlist.quotaUnits + YOUTUBE_QUOTA.playlistItemsList };
 
   const videos: YouTubeVideo[] = [];
   const items: Array<Record<string, any>> = Array.isArray(result.payload.items) ? result.payload.items : [];
@@ -590,13 +663,15 @@ export async function listUploads(
 
   // An empty window is reported as a success with nothing in it, because that is
   // what it is. Telling "this channel has no uploads" apart from "we could not
-  // read it" is the caller's job, and `videos.length` is how.
+  // read it" is the caller's job, and `videos.length` is how — but only together
+  // with `nextPageToken`: a page of nothing but private uploads comes back empty
+  // and still has more behind it.
   return {
     ok: true,
     channelId,
     videos,
     nextPageToken: isUploadsPageToken(next) ? next : null,
-    quotaUnits: YOUTUBE_QUOTA.channelsList + YOUTUBE_QUOTA.playlistItemsList,
+    quotaUnits: playlist.quotaUnits + YOUTUBE_QUOTA.playlistItemsList,
   };
 }
 
@@ -680,6 +755,27 @@ export interface VideoSnippet {
   defaultAudioLanguage: string | null;
 }
 
+/**
+ * The snippet behind one video, as the read half of a read-modify-write.
+ *
+ * **The write's safety rests on this description being the whole one.**
+ * `videos.update` replaces the `snippet` part, so whatever comes back here is
+ * what the video ends up with: if the read were ever truncated, the write would
+ * destroy everything past the cut, and `withMealioLink` would also fail to see a
+ * link sitting past it and add a second one. Google documents `videos.list` as
+ * returning the full description and `search.list` as returning a truncated one,
+ * which is why the write reads through this rather than through a listing —
+ * `toVideo`'s 20,000-character slice deliberately does not apply here.
+ *
+ * That cannot be *proved* from one source, and no second source exists to check
+ * it against, so the guard is the one length where a whole read and a cut one are
+ * indistinguishable: a description arriving at or past YouTube's own maximum is
+ * exactly where a cap would bite, and is refused rather than written back. Below
+ * it the read is either whole or short by an amount nothing here can see; the
+ * remaining protection is `updateVideoDescription` refusing any body that is not
+ * a superset of what was read. **Whether `videos.list` truncates at all is only
+ * answerable against a live grant.**
+ */
 export async function fetchVideoSnippet(
   accessToken: string,
   videoId: string,
@@ -699,6 +795,18 @@ export async function fetchVideoSnippet(
   }
 
   const snippet = (item.snippet ?? {}) as Record<string, any>;
+
+  if (typeof snippet.description === 'string' && snippet.description.length >= YOUTUBE_DESCRIPTION_MAX) {
+    return {
+      ok: false,
+      detail:
+        `The description YouTube returned for video ${videoId} is ${snippet.description.length} characters, ` +
+        `which is YouTube's own ${YOUTUBE_DESCRIPTION_MAX}-character maximum — a read that comes back exactly ` +
+        'at the limit cannot be told apart from one the API cut short, and writing it back would delete ' +
+        'whatever sits past the cut. Nothing was written.',
+    };
+  }
+
   return {
     ok: true,
     snippet: {
@@ -758,7 +866,11 @@ export function withMealioLink(description: string, mealUrl: string): Descriptio
     return {
       status: 'too-long',
       detail:
-        `This description is ${description.length} characters and the link needs ${block.length + 2} more, ` +
+        `This description is ${description.length} characters and the link needs ` +
+        // Measured off the result rather than assumed to be the block plus a
+        // separator: a blank description gets no separator, and a trailing
+        // newline the trim removes makes the difference smaller still.
+        `${next.length - description.length} more, ` +
         `which is past YouTube's ${YOUTUBE_DESCRIPTION_MAX}-character limit. Nothing was written — trimming ` +
         "a creator's description to make room is a second edit nobody asked for.",
     };
@@ -773,14 +885,53 @@ export function withMealioLink(description: string, mealUrl: string): Descriptio
  * Every caller must have gone through `assertAppendAllowed` first: that is where
  * `youtube_append_opt_in`, a live connection, the write scope and a channel id
  * are checked, and it is deliberately the only place any of them are.
+ *
+ * Two things are checked here rather than trusted to the caller, because this is
+ * the last place either can be checked at all:
+ *
+ *   1. **The body must contain the description it was derived from.** An append
+ *      adds and never removes, and `videos.update?part=snippet` *replaces* the
+ *      part, so a body that is not a superset of the snapshot deletes the
+ *      difference off the creator's video. Nothing in the current caller can
+ *      produce one; the point is that a future one cannot either.
+ *   2. **The category has to be a category YouTube reported.** See the refusal
+ *      below.
+ *
+ * What it cannot check is whether the snapshot was whole in the first place — see
+ * `fetchVideoSnippet`.
  */
 export async function updateVideoDescription(
   accessToken: string,
   snippet: VideoSnippet,
   description: string,
   options: GoogleApiOptions = {},
-): Promise<{ ok: true; quotaUnits: number } | { ok: false; detail: string }> {
+): Promise<{ ok: true; quotaUnits: number } | { ok: false; detail: string; quotaUnits: number }> {
   const fetchImpl = options.fetchImpl ?? fetch;
+
+  const snapshot = snippet.description.trimEnd();
+  if (!description.startsWith(snapshot)) {
+    return {
+      ok: false,
+      quotaUnits: 0,
+      detail:
+        `The description being written to video ${snippet.videoId} does not begin with the one that was read ` +
+        'from it, so writing it would delete the difference rather than add to it. Nothing was written.',
+    };
+  }
+  if (!snippet.categoryId) {
+    // `categoryId` is required on an update, and defaulting it re-files the
+    // video under People & Blogs — a second, silent edit to somebody's channel,
+    // made on the strength of a field a read did not return. A read that came
+    // back without a category is not evidence the video has none, which is the
+    // same reason the 5,000-character case refuses instead of trimming.
+    return {
+      ok: false,
+      quotaUnits: 0,
+      detail:
+        `YouTube did not report a category for video ${snippet.videoId}, and \`videos.update\` replaces the ` +
+        'whole snippet — so writing now would re-file the video under People & Blogs. Nothing was written.',
+    };
+  }
 
   let response: Response;
   try {
@@ -794,7 +945,7 @@ export async function updateVideoDescription(
           // merging, so anything omitted here is anything cleared on the video.
           title: snippet.title,
           description,
-          categoryId: snippet.categoryId ?? '22',
+          categoryId: snippet.categoryId,
           ...(snippet.tags ? { tags: snippet.tags } : {}),
           ...(snippet.defaultLanguage ? { defaultLanguage: snippet.defaultLanguage } : {}),
           ...(snippet.defaultAudioLanguage ? { defaultAudioLanguage: snippet.defaultAudioLanguage } : {}),
@@ -803,14 +954,43 @@ export async function updateVideoDescription(
       signal: providerSignal(),
     });
   } catch (err) {
-    return { ok: false, detail: `YouTube did not answer: ${err instanceof Error ? err.message : String(err)}` };
+    // Nothing reached Google, so nothing was charged and nothing was changed.
+    return {
+      ok: false,
+      quotaUnits: 0,
+      detail: `YouTube did not answer: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
+  const payload = await readJsonCapped(response);
+
   if (!response.ok) {
-    const payload = await readJsonCapped(response);
     const reason = typeof payload?.error?.message === 'string' ? ` ${payload.error.message}` : '';
-    return { ok: false, detail: `YouTube refused the description update (HTTP ${response.status}).${reason}` };
+    return {
+      ok: false,
+      // A refused write has still been counted. Reporting it is what keeps the
+      // screen's running total from drifting below Google's.
+      quotaUnits: YOUTUBE_QUOTA.videosUpdate,
+      detail: `YouTube refused the description update (HTTP ${response.status}).${reason}`,
+    };
   }
+
+  // `videos.update` echoes back the resource it stored, and that echo is the only
+  // look anything here gets at YouTube's own copy of the field. A store that does
+  // not match what was sent is a partial write, and an operator finding out now
+  // beats finding out never. A body we could not read is not evidence of
+  // anything, so it passes.
+  const stored = (payload as Record<string, any> | null)?.snippet?.description;
+  if (typeof stored === 'string' && stored !== description) {
+    return {
+      ok: false,
+      quotaUnits: YOUTUBE_QUOTA.videosUpdate,
+      detail:
+        `YouTube stored a description for video ${snippet.videoId} that is not the one that was sent ` +
+        `(${stored.length} characters against ${description.length}). Check the video before pressing this again.`,
+    };
+  }
+
   return { ok: true, quotaUnits: YOUTUBE_QUOTA.videosUpdate };
 }
 
@@ -978,38 +1158,42 @@ export async function youtubeSourceDocument(
 // ── Reading a connected channel ──────────────────────────────────────────────
 
 /**
- * The channel id to list for a creator: the grant's if it carries one, otherwise
- * derived from their link.
+ * The channel id to list for a creator: **the grant's, and nothing else.**
  *
- * The grant wins because it is the only source that cannot be wrong — MEAL-74
- * says a creator is never asked to type a channel id, and a link they pasted
- * during an application is one step away from typing one. The link is the
- * fallback for one narrow case: a connection stored before the channel id was
- * recorded on it.
+ * Everything downstream compares against this value — the run filters each video
+ * on `video.channelId === resolved.channelId` before extracting it — so this is
+ * the anchor that check hangs from, and an anchor derived from anything a
+ * creator supplied makes the check self-consistent rather than grant-anchored.
+ * It can then catch a wrong video id and never a wrong channel.
+ *
+ * It used to fall back to `resolveChannelId(creator.youtube_url)` for a
+ * connection stored without a channel id. With that fallback, a legacy row plus
+ * a `youtube_url` naming somebody else's channel listed **that** channel's
+ * uploads, and the filter compared each of the stranger's videos against the
+ * stranger's id and passed every one — a stranger's recipes drafted under this
+ * creator's name, which is the harm MEAL-77 exists to prevent and the one this
+ * ticket claims to close. So a grant that carries no channel id is refused the
+ * same way `assertAppendAllowed` refuses it: one rule, one sentence, and the
+ * legacy row gets fixed by reconnecting rather than papered over with a guess.
  *
  * Takes the connection rather than loading it. Every caller has already loaded
  * one to get a token — nothing can be listed without a grant any more — and a
  * second read here would be a second answer to a question already asked.
  */
-export async function channelIdForCreator(
+export function channelIdForCreator(
   connection: PlatformConnection | null,
-  youtubeUrl: string | null,
-  fetchOptions?: SafeFetchOptions,
-): Promise<{ ok: true; channelId: string } | { ok: false; detail: string }> {
+): { ok: true; channelId: string } | { ok: false; detail: string } {
   if (connection && isChannelId(connection.externalId)) {
     return { ok: true, channelId: connection.externalId };
   }
-  if (!youtubeUrl) {
-    return {
-      ok: false,
-      detail:
-        'This creator has no YouTube link and has not connected a channel, so there is nothing to list. ' +
-        'Ask them to connect YouTube from the creator portal.',
-    };
-  }
-
-  const resolved = await resolveChannelId(youtubeUrl, fetchOptions);
-  return resolved.ok ? { ok: true, channelId: resolved.channelId } : resolved;
+  return {
+    ok: false,
+    detail: connection
+      ? 'This creator’s YouTube connection carries no channel id, so there is no channel we can prove is ' +
+        'theirs to list. Ask them to reconnect YouTube from the creator portal.'
+      : 'This creator has not connected a YouTube channel, so there is nothing to list. Ask them to ' +
+        'connect YouTube from the creator portal.',
+  };
 }
 
 // ── The append consent flag ──────────────────────────────────────────────────

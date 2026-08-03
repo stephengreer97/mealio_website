@@ -141,11 +141,22 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
-  /** Units the current listing has spent, summed across "load more" presses. */
+  /**
+   * YouTube quota this screen has spent since it was opened.
+   *
+   * Everything that spends adds to it — every listing page **and every append**,
+   * which is the expensive half at 51 units against a listing page's 1 or 2. It
+   * used to count listings only and reset on every creator or catalog change,
+   * which made "N units spent of 10,000/day" a figure for the current listing
+   * presented against a daily budget: ten appends could spend 510 units without
+   * moving it. A guard rail that cannot see the expensive half is not one.
+   */
   const [quotaUnits, setQuotaUnits] = useState(0);
 
   // ── The append half (MEAL-79) ──────────────────────────────────────────────
   const [appendable, setAppendable] = useState<AppendableMeal[] | null>(null);
+  /** True when there are approved video imports older than the list's own ceiling. */
+  const [appendTruncated, setAppendTruncated] = useState(false);
   /** The refusal sentence, shown *instead of* the list. Never beside it. */
   const [appendRefusal, setAppendRefusal] = useState('');
   const [appendBusy, setAppendBusy] = useState('');
@@ -180,7 +191,10 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setCreatorId(id);
     setCatalog(null);
     setSelected([]);
-    setQuotaUnits(0);
+    // The quota total deliberately survives a creator change. The budget is one
+    // budget, shared by every creator we read or write for, so what this screen
+    // has spent on the last three creators is exactly what is relevant before
+    // spending on a fourth.
     setRun(null);
     setTotals(null);
     setError('');
@@ -203,7 +217,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setError('');
     setCatalog(null);
     setSelected([]);
-    setQuotaUnits(0);
     const { res, data } = await authedPost('/api/admin/sync/catalog', { creatorId, source });
     if (!mountedRef.current) return;
     setLoadingCatalog(false);
@@ -213,15 +226,18 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     }
     const next = data.catalog as CatalogResult;
     setCatalog(next);
-    if (next.ok) setQuotaUnits(next.quotaUnits ?? 0);
+    // A failed listing can still have spent — `playlistItems.list` refusing
+    // after `channels.list` succeeded costs a unit either way.
+    setQuotaUnits(spent => spent + (next.quotaUnits ?? 0));
   };
 
   /**
    * The next window of a paged catalogue (YouTube, MEAL-79).
    *
    * A press, not a page load. Walking a 300-video channel is 7 quota units out
-   * of a budget shared by every creator, and nobody agreed to spend it by
-   * opening a tab — so each press buys 50 more and says what it cost.
+   * of a budget shared by every creator — 12 if every press lands on an instance
+   * that has to re-read the uploads playlist id — and nobody agreed to spend it
+   * by opening a tab, so each press buys 50 more and says what it cost.
    *
    * Entries are appended rather than replaced, and the selection is left alone:
    * an operator who ticked six videos on page one and then asked for page two
@@ -239,11 +255,11 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     if (!mountedRef.current) return;
     setLoadingCatalog(false);
     const next = data.catalog as CatalogResult | undefined;
+    setQuotaUnits(spent => spent + (next?.quotaUnits ?? 0));
     if (!res.ok || !next?.ok) {
       setError((next && !next.ok ? next.detail : data.error) || 'Could not read the next page.');
       return;
     }
-    setQuotaUnits(spent => spent + (next.quotaUnits ?? 0));
     setCatalog(current =>
       current?.ok ? { ...next, entries: [...current.entries, ...next.entries] } : next,
     );
@@ -263,6 +279,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setAppendBusy('list');
     setAppendRefusal('');
     setAppendable(null);
+    setAppendTruncated(false);
     setAppendResults({});
     const res = await fetch(`/api/admin/sync/append?creatorId=${encodeURIComponent(creatorId)}`, {
       headers: { Authorization: `Bearer ${token()}` },
@@ -275,6 +292,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
       return;
     }
     setAppendable((data.meals ?? []) as AppendableMeal[]);
+    setAppendTruncated(data.truncated === true);
   };
 
   const appendOne = async (meal: AppendableMeal) => {
@@ -283,6 +301,10 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     const { res, data } = await authedPost('/api/admin/sync/append', { creatorId, draftId: meal.draftId });
     if (!mountedRef.current) return;
     setAppendBusy('');
+    // 51 units for a write, 1 for a second press that finds the link already
+    // there, and whatever a refusal spent before it refused. The route reports
+    // all three, and this is the only counter on the screen.
+    setQuotaUnits(spent => spent + (data.quotaUnits ?? 0));
     setAppendResults(prev => ({
       ...prev,
       [meal.draftId]: res.ok ? data.detail : data.error || 'That write failed.',
@@ -461,7 +483,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
               <select
                 value={source}
-                onChange={e => { setSource(e.target.value as PlatformSource); setCatalog(null); setSelected([]); setQuotaUnits(0); }}
+                onChange={e => { setSource(e.target.value as PlatformSource); setCatalog(null); setSelected([]); }}
                 aria-label="Source"
                 style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '13px', background: 'white', cursor: 'pointer' }}
               >
@@ -503,6 +525,11 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
                 {catalog.feed.url}
               </a>
             )}
+            {catalog.entries.length === 0 && catalog.nextPageToken && (
+              <span style={{ fontSize: '11px', color: '#b45309' }} data-testid="empty-page">
+                Every upload on this page is private or unreadable. There is more behind it.
+              </span>
+            )}
             {catalog.truncated && !catalog.nextPageToken && (
               <span style={{ fontSize: '11px', color: '#b45309' }}>
                 Showing the most recent {catalog.entries.length}; sync those, then reload for more.
@@ -512,7 +539,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
                 listings and description writes, and it is shared and daily. */}
             {quotaUnits > 0 && (
               <span style={{ fontSize: '11px', color: '#aaa' }} data-testid="quota-spent">
-                {quotaUnits} YouTube quota {quotaUnits === 1 ? 'unit' : 'units'} spent of 10,000/day
+                {quotaUnits} YouTube quota {quotaUnits === 1 ? 'unit' : 'units'} spent on this screen, of 10,000/day
               </span>
             )}
           </div>
@@ -568,7 +595,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
                 {loadingCatalog ? 'Reading…' : 'Load 50 more'}
               </button>
               <span style={{ fontSize: '11px', color: '#aaa' }}>
-                There is more back catalogue than this. Each page costs 2 quota units and your selection is kept.
+                There is more back catalogue than this. Each page costs 1–2 quota units and your selection is kept.
               </span>
             </div>
           )}
@@ -696,6 +723,16 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             <p style={{ margin: '12px 0 0', fontSize: '12px', color: '#888' }}>
               Nothing yet. A meal becomes linkable once it has been imported from one of their videos and
               approved in <strong>Review</strong>.
+            </p>
+          )}
+
+          {/* There is no cursor past the ceiling, so saying so is the whole
+              remedy: a creator past it would otherwise have their older imports
+              become unlinkable with the screen showing nothing about it. */}
+          {appendTruncated && (
+            <p style={{ margin: '12px 0 0', fontSize: '11px', color: '#b45309' }} data-testid="append-truncated">
+              Showing the {appendable?.length ?? 0} most recently approved. This creator has more, and there is
+              no way to reach them from here yet — link these, then reload.
             </p>
           )}
 

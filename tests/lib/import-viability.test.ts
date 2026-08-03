@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   runViabilityCheck,
   SOURCE_PROBES,
@@ -7,6 +7,7 @@ import {
 } from '@/lib/import/viability';
 import type { PlatformSource } from '@/lib/creator-sources';
 import { failingCaller, publicLookup, stubCaller, stubFetch, type StubRoute } from '../helpers/import-stubs';
+import { __resetUploadsPlaylistCache } from '@/lib/youtube';
 
 const HOME = 'https://chefsarah.test/';
 
@@ -309,6 +310,11 @@ describe('import/viability — the YouTube probe needs a grant, and says so when
   const PLAYLIST_ID = 'UUabcdefghijklmnopqrstuv';
   const YT_API = 'https://www.googleapis.com/youtube/v3';
 
+  // The uploads playlist id is memoised per channel for the life of the
+  // process, so one probe would otherwise pay for the `channels.list` and every
+  // later one in this file would silently skip it.
+  beforeEach(__resetUploadsPlaylistCache);
+
   const CHANNELS_URL = `${YT_API}/channels?${new URLSearchParams({ part: 'contentDetails', id: CHANNEL_ID })}`;
   const UPLOADS_URL = `${YT_API}/playlistItems?${new URLSearchParams({
     part: 'snippet,contentDetails,status',
@@ -407,10 +413,16 @@ describe('import/viability — the YouTube probe needs a grant, and says so when
     expect(call.requests).toEqual([]);
   });
 
-  it('reports unavailable when the grant carries no channel id and the link names none', async () => {
-    const { fetchOptions: opts } = fetchOptions({ 'https://youtube.com/@sarah': { body: '<html></html>' } });
+  it('measures the grant’s channel or none, never the one the creator’s link names', async () => {
+    // A live grant whose row carries no channel id, and a link naming somebody
+    // else's channel outright. The probe used to fall back to the link, so this
+    // measured the stranger's back catalogue and reported it as this creator's
+    // viability — the same fallback, and the same harm, as `channelIdForCreator`.
+    const { calls, fetchOptions: opts } = fetchOptions({
+      'https://youtube.com/channel/UCzzzzzzzzzzzzzzzzzzzzzz': { body: '<html></html>' },
+    });
 
-    const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
+    const report = await runViabilityCheck('youtube', 'https://youtube.com/channel/UCzzzzzzzzzzzzzzzzzzzzzz', {
       call: stubCaller(() => ({ verdict: 'yes', reason: 'x' })),
       fetchOptions: opts,
       grant: { externalId: null, accessToken: 'ya29-token' },
@@ -418,7 +430,9 @@ describe('import/viability — the YouTube probe needs a grant, and says so when
 
     expect(report.outcome).toBe('unavailable');
     expect(report.outcome).not.toBe('viable');
-    expect(report.summary).toMatch(/did not name a channel id/);
+    expect(report.summary).toMatch(/carries no channel id/);
+    // Nothing is read at all: not the stranger's channel, not their uploads.
+    expect(calls).toEqual([]);
   });
 });
 

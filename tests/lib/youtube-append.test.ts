@@ -208,6 +208,37 @@ describe('youtube-append — only meals imported from their own videos are offer
     expect(result.meals).toEqual([]);
   });
 
+  it('says when there are more linkable meals than it will show, and keeps the newest', async () => {
+    // 201 approved video imports, plus one with no `decided_at` — an older or
+    // hand-fixed row. Postgres sorts NULLs *first* on a DESC order, so the
+    // undated row used to take the head of the 200-row window and push a
+    // just-approved meal out of it.
+    seedAll({}, [
+      draftRow({ id: 'd-undated', item_id: 'vid00undated', published_meal_id: 'meal-undated', decided_at: null }),
+      ...Array.from({ length: 201 }, (_, i) =>
+        draftRow({
+          id: `d-${i}`,
+          item_id: `vid${String(i).padStart(9, '0')}`,
+          published_meal_id: `meal-${i}`,
+          decided_at: `2026-08-01T${String(i % 24).padStart(2, '0')}:00:00.000Z`,
+        }),
+      ),
+    ]);
+
+    const result = await listAppendableMeals(supabase, 'c1');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.meals).toHaveLength(200);
+    // There is no cursor past the ceiling, so the only remedy is saying so —
+    // silently, a creator past 200 has their older imports become unlinkable
+    // with the screen showing nothing about it.
+    expect(result.truncated).toBe(true);
+    // And the undated row sorts to the tail, where the limit drops it, rather
+    // than to the head where it costs a recently approved meal its place.
+    expect(result.meals.some((meal) => meal.mealId === 'meal-undated')).toBe(false);
+  });
+
   it('refuses a write for a meal that did not come from a video, and writes nothing', async () => {
     seedAll({}, [draftRow({ source: 'website', item_id: 'chefsarah.test/guacamole' })]);
     const { impl, writes } = youtube();
@@ -244,6 +275,69 @@ describe('youtube-append — only meals imported from their own videos are offer
     if (result.ok) return;
     expect(result.error).toMatch(/not on this creator’s connected channel/i);
     expect(writes).toEqual([]);
+    // The `videos.list` that produced the disagreement was charged. A refusal
+    // reporting nothing is how the screen's total drifts below Google's.
+    expect(result.quotaUnits).toBe(YOUTUBE_QUOTA.videosList);
+  });
+
+  it('refuses, and reports its spend, when the link will not fit', async () => {
+    seedAll();
+    // Long enough that the link cannot be added, short enough that the read is
+    // not itself suspect — the truncation guard sits at 5,000 exactly.
+    const { impl, writes } = youtube('x'.repeat(4_990));
+
+    const result = await appendMealioLink({ supabase, fetchImpl: impl }, 'c1', 'd1', 'admin-1');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/5000-character limit/);
+    expect(writes).toEqual([]);
+    expect(result.quotaUnits).toBe(YOUTUBE_QUOTA.videosList);
+  });
+
+  it('refuses a description that came back at YouTube’s own maximum, rather than writing it back', async () => {
+    seedAll();
+    const { impl, writes } = youtube('x'.repeat(5_000));
+
+    const result = await appendMealioLink({ supabase, fetchImpl: impl }, 'c1', 'd1', 'admin-1');
+
+    // `videos.update` replaces the part, so the description read here is the one
+    // the video ends up with. A read arriving at exactly the documented ceiling
+    // is where a truncation would cut, and the two are indistinguishable — so it
+    // is refused, and the refusal says why rather than a comment saying it might
+    // happen.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/cut short/i);
+    expect(writes).toEqual([]);
+  });
+
+  it('refuses when YouTube reported no category for the video', async () => {
+    seedAll();
+    const writes: Array<Record<string, any>> = [];
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        writes.push(JSON.parse(String(init.body)));
+        return new Response('{}', { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(
+        // A `videos.list` that came back with no `categoryId` at all.
+        JSON.stringify({ items: [{ id: VIDEO_ID, snippet: { title: 'Best Guacamole', description: 'x', channelId: CHANNEL_ID } }] }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await appendMealioLink({ supabase, fetchImpl: impl }, 'c1', 'd1', 'admin-1');
+
+    // `categoryId` is required on the update, so defaulting it to '22' re-files
+    // somebody's recipe video as People & Blogs — a second, silent edit made on
+    // the strength of a field the read did not return.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/People & Blogs/);
+    expect(writes).toEqual([]);
+    // The read was spent even though the write never happened.
+    expect(result.quotaUnits).toBe(YOUTUBE_QUOTA.videosList);
   });
 });
 
