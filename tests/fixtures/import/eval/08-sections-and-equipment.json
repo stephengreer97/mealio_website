@@ -1,0 +1,71 @@
+{
+  "id": "08-sections-and-equipment",
+  "url": "https://layered.example/chicken-katsu",
+  "note": "Ingredient list broken into sections with equipment mixed in. Section headings and equipment must not become ingredients.",
+  "source": {
+    "title": "Chicken Katsu with Curry Sauce",
+    "text": "Serves 4.\n\nFOR THE CHICKEN\n2 chicken breasts, butterflied\n100 g panko breadcrumbs\n2 eggs, beaten\n50 g plain flour\n\nFOR THE CURRY SAUCE\n1 tablespoon vegetable oil\n1 onion, sliced\n2 tablespoons medium curry powder\n500 ml chicken stock\n\nYOU WILL ALSO NEED\nA deep frying pan\nA meat thermometer\nKitchen paper for draining\n\nCoat the chicken in flour, then egg, then panko. Fry until golden. Make the sauce while it rests.",
+    "jsonLd": null
+  },
+  "expected": {
+    "name": "Chicken Katsu with Curry Sauce",
+    "serves": "4",
+    "mustNotContain": [
+      "for the chicken",
+      "for the curry sauce",
+      "deep frying pan",
+      "meat thermometer",
+      "kitchen paper"
+    ],
+    "ingredients": [
+      {
+        "ingredientName": "chicken breasts",
+        "qty": 2,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "panko breadcrumbs",
+        "qty": 1,
+        "unit": "g",
+        "measure": "100"
+      },
+      {
+        "ingredientName": "eggs",
+        "qty": 2,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "plain flour",
+        "qty": 1,
+        "unit": "g",
+        "measure": "50"
+      },
+      {
+        "ingredientName": "vegetable oil",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "1"
+      },
+      {
+        "ingredientName": "onion",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "curry powder",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "chicken stock",
+        "qty": 1,
+        "unit": "ml",
+        "measure": "500"
+      }
+    ]
+  }
+}

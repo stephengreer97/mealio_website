@@ -1,0 +1,62 @@
+{
+  "id": "11-volume-yield-vs-people-count",
+  "url": "https://twoyields.example/tomato-soup",
+  "note": "The case that made this rule: a JSON-LD recipeYield expressed as a VOLUME, with the serving count stated separately in prose. serves must be the people count (6), never the volume (8).",
+  "source": {
+    "title": "Roasted Tomato Soup",
+    "text": "Roasted Tomato Soup\n\nThis makes a big batch — about 8 cups, which comfortably serves 6 as a main with bread, or more as a starter.\n\nRoast the tomatoes with the garlic and onion at 200C for 40 minutes. Blend with the stock and cream. Season at the end.\n\nServes 6. Keeps for four days in the fridge.",
+    "jsonLd": {
+      "@context": "https://schema.org",
+      "@type": "Recipe",
+      "name": "Roasted Tomato Soup",
+      "recipeIngredient": [
+        "2 kg ripe tomatoes, halved",
+        "1 head garlic",
+        "1 large onion, quartered",
+        "500 ml vegetable stock",
+        "100 ml double cream"
+      ],
+      "recipeYield": "8 cups"
+    }
+  },
+  "expected": {
+    "name": "Roasted Tomato Soup",
+    "serves": "6",
+    "servesMustNotBe": [
+      "8",
+      "8 cups"
+    ],
+    "ingredients": [
+      {
+        "ingredientName": "tomatoes",
+        "qty": 1,
+        "unit": "kg",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "garlic",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "onion",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "vegetable stock",
+        "qty": 1,
+        "unit": "ml",
+        "measure": "500"
+      },
+      {
+        "ingredientName": "double cream",
+        "qty": 1,
+        "unit": "ml",
+        "measure": "100"
+      }
+    ]
+  }
+}

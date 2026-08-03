@@ -1,0 +1,50 @@
+{
+  "id": "07-partial-jsonld",
+  "url": "https://halfmarked.example/tomato-soup",
+  "note": "Partial JSON-LD: ingredients only, no instructions, no yield. The interesting middle case — missing fields are not extraction failures.",
+  "source": {
+    "title": "Ten Minute Tomato Soup",
+    "text": "The blender does all of it. Blitz, heat, eat.\n\nTip everything into a blender, run it until smooth, then warm it through in a pan for five\nminutes. Do not let it boil or it splits.",
+    "jsonLd": {
+      "@context": "https://schema.org",
+      "@type": "Recipe",
+      "name": "Ten Minute Tomato Soup",
+      "recipeIngredient": [
+        "1 (28 oz) can whole peeled tomatoes",
+        "1/2 cup heavy cream",
+        "2 tablespoons unsalted butter",
+        "1 teaspoon flaky salt"
+      ]
+    }
+  },
+  "expected": {
+    "name": "Ten Minute Tomato Soup",
+    "serves": null,
+    "ingredients": [
+      {
+        "ingredientName": "whole peeled tomatoes",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "heavy cream",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "0.5"
+      },
+      {
+        "ingredientName": "unsalted butter",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "flaky salt",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "1"
+      }
+    ]
+  }
+}

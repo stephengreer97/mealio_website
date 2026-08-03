@@ -1,0 +1,78 @@
+{
+  "id": "04-youtube-recipe-video",
+  "url": "https://www.youtube.com/watch?v=eval0004",
+  "note": "Video metadata: title + description + captions. No JSON-LD is available for video, so this is the shape MEAL-74 will feed in.",
+  "source": {
+    "title": "The Only Weeknight Dal You Need | 20 Minutes, One Pot",
+    "text": "Weeknight dal that comes together in twenty minutes in one pot. Full ingredient list below.\n\nINGREDIENTS\n1 cup red split lentils\n1 tablespoon coconut oil\n1 medium onion, diced\n4 cloves garlic, minced\n1 tablespoon fresh ginger, grated\n2 teaspoons ground cumin\n1 teaspoon ground turmeric\n400 ml full-fat coconut milk\n2 cups water\nsalt to taste\nfresh coriander to serve\n\n[captions] okay so the first thing you want to do is rinse those lentils really well until the\nwater runs clear, that takes about a minute. get your pot on medium heat with the coconut oil,\nin goes the onion, we're cooking that down for about five minutes until it's soft and just\nstarting to colour. garlic and ginger next, thirty seconds, you'll smell it. now the spices,\ncumin and turmeric, stir those around for maybe twenty seconds so they wake up. lentils in,\ncoconut milk in, water in, big stir. bring that up to a simmer and then turn it right down.\nfifteen minutes, lid on, stirring now and then so nothing catches on the bottom. salt at the\nend, not before, and a big handful of coriander over the top. that's it. that's the whole thing.",
+    "jsonLd": null
+  },
+  "expected": {
+    "name": "Weeknight Dal",
+    "nameContains": "dal",
+    "ingredients": [
+      {
+        "ingredientName": "red split lentils",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "1"
+      },
+      {
+        "ingredientName": "coconut oil",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "1"
+      },
+      {
+        "ingredientName": "onion",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "garlic",
+        "qty": 4,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "fresh ginger",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "1"
+      },
+      {
+        "ingredientName": "ground cumin",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "ground turmeric",
+        "qty": 1,
+        "unit": "tsp",
+        "measure": "1"
+      },
+      {
+        "ingredientName": "coconut milk",
+        "qty": 1,
+        "unit": "ml",
+        "measure": "400"
+      },
+      {
+        "ingredientName": "water",
+        "qty": 1,
+        "unit": "cups",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "salt",
+        "unit": "qty"
+      },
+      {
+        "ingredientName": "fresh coriander",
+        "unit": "qty"
+      }
+    ]
+  }
+}

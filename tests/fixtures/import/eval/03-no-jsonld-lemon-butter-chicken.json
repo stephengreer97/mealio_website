@@ -1,0 +1,67 @@
+{
+  "id": "03-no-jsonld-lemon-butter-chicken",
+  "url": "https://smallkitchen.example/lemon-butter-chicken",
+  "note": "Synthetic. The raw-HTML path: no structured data, amounts written the way people write them.",
+  "sourceFrom": "synthetic-no-jsonld-recipe.html",
+  "why": [
+    "Two expectations here were corrected on 2026-08-01 after the first live run.",
+    "'a knob of butter' expects unit 'qty', not 'tbsp'. The original expectation asked the model",
+    "to turn a vague amount into a precise one, which is the guessing the serves spec forbids —",
+    "and it contradicted this same file, which already expects 'a handful of parsley' to come",
+    "back as 'qty'. One rule now: no stated number means no amount.",
+    "'salt and pepper to taste' expects two rows. That one is a real defect, not a spec change:",
+    "no shop sells 'salt and pepper', so a merged row never reaches a cart."
+  ],
+  "expected": {
+    "name": "Weeknight Lemon Butter Chicken",
+    "serves": "4",
+    "ingredients": [
+      {
+        "ingredientName": "chicken thighs",
+        "qty": 4,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "olive oil",
+        "qty": 1,
+        "unit": "tbsp",
+        "measure": "2"
+      },
+      {
+        "ingredientName": "butter",
+        "unit": "qty"
+      },
+      {
+        "ingredientName": "garlic",
+        "qty": 3,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "lemon",
+        "qty": 1,
+        "unit": "qty",
+        "measure": null
+      },
+      {
+        "ingredientName": "chicken stock",
+        "qty": 1,
+        "unit": "ml",
+        "measure": "150"
+      },
+      {
+        "ingredientName": "flat-leaf parsley",
+        "unit": "qty"
+      },
+      {
+        "ingredientName": "salt",
+        "unit": "qty"
+      },
+      {
+        "ingredientName": "pepper",
+        "unit": "qty"
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "02-minimalistbaker-black-bean-soup",
+  "url": "https://minimalistbaker.com/easy-1-pot-black-bean-soup/",
+  "note": "Recorded page. 17 ingredients, HowToStep instruction objects, optional/garnish lines.",
+  "sourceFrom": "minimalistbaker-black-bean-soup.html",
+  "why": [
+    "serves expected '4 (Large bowls)' until 2026-08-01, then '4'. It is null from 2026-08-02.",
+    "The page's only yield is '4 (Large bowls)' and it never says how many people it feeds. Reading",
+    "'4' out of it treats a count of vessels as a count of eaters, which is the same move as reading",
+    "'12' out of 'Makes 12 empanadas' — and canonicalizeServes now requires the span to say people",
+    "rather than denying a list of yield nouns that can never be complete. Empty is the correct",
+    "outcome the extraction prompt already asks for; the creator types one number."
+  ],
+  "expected": {
+    "name": "Easy 1-Pot Black Bean Soup",
+    "serves": null,
+    "servesMustBeEmpty": true,
+    "ingredientCountRange": [
+      14,
+      18
+    ],
+    "ingredients": [
+      {
+        "ingredientName": "olive oil",
+        "unit": "tbsp"
+      },
+      {
+        "ingredientName": "black beans",
+        "unit": "qty"
+      }
+    ]
+  }
+}
