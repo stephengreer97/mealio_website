@@ -6,10 +6,8 @@ import { log } from '@/lib/logger';
 import {
   approveDraft,
   cancelDraft,
-  CREATOR_REVIEW_QUEUE_EXISTS,
   editDraft,
   editableDraft,
-  HANDOFF_UNAVAILABLE,
   listDraftQueue,
   listHandedOverDrafts,
   notifyApproved,
@@ -48,10 +46,10 @@ export async function GET(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const drafts = await listDraftQueue(supabase, 'admin');
-  // Anything an operator handed to a creator before that button was switched
-  // off. There is no creator queue to have received it, so these rows are in no
-  // queue at all — listing them is what keeps that recoverable instead of
-  // silent, and it is why nothing here can end up invisible.
+  // What this operator has handed to creators and the creators have not decided
+  // yet. Since MEAL-89 those rows really are in a queue somebody reads, so this
+  // is no longer a stranded list — it is the record of a decision to stop
+  // deciding, which an operator has to be able to see in order to take back.
   const handedOver = await listHandedOverDrafts(supabase);
 
   // Rendered on the card, not recomputed there: the rules that decide which
@@ -88,13 +86,6 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  // Refused here as well as inside `sendDraftToCreator`, so the whole request
-  // fails with the reason rather than returning 200 and a list of per-draft
-  // errors for something that cannot work for any draft.
-  if (action === 'send-to-creator' && !CREATOR_REVIEW_QUEUE_EXISTS) {
-    return NextResponse.json({ error: HANDOFF_UNAVAILABLE }, { status: 400 });
-  }
-
   const targets = [...new Set([...ids(body.ids), ...ids(body.id)])];
   if (targets.length === 0) {
     return NextResponse.json({ error: 'Select at least one draft.' }, { status: 400 });

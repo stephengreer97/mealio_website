@@ -8,6 +8,7 @@ export default function AppHeader() {
   const pathname = usePathname();
   const [isCreator, setIsCreator] = useState(false);
   const [isAdmin, setIsAdmin]   = useState(false);
+  const [pendingDrafts, setPendingDrafts] = useState(0);
   const [mobileOpen, setMobileOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
   const hamburgerRef  = useRef<HTMLButtonElement>(null);
@@ -42,6 +43,60 @@ export default function AppHeader() {
         } catch {}
       })
       .catch(() => {});
+  }, []);
+
+  /**
+   * The pending-draft count on Creator Portal (MEAL-89).
+   *
+   * A badge and nothing else. A creator who opened the site to add a meal to
+   * their cart is not interrupted, redirected or modal-trapped by drafts
+   * waiting for them — the number is there when they look, and the decision to
+   * go and deal with it is theirs.
+   *
+   * The count, not a dot: "10" tells a creator to set aside an evening, and a
+   * dot reads identically for one draft and for twenty.
+   *
+   * Fired unconditionally rather than behind `isCreator`, because `isCreator`
+   * resolves from a round trip of its own and the badge would flash in a beat
+   * later than the button it sits on. The endpoint answers 0 for anyone who is
+   * not a creator, so asking early is cheap and never wrong.
+   */
+  useEffect(() => {
+    const token = localStorage.getItem('accessToken');
+    if (!token) return;
+
+    let live = true;
+    const refresh = () => {
+      fetch('/api/creator/import-drafts?count=1', { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => (r.ok ? r.json() : null))
+        .then(data => { if (live && typeof data?.waiting === 'number') setPendingDrafts(data.waiting); })
+        .catch(() => {});
+    };
+    refresh();
+
+    // The web equivalent of an app foreground. A creator who left this tab open
+    // for a day and came back should not be looking at yesterday's count, and a
+    // 15-minute poller does not justify a socket to say so.
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+
+    // Fired by the queue on the portal when a draft is decided. The queue and
+    // this header are siblings under a 2,000-line page with no shared store
+    // between them, and the alternative — refetching on an interval — would
+    // leave the badge reading 3 for up to a minute after the creator emptied it,
+    // in the one place they can watch it not happen.
+    const onChanged = (event: Event) => {
+      const waiting = (event as CustomEvent<{ waiting?: number }>).detail?.waiting;
+      if (typeof waiting === 'number') setPendingDrafts(waiting);
+      else refresh();
+    };
+    window.addEventListener('mealio:draft-queue-changed', onChanged);
+
+    return () => {
+      live = false;
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('mealio:draft-queue-changed', onChanged);
+    };
   }, []);
 
   useEffect(() => {
@@ -101,10 +156,13 @@ export default function AppHeader() {
     { label: 'Terms of Service', onClick: () => router.push('/terms'),     active: pathname === '/terms' },
     { label: 'Contact',          onClick: () => { window.location.href = 'mailto:contact@mealio.co'; }, active: false },
     ...(isAdmin   ? [{ label: 'Admin',          onClick: () => router.push('/admin'),   active: pathname === '/admin' }] : []),
-    ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator'), active: pathname.startsWith('/creator') }] : []),
+    // Badged as well as the desktop button, or the count is invisible to every
+    // creator using the site on a phone — which is most of them, and exactly the
+    // people a "10 recipes are waiting" number is meant to reach.
+    ...(isCreator ? [{ label: 'Creator Portal', onClick: () => router.push('/creator'), active: pathname.startsWith('/creator'), badge: pendingDrafts }] : []),
     ...(isLoggedIn ? [{ label: 'Manage Account', onClick: () => router.push('/account'), active: pathname === '/account' }] : []),
     { label: isLoggedIn ? 'Log Out' : 'Sign In / Sign Up', onClick: isLoggedIn ? handleLogout : handleSignIn, active: false, danger: isLoggedIn },
-  ] as { label: string; onClick: () => void; active: boolean; danger?: boolean }[];
+  ] as { label: string; onClick: () => void; active: boolean; danger?: boolean; badge?: number }[];
 
   return (
     <header style={{ background: 'var(--brand)', position: 'relative' }}>
@@ -127,7 +185,7 @@ export default function AppHeader() {
           <NavButton label="Discover" active={isNavActive('/discover')} onClick={() => router.push('/discover')} />
           {isLoggedIn && <NavButton label="My Meals" active={isNavActive('/my-meals')} onClick={() => router.push('/my-meals')} />}
 
-          {isCreator && <CreatorNavButton active={pathname.startsWith('/creator')} onClick={() => router.push('/creator')} />}
+          {isCreator && <CreatorNavButton active={pathname.startsWith('/creator')} onClick={() => router.push('/creator')} badge={pendingDrafts} />}
           <DropdownMenu
             label="Help & FAQ"
             active={pathname === '/help' || pathname === '/privacy' || pathname === '/terms'}
@@ -181,7 +239,7 @@ export default function AppHeader() {
             <button
               key={item.label}
               onClick={item.onClick}
-              className="block w-full text-left px-5 py-3 text-sm font-medium transition-colors"
+              className="flex w-full items-center gap-2 text-left px-5 py-3 text-sm font-medium transition-colors"
               style={{
                 background: item.active ? 'var(--surface)' : 'transparent',
                 color: item.danger ? 'var(--brand)' : item.active ? 'var(--text-1)' : 'var(--text-2)',
@@ -190,6 +248,7 @@ export default function AppHeader() {
               }}
             >
               {item.label}
+              {item.badge ? <DraftBadge count={item.badge} tone="dark" /> : null}
             </button>
           ))}
         </div>
@@ -198,11 +257,50 @@ export default function AppHeader() {
   );
 }
 
-function CreatorNavButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+/**
+ * How many drafts are waiting, as a number.
+ *
+ * Never a dot. The count is the information — a creator seeing "10" knows to
+ * set an evening aside and a creator seeing "1" knows it is a two-minute job,
+ * and a dot says the same thing to both of them. Capped at 99+ only because the
+ * badge stops being a badge somewhere past three digits, and by then the
+ * difference between 100 and 140 is not a difference anyone acts on.
+ *
+ * Rendered with the count spelled out for screen readers: "7" beside a button
+ * labelled "Creator Portal" is a number with no noun attached to it, which is
+ * exactly as useful as it sounds.
+ */
+function DraftBadge({ count, tone }: { count: number; tone: 'light' | 'dark' }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      data-testid="creator-draft-badge"
+      aria-label={`${count} ${count === 1 ? 'recipe' : 'recipes'} waiting for you to review`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minWidth: '18px',
+        height: '18px',
+        padding: '0 5px',
+        borderRadius: '99px',
+        fontSize: '11px',
+        fontWeight: 700,
+        lineHeight: 1,
+        background: tone === 'light' ? '#fff' : 'var(--brand)',
+        color: tone === 'light' ? 'var(--brand)' : '#fff',
+      }}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+function CreatorNavButton({ active, onClick, badge }: { active: boolean; onClick: () => void; badge: number }) {
   return (
     <button
       onClick={onClick}
-      className="px-4 py-2 text-sm font-semibold rounded-lg transition-colors"
+      className="px-4 py-2 text-sm font-semibold rounded-lg transition-colors flex items-center gap-2"
       style={{
         background: active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.15)',
         color: '#fff',
@@ -213,6 +311,7 @@ function CreatorNavButton({ active, onClick }: { active: boolean; onClick: () =>
       onMouseLeave={e => { e.currentTarget.style.background = active ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.15)'; }}
     >
       Creator Portal
+      <DraftBadge count={badge} tone="light" />
     </button>
   );
 }

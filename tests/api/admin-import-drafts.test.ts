@@ -275,18 +275,26 @@ describe('POST /api/admin/import-drafts', () => {
     expect(revalidateTag).not.toHaveBeenCalled();
   });
 
-  it('send-to-creator is refused outright, and the draft does not move', async () => {
+  it('send-to-creator moves it to the creator queue without publishing anything', async () => {
+    // A disabled button until MEAL-89, because nothing read `review_by =
+    // 'creator'`. The far side is `/api/creator/import-drafts`, which is what
+    // makes this a handoff rather than a one-way trapdoor.
     asAdmin();
     storeDrafts(draftRow());
 
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'send-to-creator', ids: ['d1'] } }));
 
-    // 400 with the reason, not 200 with a per-draft error list: there is no
-    // creator queue for *any* draft, so the request cannot partly work.
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/MEAL-89/);
-    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'admin', status: 'pending_review' });
-    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
+    expect(res.status).toBe(200);
+    expect((await res.json()).done).toBe(1);
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+      review_by: 'creator',
+      // Handed over, not decided: it is still somebody's to say yes or no to.
+      status: 'pending_review',
+      decided_by: null,
+      published_meal_id: null,
+    });
+    expect(publishCreatorMeal).not.toHaveBeenCalled();
+    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
   });
 
   it('reclaim brings a handed-over draft back into the admin queue', async () => {

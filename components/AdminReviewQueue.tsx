@@ -2,11 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ImportFieldNotice from '@/components/ImportFieldNotice';
+import DraftEditor, { hostOf, input, label, primaryButton, secondaryButton } from '@/components/DraftEditor';
 import { MealDetailBody, type MealNotices, type PresetMeal } from '@/components/MealCard';
 import { noticesFor, summaryLine, type ImportSummary } from '@/lib/import/draft-form';
-import { UNITS } from '@/lib/import/ingredients';
-import { MEAL_TAGS } from '@/lib/import/vocab';
-import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
+import type { CreatorMealDraft } from '@/lib/import/types';
 // Type-only: `lib/import-drafts` reaches Supabase, Resend and the photo copier,
 // and must never be bundled into the client. Erased at compile time.
 import type { DraftReview, QueuedDraft } from '@/lib/import-drafts';
@@ -43,20 +42,20 @@ type ReviewRow = QueuedDraft & { review: DraftReview };
 type Action = 'approve' | 'send-to-creator' | 'delete' | 'reclaim';
 
 /**
- * Why **Send to creator** is a disabled button with an explanation rather than a
- * working one.
+ * What **Send to creator** now does, said on the card rather than left to be
+ * discovered.
  *
- * Nothing reads `review_by = 'creator'`: there is no creator endpoint and no
- * creator screen (MEAL-89). Pressing it moved the draft out of the only queue
- * anybody reads, into nothing, with `creator_source_items` saying `imported` so
- * no later sync would bring the post back — while this screen said "It is in
- * their queue now, not yours." Kept visible and disabled, because an operator
- * looking for the escape hatch deserves to be told where it went rather than to
- * find the button missing. The server refuses it too.
+ * It was a disabled button until MEAL-89: nothing read `review_by = 'creator'`,
+ * so pressing it moved the draft out of the only queue anybody read and into
+ * nothing, with `creator_source_items` saying `imported` so no later sync
+ * brought the post back — while this screen said "It is in their queue now, not
+ * yours." That sentence is true now, and this says where the draft lands and
+ * that it can still be retrieved, because an operator handing over a decision
+ * should know whether they can change their mind.
  */
-const HANDOFF_DISABLED =
-  'Send to creator needs the creator’s own review queue (MEAL-89), which is not built yet. ' +
-  'Handing a draft over today would move it somewhere nobody can see it.';
+const HANDOFF_NOTE =
+  'Send to creator moves it to their own review queue — it shows up as a count on their Creator tab, ' +
+  'and on the portal here. It stays yours to take back until they decide it.';
 
 const card: React.CSSProperties = {
   background: 'white',
@@ -64,51 +63,6 @@ const card: React.CSSProperties = {
   boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
   padding: '22px 24px',
 };
-
-const secondaryButton: React.CSSProperties = {
-  padding: '6px 14px',
-  background: 'white',
-  color: '#374151',
-  border: '1px solid #e0e0e0',
-  borderRadius: '6px',
-  fontSize: '12px',
-  fontWeight: 600,
-  cursor: 'pointer',
-};
-
-const primaryButton: React.CSSProperties = {
-  padding: '7px 16px',
-  background: '#dd0031',
-  color: 'white',
-  border: 'none',
-  borderRadius: '8px',
-  fontSize: '13px',
-  fontWeight: 600,
-  cursor: 'pointer',
-};
-
-const input: React.CSSProperties = {
-  width: '100%',
-  padding: '7px 10px',
-  border: '1px solid #ddd',
-  borderRadius: '6px',
-  fontSize: '13px',
-  fontFamily: 'inherit',
-};
-
-const label: React.CSSProperties = {
-  display: 'block',
-  fontSize: '11px',
-  fontWeight: 700,
-  color: '#6b7280',
-  textTransform: 'uppercase',
-  letterSpacing: '0.06em',
-  marginBottom: '4px',
-};
-
-function hostOf(url: string): string {
-  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
-}
 
 /**
  * A draft, shaped as the meal card renders it.
@@ -200,6 +154,9 @@ export default function AdminReviewQueue() {
       );
     }
     if (action === 'reclaim') setNotice('Back in your queue. It is yours to decide again.');
+    if (action === 'send-to-creator') {
+      setNotice('Sent. It is on their Creator tab now, as a count they will see next time they open the app — and you can take it back below until they decide it.');
+    }
     if (action === 'delete') setNotice('Declined. It will not be imported again by a later sync or poll.');
     setOpenId(null);
     setEditingId(null);
@@ -341,20 +298,21 @@ export default function AdminReviewQueue() {
       {group('Verified clean', 'Every field we filled matched the page we read. Still worth a glance.', clean)}
 
       {/*
-        Drafts an operator handed over while Send to creator still worked. There
-        is no creator queue that received them, so without this section they are
-        in no queue at all and nobody would ever know they existed. Take it back
-        puts one in front of the only person who can currently decide it.
+        Drafts this operator has handed over and the creator has not decided.
+        Not stranded any more — MEAL-89 built the queue that reads them — but
+        still worth a section: handing over is a decision to stop deciding, and
+        a creator who has gone quiet for a month should not be the reason a
+        recipe sits forever. Take it back is the way out of that.
       */}
       {handedOver.length > 0 && (
         <div style={card} data-testid="handed-over">
           <h3 style={{ margin: '0 0 2px', fontSize: '14px', fontWeight: 700, color: '#b45309' }}>
-            Handed over, waiting on nobody ({handedOver.length})
+            Waiting on their creator ({handedOver.length})
           </h3>
           <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-            These were sent to their creator before that button was switched off. The creator’s review queue does not
-            exist yet (MEAL-89), so nothing is showing them to anyone — and a later sync will not re-import the post,
-            because it is already recorded as imported. Take one back to decide it here.
+            You sent these to the creator, and they are counted on that creator’s Creator tab until they approve, edit
+            or decline them. Nothing here is live and a later sync will not re-import the post, because it is already
+            recorded as imported — so if one has been sitting a while, take it back and decide it here.
           </p>
           {handedOver.map(row => (
             <div key={row.id} style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0', display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -455,9 +413,10 @@ function DraftRow({
               <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
                 <button onClick={() => onAct('approve')} disabled={busy} style={primaryButton}>Approve &amp; publish</button>
                 <button
-                  disabled
-                  title={HANDOFF_DISABLED}
-                  style={{ ...secondaryButton, color: '#aaa', cursor: 'not-allowed' }}
+                  onClick={() => onAct('send-to-creator')}
+                  disabled={busy}
+                  title={HANDOFF_NOTE}
+                  style={secondaryButton}
                   data-testid="send-to-creator"
                 >
                   Send to creator
@@ -480,7 +439,7 @@ function DraftRow({
                 </a>
               </div>
               <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#aaa', lineHeight: 1.6 }} data-testid="draft-actions-note">
-                {HANDOFF_DISABLED} Delete declines it and stops a later sync re-importing the same post.
+                {HANDOFF_NOTE} Delete declines it and stops a later sync re-importing the same post.
               </p>
             </>
           )}
@@ -504,167 +463,5 @@ function FlagBadge({ summary }: { summary: ImportSummary }) {
     >
       {clean ? 'all verified' : `${summary.needALook} to check`}
     </span>
-  );
-}
-
-// ── Edit ─────────────────────────────────────────────────────────────────────
-
-/**
- * The publish form's nine fields, pre-filled from the draft.
- *
- * So a wrong measure is a fix rather than a delete-and-redo. Saving does **not**
- * publish: the operator lands back on the card and still has to approve it,
- * because someone correcting a typo has not thereby said the recipe is right.
- *
- * The vocabularies come from `lib/import/vocab.ts` and `lib/import/ingredients.ts`
- * — the same lists the pipeline canonicalises against, so the picker cannot
- * offer a tag or a unit the server would then strip back out.
- */
-function DraftEditor({
-  draft, busy, onCancel, onSave,
-}: {
-  draft: CreatorMealDraft;
-  busy: boolean;
-  onCancel: () => void;
-  onSave: (draft: CreatorMealDraft) => void;
-}) {
-  const [form, setForm] = useState<CreatorMealDraft>(draft);
-  const set = <K extends keyof CreatorMealDraft>(key: K, value: CreatorMealDraft[K]) =>
-    setForm(prev => ({ ...prev, [key]: value }));
-
-  const setIngredient = (index: number, patch: Partial<DraftIngredient>) =>
-    setForm(prev => ({
-      ...prev,
-      ingredients: prev.ingredients.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-    }));
-
-  const removeIngredient = (index: number) =>
-    setForm(prev => ({ ...prev, ingredients: prev.ingredients.filter((_, i) => i !== index) }));
-
-  const addIngredient = () =>
-    setForm(prev => ({
-      ...prev,
-      ingredients: [...prev.ingredients, { ingredientName: '', qty: 1, productQty: 1, unit: 'qty', measure: null, searchTerm: null }],
-    }));
-
-  const toggleTag = (tag: string) =>
-    setForm(prev => {
-      const tags = prev.tags ?? [];
-      if (tags.includes(tag)) return { ...prev, tags: tags.filter(t => t !== tag) };
-      // Three is what the publish form accepts, and a fourth would be silently
-      // dropped on save rather than visibly refused here.
-      return tags.length >= 3 ? prev : { ...prev, tags: [...tags, tag] };
-    });
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }} data-testid="draft-editor">
-      <div>
-        <label style={label} htmlFor="draft-name">Meal name</label>
-        <input id="draft-name" style={input} value={form.name} onChange={e => set('name', e.target.value)} />
-      </div>
-
-      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        <div style={{ flex: '1 1 120px' }}>
-          <label style={label} htmlFor="draft-serves">Serves</label>
-          <input id="draft-serves" style={input} placeholder="4 or 2-4" value={form.serves ?? ''} onChange={e => set('serves', e.target.value)} />
-        </div>
-        <div style={{ flex: '1 1 120px' }}>
-          <label style={label} htmlFor="draft-difficulty">Difficulty</label>
-          <select
-            id="draft-difficulty"
-            style={input}
-            value={form.difficulty ?? ''}
-            onChange={e => set('difficulty', e.target.value ? Number(e.target.value) : null)}
-          >
-            <option value="">—</option>
-            {[1, 2, 3, 4, 5].map(level => <option key={level} value={level}>{level}</option>)}
-          </select>
-        </div>
-      </div>
-
-      <div>
-        <label style={label} htmlFor="draft-photo">Photo URL</label>
-        <input id="draft-photo" style={input} value={form.photoUrl ?? ''} onChange={e => set('photoUrl', e.target.value)} />
-      </div>
-
-      <div>
-        <label style={label}>Tags (up to 3)</label>
-        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '110px', overflowY: 'auto' }} data-testid="tag-picker">
-          {MEAL_TAGS.map(tag => {
-            const on = (form.tags ?? []).includes(tag);
-            return (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => toggleTag(tag)}
-                style={{
-                  fontSize: '11px', padding: '2px 8px', borderRadius: '99px', cursor: 'pointer',
-                  background: on ? '#dd0031' : 'white', color: on ? 'white' : '#6b7280',
-                  border: `1px solid ${on ? '#dd0031' : '#e0e0e0'}`,
-                }}
-              >
-                {tag}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div>
-        <label style={label}>Measurements</label>
-        {form.ingredients.map((row, i) => (
-          <div key={i} style={{ display: 'flex', gap: '6px', marginBottom: '6px', alignItems: 'center' }}>
-            <input
-              style={{ ...input, flex: '2 1 160px' }}
-              aria-label={`Ingredient ${i + 1} name`}
-              value={row.ingredientName}
-              onChange={e => setIngredient(i, { ingredientName: e.target.value })}
-            />
-            <input
-              style={{ ...input, flex: '0 1 80px' }}
-              aria-label={`Ingredient ${i + 1} amount`}
-              value={row.unit === 'qty' ? String(row.qty ?? 1) : (row.measure ?? '')}
-              onChange={e => setIngredient(i, row.unit === 'qty'
-                ? { qty: Number(e.target.value) || 1 }
-                : { measure: e.target.value })}
-            />
-            <select
-              style={{ ...input, flex: '0 1 90px' }}
-              aria-label={`Ingredient ${i + 1} unit`}
-              value={row.unit}
-              onChange={e => setIngredient(i, { unit: e.target.value })}
-            >
-              <option value="qty">Qty</option>
-              {UNITS.map(unit => <option key={unit} value={unit}>{unit}</option>)}
-            </select>
-            <button type="button" onClick={() => removeIngredient(i)} style={{ ...secondaryButton, padding: '6px 10px' }}>×</button>
-          </div>
-        ))}
-        <button type="button" onClick={addIngredient} style={secondaryButton}>Add a row</button>
-      </div>
-
-      <div>
-        <label style={label} htmlFor="draft-recipe">Recipe instructions</label>
-        <textarea id="draft-recipe" rows={6} style={{ ...input, resize: 'vertical' }} value={form.recipe ?? ''} onChange={e => set('recipe', e.target.value)} />
-      </div>
-
-      <div>
-        <label style={label} htmlFor="draft-story">Story</label>
-        <textarea id="draft-story" rows={3} style={{ ...input, resize: 'vertical' }} value={form.story ?? ''} onChange={e => set('story', e.target.value)} />
-      </div>
-
-      <div>
-        <label style={label} htmlFor="draft-source">Recipe URL</label>
-        <input id="draft-source" style={input} value={form.source ?? ''} onChange={e => set('source', e.target.value)} />
-      </div>
-
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        <button onClick={() => onSave(form)} disabled={busy} style={primaryButton}>Save edits</button>
-        <button onClick={onCancel} disabled={busy} style={secondaryButton}>Cancel</button>
-        <span style={{ fontSize: '11px', color: '#aaa', alignSelf: 'center' }}>
-          Saving does not publish. It stays in this queue, and every field you change drops our check of it.
-        </span>
-      </div>
-    </div>
   );
 }
