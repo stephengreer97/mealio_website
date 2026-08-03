@@ -54,7 +54,7 @@ function ingName(ing: FullPresetMeal['ingredients'][number]): string {
 function fmtMeasurement(ing: FullPresetMeal['ingredients'][number]): string {
   const n = ingName(ing);
   const qty = ing.qty ?? ing.quantity ?? 1;
-  if (!ing.unit || ing.unit === 'qty') return `${n}, ${qty}`;
+  if (!ing.unit || ing.unit === 'qty') return qty > 1 ? `${n}, ${qty}` : n;
   return `${n}, ${ing.measure ?? ''} ${ing.unit}`.replace(/\s+/g, ' ').trim();
 }
 

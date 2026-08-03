@@ -81,7 +81,10 @@ describe('import/ingredients — statedUnits', () => {
   it('canonicalises the units a line names, including the two-word ones', () => {
     expect(statedUnits('1 teaspoon kosher salt')).toEqual(new Set(['tsp']));
     expect(statedUnits('8 fl oz whole milk')).toEqual(new Set(['fl oz', 'oz']));
-    expect(statedUnits('3 cloves garlic, minced')).toEqual(new Set());
+    // A cook's unit is a unit the line named, so it is reported like any other.
+    expect(statedUnits('3 cloves garlic, minced')).toEqual(new Set(['cloves']));
+    // Still nothing for a line that names no unit at all.
+    expect(statedUnits('a knob of butter')).toEqual(new Set());
   });
 });
 
@@ -131,8 +134,19 @@ describe('import/ingredients — canonicalUnit', () => {
     }
   });
 
-  it('returns null for units the editor cannot display', () => {
-    for (const input of ['clove', 'can', 'bunch', 'pinch', 'sprig', 'stalk']) {
+  it('keeps a cook\'s unit, singular or plural, on the plural spelling', () => {
+    // These convert to nothing and never needed to. Carrying the word is what
+    // stops "3 cloves garlic" reading as "garlic, 3".
+    expect(canonicalUnit('clove')).toBe('cloves');
+    expect(canonicalUnit('cloves')).toBe('cloves');
+    expect(canonicalUnit('can')).toBe('cans');
+    expect(canonicalUnit('tin')).toBe('cans');
+    expect(canonicalUnit('pinch')).toBe('pinches');
+    expect(canonicalUnit('grind')).toBe('grinds');
+  });
+
+  it('returns null for units the editor still cannot display', () => {
+    for (const input of ['stalk', 'knob', 'dollop', 'splash']) {
       expect(canonicalUnit(input)).toBeNull();
     }
   });
@@ -160,12 +174,25 @@ describe('import/ingredients — canonicalizeIngredient', () => {
     });
   });
 
-  it('folds a unit outside the picker vocabulary into a count', () => {
-    // "3 cloves garlic" — the editor has no "clove", and a cart cannot act on
-    // one. The original wording survives in the evidence span the UI shows.
+  it('keeps a cook\'s unit rather than folding it into a package count', () => {
+    // "3 cloves garlic" used to become qty 3 — which read as "garlic, 3" and,
+    // worse, told the cart to buy three heads of garlic for three cloves. The
+    // amount is now the measure and the package count drops back to one.
     expect(canonicalizeIngredient(ing({ productName: 'garlic', measure: '3', unit: 'cloves', qty: 3 }))).toMatchObject({
       ingredientName: 'garlic',
-      qty: 3,
+      qty: 1,
+      productQty: 1,
+      unit: 'cloves',
+      measure: '3',
+    });
+  });
+
+  it('still folds a unit nothing can display into a count', () => {
+    // "a knob of butter" has no amount and no unit we carry, so it falls back
+    // to a single countable item — one pack of butter.
+    expect(canonicalizeIngredient(ing({ productName: 'butter', measure: null, unit: 'knob', qty: 1 }))).toMatchObject({
+      ingredientName: 'butter',
+      qty: 1,
       unit: 'qty',
       measure: null,
     });

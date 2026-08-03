@@ -23,6 +23,29 @@ import type { DraftIngredient, ExtractedIngredient } from './types';
 export const UNITS = ['cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp'] as const;
 export const COUNT_UNIT = 'qty';
 
+/**
+ * Units a cook writes that do not convert to anything, and never needed to.
+ *
+ * "3 cloves garlic" used to collapse to a count of 3 because `clove` was not in
+ * the vocabulary — which read as "garlic, 3" to the cook and, worse, told the
+ * cart to buy **three heads of garlic** for three cloves. Carrying the word
+ * fixes both: the line reads the way the recipe wrote it, and the amount stops
+ * being a package count.
+ *
+ * Nothing downstream converts these, and nothing needs to. `unit` is display
+ * text everywhere it is read — the store search uses `searchTerm`/
+ * `ingredientName`, the number of packages comes from `productQty`, and
+ * consolidation keys on `searchTerm`. The only branch that inspects a unit at
+ * all is `unit === 'qty'`, which chooses between two display formats.
+ *
+ * Plural because that is how a line reads in the common case ("3 cloves"), and
+ * the singular spellings alias onto it below.
+ */
+export const COOK_UNITS = ['cloves', 'cans', 'bunches', 'sprigs', 'pinches', 'handfuls', 'grinds', 'slices'] as const;
+
+/** Everything the picker offers, in the order it offers it. */
+export const ALL_UNITS = [...UNITS, ...COOK_UNITS] as const;
+
 /** Everything a recipe writer might type, mapped to the picker's tokens. */
 const UNIT_ALIASES: Record<string, string> = {
   c: 'cups', cup: 'cups', cups: 'cups',
@@ -37,6 +60,17 @@ const UNIT_ALIASES: Record<string, string> = {
   oz: 'oz', ounce: 'oz', ounces: 'oz',
   'fl oz': 'fl oz', floz: 'fl oz', 'fluid ounce': 'fl oz', 'fluid ounces': 'fl oz',
   qty: COUNT_UNIT, count: COUNT_UNIT, each: COUNT_UNIT, ea: COUNT_UNIT, '': COUNT_UNIT,
+
+  // Cook's units. Singular and plural both land on the plural spelling, so
+  // "1 clove garlic" and "3 cloves garlic" render the same way.
+  clove: 'cloves', cloves: 'cloves',
+  can: 'cans', cans: 'cans', tin: 'cans', tins: 'cans',
+  bunch: 'bunches', bunches: 'bunches',
+  sprig: 'sprigs', sprigs: 'sprigs',
+  pinch: 'pinches', pinches: 'pinches',
+  handful: 'handfuls', handfuls: 'handfuls',
+  grind: 'grinds', grinds: 'grinds',
+  slice: 'slices', slices: 'slices',
 };
 
 /**
