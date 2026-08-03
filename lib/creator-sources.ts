@@ -231,6 +231,74 @@ export function toSourceColumns(
   return row;
 }
 
+// ── The polling invariants, judged on the resulting row ──────────────────────
+
+/**
+ * The columns `checkPollingInvariants` reads. Both `creators` and the object a
+ * PATCH would leave behind satisfy it.
+ */
+export type PollingRow = Record<string, unknown>;
+
+export type PollingVerdict =
+  /** Coherent. `importOptIn` is the value that has to be written, which is not
+   *  always the one that came in — see the `none` case below. */
+  | { ok: true; importOptIn: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Judges the row a write would leave behind, not the fields it sent.
+ *
+ * Every rule here is about a *combination* of columns, so validating only the
+ * ones a request happened to mention validates nothing: the admin radio button
+ * sends `primarySource` alone, the feed-confirm button sends `feedUrl` alone,
+ * and a creator editing their own links (MEAL-94) sends neither — yet any of
+ * the three can walk an already-opted-in creator into a state these lines exist
+ * to refuse. Pointed at a source they have no link for, or polling a website
+ * whose feed was just cleared.
+ *
+ * Shared by the admin source picker and the creator's own link editor because a
+ * rule enforced on one path and not the other is the rule not existing — the
+ * same reason `describeHostMismatch` is shared. The wording is the operator's;
+ * a creator-facing caller checks its own case first, with its own sentence, and
+ * keeps this as the backstop that cannot be talked past.
+ *
+ * `explicitOptIn` is true only when the request *asked* to turn import on, which
+ * separates "leave the switch alone" from "turn it on" — a distinction the row
+ * itself cannot carry.
+ */
+export function checkPollingInvariants(row: PollingRow, explicitOptIn = false): PollingVerdict {
+  const primarySource = isPrimarySource(row.primary_source) ? row.primary_source : 'none';
+  let importOptIn = row.import_opt_in === true;
+
+  // Clearing the source turns polling off with it. Leaving an opt-in set against
+  // 'none' would be a switch that means nothing today and the wrong thing the
+  // day someone picks a source. A request that explicitly asks for opt-in with
+  // no source is a contradiction rather than an off switch, and is refused below.
+  if (primarySource === 'none' && importOptIn && !explicitOptIn) {
+    importOptIn = false;
+  }
+
+  if (importOptIn) {
+    // Nothing is polled until a source is chosen AND opt-in is true. Refusing
+    // the incoherent combination here means the poller never has to wonder what
+    // an opted-in creator with no source means.
+    if (primarySource === 'none') {
+      return { ok: false, error: 'Choose a source of truth before turning import on — nothing is polled without one.' };
+    }
+    if (!row[SOURCE_COLUMNS[primarySource]]) {
+      return { ok: false, error: `This creator has no ${SOURCE_LABELS[primarySource]} link, so there is nothing to poll.` };
+    }
+    // For a website the feed URL *is* the thing polled, and it must be one a
+    // human confirmed — that confirmation step is the whole defence against a
+    // silently wrong discovery.
+    if (primarySource === 'website' && !row.feed_url) {
+      return { ok: false, error: 'Confirm the discovered feed URL before turning import on.' };
+    }
+  }
+
+  return { ok: true, importOptIn };
+}
+
 // ── "Is this on the creator's own site?" ─────────────────────────────────────
 
 /** A hostname in the form two links can be compared on, or null if unparseable. */

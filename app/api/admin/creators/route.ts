@@ -3,11 +3,10 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
 import {
+  checkPollingInvariants,
   describeHostMismatch,
   isPrimarySource,
   normalizePlatformUrl,
-  SOURCE_COLUMNS,
-  SOURCE_LABELS,
 } from '@/lib/creator-sources';
 
 /**
@@ -142,52 +141,19 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
 
-  // ── Judge the row this request would leave behind, not the fields it sent ──
-  //
-  // Every invariant below is about a *combination* of columns, so validating
-  // only the ones a request happened to mention validates nothing: the radio
-  // button sends `primarySource` alone and the feed-confirm button sends
-  // `feedUrl` alone, and either can walk an already-opted-in creator into a
-  // state these lines exist to refuse — pointed at a source they have no link
-  // for, or polling a website whose feed was just cleared.
+  // Judged on the row this request would leave behind, not the fields it sent —
+  // and by the same function the creator's own link editor calls (MEAL-94), so
+  // the two paths cannot drift into disagreeing about what a pollable creator is.
   const resulting = { ...creator, ...update };
-  const primarySource = isPrimarySource(resulting.primary_source) ? resulting.primary_source : 'none';
-
-  // Clearing the source turns polling off with it. Leaving an opt-in set against
-  // 'none' would be a switch that means nothing today and the wrong thing the
-  // day someone picks a source. A request that explicitly asks for opt-in with
-  // no source is a contradiction rather than an off switch, and is refused below.
-  if (primarySource === 'none' && resulting.import_opt_in && body.importOptIn !== true) {
-    update.import_opt_in = false;
-    resulting.import_opt_in = false;
+  const verdict = checkPollingInvariants(resulting, body.importOptIn === true);
+  if (!verdict.ok) {
+    return NextResponse.json({ error: verdict.error }, { status: 400 });
   }
-
-  if (resulting.import_opt_in) {
-    // Nothing is polled until a source is chosen AND opt-in is true. Refusing
-    // the incoherent combination here means the poller never has to wonder
-    // what an opted-in creator with no source means.
-    if (primarySource === 'none') {
-      return NextResponse.json(
-        { error: 'Choose a source of truth before turning import on — nothing is polled without one.' },
-        { status: 400 },
-      );
-    }
-    const link = resulting[SOURCE_COLUMNS[primarySource] as keyof typeof resulting];
-    if (!link) {
-      return NextResponse.json(
-        { error: `This creator has no ${SOURCE_LABELS[primarySource]} link, so there is nothing to poll.` },
-        { status: 400 },
-      );
-    }
-    // For a website the feed URL *is* the thing polled, and it must be one a
-    // human confirmed — that confirmation step is the whole defence against a
-    // silently wrong discovery.
-    if (primarySource === 'website' && !resulting.feed_url) {
-      return NextResponse.json(
-        { error: 'Confirm the discovered feed URL before turning import on.' },
-        { status: 400 },
-      );
-    }
+  // Written only when the verdict *changed* it — clearing the source turns the
+  // switch off with it. Otherwise a request that never mentioned import stays a
+  // request that never mentioned import, in the row and in the log line.
+  if (verdict.importOptIn !== (resulting.import_opt_in === true)) {
+    update.import_opt_in = verdict.importOptIn;
   }
 
   const { error } = await supabase.from('creators').update(update).eq('id', id);

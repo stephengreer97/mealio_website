@@ -306,6 +306,34 @@ describe('/api/creator/youtube', () => {
     expect(JSON.stringify(body)).not.toContain('ya29-token');
   });
 
+  /**
+   * `hasChannel` is what decides whether the append setting is offered at all
+   * (MEAL-78). It is not the enforcement — `assertAppendAllowed` is — but a
+   * consent prompt about a channel that does not exist is one a creator learns
+   * to click past, so it has to be right.
+   */
+  it('reports no channel for a creator with neither a link nor a grant', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_url: null, youtube_append_opt_in: false } });
+    fakeDb.queue('creator_platform_accounts', { data: null });
+
+    const body = await (await GET(jsonRequest('/api/creator/youtube', { method: 'GET', token }))).json();
+
+    expect(body).toMatchObject({ hasChannel: false, connected: false, appendOptIn: false });
+  });
+
+  it('reports a channel on a link alone, so a creator who adds one can connect it', async () => {
+    asUser();
+    // The MEAL-94 case: joined without YouTube, started a channel later, added
+    // the link. Nothing is connected yet and the offer is still honest.
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_url: 'https://youtube.com/@chefsarah', youtube_append_opt_in: false } });
+    fakeDb.queue('creator_platform_accounts', { data: null });
+
+    const body = await (await GET(jsonRequest('/api/creator/youtube', { method: 'GET', token }))).json();
+
+    expect(body).toMatchObject({ hasChannel: true, connected: false });
+  });
+
   it('surfaces a broken connection to the one person who can fix it', async () => {
     asUser();
     fakeDb.queue('creators', { data: { id: 'c1', youtube_append_opt_in: false } });

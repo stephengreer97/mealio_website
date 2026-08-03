@@ -7,6 +7,8 @@ import AppFooter from '@/components/AppFooter';
 import ImportLinkBar from '@/components/ImportLinkBar';
 import ImportFieldNotice, { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
 import YouTubeConnectCard from '@/components/YouTubeConnectCard';
+import PlatformLinksCard from '@/components/PlatformLinksCard';
+import { SOURCE_COLUMNS, type PlatformSource } from '@/lib/creator-sources';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import {
   appendIngredientState,
@@ -35,6 +37,14 @@ interface Creator {
   photo_url: string | null;
   approved_at: string;
   handle: string | null;
+  /** The four links, editable here since MEAL-94. */
+  website_url: string | null;
+  youtube_url: string | null;
+  instagram_url: string | null;
+  tiktok_url: string | null;
+  /** What Mealio polls, if anything — an operator's decision, shown not offered. */
+  primary_source: string | null;
+  import_opt_in: boolean | null;
 }
 
 interface CreatorMeal {
@@ -779,6 +789,16 @@ export default function CreatorPortal() {
   const [publishError, setPublishError] = useState('');
   const [publishSuccess, setPublishSuccess] = useState('');
   const [publishedMeal, setPublishedMeal] = useState<{ id: string; name: string; source: string | null } | null>(null);
+  /**
+   * The meal this creator already published from the link in the form (MEAL-93).
+   *
+   * Set from the server's refusal, cleared by confirming or by editing the link.
+   * Never a `window.confirm`: the point of the prompt is that they can open the
+   * existing meal and check rather than guess, which a modal dialog forbids.
+   */
+  const [duplicateMeal, setDuplicateMeal] = useState<{ id: string; name: string } | null>(null);
+  /** Bumped when the links change, to remount the connect card that reads them. */
+  const [linksVersion, setLinksVersion] = useState(0);
 
   const [mealName, setMealName]       = useState('');
   const [mealRecipe, setMealRecipe]   = useState('');
@@ -1140,7 +1160,7 @@ export default function CreatorPortal() {
     setThumbs([]); setFulls([]); setSelectedIdx(null);
     setMealIngredients([{ ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
     setFieldStates(null); setImportInfo(null); setImportedPhotoUrl(null); setTagsNote(null);
-    setPublishError('');
+    setPublishError(''); setDuplicateMeal(null);
     // The bar aborts the request; this drops the bookkeeping that went with it,
     // so anything typed into the fresh form is not counted as an in-flight edit
     // against an import that no longer exists.
@@ -1164,6 +1184,7 @@ export default function CreatorPortal() {
   const closePublishForm = () => {
     setShowForm(false);
     setPublishError('');
+    setDuplicateMeal(null);
     importInFlight.current = false;
     editedDuringImport.current = new Set();
   };
@@ -1291,10 +1312,23 @@ export default function CreatorPortal() {
     setMealSource(prev => prev.trim() ? prev : url);
   };
 
-  const handlePublish = async (e: React.FormEvent) => {
+  const handleLinksSaved = (links: Record<PlatformSource, string | null>) => {
+    setCreator(prev => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      for (const [source, url] of Object.entries(links)) {
+        (next as Record<string, unknown>)[SOURCE_COLUMNS[source as PlatformSource]] = url;
+      }
+      return next;
+    });
+    setLinksVersion(v => v + 1);
+  };
+
+  const handlePublish = async (e: React.SyntheticEvent, confirmDuplicate = false) => {
     e.preventDefault();
     setPublishError('');
     setPublishSuccess('');
+    if (!confirmDuplicate) setDuplicateMeal(null);
 
     const validIngredientForms = mealIngredients.filter(i => i.ingredientName.trim());
     const validIngredients = validIngredientForms.map(fromFormIng);
@@ -1339,14 +1373,23 @@ export default function CreatorPortal() {
           difficulty:  mealDifficulty,
           photoUrl,
           tags:        mealTags,
+          confirmDuplicate,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
+        // A link this creator has already published from. Not an error they can
+        // only read: the meal we found is named and linked, so they can check it
+        // and then decide, because two recipes from one page is a real thing.
+        if (res.status === 409 && data.duplicate) {
+          setDuplicateMeal(data.duplicate);
+          return;
+        }
         setPublishError(data.error || 'Failed to publish meal.');
         return;
       }
+      setDuplicateMeal(null);
 
       setPublishSuccess(`"${mealName}" is now live in Discover!`);
       // Publishing is the moment the creator can still edit the caption of the
@@ -1616,8 +1659,12 @@ export default function CreatorPortal() {
             )}
           </div>
 
-          {/* ── Where they publish (MEAL-74) ── */}
-          <YouTubeConnectCard />
+          {/* ── Where they publish (MEAL-94), and connecting it (MEAL-74) ──
+              The connect card is remounted when the links change: adding a
+              YouTube link is what makes it appear at all (MEAL-78), and a card
+              that only reads its status on first mount would not know. */}
+          {creator && <PlatformLinksCard creator={creator} onSaved={handleLinksSaved} />}
+          <YouTubeConnectCard key={linksVersion} />
 
           {/* ── Stats ── */}
           {stats && (
@@ -1819,7 +1866,9 @@ export default function CreatorPortal() {
                     // Goes through the same door as every other box: once they
                     // have typed their own link here, an import must not
                     // replace it with the URL it happened to end up reading.
-                    onChange={e => { setMealSource(e.target.value); creatorTypedSource.current = true; markEdited('source'); }}
+                    // A different link is a different question, so the
+                    // already-published prompt stops applying the moment it changes.
+                    onChange={e => { setMealSource(e.target.value); setDuplicateMeal(null); creatorTypedSource.current = true; markEdited('source'); }}
                     placeholder="https://yourblog.com/recipe"
                     className={pInputCls}
                   />
@@ -2079,6 +2128,44 @@ export default function CreatorPortal() {
                 {publishError && (
                   <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
                     {publishError}
+                  </div>
+                )}
+
+                {/* Already published from this link (MEAL-93). Amber rather than
+                    red: two recipes from one page is a real thing, so this is a
+                    question and not a refusal — with the meal we found linked,
+                    so they can check instead of guessing. */}
+                {duplicateMeal && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-900">
+                    <p className="leading-relaxed">
+                      You already published{' '}
+                      <a
+                        href={`/meal/p/${duplicateMeal.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-semibold underline underline-offset-2"
+                      >
+                        {duplicateMeal.name}
+                      </a>{' '}
+                      from this link. Publish anyway?
+                    </p>
+                    <div className="flex gap-3 mt-3">
+                      <button
+                        type="button"
+                        onClick={e => handlePublish(e, true)}
+                        disabled={publishing}
+                        className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-semibold rounded-lg px-4 py-2 text-xs transition-colors"
+                      >
+                        {publishing ? 'Publishing…' : 'Publish anyway'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDuplicateMeal(null)}
+                        className="px-4 py-2 border border-amber-300 rounded-lg text-xs text-amber-900 hover:bg-amber-100 transition-colors"
+                      >
+                        Keep editing
+                      </button>
+                    </div>
                   </div>
                 )}
 

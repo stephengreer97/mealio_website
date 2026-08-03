@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  checkPollingInvariants,
   isOnSameSite,
   knownUnsupportedSource,
   normalizePlatformUrl,
@@ -228,5 +229,57 @@ describe('creator-sources — is this on the creator\u2019s own site?', () => {
     // direction of the same mistake: a shared parent is not the same site.
     expect(isOnSameSite('https://blog.example.com/', 'https://example.com/anyones-post')).toBe(false);
     expect(isOnSameSite('https://blog.example.com/', 'https://shop.example.com/x')).toBe(false);
+  });
+});
+
+/**
+ * The polling invariants, now shared between the admin source picker and the
+ * creator's own link editor (MEAL-94).
+ *
+ * They exist because every one of them is about a *combination* of columns, so
+ * they can only be judged on the row a write would leave behind. Tested here,
+ * once, rather than twice through two routes.
+ */
+describe('creator-sources — checkPollingInvariants', () => {
+  const READY = {
+    website_url: 'https://chefsarah.test/',
+    youtube_url: null,
+    instagram_url: null,
+    tiktok_url: null,
+    primary_source: 'website',
+    import_opt_in: true,
+    feed_url: 'https://chefsarah.test/feed',
+  };
+
+  it('passes a creator with a source, a link and a confirmed feed', () => {
+    expect(checkPollingInvariants(READY)).toEqual({ ok: true, importOptIn: true });
+  });
+
+  it('refuses opt-in for a source the creator has no link for', () => {
+    const verdict = checkPollingInvariants({ ...READY, primary_source: 'youtube' });
+    expect(verdict).toMatchObject({ ok: false });
+    expect((verdict as { error: string }).error).toMatch(/no YouTube link/i);
+  });
+
+  it('refuses opt-in for a website whose feed was never confirmed', () => {
+    expect(checkPollingInvariants({ ...READY, feed_url: null })).toMatchObject({ ok: false });
+  });
+
+  it('turns the switch off with the source rather than leaving it dangling', () => {
+    // An opt-in against `none` is a switch that means nothing today and the
+    // wrong thing the day somebody picks a source.
+    expect(checkPollingInvariants({ ...READY, primary_source: 'none' })).toEqual({ ok: true, importOptIn: false });
+  });
+
+  it('refuses a request that explicitly asks to poll nothing', () => {
+    // Asking for opt-in with no source is a contradiction, not an off switch.
+    expect(checkPollingInvariants({ ...READY, primary_source: 'none' }, true)).toMatchObject({ ok: false });
+  });
+
+  it('says nothing about a creator who is not opted in', () => {
+    // Every rule here is about what gets polled. A creator nothing is polled
+    // for can have any combination of links and sources there is.
+    expect(checkPollingInvariants({ ...READY, import_opt_in: false, website_url: null, feed_url: null }))
+      .toEqual({ ok: true, importOptIn: false });
   });
 });
