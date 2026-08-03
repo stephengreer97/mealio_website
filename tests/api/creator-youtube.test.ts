@@ -75,6 +75,17 @@ async function stateCookie(payload: Record<string, unknown> = {}) {
     .sign(JWT_SECRET());
 }
 
+/**
+ * The claims inside a state cookie.
+ *
+ * Read rather than substring-matched against the URL: a 32-character hex nonce
+ * contains the two characters "c1" about one run in nine, so "the state does not
+ * contain the creator id" is a coin flip dressed up as an assertion.
+ */
+function claims(cookie: string): Record<string, unknown> {
+  return JSON.parse(Buffer.from(cookie.split('.')[1], 'base64url').toString());
+}
+
 /** Every column value any call carried — for "did a token leak?" checks. */
 function everythingWritten(): string {
   return JSON.stringify({ calls: fakeDb.calls, logs: log.mock.calls });
@@ -129,10 +140,12 @@ describe('POST /api/creator/youtube/connect', () => {
     expect(cookie?.httpOnly).toBe(true);
     // Identity that round-trips through a third party and comes back in a query
     // string is identity anyone can supply — and what is being attached here is
-    // write access to a creator's channel.
+    // write access to a creator's channel. So the state parameter is an opaque
+    // nonce, and the identity is in the signed cookie Google never sees.
     const url = new URL((await res.json()).url);
-    expect(url.searchParams.get('state')).not.toContain('c1');
+    expect(url.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
     expect(cookie?.value.split('.')).toHaveLength(3);
+    expect(claims(cookie!.value)).toMatchObject({ sub: 'u1', creatorId: 'c1' });
   });
 
   it('treats anything other than a literal true as no consent', async () => {

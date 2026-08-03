@@ -245,6 +245,48 @@ describe('POST /api/admin/sync', () => {
     expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
   });
 
+  it('starts an Instagram run for a connected creator with no instagram_url', async () => {
+    // The account comes from the OAuth grant (MEAL-82), so requiring the link as
+    // well would refuse exactly the creators who did the connecting properly.
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+    fakeDb.queue('creator_sync_runs', { data: insertedRun([], { source: 'instagram' }) });
+
+    const res = await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: {
+        creatorId: 'c1',
+        mode: 'catalog',
+        source: 'instagram',
+        items: [{ itemId: 'm1', url: 'https://www.instagram.com/reel/CabcDEFghij/' }],
+      },
+    }));
+
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses a TikTok item whose URL is not on tiktok.com', async () => {
+    // A permalink carries a shortcode rather than the media id, so the id cannot
+    // be cross-checked against the URL the way YouTube's can. The host can be,
+    // and a row claiming a TikTok post lives elsewhere is not one to record
+    // under this creator's name.
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+
+    const res = await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: {
+        creatorId: 'c1',
+        mode: 'catalog',
+        source: 'tiktok',
+        items: [{ itemId: 'v1', url: 'https://not-tiktok.test/@someone/video/v1' }],
+      },
+    }));
+
+    expect(res.status).toBe(400);
+    expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
   it('gives one link one item_id however it was spelled', async () => {
     // Three spellings of one post were three item_ids, so an operator pasting
     // the same link on two different days got two drafts and two published

@@ -191,19 +191,43 @@ describe('import/viability — cannot check is not the same as failed', () => {
 });
 
 describe('import/viability — platforms that are not connected yet', () => {
-  it.each<[PlatformSource, string]>([
-    ['instagram', 'MEAL-82'],
-    ['tiktok', 'MEAL-83'],
-  ])('%s reports unavailable and names the ticket', async (source, ticket) => {
-    const call = stubCaller(() => ({ verdict: 'yes', reason: 'x' }));
-    const report = await runViabilityCheck(source, `https://${source}.com/@sarah`, { call });
+  it.each<PlatformSource>(['instagram', 'tiktok'])(
+    '%s reports unavailable until the creator connects, never a pass',
+    async (source) => {
+      const call = stubCaller(() => ({ verdict: 'yes', reason: 'x' }));
+      // No grant. Unlike a website or a YouTube channel there is no public feed
+      // to fall back on, so there is genuinely nothing to measure yet
+      // (MEAL-82 / MEAL-83).
+      const report = await runViabilityCheck(source, `https://${source}.com/@sarah`, { call });
 
-    // The failure mode this whole ticket exists to prevent is a check that
-    // cannot run looking like a check that passed.
+      // The failure mode this whole ticket exists to prevent is a check that
+      // cannot run looking like a check that passed.
+      expect(report.outcome).toBe('unavailable');
+      expect(report.outcome).not.toBe('viable');
+      expect(report.summary).toMatch(/connect/i);
+      expect(report.summary).toMatch(/not\* a pass|not a pass/i);
+      expect(call.requests).toEqual([]);
+    },
+  );
+
+  it('says an account is empty rather than that nothing could be read', async () => {
+    // An account we reached that has posted nothing is an answer. It used to
+    // come back through `ok: false` — which every caller then treated as a
+    // failure — and now comes back as a probe that succeeded with nothing in
+    // it. Neither a pass nor a verdict on the creator, and it says which.
+    const probe: SourceProbe = { source: 'instagram', async probe(): Promise<ProbeResult> { return { ok: true, items: [] }; } };
+    const call = stubCaller(() => ({ verdict: 'yes', reason: 'x' }));
+
+    const report = await runViabilityCheck('instagram', 'https://instagram.com/@sarah', {
+      call,
+      probes: { ...SOURCE_PROBES, instagram: probe },
+    });
+
     expect(report.outcome).toBe('unavailable');
-    expect(report.outcome).not.toBe('viable');
-    expect(report.summary).toContain(ticket);
-    expect(report.summary).toMatch(/not\* a pass|not a pass/i);
+    expect(report.summary).toMatch(/nothing posted/i);
+    // The sentence for a set of items we failed to read must not be used for a
+    // set of items that does not exist.
+    expect(report.summary).not.toMatch(/could not be read/i);
     expect(call.requests).toEqual([]);
   });
 
@@ -383,5 +407,128 @@ describe('import/viability — the YouTube probe measures a channel for free', (
     expect(report.outcome).toBe('unavailable');
     expect(report.outcome).not.toBe('viable');
     expect(report.summary).toMatch(/did not name a channel id/);
+  });
+});
+
+// ── Instagram and TikTok (MEAL-82 / MEAL-83) ─────────────────────────────────
+
+/**
+ * Both probes read through a grant, so `fetchOptions.fetchImpl` is the seam and
+ * `grant.accessToken` is what turns the probe on. Neither can be run against the
+ * real API until app review clears; these exercise the documented shapes.
+ */
+describe('import/viability — the caption is the measurement', () => {
+  /** Long enough that the gate would judge it rather than call it thin. */
+  const RECIPE_CAPTION = `Guacamole\nIngredients:\n2 ripe avocados\n1 lime\n${'Mash them together and season well. '.repeat(8)}`;
+
+  const jsonRoute = (body: unknown) => ({ body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
+
+  function instagramRoutes(captions: string[]) {
+    return {
+      'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cpermalink%2Ctimestamp&limit=10&access_token=IGQ-long': jsonRoute({
+        data: captions.map((caption, index) => ({
+          id: `m${index}`,
+          caption,
+          media_type: 'VIDEO',
+          permalink: `https://www.instagram.com/reel/m${index}/`,
+          timestamp: '2026-07-29T09:00:00+0000',
+        })),
+      }),
+    };
+  }
+
+  it('gates each Instagram post on its caption', async () => {
+    const { calls, fetchOptions: opts } = fetchOptions(instagramRoutes([RECIPE_CAPTION, RECIPE_CAPTION]));
+    const call = stubCaller((request) =>
+      request.prompt.includes('TITLE: Guacamole')
+        ? { verdict: 'yes', reason: 'Lists ingredients and steps.' }
+        : { verdict: 'no', reason: 'Not a recipe.' },
+    );
+
+    const report = await runViabilityCheck('instagram', 'https://instagram.com/chefsarah', {
+      call,
+      fetchOptions: opts,
+      grant: { externalId: '178', accessToken: 'IGQ-long' },
+    });
+
+    expect(report.checked).toBe(2);
+    expect(report.passed).toBe(2);
+    expect(report.outcome).toBe('viable');
+    // One request for the whole measurement. No video downloaded — transcription
+    // is MEAL-85 and is not built.
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reports a post with no caption rather than gating it', async () => {
+    const { fetchOptions: opts } = fetchOptions(instagramRoutes(['']));
+    const call = stubCaller(() => ({ verdict: 'yes', reason: 'x' }));
+
+    const report = await runViabilityCheck('instagram', 'https://instagram.com/chefsarah', {
+      call,
+      fetchOptions: opts,
+      grant: { externalId: '178', accessToken: 'IGQ-long' },
+    });
+
+    // Calling an empty caption "not a recipe" would measure our access rather
+    // than the creator's post — and Instagram exposes no transcript to fall back
+    // on, which the reason says out loud.
+    expect(report.items[0].verdict).toBe('error');
+    expect(report.items[0].reason).toMatch(/MEAL-85/);
+    expect(report.checked).toBe(0);
+    expect(report.outcome).toBe('unavailable');
+    expect(call.requests).toEqual([]);
+  });
+
+  it('gates each TikTok video on its description, and says so honestly when they are thin', async () => {
+    const { fetchOptions: opts } = fetchOptions({
+      'https://open.tiktokapis.com/v2/video/list/?fields=id%2Ctitle%2Cvideo_description%2Cduration%2Ccover_image_url%2Cembed_link%2Cshare_url%2Ccreate_time':
+        jsonRoute({
+          data: {
+            videos: [
+              { id: 'v1', title: 'Guacamole', video_description: RECIPE_CAPTION, share_url: 'https://www.tiktok.com/@s/video/v1' },
+              { id: 'v2', title: 'Dinner', video_description: 'full recipe on my blog', share_url: 'https://www.tiktok.com/@s/video/v2' },
+              { id: 'v3', title: 'Lunch', video_description: 'link in bio', share_url: 'https://www.tiktok.com/@s/video/v3' },
+            ],
+            has_more: false,
+          },
+          error: { code: 'ok' },
+        }),
+    });
+    const call = stubCaller((request) =>
+      request.prompt.includes('2 ripe avocados')
+        ? { verdict: 'yes', reason: 'Lists ingredients and steps.' }
+        : { verdict: 'no', reason: 'Points elsewhere for the recipe.' },
+    );
+
+    const report = await runViabilityCheck('tiktok', 'https://tiktok.com/@chefsarah', {
+      call,
+      fetchOptions: opts,
+      grant: { externalId: 'open-id-1', accessToken: 'act.tiktok' },
+    });
+
+    // "Recipe on my blog" is a real answer about this creator, not a failure of
+    // ours — there is no transcription route on TikTok and there cannot be one,
+    // so a mostly-red report means TikTok is their link source, not their recipe
+    // source.
+    expect(report.checked).toBe(3);
+    expect(report.passed).toBe(1);
+    expect(report.outcome).toBe('partial');
+  });
+
+  it('reports the platform’s own refusal rather than an empty account', async () => {
+    const { fetchOptions: opts } = fetchOptions({
+      'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cpermalink%2Ctimestamp&limit=10&access_token=IGQ-dead':
+        { ...jsonRoute({ error: { message: 'Session has expired' } }), status: 400 },
+    });
+
+    const report = await runViabilityCheck('instagram', 'https://instagram.com/chefsarah', {
+      call: stubCaller(() => ({ verdict: 'yes', reason: 'x' })),
+      fetchOptions: opts,
+      grant: { externalId: '178', accessToken: 'IGQ-dead' },
+    });
+
+    expect(report.outcome).toBe('unavailable');
+    expect(report.outcome).not.toBe('not-viable');
+    expect(report.summary).toMatch(/Session has expired/);
   });
 });

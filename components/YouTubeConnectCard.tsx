@@ -27,12 +27,32 @@ interface Status {
   appendOptIn: boolean;
 }
 
+/**
+ * What a failed attempt says, keyed by the callback's reason code.
+ *
+ * The card owns the sentences; the URL only picks between them. Same argument as
+ * `PlatformConnectCard` — see `ConnectFailure` in `lib/creator-connect.ts`.
+ */
+const FAILURE_COPY: Record<string, string> = {
+  expired: 'That connection attempt has expired. Start again from this page.',
+  unverified: 'That connection could not be verified. Start again from this page.',
+  'no-code': 'Google sent you back without an authorization code. Try connecting again.',
+  exchange: 'Google would not complete that connection. Try connecting again.',
+  account: 'We could not read a channel from that Google account. Make sure it has a YouTube channel, then try again.',
+  store: 'We could not store that connection. Try again.',
+  'consent-write':
+    'Your channel is connected, but we could not save your choice about editing descriptions. It is off — set it ' +
+    'from the card below.',
+  'consent-withdraw':
+    'We could not record that you no longer want Mealio editing your descriptions, so nothing was changed. Try again.',
+};
+
 /** What the OAuth callback redirected back with, if anything. */
-function callbackOutcome(): { outcome: string; detail: string | null } | null {
+function callbackOutcome(): { outcome: string; reason: string | null } | null {
   if (typeof window === 'undefined') return null;
   const params = new URLSearchParams(window.location.search);
   const outcome = params.get('youtube');
-  return outcome ? { outcome, detail: params.get('detail') } : null;
+  return outcome ? { outcome, reason: params.get('reason') } : null;
 }
 
 export default function YouTubeConnectCard() {
@@ -161,7 +181,9 @@ export default function YouTubeConnectCard() {
       </div>
 
       {callback?.outcome === 'failed' && (
-        <p className="text-sm text-red-600 mb-3">{callback.detail || 'That connection did not complete.'}</p>
+        <p className="text-sm text-red-600 mb-3">
+          {(callback.reason && FAILURE_COPY[callback.reason]) || 'That connection did not complete.'}
+        </p>
       )}
       {callback?.outcome === 'cancelled' && (
         <p className="text-sm text-gray-500 mb-3">You cancelled on Google&rsquo;s screen. Nothing was connected.</p>
