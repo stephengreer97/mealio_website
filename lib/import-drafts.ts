@@ -658,12 +658,16 @@ export interface AllPendingDrafts {
  * are what let a screen say "the oldest 500 of 812" instead of a guarantee it
  * cannot keep.
  *
- * Related hazard, since this is the query people will read looking for it:
- * `creator_import_drafts.creator_id` is `NOT NULL REFERENCES creators(id) ON
- * DELETE CASCADE`, so deleting a creator deletes their pending drafts outright —
- * while `creator_source_items` goes on recording those posts as imported, so a
- * re-sync will not bring the recipes back. Nothing here can surface that; a
- * cascaded row is gone, not stranded.
+ * Since this is the query people will read looking for stranded rows: a draft
+ * whose creator is gone cannot exist, and nothing is left behind by the deletion
+ * either. `creator_import_drafts`, `creator_source_items`, `creator_source_state`
+ * and `creator_platform_accounts` all cascade from `creators`, so a deleted
+ * creator takes the drafts *and* the record of which posts were already
+ * imported. Re-adding them starts genuinely clean rather than half-imported.
+ *
+ * What a deletion cannot do quietly is take published meals with it:
+ * `preset_meals.creator_id` and `meals.creator_id` are NO ACTION, so Postgres
+ * refuses the delete outright while any published meal still points at them.
  */
 export async function listAllPendingDrafts(
   supabase: SupabaseClient,
