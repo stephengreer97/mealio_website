@@ -60,6 +60,13 @@ export type EventType =
   // from `import_opt_in` on purpose: reading and writing are different
   // permissions over different property (MEAL-77).
   | 'CREATOR:APPEND_OPT_IN'
+  // A creator approving, editing or declining a draft in their own review queue
+  // (MEAL-89). Distinct from the ADMIN:DRAFT_* events even though both reach the
+  // same functions in `lib/import-drafts.ts`: MEAL-77's consent story turns on
+  // who decided, and an operator publishing under a creator's name and that
+  // creator publishing their own recipe must not read identically in the log.
+  | 'CREATOR:DRAFT_DECIDE'
+  | 'CREATOR:DRAFT_EDIT'
   // ── Payments ──────────────────────────────────────────────────────────────
   | 'PAYMENT:CHECKOUT'
   | 'PAYMENT:WEBHOOK'

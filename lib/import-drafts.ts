@@ -112,6 +112,27 @@ export interface DraftDeps {
   publisher?: typeof publishCreatorMeal;
   notifier?: typeof sendCreatorSyncPublishedEmail;
   now?: () => number;
+  /**
+   * Which queue the decision came from. Changes **nothing** but the log event,
+   * and that is the point of it existing at all: the rules for approving,
+   * editing and declining are identical on both sides — same conditional
+   * writes, same publish, same refusal to delete a cancelled row — so a second
+   * set of functions for the creator would be a second set to keep correct.
+   *
+   * The log is the one place they must differ. MEAL-77's consent story turns on
+   * *who* decided, and every line in this file said `ADMIN:` — so a creator
+   * approving their own recipe was recorded as an operator publishing under
+   * their name, which is exactly the distinction the audit trail exists to
+   * make. Defaults to admin, which is what every caller before MEAL-89 was.
+   */
+  role?: DraftReviewBy;
+}
+
+/** Log event names for a decision, by who made it. See `DraftDeps.role`. */
+function events(role: DraftReviewBy | undefined) {
+  return role === 'creator'
+    ? { approve: 'CREATOR:DRAFT_DECIDE', cancel: 'CREATOR:DRAFT_DECIDE', edit: 'CREATOR:DRAFT_EDIT' } as const
+    : { approve: 'ADMIN:DRAFT_APPROVE', cancel: 'ADMIN:DRAFT_CANCEL', edit: 'ADMIN:DRAFT_EDIT' } as const;
 }
 
 // ── Presentation ─────────────────────────────────────────────────────────────
@@ -178,26 +199,49 @@ export interface QueuedDraft extends ImportDraft {
   summary: ImportSummary;
 }
 
+export interface QueueScope {
+  /**
+   * Narrows the queue to one creator's own drafts (MEAL-89).
+   *
+   * The admin queue spans creators by design — that is what it is for. The
+   * creator's does not, and this is the only thing stopping it: `review_by` is
+   * `'creator'` on every poller draft in the table, so a creator queue that
+   * filtered on `review_by` alone would hand each creator every other
+   * creator's unpublished recipes, with Approve underneath them.
+   */
+  creatorId?: string;
+  limit?: number;
+}
+
 /**
- * Everything waiting on the admin, flagged items first.
+ * Everything waiting on a reviewer, flagged items first.
  *
  * Sorted here rather than in SQL because "how many fields need a look" is
  * derived from the confidence jsonb by rules that live in `draft-form.ts`, and
  * a second copy of them in a Postgres expression is a second thing to keep
- * true. The admin queue is a handful of rows, not a feed.
+ * true. Either queue is a handful of rows, not a feed.
+ *
+ * The order is also the creator's queue ORDER — "3 of 10" counts through this
+ * list — so it has to be stable across a reload rather than merely sensible:
+ * `created_at` breaks every tie, and no row can drift past another between two
+ * reads unless something about it actually changed.
  */
 export async function listDraftQueue(
   supabase: SupabaseClient,
   reviewBy: DraftReviewBy,
-  limit = 200,
+  scope: QueueScope = {},
 ): Promise<QueuedDraft[]> {
-  const { data } = await supabase
+  let query = supabase
     .from('creator_import_drafts')
     .select(DRAFT_COLUMNS)
     .eq('status', 'pending_review')
-    .eq('review_by', reviewBy)
+    .eq('review_by', reviewBy);
+
+  if (scope.creatorId) query = query.eq('creator_id', scope.creatorId);
+
+  const { data } = await query
     .order('created_at', { ascending: true })
-    .limit(limit);
+    .limit(scope.limit ?? 200);
 
   const drafts = ((data ?? []) as Array<Record<string, any>>).map(toImportDraft);
   return drafts
@@ -209,6 +253,59 @@ export async function listDraftQueue(
       if (a.summary.needALook !== b.summary.needALook) return b.summary.needALook - a.summary.needALook;
       return (a.createdAt ?? '').localeCompare(b.createdAt ?? '');
     });
+}
+
+/**
+ * How many drafts are waiting on this creator. The badge, and nothing else.
+ *
+ * A count rather than a boolean, because the badge shows the number: "10" tells
+ * a creator to set aside time and a dot reads identically for one draft and for
+ * twenty, which is the part they actually need in order to decide when to look.
+ *
+ * `head: true` so no row bodies cross the wire — this runs on every portal load
+ * and every app foreground, and the drafts themselves are jsonb recipes. The
+ * `review_by` filter is what keeps a draft an operator is still holding out of
+ * the creator's number; it is not waiting on them yet, and a badge that counts
+ * it would send them to a queue with nothing in it.
+ */
+export async function countPendingDrafts(supabase: SupabaseClient, creatorId: string): Promise<number> {
+  const { count } = await supabase
+    .from('creator_import_drafts')
+    .select('id', { count: 'exact', head: true })
+    .eq('creator_id', creatorId)
+    .eq('status', 'pending_review')
+    .eq('review_by', 'creator');
+  return count ?? 0;
+}
+
+/**
+ * Whether `id` is a draft `creatorId` is allowed to decide (MEAL-89).
+ *
+ * Every decision below takes an actor and none of them takes an owner: on the
+ * admin path `requireAdmin` is the whole authorisation, and a draft id is a
+ * uuid an operator legitimately holds. On the creator path the id is the only
+ * thing in the request, so without this any creator could approve or decline
+ * any other creator's draft by posting a uuid — publishing to Discover under
+ * somebody else's name, which is the exact harm MEAL-77 is about.
+ *
+ * A pre-check rather than an extra predicate on the conditional write, and it
+ * is not a TOCTOU gap: `creator_id` is set at insert and never updated, so an
+ * ownership answer cannot go stale between this read and the write that
+ * follows. Nothing in this module writes it.
+ *
+ * Fails CLOSED. A row that does not exist, or a read that errors, answers no.
+ */
+export async function draftBelongsToCreator(
+  supabase: SupabaseClient,
+  id: string,
+  creatorId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from('creator_import_drafts')
+    .select('creator_id')
+    .eq('id', id)
+    .maybeSingle();
+  return Boolean(data) && (data as { creator_id?: string }).creator_id === creatorId;
 }
 
 // ── Writing a draft ──────────────────────────────────────────────────────────
@@ -405,7 +502,7 @@ export async function approveDraft(
   // claimed the record now pointed at something live.
 
   log({
-    event: 'ADMIN:DRAFT_APPROVE',
+    event: events(deps.role).approve,
     status: 'success',
     userId: adminUserId,
     detail: `draft=${id} creator=${draft.creatorId} meal=${meal.id} ${draft.editedAt ? 'edited' : 'as-extracted'}`,
@@ -481,46 +578,28 @@ export async function notifyApproved(
 }
 
 /**
- * Is there a creator-facing review queue to hand a draft to?
- *
- * **No, and this is the switch that says so.** `review_by = 'creator'` is read
- * by exactly one query in this repository — `listDraftQueue`, from
- * `/api/admin/import-drafts`, which asks for `'admin'`. There is no creator
- * endpoint, no creator screen, and no admin action that used to set it back:
- * MEAL-89 is the ticket for all three and it is not built. Flipping the column
- * therefore did not hand the decision to anyone, it removed the draft from the
- * only queue anybody reads, while `creator_source_items` said `imported` so no
- * later sync would bring the post back. First click, recipe gone, and the
- * screen said "It is in their queue now, not yours."
- *
- * Turn this on in the same commit that adds the creator's queue, not before.
- */
-export const CREATOR_REVIEW_QUEUE_EXISTS = false;
-
-/** What an operator is told instead, and why. The UI shows this on the button. */
-export const HANDOFF_UNAVAILABLE =
-  'Send to creator is off until the creator review queue exists (MEAL-89). ' +
-  'Handing a draft over today would move it out of this queue and into nothing — ' +
-  'no creator can see it and no later sync re-imports it. Approve it, edit it, or decline it.';
-
-/**
  * Moves a draft into the creator's own queue.
  *
  * The escape hatch for "this looks right, but I am not the person who cooked
  * it". Without it an unsure operator has only approve or delete, and both are
- * worse than asking — which is why this is disabled rather than deleted: the
- * code is right, the queue it hands to is missing. Status stays
- * `pending_review` — the decision would be handed over, not made.
+ * worse than asking. Status stays `pending_review` — the decision is handed
+ * over, not made.
+ *
+ * This was a disabled button until MEAL-89. `review_by = 'creator'` was read by
+ * exactly one query in this repository and it asked for `'admin'`, so flipping
+ * the column did not hand the decision to anyone: it removed the draft from the
+ * only queue anybody read, while `creator_source_items` said `imported` so no
+ * later poll brought the post back. A `CREATOR_REVIEW_QUEUE_EXISTS` constant
+ * held the trapdoor shut and is gone with the same commit that built the far
+ * side — `GET /api/creator/import-drafts` now reads exactly these rows, the
+ * portal and the app's Creator tab both render them, and `countPendingDrafts`
+ * puts the number on a badge so the handoff is visible without being opened.
  */
 export async function sendDraftToCreator(
   deps: DraftDeps,
   id: string,
   adminUserId: string,
 ): Promise<DraftDecision> {
-  // Checked before anything is read, let alone written. A one-way trapdoor is
-  // not a thing to leave switched on and warn about.
-  if (!CREATOR_REVIEW_QUEUE_EXISTS) return { ok: false, error: HANDOFF_UNAVAILABLE };
-
   const now = deps.now ?? Date.now;
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
@@ -551,14 +630,19 @@ export async function sendDraftToCreator(
 }
 
 /**
- * Everything an operator handed to a creator before the button was switched off.
+ * Everything an operator has handed to a creator and the creator has not
+ * decided yet.
  *
- * These rows are in no queue: out of the admin's by `review_by`, and into one
- * that does not exist. Listing them is what makes that recoverable rather than
- * silent — the alternative is a recipe that vanished on a click nobody can now
- * see the effect of. Keyed on `sent_to_creator_at` rather than on `review_by`
- * alone, so the poller's own drafts (`review_by` defaults to `'creator'`) are
- * not swept into an admin screen they do not belong on.
+ * Before MEAL-89 these rows were in no queue at all — out of the admin's by
+ * `review_by`, and into one that did not exist — and listing them was the only
+ * thing keeping that recoverable. The creator's queue now reads them, so this
+ * has become the ordinary "what am I waiting on somebody else for" list: a
+ * handoff is an operator's decision to stop deciding, and a decision whose
+ * effect they cannot see afterwards is one they cannot correct.
+ *
+ * Keyed on `sent_to_creator_at` rather than on `review_by` alone, so the
+ * poller's own drafts (`review_by` defaults to `'creator'`) are not swept into
+ * an admin screen they do not belong on. Those were never the admin's to watch.
  */
 export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200): Promise<QueuedDraft[]> {
   const { data } = await supabase
@@ -579,9 +663,15 @@ export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200
  * Brings a handed-over draft back into the admin queue.
  *
  * The action that did not exist, which is half of why the handoff was a
- * trapdoor: nothing could undo it. Deliberately not conditional on
+ * trapdoor: nothing could undo it. Still worth having now that the far side is
+ * built — a creator who has gone quiet for a month should not be the reason a
+ * recipe sits undecided forever. Deliberately not conditional on
  * `sent_to_creator_at` — a row in `review_by = 'creator'` that an operator can
  * see and wants back should come back.
+ *
+ * Conditional on `pending_review` like every other decision, so taking one back
+ * cannot undo an approval the creator made a second earlier and drop a live
+ * meal's draft into the admin queue as though nothing had been published.
  */
 export async function reclaimDraft(deps: DraftDeps, id: string, adminUserId: string): Promise<DraftDecision> {
   const now = deps.now ?? Date.now;
@@ -638,7 +728,7 @@ export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: stri
   if (!declined) return { ok: false, error: 'That draft was already decided in another tab.' };
 
   log({
-    event: 'ADMIN:DRAFT_CANCEL',
+    event: events(deps.role).cancel,
     status: 'success',
     userId: adminUserId,
     detail: `draft=${id} creator=${loaded.draft.creatorId} url=${JSON.stringify(loaded.draft.sourceUrl)}`,
@@ -777,7 +867,7 @@ export async function editDraft(
   });
   if (!saved) return { ok: false, error: 'That draft was decided in another tab before this could be saved.' };
 
-  log({ event: 'ADMIN:DRAFT_EDIT', status: 'success', userId: adminUserId, detail: `draft=${id}` });
+  log({ event: events(deps.role).edit, status: 'success', userId: adminUserId, detail: `draft=${id}` });
 
   return { ok: true, draft: { ...loaded.draft, draft: next, confidence, editedAt: nowIso } };
 }

@@ -229,22 +229,25 @@ describe('AdminReviewQueue — deciding', () => {
     expect(bodies.find((b) => b.method === 'POST')!.body.notifyCreator).toBe(false);
   });
 
-  it('cannot hand a draft to a queue that does not exist, and says why', async () => {
-    // The button used to work and the screen used to say "It is in their queue
-    // now, not yours." Nothing reads `review_by = 'creator'`: the draft left the
-    // admin queue for nothing, and `creator_source_items` said `imported` so no
-    // later sync brought the post back.
-    const { bodies } = harness([draft()]);
+  it('hands a draft to the creator, and says where it lands', async () => {
+    // The button was disabled while nothing read `review_by = 'creator'`:
+    // pressing it moved the draft out of the only queue anybody read, and
+    // `creator_source_items` said `imported` so no later sync brought the post
+    // back. MEAL-89 built the far side, so it works — and the note has to say
+    // where the draft goes, because an operator handing over a decision needs to
+    // know whether they can change their mind.
+    const { bodies } = harness([draft()], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
 
     await openFirstRow();
     const send = screen.getByTestId('send-to-creator') as HTMLButtonElement;
-
-    expect(send.disabled).toBe(true);
+    expect(send.disabled).toBe(false);
+    // Read before the click: acting closes the row, and the note is what tells
+    // an operator the handoff is reversible *before* they make it.
+    expect(screen.getByTestId('draft-actions-note').textContent).toMatch(/take back/i);
     fireEvent.click(send);
-    expect(bodies.some((b) => b.method === 'POST')).toBe(false);
-    // And the explanation names the missing piece rather than going quiet.
-    expect(screen.getByTestId('draft-actions-note').textContent).toMatch(/MEAL-89/);
-    expect(screen.queryByText(/in their queue now/)).toBeNull();
+
+    await waitFor(() => expect(bodies.some((b) => b.method === 'POST')).toBe(true));
+    expect(bodies.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'send-to-creator', ids: ['d1'] });
   });
 
   it('approves a selection in one request, so one creator gets one email', async () => {
@@ -286,7 +289,9 @@ describe('AdminReviewQueue — deciding', () => {
     render(<AdminReviewQueue />);
 
     const section = await screen.findByTestId('handed-over');
-    expect(section.textContent).toMatch(/MEAL-89/);
+    // No longer "waiting on nobody": the creator's queue reads these rows now,
+    // so the section says who it is waiting on and offers the way back.
+    expect(section.textContent).toMatch(/waiting on their creator/i);
     fireEvent.click(within(section).getByRole('button', { name: 'Take it back' }));
 
     await waitFor(() => expect(posted.some((b) => b.method === 'POST')).toBe(true));

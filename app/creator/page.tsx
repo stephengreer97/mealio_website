@@ -28,6 +28,7 @@ import {
   type ScalarField,
 } from '@/lib/import/draft-form';
 import PublishedLinkModal from '@/components/PublishedLinkModal';
+import CreatorReviewQueue from '@/components/CreatorReviewQueue';
 
 interface Creator {
   id: string;
@@ -1473,6 +1474,14 @@ export default function CreatorPortal() {
         <AppHeader />
 
         <div className="max-w-3xl mx-auto px-4 py-8 space-y-4">
+
+          {/* ── Drafts waiting on this creator (MEAL-89) ──
+              Above the profile because it is the only thing on this page that
+              is waiting on them; everything below is theirs to do whenever.
+              It renders nothing when the queue is empty, so the portal does not
+              grow a box to say there is nothing to do — and it never blocks:
+              a creator who came here to edit a published meal scrolls past. */}
+          <CreatorReviewQueue />
 
           {/* ── Profile card ── */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">

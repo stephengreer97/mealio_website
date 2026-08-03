@@ -23,8 +23,9 @@ import {
   approveDraft,
   cancelDraft,
   editDraft,
+  countPendingDrafts,
+  draftBelongsToCreator,
   editableDraft,
-  HANDOFF_UNAVAILABLE,
   listDraftQueue,
   listHandedOverDrafts,
   notifyApproved,
@@ -200,6 +201,62 @@ describe('listDraftQueue', () => {
     await listDraftQueue(supabase, 'creator');
     const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
     expect(filters.map((c) => c.args)).toContainEqual(['review_by', 'creator']);
+  });
+});
+
+describe('the creator queue is scoped to one creator', () => {
+  it('returns only that creator’s drafts', async () => {
+    // `review_by = 'creator'` is true of every poller draft in the table, for
+    // every creator on the platform. Without the creator filter the queue would
+    // hand each of them everyone else's unpublished recipes.
+    fakeDb.seed('creator_import_drafts', [
+      queueRow({ id: 'mine', review_by: 'creator', creator_id: 'c1' }),
+      queueRow({ id: 'theirs', review_by: 'creator', creator_id: 'c2' }),
+    ]);
+
+    const rows = await listDraftQueue(supabase, 'creator', { creatorId: 'c1' });
+
+    expect(rows.map((row) => row.id)).toEqual(['mine']);
+  });
+
+  it('counts what is waiting on them, and nothing else', async () => {
+    fakeDb.seed('creator_import_drafts', [
+      queueRow({ id: 'a', review_by: 'creator', creator_id: 'c1' }),
+      queueRow({ id: 'b', review_by: 'creator', creator_id: 'c1' }),
+      // Already decided — out of the queue and out of the badge.
+      queueRow({ id: 'c', review_by: 'creator', creator_id: 'c1', status: 'cancelled' }),
+      // Still an operator's to decide; not waiting on this creator at all.
+      queueRow({ id: 'd', review_by: 'admin', creator_id: 'c1' }),
+      queueRow({ id: 'e', review_by: 'creator', creator_id: 'c2' }),
+    ]);
+
+    expect(await countPendingDrafts(supabase, 'c1')).toBe(2);
+  });
+
+  it('asks the database for a count rather than for the recipes', async () => {
+    // Every portal load and every app foreground calls this, and a draft is a
+    // jsonb recipe. Fetching rows to call `.length` on them is the version of
+    // this that works fine until a creator has forty.
+    fakeDb.seed('creator_import_drafts', [queueRow({ review_by: 'creator', creator_id: 'c1' })]);
+    await countPendingDrafts(supabase, 'c1');
+
+    const select = fakeDb.calls.find((c) => c.table === 'creator_import_drafts' && c.method === 'select');
+    expect(select?.args[1]).toMatchObject({ head: true, count: 'exact' });
+  });
+});
+
+describe('draftBelongsToCreator — whose recipe is this', () => {
+  it('says yes only for the owner', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    expect(await draftBelongsToCreator(supabase, 'd1', 'c1')).toBe(true);
+    expect(await draftBelongsToCreator(supabase, 'd1', 'c2')).toBe(false);
+  });
+
+  it('fails closed on a draft that does not exist', async () => {
+    // A uuid in a request body is not evidence of anything. The safe answer to
+    // "we cannot find this row" is no.
+    fakeDb.seed('creator_import_drafts', []);
+    expect(await draftBelongsToCreator(supabase, 'nope', 'c1')).toBe(false);
   });
 });
 
@@ -403,34 +460,45 @@ describe('notifyApproved', () => {
 
 // ── Send to creator ──────────────────────────────────────────────────────────
 
-describe('sendDraftToCreator — an escape hatch with nowhere to go', () => {
-  it('refuses, and moves nothing, while there is no creator queue to hand to', async () => {
-    // `review_by = 'creator'` is read by one query in this repository and it asks
-    // for `'admin'`. Flipping the column moved a draft out of the only queue
-    // anybody reads and into nothing: no creator endpoint, no creator screen, no
-    // way back — and `creator_source_items` says `imported`, so no later sync
-    // re-imports the post. The recipe was lost on the first click.
+describe('sendDraftToCreator — the escape hatch, now that it lands somewhere', () => {
+  it('moves the draft into the creator queue, still undecided', async () => {
+    // The button was disabled until MEAL-89: `review_by = 'creator'` was read by
+    // one query in this repository and it asked for `'admin'`, so flipping the
+    // column moved a draft out of the only queue anybody read and into nothing.
+    // `listDraftQueue(supabase, 'creator', { creatorId })` is the reader that
+    // makes this a handoff rather than a trapdoor, and it is asserted below.
     fakeDb.seed('creator_import_drafts', [draftRow()]);
 
     const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
 
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.error).toMatch(/MEAL-89/);
-    // Not a warning, a refusal: the row is untouched and still in the queue.
+    expect(result.ok).toBe(true);
     expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
-      review_by: 'admin',
+      review_by: 'creator',
+      sent_to_creator_by: 'admin-1',
+      // Handing the decision over is not making it.
       status: 'pending_review',
+      decided_at: null,
+      decided_by: null,
     });
-    expect(fakeDb.row('creator_import_drafts', 'd1')).not.toHaveProperty('sent_to_creator_at');
-    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
   });
 
-  it('says nothing untrue about where the draft went', async () => {
-    // The screen used to say "It is in their queue now, not yours."
+  it('lands where the creator will actually find it', async () => {
+    // The whole reason the button was switched off. A handoff that the creator's
+    // own queue does not return is a recipe nobody can see and no later poll
+    // re-imports, so this is asserted end to end rather than on the column.
     fakeDb.seed('creator_import_drafts', [draftRow()]);
+    await sendDraftToCreator(deps(), 'd1', 'admin-1');
+
+    const theirs = await listDraftQueue(supabase, 'creator', { creatorId: 'c1' });
+    expect(theirs.map((row) => row.id)).toEqual(['d1']);
+    expect(await countPendingDrafts(supabase, 'c1')).toBe(1);
+  });
+
+  it('refuses to hand over one that is already theirs', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
     const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
-    expect(result.ok === false && result.error).toMatch(/queue|nothing/i);
-    expect(HANDOFF_UNAVAILABLE).not.toMatch(/in their queue/i);
+    expect(result.ok).toBe(false);
+    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
   });
 
   it('publishes nothing on the way — that is the whole point of the button', async () => {
@@ -443,8 +511,8 @@ describe('sendDraftToCreator — an escape hatch with nowhere to go', () => {
   });
 });
 
-describe('drafts already handed over — nothing is left in neither queue', () => {
-  /** What production has: rows the button moved before it was switched off. */
+describe('drafts handed over — visible to the operator who let go of them', () => {
+  /** Rows an operator sent to a creator who has not decided them yet. */
   const handedOver = (overrides: Record<string, unknown> = {}) =>
     draftRow({
       review_by: 'creator',

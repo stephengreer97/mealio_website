@@ -60,6 +60,13 @@ function stubApi(routes: Routes = {}) {
         stats: null,
       });
     }
+    // Before the import check, for the same reason /meals is before /me:
+    // '/api/creator/import-drafts'.includes('/api/creator/import'). The portal
+    // mounts the creator's review queue (MEAL-89), which reads this on load —
+    // routing it to the import pipeline would hand the queue an ImportSuccess
+    // and, worse, consume a one-shot import route this test was holding for the
+    // creator's own paste-a-link import.
+    if (url.includes('/api/creator/import-drafts')) return json({ drafts: [], totals: { waiting: 0, flagged: 0 } });
     if (url.includes('/api/creator/import')) {
       return routes.import?.() ?? json({ error: 'no route' }, 500);
     }
