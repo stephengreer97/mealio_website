@@ -71,9 +71,9 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
   /**
    * The source Mealio actually polls, when it is polling at all.
    *
-   * Said before they try to clear it rather than only when the save is refused:
+   * Said before they try to edit it rather than only when the save is refused:
    * "this is where your recipes come from" is the whole reason that link cannot
-   * be removed, and a creator who reads it first never meets the refusal.
+   * be changed, and a creator who reads it first never meets the refusal.
    */
   const polled =
     creator.import_opt_in === true && creator.primary_source && creator.primary_source !== 'none'
@@ -158,8 +158,9 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
 
       {polled && (
         <p className="text-xs text-gray-500 mb-4">
-          Mealio is importing your recipes from your {SOURCE_LABELS[polled]}, so that one can&rsquo;t be left blank —
-          change it to a new link, or ask us to stop importing first.
+          Mealio is importing your recipes from your {SOURCE_LABELS[polled]}, so that one can&rsquo;t be changed or
+          removed here &mdash; it&rsquo;s the link we read your recipes from. Send us the new link and we&rsquo;ll
+          move the import across, or ask us to stop importing first.
         </p>
       )}
 

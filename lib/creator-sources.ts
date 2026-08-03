@@ -109,6 +109,14 @@ const MAX_LINK_CHARS = 2048;
  * mistake that would otherwise only surface as a viability check with no items.
  */
 export function normalizePlatformUrl(source: PlatformSource, raw: unknown): LinkResult {
+  // A missing field is a field nobody typed into; anything else that is not a
+  // string is a client bug, and folding it to blank made that bug *destructive* —
+  // `{website: null}` for a field the form never touched deleted the creator's
+  // link and answered 200. An empty string is the way to clear one, and it is
+  // the only way, because it is the only value that says so unambiguously.
+  if (raw !== undefined && typeof raw !== 'string') {
+    return { ok: false, error: `That is not a link. Send the link as text, or an empty string to remove it. Example: ${EXAMPLES[source]}` };
+  }
   const input = typeof raw === 'string' ? raw.trim() : '';
   if (!input) return { ok: true, url: null };
   if (input.length > MAX_LINK_CHARS) {
@@ -291,8 +299,17 @@ export function checkPollingInvariants(row: PollingRow, explicitOptIn = false): 
     // For a website the feed URL *is* the thing polled, and it must be one a
     // human confirmed — that confirmation step is the whole defence against a
     // silently wrong discovery.
-    if (primarySource === 'website' && !row.feed_url) {
-      return { ok: false, error: 'Confirm the discovered feed URL before turning import on.' };
+    if (primarySource === 'website') {
+      if (!row.feed_url) {
+        return { ok: false, error: 'Confirm the discovered feed URL before turning import on.' };
+      }
+      // The pairing, not just the feed. The admin route checks a feed URL
+      // against the website as it is *stored*, which only holds the two together
+      // while the website link never moves — and since MEAL-94 it does move, on
+      // a request no operator sees. Judged here, on the row, the rule survives
+      // whichever of the two columns changed and whichever route changed it.
+      const mismatch = describeHostMismatch(String(row[SOURCE_COLUMNS.website] ?? ''), String(row.feed_url));
+      if (mismatch) return { ok: false, error: mismatch };
     }
   }
 

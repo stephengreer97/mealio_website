@@ -275,6 +275,26 @@ describe('/api/admin/creators', () => {
       expect(res.status).toBe(200);
     });
 
+    it('refuses turning import on against a feed the website has since moved away from', async () => {
+      // The pairing was confirmed once, against the website as it stood then.
+      // Checking it only when the *feed* is submitted holds the two together
+      // only while the website link never moves — and a creator can move theirs
+      // (MEAL-94). So the rule is judged on the row, from either side: the
+      // stored feed here is on a host this creator's site no longer is.
+      asAdmin();
+      fakeDb.queue('creators', {
+        data: { ...READY, website_url: 'https://sarahcooks.test/', feed_url: 'https://chefsarah.test/feed' },
+      });
+      const res = await PATCH(jsonRequest('/api/admin/creators', {
+        method: 'PATCH', token, body: { id: 'c1', importOptIn: true },
+      }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/not on the creator's own site/i);
+      // Nothing written: an operator re-confirms the feed for the new host, and
+      // only then is there something coherent to poll.
+      expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
+    });
+
     it.each([
       ['a trailing dot on the feed', 'https://chefsarah.test/', 'https://chefsarah.test./feed'],
       ['a trailing dot on the site', 'https://chefsarah.test./', 'https://chefsarah.test/feed'],

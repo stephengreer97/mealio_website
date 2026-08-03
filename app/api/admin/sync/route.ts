@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
 import { isOnSameSite, platformSourceForUrl, SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
+import { sourceItemId } from '@/lib/creator-meals';
 import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
 import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncItem } from '@/lib/admin-sync';
 
@@ -105,7 +106,12 @@ export async function POST(request: NextRequest) {
     // pasted link the URL is the only identity available, so it is the *folded*
     // one: `http://x/p`, `https://x/p` and `https://www.x/p` are one post, and
     // three item_ids for it are three drafts and three published meals.
-    items = [newItem({ itemId: urlIdentity(url) ?? url, url })];
+    //
+    // Except where the source has an id of its own. A pasted YouTube link has to
+    // key on the video id, because that is what the catalog, the uploads-feed
+    // lookup that reads the video, and MEAL-79's relationship all use — keyed on
+    // the URL the run cannot even find the video it was given.
+    items = [newItem({ itemId: sourceItemId(source, urlIdentity(url) ?? url), url })];
   } else {
     const requested = body.source;
     source = typeof requested === 'string' && requested in SOURCE_COLUMNS ? (requested as PlatformSource) : 'website';

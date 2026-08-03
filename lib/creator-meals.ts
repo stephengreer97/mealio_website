@@ -14,8 +14,9 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolvePhotoUrl } from '@/lib/photos';
-import { platformSourceForUrl } from '@/lib/creator-sources';
+import { platformSourceForUrl, type PlatformSource } from '@/lib/creator-sources';
 import { urlIdentity } from '@/lib/import/ssrf';
+import { videoIdFromUrl } from '@/lib/youtube';
 import type { CreatorMealDraft } from '@/lib/import/types';
 
 export interface PublishingCreator {
@@ -67,6 +68,22 @@ export interface DuplicateSource {
 }
 
 /**
+ * How many of a creator's meals the duplicate prompt reads.
+ *
+ * The comparison is on a folded identity, which no index can serve, so this is
+ * an unfiltered read of the creator's own rows. Unbounded it inherits
+ * PostgREST's default page instead — 1000 rows, silently, with no error and no
+ * marker saying the answer was truncated, so the prompt would simply stop firing
+ * for the most prolific creators and nothing would say why. A stated bound with
+ * the newest rows inside it is a limit we chose; the other kind is one we found
+ * out about. Newest first because a repeat publish is a repeat of recent work.
+ *
+ * The prompt is a warning, never a block — the hard guarantee is the claim
+ * below, which is an indexed lookup on one key and is not affected by this.
+ */
+const DUPLICATE_SCAN_LIMIT = 500;
+
+/**
  * Has this creator already published a meal from this link?
  *
  * Compared in memory rather than in SQL because the stored `source` is whatever
@@ -82,7 +99,9 @@ export async function findMealFromSameLink(
     .from('preset_meals')
     .select('id, name, source')
     .eq('creator_id', creatorId)
-    .not('source', 'is', null);
+    .not('source', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(DUPLICATE_SCAN_LIMIT);
 
   const match = ((data ?? []) as Array<Record<string, any>>).find(
     (meal) => typeof meal.source === 'string' && publishIdentity(meal.source) === identity,
@@ -117,6 +136,85 @@ export type PublishClaim =
   | { ok: true; release: () => Promise<void> }
   | { ok: false };
 
+/**
+ * How long a hand-publish claim with no meal behind it is believed.
+ *
+ * The caller only claims when no meal of this creator's holds the link, so a
+ * record already sitting there is one of two things: the twin of a request still
+ * in flight, or an orphan whose request died between the claim and the insert.
+ * Nothing on the row tells them apart — `release()` runs from a `catch`, and a
+ * killed function runs no `catch` — so age does. A publish is one photo copy and
+ * one insert inside a serverless invocation that is killed after seconds; five
+ * minutes is far past any of that, which makes a claim older than this one
+ * nobody is coming back for.
+ *
+ * The consequence of the two mistakes is why the window is generous rather than
+ * tight: taking over too early publishes a second meal, waiting too long only
+ * delays a retry the creator can make themselves.
+ */
+export const CLAIM_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * The `item_id` a hand publish's record has to land under.
+ *
+ * Per source, because the poller's key is per source: YouTube records are keyed
+ * on the bare video id (`parseUploadsFeed`), and a record written under a URL is
+ * one the sync will never find — it re-imports the post the creator published by
+ * hand, which is the exact promise this record exists to keep. The folded
+ * identity is right for a website, where a feed's own guid is a URL anyway.
+ *
+ * Instagram and TikTok have no catalog yet (MEAL-82 / 83), so there is no key to
+ * agree with; they fold to the identity and this is the one place that changes
+ * when those land.
+ *
+ * Shared with the one-link admin sync, which starts from a pasted URL for the
+ * same reason a hand publish does. Two hand paths deriving this separately is
+ * how they would come to disagree about what one video is called.
+ */
+export function sourceItemId(source: PlatformSource, identity: string): string {
+  return (source === 'youtube' && videoIdFromUrl(identity)) || identity;
+}
+
+/** Drops a hand publish's claim, so the link can be published from again. */
+async function dropClaim(
+  supabase: SupabaseClient,
+  creatorId: string,
+  source: PlatformSource,
+  itemId: string,
+): Promise<void> {
+  await supabase
+    .from('creator_source_items')
+    .delete()
+    .eq('creator_id', creatorId)
+    .eq('source', source)
+    .eq('item_id', itemId)
+    // Never a record the sync owns. Those carry a draft in the review queue, and
+    // deleting one here would strand it.
+    .is('draft_id', null);
+}
+
+/**
+ * Releases the claim a published meal holds over its link.
+ *
+ * Called when the meal stops holding it — deleted, or edited onto a different
+ * link. Without this the record outlives the meal it was protecting, and since
+ * the record is what the *next* publish is refused against, deleting a meal
+ * (a typo in the title, the wrong photo — the ordinary reasons) would lock its
+ * link out of publishing for good, with an error saying a meal exists that does
+ * not. Deleting rather than reverting to `seen`: the meal is gone, so the post
+ * genuinely is un-imported and a later sync should offer it again.
+ */
+export async function releaseLinkClaim(
+  supabase: SupabaseClient,
+  creatorId: string,
+  sourceUrl: string | null | undefined,
+): Promise<void> {
+  const identity = publishIdentity(sourceUrl);
+  if (!identity) return;
+  const source = platformSourceForUrl(identity);
+  await dropClaim(supabase, creatorId, source, sourceItemId(source, identity));
+}
+
 export async function claimPublishFromLink(
   supabase: SupabaseClient,
   creatorId: string,
@@ -125,25 +223,48 @@ export async function claimPublishFromLink(
   now: () => number = Date.now,
 ): Promise<PublishClaim> {
   const source = platformSourceForUrl(identity);
+  const itemId = sourceItemId(source, identity);
   const nowIso = new Date(now()).toISOString();
   const detail = 'Published by the creator from the portal.';
-  const key = { creator_id: creatorId, source, item_id: identity };
+  const key = { creator_id: creatorId, source, item_id: itemId };
   const noop = { ok: true as const, release: async () => {} };
 
   const { data: existing } = await supabase
     .from('creator_source_items')
-    .select('id, status, draft_id, detail')
+    .select('id, status, draft_id, detail, updated_at')
     .eq('creator_id', creatorId)
     .eq('source', source)
-    .eq('item_id', identity)
+    .eq('item_id', itemId)
     .maybeSingle();
 
   const record = existing as Record<string, any> | null;
 
   if (record && record.status === 'imported') {
-    // Somebody holds it. Ours (no draft id) means this creator already published
-    // from this link — a moment ago in a twin request, or in an earlier session.
-    return record.draft_id ? noop : { ok: false };
+    // Somebody holds it. A draft id says the sync does, and a draft is not a
+    // published meal, so it yields.
+    if (record.draft_id) return noop;
+
+    // Ours, and no meal of this creator's is behind it — the caller checked
+    // before it got here. Either a twin request is still in flight or the one
+    // that claimed this never came back. Age is the only thing that tells them
+    // apart, and a stale claim has to be recoverable: it is the difference
+    // between a creator retrying and a link nobody can ever publish from again.
+    const claimedAt = Date.parse(String(record.updated_at ?? ''));
+    if (!Number.isFinite(claimedAt) || now() - claimedAt <= CLAIM_GRACE_MS) {
+      return { ok: false };
+    }
+
+    // Taken over with the timestamp as the condition, so two requests that both
+    // decide it is stale cannot both win — the same "the write is the test"
+    // shape as the branch below, on the one column that distinguishes them.
+    const { data: taken } = await supabase
+      .from('creator_source_items')
+      .update({ detail, updated_at: nowIso })
+      .eq('id', record.id)
+      .eq('updated_at', record.updated_at)
+      .select('id');
+    if (!Array.isArray(taken) || taken.length === 0) return { ok: false };
+    return { ok: true, release: () => dropClaim(supabase, creatorId, source, itemId) };
   }
 
   if (record) {
@@ -180,16 +301,9 @@ export async function claimPublishFromLink(
     ok: true,
     // A claim with no meal behind it would block this link forever, and the
     // creator would be told they had already published something that does not
-    // exist. Released the moment the insert it was protecting fails.
-    release: async () => {
-      await supabase
-        .from('creator_source_items')
-        .delete()
-        .eq('creator_id', creatorId)
-        .eq('source', source)
-        .eq('item_id', identity)
-        .is('draft_id', null);
-    },
+    // exist. Released the moment the insert it was protecting fails — and, for
+    // the failure no `catch` can see, aged out by `CLAIM_GRACE_MS` above.
+    release: () => dropClaim(supabase, creatorId, source, itemId),
   };
 }
 

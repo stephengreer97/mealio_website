@@ -131,6 +131,26 @@ describe('POST /api/admin/sync', () => {
     expect(insert?.args[0].items[0]).toMatchObject({ url: 'https://chefsarah.test/guacamole', status: 'pending' });
   });
 
+  it('keys a pasted YouTube link on the video id, not on the URL', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+    fakeDb.queue('creator_sync_runs', { data: insertedRun([]) });
+
+    const res = await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: { creatorId: 'c1', mode: 'link', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
+    }));
+
+    expect(res.status).toBe(201);
+    const insert = fakeDb.calls.find((c) => c.table === 'creator_sync_runs' && c.method === 'insert');
+    // The id the uploads feed uses. Keyed on the URL the worker looks the video
+    // up by a string the channel map has never heard of and fails the item with
+    // "no longer in the channel's recent uploads" — a sentence about the video
+    // rather than about the key, which is the worst kind of wrong message.
+    expect(insert?.args[0].items[0]).toMatchObject({ itemId: 'dQw4w9WgXcQ' });
+    expect(insert?.args[0]).toMatchObject({ source: 'youtube' });
+  });
+
   it('never writes a preset meal — a run only enqueues (MEAL-91)', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: CREATOR });

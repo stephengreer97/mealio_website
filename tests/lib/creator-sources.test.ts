@@ -26,6 +26,15 @@ describe('creator-sources — link normalisation', () => {
     expect(normalizePlatformUrl('youtube', undefined)).toEqual({ ok: true, url: null });
   });
 
+  it('refuses a value that is not text at all', () => {
+    // Not the same thing as blank. Folding these to blank made them *clear* the
+    // link, so a client sending `null` for a field nobody touched deleted it and
+    // was told the write succeeded.
+    for (const input of [null, 42, {}, [], true]) {
+      expect(normalizePlatformUrl('website', input).ok, JSON.stringify(input)).toBe(false);
+    }
+  });
+
   it('accepts every shape of a platform URL that platform actually serves', () => {
     for (const input of ['youtube.com/@sarah', 'https://www.youtube.com/c/sarah', 'https://youtu.be/abc123', 'm.youtube.com/@sarah']) {
       expect(normalizePlatformUrl('youtube', input).ok, input).toBe(true);
@@ -263,6 +272,16 @@ describe('creator-sources — checkPollingInvariants', () => {
 
   it('refuses opt-in for a website whose feed was never confirmed', () => {
     expect(checkPollingInvariants({ ...READY, feed_url: null })).toMatchObject({ ok: false });
+  });
+
+  it('refuses opt-in for a feed that is not on the creator’s own site', () => {
+    // The pairing the admin route checks when a feed is submitted, carried here
+    // so it also holds when the *website* is what moved. Otherwise the rule is
+    // enforceable from one side only, and the other side — a creator editing
+    // their own links — is the side that is not an operator.
+    const verdict = checkPollingInvariants({ ...READY, website_url: 'https://sarahcooks.test/' });
+    expect(verdict).toMatchObject({ ok: false });
+    expect((verdict as { error: string }).error).toMatch(/not on the creator's own site/i);
   });
 
   it('turns the switch off with the source rather than leaving it dangling', () => {

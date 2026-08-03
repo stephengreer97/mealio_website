@@ -37,6 +37,7 @@ function applyLinkEdits(
 ): { ok: true; update: Record<string, string | null>; cleared: PlatformSource[] } | { ok: false; error: string } {
   const update: Record<string, string | null> = {};
   const cleared: PlatformSource[] = [];
+  const touched: PlatformSource[] = [];
 
   for (const [key, raw] of Object.entries(links)) {
     if (!isPlatformSource(key)) {
@@ -50,6 +51,13 @@ function applyLinkEdits(
     if ((creator[column] ?? null) === result.url) continue;
     update[column] = result.url;
     if (!result.url) cleared.push(key);
+    // What the link *means*, against the stored value read the same way. A row
+    // written before this validator existed can hold `chefsarah.com` where the
+    // card now sends `https://chefsarah.com/`: the same place, and rewriting it
+    // is a tidy-up rather than a repointing. Refusing that as a repointing would
+    // lock such a creator out of editing any of their links.
+    const stored = normalizePlatformUrl(key, creator[column] ?? undefined);
+    if ((stored.ok ? stored.url : (creator[column] ?? null)) !== result.url) touched.push(key);
   }
 
   // Adding a link tells us a place exists. It does not opt the creator into
@@ -57,18 +65,30 @@ function applyLinkEdits(
   // operator decision (MEAL-81), so nothing here writes `primary_source` or
   // `import_opt_in`.
   const primarySource = isPrimarySource(creator.primary_source) ? creator.primary_source : 'none';
-  for (const source of cleared) {
-    // Refused rather than silently switched off. Clearing `import_opt_in` here
-    // would let a creator's edit reverse an operator's decision, and clearing
-    // the link while leaving it set would leave them opted into polling a source
-    // they had just removed — which is the outcome that must never happen.
+  for (const source of touched) {
+    // The link being polled is not editable here — replaced any more than
+    // removed. For a source read straight off the link (`primary_source` of
+    // 'youtube' with no OAuth grant, where `channelIdForCreator` resolves the
+    // channel from `youtube_url`) a replacement *is* a change of what gets read,
+    // so a creator could point an actively-polled source at a stranger's channel
+    // and have their uploads published under this creator's name. That is the
+    // attribution risk MEAL-77 exists for, and an operator reviewing the drafts
+    // afterwards is mediation, not prevention: the videos really are from the
+    // channel the row now names.
+    //
+    // Refused rather than silently switched off, because clearing
+    // `import_opt_in` here would let a creator's edit reverse an operator's
+    // decision — and it would stop their imports with nobody told but them.
+    // Which link we poll is an operator's to move, and this sentence is how a
+    // creator asks for that.
     if (creator.import_opt_in === true && primarySource === source) {
       return {
         ok: false,
         error:
           `Mealio is currently importing your recipes from your ${SOURCE_LABELS[source]}, so that link can't be ` +
-          `removed — there would be nothing left to import from. Send us a new ${SOURCE_LABELS[source]} link, or ` +
-          'ask us to stop importing first.',
+          `changed or removed here — it is the one we read your recipes from, and pointing it somewhere else ` +
+          `would change what gets published under your name. Send us the new ${SOURCE_LABELS[source]} link and ` +
+          "we'll move the import across, or ask us to stop importing first.",
       };
     }
   }
@@ -122,7 +142,7 @@ export async function PATCH(request: NextRequest) {
   const { photoUrl, handle, bio, socialHandle, links } = body;
 
   const updates: Record<string, unknown> = {};
-  let notices: string[] = [];
+  const notices: string[] = [];
 
   if (links !== undefined) {
     if (typeof links !== 'object' || links === null || Array.isArray(links)) {
@@ -147,13 +167,31 @@ export async function PATCH(request: NextRequest) {
     // refuses the case a creator can actually reach, with a sentence written for
     // them; this catches every combination neither of us thought of, including
     // rows an operator left in a state no UI can produce.
-    const verdict = checkPollingInvariants({ ...(creator as Record<string, unknown>), ...edit.update });
-    if (!verdict.ok) {
-      return NextResponse.json({ error: verdict.error }, { status: 400 });
+    //
+    // Its verdict stops the polling rather than the edit. The wording is the
+    // operator's — "confirm the discovered feed URL" names a screen the creator
+    // cannot open — and a 400 would hard-block them from touching *any* of their
+    // links until somebody repaired a row they did not break. A row that cannot
+    // be polled coherently should not be polled, so the switch goes off and the
+    // creator is told plainly; the operator's own route still refuses to turn it
+    // back on until the row makes sense. This may only ever write `false`:
+    // nothing a creator sends can start polling.
+    const resulting = { ...(creator as Record<string, unknown>), ...edit.update };
+    const verdict = checkPollingInvariants(resulting);
+    const importOptIn = verdict.ok ? verdict.importOptIn : false;
+    if (importOptIn !== (resulting.import_opt_in === true)) {
+      updates.import_opt_in = importOptIn;
+      if (!verdict.ok) {
+        notices.push(
+          "We've paused importing your recipes automatically. The import settings on your account no longer add " +
+            "up, and we'd rather stop than publish the wrong thing under your name — get in touch and we'll sort " +
+            'it out.',
+        );
+      }
     }
 
     Object.assign(updates, edit.update);
-    notices = await grantNotices(supabase, (creator as { id: string }).id, edit.cleared);
+    notices.push(...(await grantNotices(supabase, (creator as { id: string }).id, edit.cleared)));
   }
 
   if (photoUrl !== undefined) updates.photo_url = photoUrl ?? null;

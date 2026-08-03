@@ -179,18 +179,84 @@ describe('PATCH /api/creator/me — platform links', () => {
       expect(row?.primary_source).toBe('website');
     });
 
-    it('allows changing that link to a different one', async () => {
+    it('refuses repointing it at somebody else’s channel', async () => {
+      asUser();
+      fakeDb.seed('creators', [
+        creatorRow({
+          youtube_url: 'https://youtube.com/@chefsarah',
+          primary_source: 'youtube',
+          import_opt_in: true,
+        }),
+      ]);
+
+      // The one that matters. With no OAuth grant `channelIdForCreator` reads
+      // the channel off this column, so replacing it substitutes a stranger's
+      // uploads feed under this creator's name — and the host guards cannot see
+      // it, because both links really are on youtube.com and the videos really
+      // are from the channel the row now names. Moving a polled link is the
+      // operator's, and a creator asks for it in the error below.
+      const res = await patch(token, { links: { youtube: 'youtube.com/@somebodyelse' } });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/can't be changed or removed here/i);
+      const row = fakeDb.row('creators', 'c1');
+      expect(row?.youtube_url).toBe('https://youtube.com/@chefsarah');
+      expect(row?.import_opt_in).toBe(true);
+    });
+
+    it('refuses moving it even when the new link is the creator’s own', async () => {
       asUser();
       fakeDb.seed('creators', [
         creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
       ]);
 
-      // Refusing a *clear* must not turn into refusing an *edit*: a creator who
-      // moved their blog has to be able to say so without an operator.
+      // A genuine blog move is refused too, and deliberately: `feed_url` is a
+      // pairing an operator confirmed against the old host, and a creator who
+      // could move the site out from under it would leave the poller reading a
+      // feed nobody has looked at. The message tells them how to ask.
       const res = await patch(token, { links: { website: 'sarahcooks.test' } });
 
+      expect(res.status).toBe(400);
+      const row = fakeDb.row('creators', 'c1');
+      expect(row?.website_url).toBe('https://chefsarah.test/');
+      expect(row?.feed_url).toBe('https://chefsarah.test/feed');
+    });
+
+    it('lets the polled link be re-sent in a spelling that means the same place', async () => {
+      asUser();
+      // A row written before the links had a validator. The card reads it back,
+      // sends it, and the normalised form differs from the stored string — the
+      // same site, spelled the way we store links now.
+      fakeDb.seed('creators', [
+        creatorRow({ website_url: 'chefsarah.test', primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
+      ]);
+
+      const res = await patch(token, { links: { website: 'chefsarah.test', tiktok: 'tiktok.com/@chefsarah' } });
+
+      // Otherwise a creator on such a row could never save any link at all: every
+      // save would read as repointing the source at itself.
       expect(res.status).toBe(200);
-      expect(fakeDb.row('creators', 'c1')?.website_url).toBe('https://sarahcooks.test/');
+      expect(fakeDb.row('creators', 'c1')?.tiktok_url).toBe('https://tiktok.com/@chefsarah');
+    });
+
+    it('allows changing a link nothing is polling', async () => {
+      asUser();
+      fakeDb.seed('creators', [
+        creatorRow({
+          youtube_url: 'https://youtube.com/@chefsarah',
+          primary_source: 'website',
+          import_opt_in: true,
+          feed_url: 'https://chefsarah.test/feed',
+        }),
+      ]);
+
+      // The refusal is about the polled link, not about editing. A renamed
+      // YouTube channel on a creator whose website is the source is an ordinary
+      // edit and must stay one.
+      const res = await patch(token, { links: { youtube: 'youtube.com/@sarahcooks' } });
+
+      expect(res.status).toBe(200);
+      expect(fakeDb.row('creators', 'c1')?.youtube_url).toBe('https://youtube.com/@sarahcooks');
     });
 
     it('allows clearing a link nothing is polling', async () => {
@@ -219,6 +285,74 @@ describe('PATCH /api/creator/me — platform links', () => {
 
       expect(res.status).toBe(200);
       expect(fakeDb.row('creators', 'c1')?.youtube_url).toBeNull();
+      expect(fakeDb.row('creators', 'c1')?.import_opt_in).toBe(false);
+    });
+  });
+
+  describe('a value that is not a link at all', () => {
+    it.each([
+      ['null', null],
+      ['a number', 42],
+      ['an object', {}],
+      ['an array', []],
+      ['a boolean', true],
+    ])('refuses %s rather than reading it as "clear this link"', async (_label, value) => {
+      asUser();
+      fakeDb.seed('creators', [creatorRow({ youtube_url: 'https://youtube.com/@chefsarah' })]);
+
+      // Silently folding a non-string to blank made a client bug destructive: a
+      // form that sends `null` for a field nobody touched would delete the link
+      // and be told 200.
+      const res = await patch(token, { links: { youtube: value } });
+
+      expect(res.status).toBe(400);
+      expect(fakeDb.row('creators', 'c1')?.youtube_url).toBe('https://youtube.com/@chefsarah');
+    });
+
+    it('still clears on an empty string, which is the way to say it', async () => {
+      asUser();
+      fakeDb.seed('creators', [creatorRow({ youtube_url: 'https://youtube.com/@chefsarah' })]);
+
+      expect((await patch(token, { links: { youtube: '' } })).status).toBe(200);
+      expect(fakeDb.row('creators', 'c1')?.youtube_url).toBeNull();
+    });
+  });
+
+  describe('a row an operator left in a state no screen can produce', () => {
+    it('stops the polling rather than the creator’s edit', async () => {
+      asUser();
+      // Opted into polling a website whose feed was never confirmed. Nothing a
+      // creator can send produces this; `checkPollingInvariants` is the backstop
+      // that catches it, and it is reached only from rows like this one.
+      fakeDb.seed('creators', [
+        creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: null }),
+      ]);
+
+      const res = await patch(token, { links: { tiktok: 'tiktok.com/@chefsarah' } });
+      const body = await res.json();
+
+      // The edit goes through — a creator adding an unrelated TikTok link did
+      // not break this row and must not be held hostage by it, least of all by
+      // an error telling them to confirm a feed URL on a screen they cannot open.
+      expect(res.status).toBe(200);
+      expect(fakeDb.row('creators', 'c1')?.tiktok_url).toBe('https://tiktok.com/@chefsarah');
+      // And the incoherent polling is off, which is the only safe reading of a
+      // row that says "poll this website" with nothing to poll.
+      expect(fakeDb.row('creators', 'c1')?.import_opt_in).toBe(false);
+      expect(body.notices.join(' ')).toMatch(/paused importing/i);
+      expect(body.notices.join(' ')).not.toMatch(/feed URL/i);
+    });
+
+    it('never writes the switch the other way', async () => {
+      asUser();
+      fakeDb.seed('creators', [
+        creatorRow({ youtube_url: 'https://youtube.com/@chefsarah', primary_source: 'youtube', import_opt_in: false }),
+      ]);
+
+      // The backstop may only ever turn import off. A coherent row that could be
+      // polled is still not one anybody asked to poll.
+      await patch(token, { links: { instagram: 'instagram.com/chefsarah' } });
+
       expect(fakeDb.row('creators', 'c1')?.import_opt_in).toBe(false);
     });
   });

@@ -17,6 +17,18 @@ export type QueryResult = { data?: any; error?: any; count?: number | null };
  */
 export const URL_LIMIT_BYTES = 8 * 1024;
 
+/**
+ * PostgREST's default page size, as the fake enforces it.
+ *
+ * A select with no `.limit()` does not return every row: it returns the first
+ * `db-max-rows` of them — 1000 on Supabase — with no error, no exception and
+ * nothing in the response saying the answer was cut short. Code that folds the
+ * result in memory therefore keeps working perfectly on every test-sized table
+ * and quietly stops being correct for exactly the rows that grew, which is the
+ * kind of bug that only ever shows up on the biggest account.
+ */
+export const DEFAULT_PAGE_ROWS = 1000;
+
 type Filter = { op: string; column: string; value: any };
 
 function compare(a: any, b: any): number {
@@ -292,7 +304,7 @@ export class FakeSupabase {
             const { column, ascending } = orderBy;
             out.sort((a, b) => (ascending ? 1 : -1) * compare(a[column], b[column]));
           }
-          if (rowLimit !== null) out = out.slice(0, rowLimit);
+          out = out.slice(0, rowLimit ?? DEFAULT_PAGE_ROWS);
           return { data: out.map((r) => project(r, columns)), error: null, count: out.length };
         }
       }

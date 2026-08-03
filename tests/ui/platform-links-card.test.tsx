@@ -78,12 +78,15 @@ describe('PlatformLinksCard', () => {
     expect(calls.some(call => call.method === 'PATCH')).toBe(false);
   });
 
-  it('says which link is being polled, before they try to clear it', async () => {
+  it('says which link is being polled, before they try to edit it', async () => {
     harness({ ...CREATOR, primary_source: 'website', import_opt_in: true });
 
     // The refusal is legible only if they already know why. A creator who reads
-    // this never meets it.
+    // this never meets it. It has to name the whole rule the route enforces:
+    // the polled link cannot be *changed* either, because a replacement is a
+    // change of what gets read and published under their name.
     expect(screen.getByText(/importing your recipes from your Website/i)).toBeTruthy();
+    expect(screen.getByText(/can’t be changed or removed here/i)).toBeTruthy();
   });
 
   it('says nothing about polling when nothing is polled', () => {
