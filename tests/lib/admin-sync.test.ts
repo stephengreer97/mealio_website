@@ -26,8 +26,10 @@ import {
   buildCatalog,
   createSourceDocumentResolver,
   processSyncItem,
+  resumeStalledSyncRuns,
   retrySyncItem,
   summariseRun,
+  SWEEP_BUDGET_MS,
   type SyncDeps,
   type SyncItem,
   type SyncRun,
@@ -195,11 +197,18 @@ function runRow(items: SyncItem[], overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Queues the run read and a successful lease claim. */
-function queueRun(row: Record<string, unknown>) {
-  fakeDb.queue('creator_sync_runs', { data: row });
-  fakeDb.queue('creator_sync_runs', { data: [row] });
-  fakeDb.queue('creators', { data: CREATOR });
+/**
+ * Stores the run, its creator and the per-item record table.
+ *
+ * A stored row rather than a queued result, because everything a run does is a
+ * read-modify-write under a lease: which rows a predicate matches and how many
+ * a conditional update affected *are* the behaviour, and a canned result cannot
+ * express either.
+ */
+function storeRun(row: Record<string, unknown>) {
+  fakeDb.seed('creator_sync_runs', [{ lease_until: null, updated_at: null, ...row }]);
+  fakeDb.seed('creators', [CREATOR]);
+  fakeDb.seed('creator_source_items', []);
 }
 
 const rejection = (stage: ImportResult extends never ? never : 'fetch' | 'gate' | 'extract', detail: string): ImportResult => ({
@@ -703,7 +712,7 @@ describe('advanceRun', () => {
       item({ itemId: 'b', url: 'https://chefsarah.test/b' }),
       item({ itemId: 'c', url: 'https://chefsarah.test/c' }),
     ];
-    queueRun(runRow(items));
+    storeRun(runRow(items));
 
     const importer = vi.fn(async (url: string) =>
       url.endsWith('/a') ? success
@@ -726,7 +735,7 @@ describe('advanceRun', () => {
       item({ itemId: 'a', url: 'https://chefsarah.test/a' }),
       item({ itemId: 'b', url: 'https://chefsarah.test/b' }),
     ];
-    queueRun(runRow(items));
+    storeRun(runRow(items));
 
     const result = await advanceRun(deps({ importer: async () => success }), 'r1');
 
@@ -738,24 +747,14 @@ describe('advanceRun', () => {
   });
 
   it('reports how many fields the queue will ask a human to check', async () => {
-    queueRun(runRow([item()]));
+    storeRun(runRow([item()]));
     const result = await advanceRun(deps({ importer: async () => success }), 'r1');
     expect(summariseRun(result!).needALook).toBeGreaterThan(0);
   });
 
-  it('refuses to work on a run another worker holds the lease on', async () => {
-    fakeDb.queue('creator_sync_runs', { data: runRow([item()], { status: 'running' }) });
-    fakeDb.queue('creator_sync_runs', { data: [] }); // the claim matched no row
-    const importer = vi.fn();
-
-    await advanceRun(deps({ importer: importer as unknown as SyncDeps['importer'] }), 'r1');
-
-    expect(importer).not.toHaveBeenCalled();
-  });
-
   it('stops at its time budget and leaves the rest queued', async () => {
     const items = Array.from({ length: 6 }, (_, i) => item({ itemId: `i${i}`, url: `https://chefsarah.test/${i}` }));
-    queueRun(runRow(items));
+    storeRun(runRow(items));
 
     // A clock that jumps 30s per read: the budget is spent after the first wave.
     let clock = 1_800_000_000_000;
@@ -777,21 +776,227 @@ describe('advanceRun', () => {
 
 describe('retrySyncItem', () => {
   it('puts a failed item back in the queue', async () => {
-    fakeDb.queue('creator_sync_runs', { data: runRow([item({ status: 'failed', detail: 'timeout' })], { status: 'done' }) });
+    storeRun(runRow([item({ status: 'failed', detail: 'timeout' })], { status: 'done', finished_at: '2026-08-02T11:00:00.000Z' }));
+
     const result = await retrySyncItem(deps(), 'r1', 'guid-1');
+
     expect(result.ok && result.run.items[0].status).toBe('pending');
     expect(result.ok && result.run.status).toBe('queued');
+    // Persisted, not merely returned: the old assertion read the object the
+    // function built and would have passed on a write that never landed.
+    const stored = fakeDb.row('creator_sync_runs', 'r1')!;
+    expect((stored.items as SyncItem[])[0]).toMatchObject({ status: 'pending', detail: null });
+    expect(stored).toMatchObject({ status: 'queued', finished_at: null, lease_until: null });
   });
 
   it('refuses to retry a gate rejection — that answer will not change', async () => {
-    fakeDb.queue('creator_sync_runs', { data: runRow([item({ status: 'rejected' })]) });
+    storeRun(runRow([item({ status: 'rejected' })]));
     const result = await retrySyncItem(deps(), 'r1', 'guid-1');
     expect(result.ok).toBe(false);
   });
 
   it('refuses to retry something already drafted', async () => {
-    fakeDb.queue('creator_sync_runs', { data: runRow([item({ status: 'drafted', draftId: 'd1' })]) });
+    storeRun(runRow([item({ status: 'drafted', draftId: 'd1' })]));
     const result = await retrySyncItem(deps(), 'r1', 'guid-1');
     expect(result.ok).toBe(false);
+  });
+});
+
+// ── Two writers on one run ───────────────────────────────────────────────────
+
+/**
+ * The run row is shared mutable state: a worker holds a lease on it while an
+ * operator presses Retry, the cron sweeps it, and a second tab polls it. These
+ * run against a stored row rather than a queued result, because what is being
+ * asserted is what ended up *persisted* after two writers interleaved — which a
+ * FIFO stub cannot express at all.
+ */
+describe('advanceRun and retrySyncItem — concurrent writers', () => {
+  let success: ImportSuccess;
+  beforeEach(async () => { success = await importedGuacamole(); });
+
+  it('never reports a retry it then discards', async () => {
+    // Item `a` is being imported; the operator presses Retry on the failed `b`.
+    // The retry used to succeed, tell the operator `b` was requeued, and then be
+    // overwritten by the worker writing back the array it read *before* the
+    // retry: `b` failed again, every item terminal, run marked done — and
+    // `resumeStalledSyncRuns` filters `status <> 'done'`, so nothing ever picks
+    // `b` up again. Refusing while a worker holds the lease is an acceptable
+    // answer here; saying yes and meaning no is not.
+    storeRun(runRow([
+      item({ itemId: 'a', url: 'https://chefsarah.test/a' }),
+      item({ itemId: 'b', url: 'https://chefsarah.test/b', status: 'failed', detail: 'timeout' }),
+    ]));
+
+    let retried: Awaited<ReturnType<typeof retrySyncItem>> | undefined;
+    const importer = vi.fn(async () => {
+      // Mid-wave, through the real PATCH path the retry button takes.
+      if (importer.mock.calls.length === 1) retried = await retrySyncItem(deps(), 'r1', 'b');
+      return success;
+    });
+
+    await advanceRun(deps({ importer: importer as unknown as SyncDeps['importer'] }), 'r1');
+
+    const stored = fakeDb.row('creator_sync_runs', 'r1')!;
+    const b = (stored.items as SyncItem[]).find((entry) => entry.itemId === 'b')!;
+    expect(retried).toBeDefined();
+    const outcome = retried!;
+    if (outcome.ok) {
+      expect(b.status).toBe('pending');
+      expect(stored.status).not.toBe('done');
+    } else {
+      // Refused, and the operator is told why rather than shown a requeued row.
+      expect(outcome.error).toMatch(/being worked on/i);
+      expect(b.status).toBe('failed');
+    }
+  });
+
+  it('does not overwrite a drafted item with a stale pending copy', async () => {
+    // The reverse interleaving, both sides real. A retry written from a copy
+    // read before the wave finished resets `a` to pending, which re-runs it,
+    // finds `creator_source_items` already `imported`, and returns `skipped`
+    // with `draftId: null` — the run has lost its link to a draft sitting in
+    // the review queue with nothing pointing at it.
+    storeRun(runRow([
+      item({ itemId: 'a', url: 'https://chefsarah.test/a' }),
+      item({ itemId: 'b', url: 'https://chefsarah.test/b', status: 'failed', detail: 'timeout' }),
+    ]));
+
+    const [, retried] = await Promise.all([
+      advanceRun(deps({ importer: async () => success }), 'r1'),
+      retrySyncItem(deps(), 'r1', 'b'),
+    ]);
+
+    const stored = fakeDb.row('creator_sync_runs', 'r1')!;
+    const items = stored.items as SyncItem[];
+    // Whoever wrote last, the imported item keeps its draft.
+    expect(items.find((entry) => entry.itemId === 'a')).toMatchObject({ status: 'drafted', draftId: 'draft-1' });
+    // And a retry the operator was told succeeded is still queued.
+    if (retried.ok) {
+      expect(items.find((entry) => entry.itemId === 'b')?.status).toBe('pending');
+      expect(stored.status).not.toBe('done');
+    }
+  });
+
+  it('does not release a lease another worker now holds', async () => {
+    // A wave can outrun `LEASE_MS`, and the moment it does the run is claimable
+    // by the cron or a second tab. The worker that overran must not then write
+    // its own items over the new holder's progress, and must not clear a lease
+    // that is no longer its own — that lets a third driver in on a run two
+    // workers are already inside.
+    storeRun(runRow([item({ itemId: 'a', url: 'https://chefsarah.test/a' })]));
+    const held = '2099-01-01T00:00:00.000Z';
+
+    const importer = vi.fn(async () => {
+      // Our lease expired and somebody else claimed the run mid-wave.
+      fakeDb.patch('creator_sync_runs', 'r1', { lease_until: held, status: 'running' });
+      return success;
+    });
+
+    await advanceRun(deps({ importer: importer as unknown as SyncDeps['importer'] }), 'r1');
+
+    expect(fakeDb.row('creator_sync_runs', 'r1')).toMatchObject({ lease_until: held });
+  });
+
+  it('claims with a predicate that a live lease actually refuses', async () => {
+    // The lease test this file used to have queued `{ data: [] }` and asserted
+    // the branch. It would have passed with the expiry term dropped, the
+    // predicate misspelled, or `.select()` missing. This one runs the filter
+    // against a row that really is leased.
+    storeRun(runRow([item()], { lease_until: '2099-01-01T00:00:00.000Z', status: 'running' }));
+    const importer = vi.fn();
+
+    const result = await advanceRun(deps({ importer: importer as unknown as SyncDeps['importer'] }), 'r1');
+
+    expect(importer).not.toHaveBeenCalled();
+    expect(result?.status).toBe('running');
+    expect(fakeDb.row('creator_sync_runs', 'r1')).toMatchObject({ lease_until: '2099-01-01T00:00:00.000Z' });
+  });
+
+  it('claims a run whose holder is gone, and holds it while it works', async () => {
+    // The other half of the same predicate: an expired lease must not wedge the
+    // run forever, which is why it is a lease and not a boolean.
+    storeRun(runRow([item()], { lease_until: '2020-01-01T00:00:00.000Z', status: 'running' }));
+
+    const result = await advanceRun(deps({ importer: async () => success }), 'r1');
+
+    expect(summariseRun(result!)).toMatchObject({ drafted: 1 });
+    // Finished and let go, so the next worker can have it.
+    expect(fakeDb.row('creator_sync_runs', 'r1')).toMatchObject({ status: 'done', lease_until: null });
+  });
+});
+
+// ── The cron's sweep ─────────────────────────────────────────────────────────
+
+/**
+ * The backstop for a run whose operator closed the tab. It runs inside a
+ * function with two email passes ahead of it, so what it must not do is start
+ * work it cannot finish — a chunk begun and then killed leaves a live lease on
+ * a run nobody else can touch until it expires.
+ */
+describe('resumeStalledSyncRuns', () => {
+  /** A run with nothing left to do: claiming it is all the work there is. */
+  function finishedRun(id: string, updatedAt: string, createdAt: string) {
+    return {
+      id, creator_id: 'c1', source: 'website', mode: 'catalog', status: 'queued',
+      items: [item({ status: 'drafted', draftId: 'd1' })],
+      started_at: null, created_at: createdAt, updated_at: updatedAt, lease_until: null,
+    };
+  }
+
+  it('takes the least recently advanced runs, not the same five old ones every day', async () => {
+    // `created_at` ascending meant five old stuck runs were picked every fire
+    // and every newer run starved behind them permanently. Ordering by
+    // `updated_at` sends a run to the back of the line the moment it is
+    // advanced, so the sweep is a round robin.
+    fakeDb.seed('creators', [CREATOR]);
+    fakeDb.seed('creator_source_items', []);
+    fakeDb.seed('creator_sync_runs', [
+      // Oldest by creation, but advanced most recently — must not be picked.
+      finishedRun('old-but-busy', '2026-08-02T10:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+      finishedRun('untouched', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'),
+    ]);
+
+    const swept = await resumeStalledSyncRuns(deps({ importer: vi.fn() as unknown as SyncDeps['importer'] }), 1);
+
+    expect(swept).toBe(1);
+    expect(fakeDb.row('creator_sync_runs', 'untouched')).toMatchObject({ status: 'done' });
+    expect(fakeDb.row('creator_sync_runs', 'old-but-busy')).toMatchObject({ status: 'queued' });
+  });
+
+  it('stops at its budget rather than starting a chunk it cannot finish', async () => {
+    // The killed-mid-chunk failure is not "slow", it is a run left holding a
+    // lease nobody else can take until it expires.
+    fakeDb.seed('creators', [CREATOR]);
+    fakeDb.seed('creator_source_items', []);
+    fakeDb.seed('creator_sync_runs', [
+      { ...finishedRun('a', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'), items: [item()] },
+      { ...finishedRun('b', '2026-07-02T00:00:00.000Z', '2026-07-02T00:00:00.000Z'), items: [item()] },
+    ]);
+
+    // The first run's one import spends the whole sweep budget.
+    let clock = 1_800_000_000_000;
+    const swept = await resumeStalledSyncRuns(
+      deps({
+        importer: async () => { clock += SWEEP_BUDGET_MS; return await importedGuacamole(); },
+        now: () => clock,
+      }),
+      5,
+    );
+
+    expect(swept).toBe(1);
+    expect(fakeDb.row('creator_sync_runs', 'a')).toMatchObject({ status: 'done' });
+    // Untouched and unleased, so the next fire — or an operator pressing Resume
+    // — can pick it up immediately.
+    expect(fakeDb.row('creator_sync_runs', 'b')).toMatchObject({ status: 'queued', lease_until: null });
+  });
+
+  it('skips a run another worker is inside', async () => {
+    fakeDb.seed('creators', [CREATOR]);
+    fakeDb.seed('creator_sync_runs', [
+      { ...finishedRun('leased', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'), lease_until: '2099-01-01T00:00:00.000Z' },
+    ]);
+
+    expect(await resumeStalledSyncRuns(deps(), 5)).toBe(0);
   });
 });

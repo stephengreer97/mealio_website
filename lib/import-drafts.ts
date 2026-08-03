@@ -160,9 +160,11 @@ export interface DraftReview {
 export function reviewDraft(draft: ImportDraft): DraftReview {
   const values = importedFormValues({ draft: draft.draft, url: draft.sourceUrl });
   const written = values.provided as Partial<Record<ImportField, boolean>>;
-  // `empty` is all-true and `previous` is null because there is no form here:
-  // the queue renders a stored draft into fresh boxes, so nothing is mid-edit
-  // and no earlier import's states are on screen to preserve.
+  // `empty` and `previous` exist for the live creator flow, where a box may
+  // already hold the creator's typing or an earlier import's value. The queue
+  // renders a stored draft into fresh boxes every time, so nothing is mid-edit
+  // and there are no earlier states on screen to preserve — both are their
+  // identity values.
   const states = fieldStatesFor({
     confidence: confidenceOf(draft),
     values,
@@ -303,12 +305,44 @@ export interface ApprovedMeal {
 }
 
 /**
+ * Takes a draft out of `pending_review`, or reports that somebody else already did.
+ *
+ * Every decision in this file is a conditional write, and it is the same three
+ * lines each time: patch the row **only while it is still pending**, ask for the
+ * rows that changed, and act only if one came back. Read the status, check it in
+ * JavaScript, then write — the shape this replaces — is three round trips with
+ * two gaps in it, and two tabs or one retried `fetch` fit through either.
+ * Postgres re-evaluates the predicate under the row lock, so of two simultaneous
+ * callers exactly one is handed a row.
+ */
+async function decideDraft(
+  deps: DraftDeps,
+  id: string,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  const { data } = await deps.supabase
+    .from('creator_import_drafts')
+    .update(patch)
+    .eq('id', id)
+    .eq('status', 'pending_review')
+    .select('id');
+  return Array.isArray(data) && data.length > 0;
+}
+
+/**
  * Publishes one draft.
  *
  * This is what `processSyncItem` used to do inline; the code is the same call,
  * just no longer reachable without someone pressing a button. `edited` rather
  * than `approved` when an operator changed a field, so months later the row
  * still answers "did a human rewrite what the model produced?".
+ *
+ * The decision is written **before** the publish, not after. Two tabs both
+ * reading `pending_review` and both publishing is two `preset_meals` rows for
+ * one draft under a creator's name, two Discover entries and two "your recipe
+ * is live" emails naming different meals — and nothing in `preset_meals` stops
+ * it. Claiming first costs a rollback on the failure path below, which is the
+ * cheaper of the two prices.
  */
 export async function approveDraft(
   deps: DraftDeps,
@@ -323,10 +357,20 @@ export async function approveDraft(
   const { draft, creator } = loaded;
 
   if (draft.status !== 'pending_review') {
-    // Two tabs, or a double-click. Publishing twice would put the same recipe on
-    // Discover twice under a creator's name, which is exactly the failure this
-    // queue exists to prevent.
     return { ok: false, error: `That draft was already ${draft.status.replace('_', ' ')}.` };
+  }
+
+  const nowIso = new Date(now()).toISOString();
+  const claimed = await decideDraft(deps, id, {
+    status: draft.editedAt ? 'edited' : 'approved',
+    decided_at: nowIso,
+    decided_by: adminUserId,
+    updated_at: nowIso,
+  });
+  if (!claimed) {
+    // Somebody else decided it between the read above and this write. Which way
+    // does not matter: it is no longer ours to publish.
+    return { ok: false, error: 'That draft was already decided in another tab.' };
   }
 
   let meal: PublishedMeal;
@@ -339,32 +383,28 @@ export async function approveDraft(
       draft.draft,
     );
   } catch (err) {
+    // Put it back. A draft left `approved` with no meal behind it has gone from
+    // the queue without publishing — invisible to the operator and to the
+    // creator both, which is the one outcome worse than a failed publish.
+    await deps.supabase
+      .from('creator_import_drafts')
+      .update({ status: 'pending_review', decided_at: null, decided_by: null, updated_at: nowIso })
+      .eq('id', id)
+      .eq('decided_by', adminUserId)
+      .is('published_meal_id', null);
     return { ok: false, error: `Publishing failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const nowIso = new Date(now()).toISOString();
   await deps.supabase
     .from('creator_import_drafts')
-    .update({
-      status: draft.editedAt ? 'edited' : 'approved',
-      decided_at: nowIso,
-      decided_by: adminUserId,
-      published_meal_id: meal.id,
-      updated_at: nowIso,
-    })
+    .update({ published_meal_id: meal.id, updated_at: nowIso })
     .eq('id', id);
 
-  // The durable record already says `imported` — it was written when the draft
-  // was created — but it now points at a live meal, and the operator reading
-  // `creator_source_items` next month should see which one.
-  if (draft.itemId && draft.source) {
-    await deps.supabase
-      .from('creator_source_items')
-      .update({ draft_id: draft.id, updated_at: nowIso })
-      .eq('creator_id', draft.creatorId)
-      .eq('source', draft.source)
-      .eq('item_id', draft.itemId);
-  }
+  // Nothing is written to `creator_source_items` here. It already says
+  // `imported` and already points at this draft — `recordItem` wrote both at
+  // sync time — and the table has no column for a meal, so the update that used
+  // to sit here wrote the value that was already in the row while its comment
+  // claimed the record now pointed at something live.
 
   log({
     event: 'ADMIN:DRAFT_APPROVE',
@@ -443,18 +483,46 @@ export async function notifyApproved(
 }
 
 /**
+ * Is there a creator-facing review queue to hand a draft to?
+ *
+ * **No, and this is the switch that says so.** `review_by = 'creator'` is read
+ * by exactly one query in this repository — `listDraftQueue`, from
+ * `/api/admin/import-drafts`, which asks for `'admin'`. There is no creator
+ * endpoint, no creator screen, and no admin action that used to set it back:
+ * MEAL-89 is the ticket for all three and it is not built. Flipping the column
+ * therefore did not hand the decision to anyone, it removed the draft from the
+ * only queue anybody reads, while `creator_source_items` said `imported` so no
+ * later sync would bring the post back. First click, recipe gone, and the
+ * screen said "It is in their queue now, not yours."
+ *
+ * Turn this on in the same commit that adds the creator's queue, not before.
+ */
+export const CREATOR_REVIEW_QUEUE_EXISTS = false;
+
+/** What an operator is told instead, and why. The UI shows this on the button. */
+export const HANDOFF_UNAVAILABLE =
+  'Send to creator is off until the creator review queue exists (MEAL-89). ' +
+  'Handing a draft over today would move it out of this queue and into nothing — ' +
+  'no creator can see it and no later sync re-imports it. Approve it, edit it, or decline it.';
+
+/**
  * Moves a draft into the creator's own queue.
  *
  * The escape hatch for "this looks right, but I am not the person who cooked
  * it". Without it an unsure operator has only approve or delete, and both are
- * worse than asking. Status stays `pending_review` — the decision has been
- * handed over, not made.
+ * worse than asking — which is why this is disabled rather than deleted: the
+ * code is right, the queue it hands to is missing. Status stays
+ * `pending_review` — the decision would be handed over, not made.
  */
 export async function sendDraftToCreator(
   deps: DraftDeps,
   id: string,
   adminUserId: string,
 ): Promise<DraftDecision> {
+  // Checked before anything is read, let alone written. A one-way trapdoor is
+  // not a thing to leave switched on and warn about.
+  if (!CREATOR_REVIEW_QUEUE_EXISTS) return { ok: false, error: HANDOFF_UNAVAILABLE };
+
   const now = deps.now ?? Date.now;
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
@@ -466,10 +534,13 @@ export async function sendDraftToCreator(
   }
 
   const nowIso = new Date(now()).toISOString();
-  await deps.supabase
-    .from('creator_import_drafts')
-    .update({ review_by: 'creator', sent_to_creator_at: nowIso, sent_to_creator_by: adminUserId, updated_at: nowIso })
-    .eq('id', id);
+  const moved = await decideDraft(deps, id, {
+    review_by: 'creator',
+    sent_to_creator_at: nowIso,
+    sent_to_creator_by: adminUserId,
+    updated_at: nowIso,
+  });
+  if (!moved) return { ok: false, error: 'That draft was already decided in another tab.' };
 
   log({
     event: 'ADMIN:DRAFT_HANDOFF',
@@ -479,6 +550,64 @@ export async function sendDraftToCreator(
   });
 
   return { ok: true, draft: { ...loaded.draft, reviewBy: 'creator' } };
+}
+
+/**
+ * Everything an operator handed to a creator before the button was switched off.
+ *
+ * These rows are in no queue: out of the admin's by `review_by`, and into one
+ * that does not exist. Listing them is what makes that recoverable rather than
+ * silent — the alternative is a recipe that vanished on a click nobody can now
+ * see the effect of. Keyed on `sent_to_creator_at` rather than on `review_by`
+ * alone, so the poller's own drafts (`review_by` defaults to `'creator'`) are
+ * not swept into an admin screen they do not belong on.
+ */
+export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200): Promise<QueuedDraft[]> {
+  const { data } = await supabase
+    .from('creator_import_drafts')
+    .select(DRAFT_COLUMNS)
+    .eq('status', 'pending_review')
+    .eq('review_by', 'creator')
+    .not('sent_to_creator_at', 'is', null)
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  return ((data ?? []) as Array<Record<string, any>>)
+    .map(toImportDraft)
+    .map((draft) => ({ ...draft, summary: reviewDraft(draft).summary }));
+}
+
+/**
+ * Brings a handed-over draft back into the admin queue.
+ *
+ * The action that did not exist, which is half of why the handoff was a
+ * trapdoor: nothing could undo it. Deliberately not conditional on
+ * `sent_to_creator_at` — a row in `review_by = 'creator'` that an operator can
+ * see and wants back should come back.
+ */
+export async function reclaimDraft(deps: DraftDeps, id: string, adminUserId: string): Promise<DraftDecision> {
+  const now = deps.now ?? Date.now;
+  const loaded = await loadDraft(deps.supabase, id);
+  if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
+  if (loaded.draft.status !== 'pending_review') {
+    return { ok: false, error: `That draft was already ${loaded.draft.status.replace('_', ' ')}.` };
+  }
+  if (loaded.draft.reviewBy === 'admin') {
+    return { ok: false, error: 'That draft is already in your queue.' };
+  }
+
+  const nowIso = new Date(now()).toISOString();
+  const taken = await decideDraft(deps, id, { review_by: 'admin', updated_at: nowIso });
+  if (!taken) return { ok: false, error: 'That draft was already decided in another tab.' };
+
+  log({
+    event: 'ADMIN:DRAFT_RECLAIM',
+    status: 'success',
+    userId: adminUserId,
+    detail: `draft=${id} creator=${loaded.draft.creatorId}`,
+  });
+
+  return { ok: true, draft: { ...loaded.draft, reviewBy: 'admin' } };
 }
 
 /**
@@ -498,10 +627,17 @@ export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: stri
   }
 
   const nowIso = new Date(now()).toISOString();
-  await deps.supabase
-    .from('creator_import_drafts')
-    .update({ status: 'cancelled', decided_at: nowIso, decided_by: adminUserId, updated_at: nowIso })
-    .eq('id', id);
+  // Conditional for the same reason approve is: a decline interleaved with an
+  // approval must not leave the row `cancelled` — out of the queue, nobody
+  // looking at it again — with a live meal on Discover behind it that nobody
+  // will ever unpublish.
+  const declined = await decideDraft(deps, id, {
+    status: 'cancelled',
+    decided_at: nowIso,
+    decided_by: adminUserId,
+    updated_at: nowIso,
+  });
+  if (!declined) return { ok: false, error: 'That draft was already decided in another tab.' };
 
   log({
     event: 'ADMIN:DRAFT_CANCEL',
@@ -632,10 +768,16 @@ export async function editDraft(
   const confidence = stripEditedConfidence(loaded.draft.draft, next, loaded.draft.confidence);
   const nowIso = new Date(now()).toISOString();
 
-  await deps.supabase
-    .from('creator_import_drafts')
-    .update({ draft: next, confidence, edited_at: nowIso, updated_at: nowIso })
-    .eq('id', id);
+  // Also conditional: an edit landing on a draft somebody else has just approved
+  // would rewrite the recipe out from under a meal already on Discover, and the
+  // operator would be told their correction was saved.
+  const saved = await decideDraft(deps, id, {
+    draft: next,
+    confidence,
+    edited_at: nowIso,
+    updated_at: nowIso,
+  });
+  if (!saved) return { ok: false, error: 'That draft was decided in another tab before this could be saved.' };
 
   log({ event: 'ADMIN:DRAFT_EDIT', status: 'success', userId: adminUserId, detail: `draft=${id}` });
 

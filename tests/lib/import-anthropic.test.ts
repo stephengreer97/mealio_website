@@ -117,3 +117,41 @@ describe('import/anthropic — cost model (MEAL-68)', () => {
     }
   });
 });
+
+describe('import/anthropic — the client the pipeline actually constructs', () => {
+  it('bounds a call so one item cannot outlive a sync run’s lease', async () => {
+    // The SDK default is ten minutes plus retries. Under that, one item of an
+    // admin sync run can outlast the lease its worker holds — a second worker
+    // then claims the run, re-imports the same still-pending post, and one post
+    // becomes two drafts in the review queue.
+    vi.resetModules();
+    const construct = vi.fn();
+    vi.doMock('@anthropic-ai/sdk', () => ({
+      default: class {
+        messages = { parse: async () => ({ parsed_output: { verdict: 'yes', reason: 'r' }, stop_reason: 'end_turn' }) };
+        constructor(options: unknown) { construct(options); }
+      },
+    }));
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+
+    const anthropic = await import('@/lib/import/anthropic');
+    anthropic.__setAnthropicClient(null);
+    await anthropic.createStructuredCaller()({
+      model: anthropic.GATE_MODEL, system: 's', prompt: 'p', schema: Schema, maxTokens: 100,
+    });
+
+    expect(construct).toHaveBeenCalledWith(
+      expect.objectContaining({ timeout: anthropic.REQUEST_TIMEOUT_MS, maxRetries: anthropic.MAX_RETRIES }),
+    );
+    // And the bound is one a wave of two items fits inside its lease with.
+    const { LEASE_MS } = await import('@/lib/admin-sync');
+    const worstCallMs = anthropic.REQUEST_TIMEOUT_MS * (anthropic.MAX_RETRIES + 1);
+    // Fetch, then the gate call, then the extraction — the sequence one item runs.
+    expect(10_000 + worstCallMs * 2).toBeLessThan(LEASE_MS);
+
+    anthropic.__setAnthropicClient(null);
+    vi.unstubAllEnvs();
+    vi.doUnmock('@anthropic-ai/sdk');
+    vi.resetModules();
+  });
+});

@@ -75,19 +75,20 @@ export type EventType =
   | 'ADMIN:APPLICATION_REVIEW'
   | 'ADMIN:MEAL_DELETE'
   | 'ADMIN:BROADCAST'
-  | 'ADMIN:CREATOR_SOURCE'     // which of a creator's links we poll (MEAL-81)
-  | 'ADMIN:CREATOR_VIABILITY'  // the onboarding importability measurement (MEAL-81)
-  | 'ADMIN:AUTOMATION_CONFIG'  // publish / roll back the remote store config
-  | 'ADMIN:AUTOMATION_FUNNEL'  // per-store add-to-cart reliability dashboard
-  | 'ADMIN:SYNC_RUN'           // an operator-triggered sync run (MEAL-90)
-  | 'ADMIN:SYNC_ITEM'          // one item inside a run: recorded, or retried
+  | 'ADMIN:CREATOR_SOURCE'      // which of a creator's links we poll (MEAL-81)
+  | 'ADMIN:CREATOR_VIABILITY'   // the onboarding importability measurement (MEAL-81)
+  | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
+  | 'ADMIN:AUTOMATION_FUNNEL'   // per-store add-to-cart reliability dashboard
+  | 'ADMIN:SYNC_RUN'            // an operator-triggered sync run (MEAL-90)
+  | 'ADMIN:SYNC_ITEM'           // one item inside a run: recorded, or retried
   // The four decisions in the admin review queue (MEAL-91). Every publish under
   // a creator's name now has one of these lines behind it, with the actor on it.
   | 'ADMIN:DRAFT_APPROVE'
-  | 'ADMIN:DRAFT_HANDOFF'      // handed to the creator to decide instead
+  | 'ADMIN:DRAFT_HANDOFF'       // handed to the creator to decide instead
+  | 'ADMIN:DRAFT_RECLAIM'       // and taken back, so a handoff is never one-way
   | 'ADMIN:DRAFT_EDIT'
-  | 'ADMIN:DRAFT_CANCEL'       // declined; the row is marked, never removed
-  | 'ADMIN:DRAFT_NOTIFY'       // the "these are live now" email to the creator
+  | 'ADMIN:DRAFT_CANCEL'        // declined; the row is marked, never removed
+  | 'ADMIN:DRAFT_NOTIFY'        // the "these are live now" email to the creator
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'
@@ -107,8 +108,8 @@ export type EventType =
   | 'PUSH:REVOKE'           // token pruned (DeviceNotRegistered)
   // ── Cron ──────────────────────────────────────────────────────────────────
   | 'CRON:DAILY'
-  | 'CRON:TOKEN_REFRESH'    // the shared platform-grant refresh sweep (MEAL-74)
-  | 'CRON:PUSH_RECEIPTS'    // second, offset receipt sweep
+  | 'CRON:TOKEN_REFRESH'      // the shared platform-grant refresh sweep (MEAL-74)
+  | 'CRON:PUSH_RECEIPTS'      // second, offset receipt sweep
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'

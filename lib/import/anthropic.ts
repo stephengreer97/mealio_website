@@ -80,6 +80,30 @@ export interface AnthropicMessagesClient {
   };
 }
 
+/**
+ * Per-call ceiling, and the number `LEASE_MS` is derived from.
+ *
+ * The SDK's default is ten minutes plus retries. Left at that, one item of an
+ * admin sync run can outlast the lease its worker holds on that run — and a
+ * lease that expires while its holder is still importing is worse than none:
+ * a second worker claims the run, reads the same still-pending item and imports
+ * it again, and one post becomes two drafts in the review queue. A bound here
+ * is what makes "a wave cannot outlive its lease" arithmetic rather than hope.
+ * See `LEASE_MS` in `lib/admin-sync.ts` for the sum.
+ *
+ * Generous rather than tight: a long page legitimately takes an extraction
+ * model tens of seconds, and cutting one short wastes the tokens already spent.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * One retry, not the SDK's two. Retries are worth having — a 429 or a 503 is
+ * transient and nothing is charged for the failed attempt — but each one
+ * multiplies the worst case the lease has to cover, and an item that fails here
+ * is retryable by hand from the run screen anyway.
+ */
+export const MAX_RETRIES = 1;
+
 let cachedClient: AnthropicMessagesClient | null = null;
 
 /**
@@ -97,7 +121,10 @@ async function getClient(): Promise<AnthropicMessagesClient> {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
   // The SDK's `parse` is generic over its own param types; this pipeline talks to
   // it through the narrow structural port above.
-  cachedClient = new Anthropic() as unknown as AnthropicMessagesClient;
+  cachedClient = new Anthropic({
+    timeout: REQUEST_TIMEOUT_MS,
+    maxRetries: MAX_RETRIES,
+  }) as unknown as AnthropicMessagesClient;
   return cachedClient;
 }
 

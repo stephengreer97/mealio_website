@@ -5,7 +5,6 @@ import { log } from '@/lib/logger';
 import {
   describeHostMismatch,
   isPrimarySource,
-  isSameSite,
   normalizePlatformUrl,
   SOURCE_COLUMNS,
   SOURCE_LABELS,

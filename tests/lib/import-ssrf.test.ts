@@ -4,6 +4,7 @@ import {
   createGuardedLookup,
   isPrivateAddress,
   normalizeUrl,
+  urlIdentity,
   safeFetch,
   safeFetchImage,
   MAX_RESPONSE_BYTES,
@@ -265,6 +266,36 @@ describe('import/ssrf — normalizeUrl', () => {
     for (const input of ['', 'not a url', 'file:///etc/passwd', 'javascript:alert(1)']) {
       expect(normalizeUrl(input)).toBeNull();
     }
+  });
+
+  it('leaves the scheme and the www. alone, because this is a URL we will fetch', () => {
+    // Folding either here would mean fetching a host the operator never gave
+    // us: an apex that does not resolve, or https on a site that serves http.
+    expect(normalizeUrl('http://blog.test/x')).toBe('http://blog.test/x');
+    expect(normalizeUrl('https://www.blog.test/x')).toBe('https://www.blog.test/x');
+  });
+});
+
+describe('import/ssrf — urlIdentity', () => {
+  it('folds the three spellings of one link into one identity', () => {
+    // As `item_id` these were three: three drafts in the review queue and three
+    // published meals under the creator's name, from an operator pasting the
+    // same link on two different days.
+    const identity = urlIdentity('https://blog.test/x');
+    expect(urlIdentity('http://blog.test/x')).toBe(identity);
+    expect(urlIdentity('https://www.blog.test/x')).toBe(identity);
+    expect(urlIdentity('http://www.blog.test/x/?utm_source=pinterest')).toBe(identity);
+  });
+
+  it('still tells two different posts apart', () => {
+    expect(urlIdentity('https://blog.test/x')).not.toBe(urlIdentity('https://blog.test/y'));
+    expect(urlIdentity('https://blog.test/x')).not.toBe(urlIdentity('https://other.test/x'));
+    // `www.` is stripped, not treated as any old subdomain.
+    expect(urlIdentity('https://blog.test/x')).not.toBe(urlIdentity('https://feeds.blog.test/x'));
+  });
+
+  it('refuses what normalizeUrl refuses', () => {
+    expect(urlIdentity('javascript:alert(1)')).toBeNull();
   });
 });
 

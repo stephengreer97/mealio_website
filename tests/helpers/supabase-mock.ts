@@ -85,11 +85,47 @@ function queryStringBytes(filters: Filter[]): number {
   return Buffer.byteLength(parts.join('&'));
 }
 
+/**
+ * Splits a select list on commas that are not inside an embed's parentheses.
+ *
+ * PostgREST embeds a related table as `creators!creator_id ( id, display_name )`,
+ * and those inner commas are not column separators. Splitting on every comma
+ * turned one embed into several nonsense keys and silently dropped the nested
+ * object - which reads exactly like a row whose relation is missing, so the code
+ * under test defaulted its fields and the failure surfaced somewhere else.
+ */
+function splitColumns(columns: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of columns) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out.map((c) => c.trim()).filter(Boolean);
+}
+
 function project(row: any, columns?: string): any {
   if (!columns || columns.trim() === '*') return { ...row };
-  const wanted = columns.split(',').map((c) => c.trim()).filter(Boolean);
   const out: any = {};
-  for (const c of wanted) out[c] = row[c] ?? null;
+  for (const column of splitColumns(columns)) {
+    // `table!fk ( ... )` or `table ( ... )` - take the whole nested value under
+    // the relation's name. The embed's own column list is not enforced here; a
+    // test seeds the shape it wants and the point is that the relation survives.
+    const embed = /^([A-Za-z_][\w]*)\s*(?:!\w+)?\s*\(/.exec(column);
+    if (embed) {
+      out[embed[1]] = row[embed[1]] ?? null;
+      continue;
+    }
+    out[column] = row[column] ?? null;
+  }
   return out;
 }
 

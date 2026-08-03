@@ -24,8 +24,11 @@ import {
   cancelDraft,
   editDraft,
   editableDraft,
+  HANDOFF_UNAVAILABLE,
   listDraftQueue,
+  listHandedOverDrafts,
   notifyApproved,
+  reclaimDraft,
   reviewDraft,
   sendDraftToCreator,
   stripEditedConfidence,
@@ -43,8 +46,9 @@ import {
  *     called rather than only checking a status string.
  *   - **Delete marks, never removes.** A `.delete()` on this table would let the
  *     next sync of the same post re-import it and ask again.
- *   - **Send to creator moves the draft out of the admin's queue**, which is the
- *     escape hatch for "looks right, but I am not the person who cooked it".
+ *   - **Nothing ends up in neither queue.** Send to creator is refused while the
+ *     creator's queue does not exist, and anything an operator handed over
+ *     before it was switched off is still listed and can be taken back.
  *   - **Editing drops our verification of what was edited.** A green is a claim
  *     about the *model's* value; it must not end up vouching for a human's.
  */
@@ -203,7 +207,7 @@ describe('listDraftQueue', () => {
 
 describe('approveDraft — the only path to Discover', () => {
   it('publishes the draft and records the decision and the actor', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
     const publisher = vi.fn(async () => ({ id: 'meal-1', name: 'Best Guacamole' }));
 
     const result = await approveDraft(
@@ -220,7 +224,10 @@ describe('approveDraft — the only path to Discover', () => {
       { id: 'c1', display_name: 'Chef Sarah', user_id: 'u1' },
       guacamole.draft,
     );
-    expect(lastUpdate('creator_import_drafts')).toMatchObject({
+    // The persisted row, not the arguments of the last update: the decision is
+    // claimed and the meal id written by two separate writes now, and asserting
+    // one call's shape would say nothing about where the row ended up.
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
       status: 'approved',
       decided_by: 'admin-1',
       published_meal_id: 'meal-1',
@@ -231,15 +238,15 @@ describe('approveDraft — the only path to Discover', () => {
   it('records `edited` when an operator had changed something first', async () => {
     // Months later the row still answers "did a human rewrite what the model
     // produced?" — which is a different thing from "did a human approve it".
-    fakeDb.queue('creator_import_drafts', { data: draftRow({ edited_at: '2026-08-02T11:00:00.000Z' }) });
+    fakeDb.seed('creator_import_drafts', [draftRow({ edited_at: '2026-08-02T11:00:00.000Z' })]);
     await approveDraft(deps(), 'd1', 'admin-1');
-    expect(lastUpdate('creator_import_drafts')).toMatchObject({ status: 'edited' });
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'edited' });
   });
 
   it('refuses to publish the same draft twice', async () => {
     // Two tabs, or a double-click. Publishing twice would put one recipe on
     // Discover twice under a creator's name.
-    fakeDb.queue('creator_import_drafts', { data: draftRow({ status: 'approved' }) });
+    fakeDb.seed('creator_import_drafts', [draftRow({ status: 'approved' })]);
     const publisher = vi.fn();
 
     const result = await approveDraft(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', 'admin-1');
@@ -249,7 +256,7 @@ describe('approveDraft — the only path to Discover', () => {
   });
 
   it('refuses a draft that has been declined, so a decline is not undone by a stale tab', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow({ status: 'cancelled' }) });
+    fakeDb.seed('creator_import_drafts', [draftRow({ status: 'cancelled' })]);
     const publisher = vi.fn();
     const result = await approveDraft(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', 'admin-1');
     expect(result.ok).toBe(false);
@@ -257,7 +264,7 @@ describe('approveDraft — the only path to Discover', () => {
   });
 
   it('leaves the draft pending when publishing fails, so it can be tried again', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
 
     const result = await approveDraft(
       deps({ publisher: (async () => { throw new Error('duplicate key'); }) as unknown as DraftDeps['publisher'] }),
@@ -267,16 +274,74 @@ describe('approveDraft — the only path to Discover', () => {
 
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.error).toMatch(/duplicate key/);
-    // Nothing was written: a draft marked approved with no meal behind it would
-    // vanish from the queue and never publish.
-    expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts' && c.method === 'update')).toBe(false);
+    // The decision is claimed before the publish, so this is a rollback rather
+    // than "nothing was written" — but the row has to land in the same place. A
+    // draft left `approved` with no meal behind it has gone from the queue
+    // without publishing, which nobody would ever see.
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+      status: 'pending_review',
+      published_meal_id: null,
+      decided_by: null,
+      decided_at: null,
+    });
   });
 
-  it('points the durable record at the meal it finally became', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+  it('leaves the durable record alone — it already says everything it can', async () => {
+    // It was written at sync time and says `imported`, pointing at this draft.
+    // There is no meal column on that table, so an update here changed nothing
+    // while its comment claimed the record now pointed at a live meal.
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
     await approveDraft(deps(), 'd1', 'admin-1');
-    expect(lastUpdate('creator_source_items')).toMatchObject({ draft_id: 'd1' });
+    expect(fakeDb.calls.some((c) => c.table === 'creator_source_items')).toBe(false);
   });
+
+  it('publishes once when two tabs approve the same draft at the same time', async () => {
+    // Two admin tabs, or one tab whose fetch the browser retried. Both read
+    // `pending_review` before either writes, and the read-check-write guard sees
+    // nothing wrong: two `preset_meals` rows for one draft under a creator's
+    // name, two Discover entries, two "your recipe is live" emails.
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    let published = 0;
+    const publisher = vi.fn(async () => ({ id: `meal-${++published}`, name: 'Best Guacamole' }));
+
+    const [first, second] = await Promise.all([
+      approveDraft(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', 'admin-1'),
+      approveDraft(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', 'admin-2'),
+    ]);
+
+    expect(publisher).toHaveBeenCalledTimes(1);
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    const loser = first.ok ? second : first;
+    expect(loser.ok === false && loser.error).toMatch(/already/i);
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+      status: 'approved',
+      published_meal_id: 'meal-1',
+    });
+  });
+
+  it.each([['approve first', true], ['decline first', false]] as const)(
+    'lets exactly one of an approval and a decline win (%s)',
+    async (_name, approveFirst) => {
+      // The state the row must never reach: `cancelled`, so it has left the
+      // queue as declined and nobody will look at it again, with a live meal on
+      // Discover behind it that nobody will ever unpublish.
+      fakeDb.seed('creator_import_drafts', [draftRow()]);
+      const publisher = vi.fn(async () => ({ id: 'meal-1', name: 'Best Guacamole' }));
+      const approve = () => approveDraft(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', 'admin-1');
+      const decline = () => cancelDraft(deps(), 'd1', 'admin-2');
+
+      const results = await Promise.all(approveFirst ? [approve(), decline()] : [decline(), approve()]);
+
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      const row = fakeDb.row('creator_import_drafts', 'd1')!;
+      if (publisher.mock.calls.length > 0) {
+        expect(row).toMatchObject({ status: 'approved', published_meal_id: 'meal-1' });
+      } else {
+        expect(row).toMatchObject({ status: 'cancelled', published_meal_id: null });
+      }
+    },
+  );
+
 });
 
 // ── The email ────────────────────────────────────────────────────────────────
@@ -338,40 +403,91 @@ describe('notifyApproved', () => {
 
 // ── Send to creator ──────────────────────────────────────────────────────────
 
-describe('sendDraftToCreator — the escape hatch', () => {
-  it('moves the draft into the creator’s queue and out of the admin’s', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+describe('sendDraftToCreator — an escape hatch with nowhere to go', () => {
+  it('refuses, and moves nothing, while there is no creator queue to hand to', async () => {
+    // `review_by = 'creator'` is read by one query in this repository and it asks
+    // for `'admin'`. Flipping the column moved a draft out of the only queue
+    // anybody reads and into nothing: no creator endpoint, no creator screen, no
+    // way back — and `creator_source_items` says `imported`, so no later sync
+    // re-imports the post. The recipe was lost on the first click.
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
 
     const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
 
-    expect(result.ok).toBe(true);
-    const update = lastUpdate('creator_import_drafts');
-    expect(update).toMatchObject({ review_by: 'creator', sent_to_creator_by: 'admin-1' });
-    // The decision has been handed over, not made: the draft is still pending.
-    expect(update).not.toHaveProperty('status');
-    expect(update).not.toHaveProperty('decided_by');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toMatch(/MEAL-89/);
+    // Not a warning, a refusal: the row is untouched and still in the queue.
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+      review_by: 'admin',
+      status: 'pending_review',
+    });
+    expect(fakeDb.row('creator_import_drafts', 'd1')).not.toHaveProperty('sent_to_creator_at');
+    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
+  });
+
+  it('says nothing untrue about where the draft went', async () => {
+    // The screen used to say "It is in their queue now, not yours."
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
+    expect(result.ok === false && result.error).toMatch(/queue|nothing/i);
+    expect(HANDOFF_UNAVAILABLE).not.toMatch(/in their queue/i);
   });
 
   it('publishes nothing on the way — that is the whole point of the button', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
     const publisher = vi.fn();
     await sendDraftToCreator(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', 'admin-1');
     expect(publisher).not.toHaveBeenCalled();
     expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
     expect(fakeDb.calls.some((c) => c.table === 'preset_meals')).toBe(false);
   });
+});
 
-  it('refuses one that is already the creator’s to decide', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow({ review_by: 'creator' }) });
-    const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
-    expect(result.ok).toBe(false);
+describe('drafts already handed over — nothing is left in neither queue', () => {
+  /** What production has: rows the button moved before it was switched off. */
+  const handedOver = (overrides: Record<string, unknown> = {}) =>
+    draftRow({
+      review_by: 'creator',
+      sent_to_creator_at: '2026-08-02T11:00:00.000Z',
+      sent_to_creator_by: 'admin-1',
+      ...overrides,
+    });
+
+  it('lists what an operator handed over, so it is visible rather than gone', async () => {
+    fakeDb.seed('creator_import_drafts', [handedOver()]);
+
+    const stranded = await listHandedOverDrafts(supabase);
+
+    expect(stranded.map((draft) => draft.id)).toEqual(['d1']);
+    expect(stranded[0].summary.needALook).toBeGreaterThan(0);
   });
 
-  it('refuses one that has already been decided', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow({ status: 'cancelled' }) });
-    const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
+  it('leaves the poller’s own drafts alone — those are not stranded, they are the creator’s', async () => {
+    // `review_by` defaults to 'creator' for every row the poller writes. Only a
+    // draft an admin *sent* is one this screen has anything to say about.
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
+    expect(await listHandedOverDrafts(supabase)).toHaveLength(0);
+  });
+
+  it('takes one back into the admin queue', async () => {
+    fakeDb.seed('creator_import_drafts', [handedOver()]);
+
+    const result = await reclaimDraft(deps(), 'd1', 'admin-2');
+
+    expect(result.ok).toBe(true);
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+      review_by: 'admin',
+      status: 'pending_review',
+    });
+    // Taking it back is not a decision about the recipe.
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ decided_by: null, published_meal_id: null });
+  });
+
+  it('refuses to take back one that has been decided', async () => {
+    fakeDb.seed('creator_import_drafts', [handedOver({ status: 'cancelled' })]);
+    const result = await reclaimDraft(deps(), 'd1', 'admin-2');
     expect(result.ok).toBe(false);
-    expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts' && c.method === 'update')).toBe(false);
+    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
   });
 });
 
@@ -379,7 +495,7 @@ describe('sendDraftToCreator — the escape hatch', () => {
 
 describe('cancelDraft — declining is a state, not a deletion', () => {
   it('marks the row cancelled and never removes it', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
 
     const result = await cancelDraft(deps(), 'd1', 'admin-1');
 
@@ -393,7 +509,7 @@ describe('cancelDraft — declining is a state, not a deletion', () => {
   });
 
   it('leaves the durable record alone, so a later sync still skips the post', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
     await cancelDraft(deps(), 'd1', 'admin-1');
     // Nothing here may reset `creator_source_items` back to something a sync
     // would treat as new.
@@ -401,7 +517,7 @@ describe('cancelDraft — declining is a state, not a deletion', () => {
   });
 
   it('refuses to decline something already published', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow({ status: 'approved', published_meal_id: 'meal-1' }) });
+    fakeDb.seed('creator_import_drafts', [draftRow({ status: 'approved', published_meal_id: 'meal-1' })]);
     const result = await cancelDraft(deps(), 'd1', 'admin-1');
     expect(result.ok).toBe(false);
     expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts' && c.method === 'update')).toBe(false);
@@ -412,7 +528,7 @@ describe('cancelDraft — declining is a state, not a deletion', () => {
 
 describe('editDraft', () => {
   it('saves the edit without deciding anything', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
     const next: CreatorMealDraft = { ...guacamole.draft, serves: '6' };
 
     const result = await editDraft(deps(), 'd1', next, 'admin-1');
@@ -428,7 +544,7 @@ describe('editDraft', () => {
   });
 
   it('publishes nothing', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow() });
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
     const publisher = vi.fn();
     await editDraft(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', guacamole.draft, 'admin-1');
     expect(publisher).not.toHaveBeenCalled();
@@ -436,7 +552,7 @@ describe('editDraft', () => {
   });
 
   it('refuses to edit a draft that has been decided', async () => {
-    fakeDb.queue('creator_import_drafts', { data: draftRow({ status: 'cancelled' }) });
+    fakeDb.seed('creator_import_drafts', [draftRow({ status: 'cancelled' })]);
     const result = await editDraft(deps(), 'd1', guacamole.draft, 'admin-1');
     expect(result.ok).toBe(false);
     expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts' && c.method === 'update')).toBe(false);
@@ -520,11 +636,15 @@ describe('editableDraft — the same rules the publish form has', () => {
     expect(result.ok && result.draft.difficulty).toBeNull();
   });
 
-  it('forces a unit outside the editor’s vocabulary into a count', () => {
-    // The cart cannot act on "1 knob", and the editor cannot display it. ("bunch"
-    // used to be the example here; MEAL-89 gave the picker a cook's-units row, so
-    // the case now needs a unit that really is outside the vocabulary.)
-    const result = editableDraft({ ...base, ingredients: [{ ingredientName: 'butter', measure: '1', unit: 'knob', qty: 1 }] });
-    expect(result.ok && result.draft.ingredients[0]).toMatchObject({ ingredientName: 'butter', unit: 'qty', qty: 1 });
+  it('keeps a cook’s unit, and still folds one nothing can display', () => {
+    // "1 bunch cilantro" now keeps its word: the cart searches by name and
+    // counts packages with productQty, so the unit is display text and dropping
+    // it lost something the source actually said.
+    const kept = editableDraft({ ...base, ingredients: [{ ingredientName: 'cilantro', measure: '1', unit: 'bunch', qty: 1 }] });
+    expect(kept.ok && kept.draft.ingredients[0]).toMatchObject({ ingredientName: 'cilantro', unit: 'bunches', measure: '1' });
+
+    // "a knob of butter" still folds — knob is not a unit anything can show.
+    const folded = editableDraft({ ...base, ingredients: [{ ingredientName: 'butter', measure: null, unit: 'knob', qty: 1 }] });
+    expect(folded.ok && folded.draft.ingredients[0]).toMatchObject({ ingredientName: 'butter', unit: 'qty', qty: 1 });
   });
 });

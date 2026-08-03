@@ -18,17 +18,7 @@ import type { ViabilityReport } from '@/lib/import/viability';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 
-type Tab =
-  | 'applications'
-  | 'sources'
-  | 'sync'
-  | 'review'
-  | 'meals'
-  | 'stats'
-  | 'broadcast'
-  | 'storage'
-  | 'email'
-  | 'automation';
+type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email' | 'automation';
 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
