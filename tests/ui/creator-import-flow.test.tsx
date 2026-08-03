@@ -31,6 +31,8 @@ interface Routes {
   import?: () => Response | Promise<Response>;
   /** Pixabay suggestions for the Generate photo button. */
   photos?: string[];
+  /** Answers `POST /api/creator/meals`, for the duplicate-link prompt (MEAL-93). */
+  publish?: (body: Record<string, unknown>) => Response;
 }
 
 let published: Record<string, unknown> | null;
@@ -45,7 +47,7 @@ function stubApi(routes: Routes = {}) {
     }
     if (url.includes('/api/creator/meals')) {
       published = JSON.parse(String(init?.body));
-      return json({ meal: { id: 'm1', name: published!.name } }, 201);
+      return routes.publish?.(published!) ?? json({ meal: { id: 'm1', name: published!.name } }, 201);
     }
     // Checked after /meals: '/api/creator/meals'.includes('/api/creator/me').
     if (url.includes('/api/creator/me')) {
@@ -936,5 +938,130 @@ describe('creator portal — The One Tap Rule', () => {
     // MEAL-73. The flags deliberately use no red at all, so nothing this work
     // added depends on telling the two apart.
     expect(publish.className).toContain('bg-red-600');
+  });
+});
+
+/**
+ * The same link, published twice (MEAL-93).
+ *
+ * A warning and not a wall: two recipes from one page is a real thing, so the
+ * prompt has to be answerable. It also has to be *checkable* — the meal we
+ * found is linked, because "you already published something" that the creator
+ * cannot open is a claim they can only take on faith.
+ */
+describe('creator portal — already published from this link', () => {
+  const DUPLICATE = () =>
+    json({ error: 'You already published "Best Guacamole" from this link.', duplicate: { id: 'm7', name: 'Best Guacamole' } }, 409);
+
+  async function publishGuacamole(routes: Routes = {}) {
+    const success = await importedGuacamole();
+    stubApi({ import: () => json(success, 200), ...routes });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+    fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
+  }
+
+  it('asks, and links the meal it found, instead of publishing', async () => {
+    await publishGuacamole({ publish: DUPLICATE });
+
+    expect(await screen.findByText(/Publish anyway\?/i)).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'Best Guacamole' });
+    expect(link.getAttribute('href')).toBe('/meal/p/m7');
+    // The form is still there to go back to — the prompt is a question asked of
+    // a form that has not been thrown away.
+    expect(nameBox().value).toBe('Best Guacamole');
+  });
+
+  it('publishes on confirmation, saying so explicitly', async () => {
+    let calls = 0;
+    await publishGuacamole({
+      publish: body => {
+        calls += 1;
+        return body.confirmDuplicate === true
+          ? json({ meal: { id: 'm8', name: body.name } }, 201)
+          : DUPLICATE();
+      },
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Publish anyway/i }));
+
+    // The confirmation travels on the request rather than being remembered by
+    // the server, so nothing is left standing for the next publish.
+    await waitFor(() => expect(calls).toBe(2));
+    expect(published!.confirmDuplicate).toBe(true);
+    await waitFor(() => expect(screen.queryByText(/Publish anyway\?/i)).toBeNull());
+  });
+
+  it('drops the question when the link it was about changes', async () => {
+    await publishGuacamole({ publish: DUPLICATE });
+    await screen.findByText(/Publish anyway\?/i);
+
+    fireEvent.change(sourceBox(), { target: { value: 'https://cookieandkate.com/other-recipe' } });
+
+    // A different link is a different question.
+    expect(screen.queryByText(/Publish anyway\?/i)).toBeNull();
+  });
+
+  it('sends confirmDuplicate false on an ordinary publish', async () => {
+    await publishGuacamole();
+
+    await waitFor(() => expect(published).not.toBeNull());
+    expect(published!.confirmDuplicate).toBe(false);
+  });
+
+  /**
+   * The idempotency key the server cannot mint for itself (MEAL-93).
+   *
+   * Every request is new to the server, so a value it generated would differ
+   * across a double-click and be identical for nothing. The browser is the only
+   * place that knows a second POST is the same publish — so what has to be
+   * tested here is *when the portal mints a new one*, which is the whole
+   * mechanism.
+   */
+  describe('the publish token', () => {
+    it('is the same on the confirmed retry as on the attempt that was refused', async () => {
+      const tokens: unknown[] = [];
+      await publishGuacamole({
+        publish: body => {
+          tokens.push(body.publishToken);
+          return body.confirmDuplicate === true ? json({ meal: { id: 'm8', name: body.name } }, 201) : DUPLICATE();
+        },
+      });
+
+      fireEvent.click(await screen.findByRole('button', { name: /Publish anyway/i }));
+
+      // "Publish anyway" is the path where the server's claim is deliberately
+      // skipped, so this value is the only thing standing between a second click
+      // and a second meal. Minted per click it would be worthless.
+      await waitFor(() => expect(tokens).toHaveLength(2));
+      expect(tokens[0]).toBeTruthy();
+      expect(tokens[1]).toBe(tokens[0]);
+    });
+
+    it('is a new one for the next meal, once a meal exists behind the last', async () => {
+      const tokens: unknown[] = [];
+      const routes: Routes = {
+        publish: body => {
+          tokens.push(body.publishToken);
+          return json({ meal: { id: `m${tokens.length}`, name: body.name } }, 201);
+        },
+      };
+
+      await publishGuacamole(routes);
+      await waitFor(() => expect(tokens).toHaveLength(1));
+
+      // A published meal holds the last token on the index. Carrying it into the
+      // next publish would have the server answer with the meal that is already
+      // there instead of publishing this one.
+      fireEvent.click(await screen.findByRole('button', { name: /publish new meal/i }));
+      await screen.findByTestId('import-link-bar');
+      await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+      await screen.findByTestId('import-summary');
+      fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
+
+      await waitFor(() => expect(tokens).toHaveLength(2));
+      expect(tokens[1]).not.toBe(tokens[0]);
+    });
   });
 });
