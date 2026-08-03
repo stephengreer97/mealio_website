@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   describeSourceHealth,
-  KNOWN_UNSUPPORTED_SOURCES,
   PLATFORM_SOURCES,
   SOURCE_COLUMNS,
   SOURCE_LABELS,
@@ -699,17 +698,6 @@ export default function AdminPage() {
         {/* Sources Tab — MEAL-81. One manually-chosen source per creator. */}
         {tab === 'sources' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-
-            {/* Unsupported platforms, listed beside the check so an operator
-                never rediscovers a question that was already measured. */}
-            <div style={{ background: '#f8f9fa', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '18px 20px' }}>
-              <h2 style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: 700, color: '#374151' }}>Known-unsupported sources</h2>
-              {KNOWN_UNSUPPORTED_SOURCES.map(entry => (
-                <p key={entry.id} style={{ margin: '6px 0 0', fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
-                  <strong style={{ color: '#374151' }}>{entry.label}</strong> — {entry.detail}
-                </p>
-              ))}
-            </div>
 
             {creators.length === 0 ? (
               <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '32px', textAlign: 'center', color: '#888' }}>

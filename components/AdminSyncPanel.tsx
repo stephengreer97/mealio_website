@@ -16,21 +16,31 @@ import type { CatalogEntry, CatalogResult, SyncItem, SyncRun, SyncRunTotals } fr
  * page and calls no model, so an operator can look at a 200-post archive without
  * spending anything to find out what is in it.
  *
- * The cost line under the selection is the real guard rail. A confirmation
+ * The cost line above the Sync button is the real guard rail. A confirmation
  * dialog gets clicked through; "137 selected · about $9.16" gets read. YouTube
  * now has a second budget beside the dollar one — the Data API's 10,000 units a
- * day, shared across every creator — so a YouTube listing says what it spent and
- * the next 50 videos are behind a button rather than a page load (MEAL-79).
+ * day, shared across every creator — so the quota total sits in the card header
+ * where every page load and every append adds to it (MEAL-79).
  *
  * A run **queues drafts for review** (MEAL-91). It used to publish, and the
  * language on this screen said so; a finished run now hands over to the Review
  * tab, and every "Published" here would be a lie about where the recipe is.
  *
- * The last card is the write half of MEAL-79: published meals that came from one
- * of this creator's videos, offered for the Mealio link to be appended to that
- * video's description. It is loaded on demand and it shows a refusal sentence
- * rather than a list when consent is off — the offer must not appear at all when
- * the answer would be no.
+ * ── One card, four steps ────────────────────────────────────────────────────
+ * This used to be seven cards that appeared one after another as an operator
+ * worked, so the further you got the more of the screen was scrollback. It is
+ * now a single card that changes: four numbered steps, of which the one being
+ * worked on is open and the settled ones collapse to a summary you click back
+ * into. Nothing is a wizard — every step header stays reachable, so the creator
+ * can be changed mid-run without starting over — and step 4 never collapses,
+ * because the cost of what is about to be spent must not be a step you scrolled
+ * past. The run and the append offer follow the steps in the same card.
+ *
+ * The append section is the write half of MEAL-79: published meals that came
+ * from one of this creator's videos, offered for the Mealio link to be appended
+ * to that video's description. It is loaded on demand and it shows a refusal
+ * sentence rather than a list when consent is off — the offer must not appear at
+ * all when the answer would be no.
  */
 
 export interface SyncPanelCreator {
@@ -125,6 +135,110 @@ const secondaryButton: React.CSSProperties = {
   cursor: 'pointer',
 };
 
+/** The divider every step and every section below them hangs from. */
+const sectionRow: React.CSSProperties = {
+  borderTop: '1px solid #f0f0f0',
+  paddingTop: '16px',
+  marginTop: '16px',
+};
+
+const stepTitle: React.CSSProperties = {
+  fontSize: '13px',
+  fontWeight: 700,
+  color: '#222',
+  whiteSpace: 'nowrap',
+};
+
+const stepSummary: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#6b7280',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const hint: React.CSSProperties = { fontSize: '11px', color: '#aaa', lineHeight: 1.6 };
+
+/** The step number, ticked once the step has an answer. */
+function stepBadge(done: boolean, open: boolean): React.CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '20px',
+    height: '20px',
+    flexShrink: 0,
+    borderRadius: '99px',
+    fontSize: '11px',
+    fontWeight: 700,
+    background: open ? '#dd0031' : done ? '#e6f9ed' : '#f3f4f6',
+    color: open ? 'white' : done ? '#1a7a3a' : '#9ca3af',
+  };
+}
+
+/**
+ * One step of the sequence.
+ *
+ * The header is always on screen — that is what makes a settled answer
+ * reviewable and, more to the point, changeable at any moment. Only the body
+ * comes and goes. A step with no body (the mode switch, in link mode) renders
+ * its header as plain text rather than a dead button.
+ */
+function Step({
+  index, title, summary, done, open, onToggle, aside, children,
+}: {
+  index: number;
+  title: string;
+  summary?: string;
+  done: boolean;
+  open: boolean;
+  onToggle: () => void;
+  /** Controls that stay reachable whether the step is open or not. */
+  aside?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const head = (
+    <>
+      <span style={stepBadge(done, open)} aria-hidden="true">{done && !open ? '✓' : index}</span>
+      <span style={stepTitle}>{title}</span>
+      {summary && <span style={stepSummary}>{summary}</span>}
+    </>
+  );
+
+  return (
+    <div style={sectionRow}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+        {children ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: '1 1 240px',
+              background: 'none', border: 'none', padding: 0, textAlign: 'left', cursor: 'pointer',
+            }}
+          >
+            {head}
+            {/* Next to the summary rather than out at the right margin, where it
+                would sit against whatever `aside` the step carries and read as a
+                label for that instead. */}
+            <span style={{ fontSize: '11px', color: '#9ca3af', flexShrink: 0 }}>
+              {open ? 'Hide' : done ? 'Change' : 'Open'}
+            </span>
+          </button>
+        ) : (
+          <span style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: '1 1 auto' }}>
+            {head}
+          </span>
+        )}
+        {aside}
+      </div>
+      {open && children && <div style={{ marginTop: '14px' }}>{children}</div>}
+    </div>
+  );
+}
+
 function formatDate(value: string | null): string {
   if (!value) return '—';
   const parsed = Date.parse(value);
@@ -137,6 +251,13 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const [source, setSource] = useState<PlatformSource>('website');
   const [linkUrl, setLinkUrl] = useState('');
   const [error, setError] = useState('');
+
+  /**
+   * The step an operator has clicked back into, or `null` for "wherever the
+   * work has got to". Anything that moves the work forward clears it, so
+   * re-opening step 1 to check a name does not strand the screen there.
+   */
+  const [openStep, setOpenStep] = useState<number | null>(null);
 
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -161,6 +282,8 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const [appendRefusal, setAppendRefusal] = useState('');
   const [appendBusy, setAppendBusy] = useState('');
   const [appendResults, setAppendResults] = useState<Record<string, string>>({});
+  /** The append offer is an aside, not step 5, so it starts folded away. */
+  const [appendOpen, setAppendOpen] = useState(false);
 
   const [run, setRun] = useState<SyncRun | null>(null);
   const [totals, setTotals] = useState<SyncRunTotals | null>(null);
@@ -198,17 +321,28 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setRun(null);
     setTotals(null);
     setError('');
-    // Nothing about the previous creator survives into the append card. A stale
-    // list of somebody else's videos beside an Append button is the worst
+    // Nothing about the previous creator survives into the append section. A
+    // stale list of somebody else's videos beside an Append button is the worst
     // possible thing for this screen to leave on it.
     setAppendable(null);
     setAppendRefusal('');
     setAppendResults({});
+    setAppendTruncated(false);
+    setAppendOpen(false);
+    // Picking a creator is the answer step 1 was waiting for, so hand the screen
+    // back to whatever comes next rather than leaving it parked here.
+    setOpenStep(null);
     const chosen = creators.find(c => c.id === id);
     // Default to whatever source they are already set up on; the operator can
     // still pick another of their links.
     const primary = chosen?.primary_source;
     setSource(primary && primary !== 'none' ? (primary as PlatformSource) : 'website');
+  };
+
+  const chooseMode = (value: 'link' | 'catalog') => {
+    setMode(value);
+    setError('');
+    setOpenStep(null);
   };
 
   const loadCatalog = async () => {
@@ -229,6 +363,8 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     // A failed listing can still have spent — `playlistItems.list` refusing
     // after `channels.list` succeeded costs a unit either way.
     setQuotaUnits(spent => spent + (next.quotaUnits ?? 0));
+    // A listing is the answer step 2 was waiting for; move on to the checklist.
+    setOpenStep(null);
   };
 
   /**
@@ -276,6 +412,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
    */
   const loadAppendable = async () => {
     if (!creatorId) return;
+    setAppendOpen(true);
     setAppendBusy('list');
     setAppendRefusal('');
     setAppendable(null);
@@ -365,6 +502,9 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setError('');
     setRun(null);
     setTotals(null);
+    // Pressing Sync is the answer to step 4. Hand the screen to the run rather
+    // than leaving it parked on whichever step was last clicked open.
+    setOpenStep(null);
 
     const body = mode === 'link'
       ? { creatorId, mode: 'link', url: linkUrl.trim() }
@@ -421,51 +561,157 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
 
   const canStart = mode === 'link' ? Boolean(creatorId && linkUrl.trim()) : Boolean(creatorId && selected.length > 0);
 
+  /**
+   * Where the work has got to.
+   *
+   * It stops at 3 on purpose. Step 4 is always on screen, so there is nothing to
+   * advance *to*, and a first tick on the checklist folding the checklist away
+   * would be the trap this rework exists to avoid.
+   *
+   * Once a run has reported, nothing is open: the answer to step 4 is what the
+   * screen is about, and a 200-row checklist sitting on top of it is the pile
+   * again. Every header is still one click from being a form.
+   */
+  const naturalStep = !creatorId ? 1 : mode === 'catalog' && !catalog ? 2 : run ? 0 : 3;
+  const currentStep = openStep ?? naturalStep;
+  const toggleStep = (n: number) => setOpenStep(current => (current === n ? null : n));
+
+  const sourceLabel = SOURCE_LABELS[source];
+  const stepTwoSummary = mode === 'link'
+    ? undefined
+    : catalog?.ok
+      ? `${sourceLabel} · ${entries.length} listed`
+      : catalog
+        ? `${sourceLabel} · could not be listed`
+        : `${sourceLabel} · not listed yet`;
+  const stepThreeSummary = mode === 'link'
+    ? linkUrl.trim() || 'Nothing pasted yet'
+    : `${selected.length} of ${entries.length} selected`;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }} data-testid="admin-sync-panel">
+    <div style={card} data-testid="admin-sync-panel">
 
-      <div style={{ background: '#f8f9fa', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '18px 20px' }}>
-        <h2 style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: 700, color: '#374151' }}>Manual sync</h2>
-        <p style={{ margin: 0, fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
-          Imports run on behalf of the creator you pick and land in <strong>Review</strong> as drafts — nothing
-          goes live until somebody opens the meal card there and approves it. Listing a catalog is free; running a
-          selection is not.
-        </p>
+      {/* ── The card's own header: what this screen does, and the one number
+             that is true of the whole screen rather than of a step. ────────── */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#222' }}>Manual sync</h2>
+        {/* The other budget. A dollar cost buys extractions; this buys listings
+            and description writes, and it is shared and daily. It lives up here
+            because listings and appends both spend it — under the checklist it
+            vanished the moment a listing failed, having already been charged. */}
+        {quotaUnits > 0 && (
+          <span style={{ ...hint, marginLeft: 'auto' }} data-testid="quota-spent">
+            {quotaUnits} YouTube quota {quotaUnits === 1 ? 'unit' : 'units'} spent on this screen, of 10,000/day
+          </span>
+        )}
       </div>
+      <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
+        Imports run on behalf of the creator you pick and land in <strong>Review</strong> as drafts — nothing
+        goes live until somebody opens the meal card there and approves it. Listing a catalog is free; running a
+        selection is not.
+      </p>
 
-      <div style={card}>
-        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
-          Creator
-        </label>
+      {/* ── 1 · Creator ──────────────────────────────────────────────────────
+             Reachable at every point, including mid-run: changing who a run is
+             for must never mean starting the screen again. */}
+      <Step
+        index={1}
+        title="Creator"
+        summary={creator?.display_name ?? 'Nobody chosen yet'}
+        done={Boolean(creatorId)}
+        open={currentStep === 1}
+        onToggle={() => toggleStep(1)}
+      >
         <select
           value={creatorId}
           onChange={e => chooseCreator(e.target.value)}
           aria-label="Creator"
-          style={{ padding: '7px 12px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '14px', background: 'white', cursor: 'pointer', minWidth: '260px' }}
+          style={{ padding: '7px 12px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '14px', background: 'white', cursor: 'pointer', width: '100%', maxWidth: '320px' }}
         >
           <option value="">Choose a creator…</option>
           {creators.map(c => (
             <option key={c.id} value={c.id}>{c.display_name}</option>
           ))}
         </select>
+      </Step>
 
-        <div style={{ display: 'flex', gap: '16px', marginTop: '16px', flexWrap: 'wrap' }}>
-          {(['link', 'catalog'] as const).map(value => (
-            <label key={value} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#333', cursor: 'pointer' }}>
-              <input
-                type="radio"
-                name="sync-mode"
-                checked={mode === value}
-                onChange={() => { setMode(value); setError(''); }}
-                style={{ accentColor: '#dd0031' }}
-              />
-              {value === 'link' ? 'One link' : 'Pick from their catalog'}
-            </label>
-          ))}
-        </div>
+      {/* ── 2 · Where from ───────────────────────────────────────────────────
+             The two radios are the aside rather than the body, so the fork
+             between one link and a catalogue is switchable without first
+             re-opening the step it belongs to. */}
+      <Step
+        index={2}
+        title="Where from"
+        summary={stepTwoSummary}
+        done={mode === 'link' || Boolean(catalog?.ok)}
+        open={currentStep === 2}
+        onToggle={() => toggleStep(2)}
+        aside={
+          <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+            {(['link', 'catalog'] as const).map(value => (
+              <label key={value} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#333', cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="sync-mode"
+                  checked={mode === value}
+                  onChange={() => chooseMode(value)}
+                  style={{ accentColor: '#dd0031' }}
+                />
+                {value === 'link' ? 'One link' : 'Pick from their catalog'}
+              </label>
+            ))}
+          </div>
+        }
+      >
+        {mode === 'catalog' ? (
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <select
+              value={source}
+              onChange={e => { setSource(e.target.value as PlatformSource); setCatalog(null); setSelected([]); }}
+              aria-label="Source"
+              style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '13px', background: 'white', cursor: 'pointer' }}
+            >
+              {PLATFORM_SOURCES.map(s => (
+                <option key={s} value={s} disabled={!listableSource(creator, s)}>
+                  {SOURCE_LABELS[s]}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={loadCatalog}
+              disabled={!creatorId || loadingCatalog}
+              style={{ ...secondaryButton, cursor: loadingCatalog ? 'wait' : 'pointer' }}
+            >
+              {loadingCatalog ? 'Reading feed…' : catalog ? 'Reload catalog' : 'List what they publish'}
+            </button>
+            <span style={hint}>
+              Reads the feed only — no pages are fetched and no model is called.
+            </span>
+          </div>
+        ) : undefined}
+      </Step>
 
+      {/* ── 3 · The link, or the checklist ───────────────────────────────────
+             The working step. It stays open once reached, because this is where
+             an operator spends their time. */}
+      <Step
+        index={3}
+        title={mode === 'link' ? 'The link' : 'Choose what to import'}
+        summary={stepThreeSummary}
+        done={mode === 'link' ? Boolean(linkUrl.trim()) : selected.length > 0}
+        open={currentStep === 3}
+        onToggle={() => toggleStep(3)}
+        aside={mode === 'catalog' && catalog?.ok && currentStep === 3 ? (
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button onClick={selectAllNew} style={secondaryButton}>
+              Select all not yet imported ({unimported.length})
+            </button>
+            <button onClick={() => setSelected([])} style={secondaryButton}>Clear selection</button>
+          </div>
+        ) : undefined}
+      >
         {mode === 'link' ? (
-          <div style={{ marginTop: '14px' }}>
+          <div>
             <input
               type="url"
               value={linkUrl}
@@ -479,167 +725,158 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             </p>
           </div>
         ) : (
-          <div style={{ marginTop: '14px' }}>
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-              <select
-                value={source}
-                onChange={e => { setSource(e.target.value as PlatformSource); setCatalog(null); setSelected([]); }}
-                aria-label="Source"
-                style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '13px', background: 'white', cursor: 'pointer' }}
-              >
-                {PLATFORM_SOURCES.map(s => (
-                  <option key={s} value={s} disabled={!listableSource(creator, s)}>
-                    {SOURCE_LABELS[s]}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={loadCatalog}
-                disabled={!creatorId || loadingCatalog}
-                style={{ ...secondaryButton, cursor: loadingCatalog ? 'wait' : 'pointer' }}
-              >
-                {loadingCatalog ? 'Reading feed…' : catalog ? 'Reload catalog' : 'List what they publish'}
-              </button>
-              <span style={{ fontSize: '11px', color: '#aaa' }}>
-                Reads the feed only — no pages are fetched and no model is called.
-              </span>
-            </div>
+          <div>
+            {/* A listing that refused says why, in place of the checklist. */}
+            {catalog && !catalog.ok && (
+              <p style={{ margin: 0, fontSize: '13px', color: '#92400e', background: '#fff8e1', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 12px', lineHeight: 1.6 }}>
+                {catalog.detail}
+              </p>
+            )}
+
+            {!catalog && (
+              <p style={{ margin: 0, fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
+                Nothing listed yet. Open <strong>Where from</strong> above and press
+                {' '}<em>List what they publish</em> — reading the feed costs nothing.
+              </p>
+            )}
+
+            {catalog?.ok && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                  <h3 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#222' }}>
+                    {catalog.entries.length} item{catalog.entries.length === 1 ? '' : 's'} published
+                  </h3>
+                  {catalog.feed && (
+                    <a href={catalog.feed.url} target="_blank" rel="noopener noreferrer nofollow" style={{ fontSize: '11px', color: '#2563eb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                      {catalog.feed.url}
+                    </a>
+                  )}
+                  {catalog.entries.length === 0 && catalog.nextPageToken && (
+                    <span style={{ fontSize: '11px', color: '#b45309' }} data-testid="empty-page">
+                      Every upload on this page is private or unreadable. There is more behind it.
+                    </span>
+                  )}
+                  {catalog.truncated && !catalog.nextPageToken && (
+                    <span style={{ fontSize: '11px', color: '#b45309' }}>
+                      Showing the most recent {catalog.entries.length}; sync those, then reload for more.
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ maxHeight: '340px', overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: '8px' }}>
+                  {catalog.entries.map((entry, i) => (
+                    <label
+                      key={entry.itemId}
+                      style={{
+                        display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '8px 12px',
+                        borderTop: i === 0 ? 'none' : '1px solid #f7f7f7', cursor: 'pointer',
+                        background: isImported(entry) ? '#fafafa' : 'white',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(entry.itemId)}
+                        onChange={() => toggle(entry.itemId)}
+                        aria-label={entry.title || entry.url}
+                        style={{ accentColor: '#dd0031', marginTop: '3px' }}
+                      />
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontSize: '13px', color: '#222', fontWeight: 500 }}>{entry.title || entry.url}</span>
+                        <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {formatDate(entry.publishedAt)} · {entry.url}
+                        </span>
+                      </span>
+                      {entry.record && (
+                        <span style={{
+                          fontSize: '11px', fontWeight: 700, borderRadius: '99px', padding: '2px 8px', flexShrink: 0,
+                          background: entry.record.status === 'imported' ? '#e6f9ed' : '#f3f4f6',
+                          color: entry.record.status === 'imported' ? '#1a7a3a' : '#6b7280',
+                        }}>
+                          {entry.record.status === 'imported' ? 'Already imported' : entry.record.status}
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+
+                {/* One press, one page, one unit. A back catalogue is walked
+                    because somebody asked for it, never because a screen was
+                    opened. */}
+                {catalog.nextPageToken && (
+                  <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <button onClick={loadMore} disabled={loadingCatalog} style={{ ...secondaryButton, cursor: loadingCatalog ? 'wait' : 'pointer' }}>
+                      {loadingCatalog ? 'Reading…' : 'Load 50 more'}
+                    </button>
+                    <span style={hint}>
+                      There is more back catalogue than this. Each page costs 1–2 quota units and your selection is kept.
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
+      </Step>
+
+      {/* ── 4 · Run ──────────────────────────────────────────────────────────
+             Never collapses. The cost of what is about to be spent is not
+             something an operator should have to expand a step to see. */}
+      <div style={sectionRow}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <span style={stepBadge(false, true)} aria-hidden="true">4</span>
+          <span style={stepTitle}>Run it</span>
+        </div>
+
+        {error && (
+          <div style={{ margin: '12px 0 0', background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: '#c40029', lineHeight: 1.6 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{
+          marginTop: '12px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap',
+          background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: '10px', padding: '14px 16px',
+        }}>
+          {mode === 'catalog' && (
+            <span
+              style={{ fontSize: '15px', fontWeight: 700, color: selected.length > 0 ? '#222' : '#aaa' }}
+              data-testid="cost-estimate"
+            >
+              {formatSelectionCost(selected.length)}
+            </span>
+          )}
+          <button
+            onClick={start}
+            disabled={!canStart || busy}
+            // Beside the cost when there is one to sit beside; a lone
+            // right-aligned button in link mode would just look stranded.
+            style={{ ...primaryButton(busy), marginLeft: mode === 'catalog' ? 'auto' : undefined, opacity: canStart ? 1 : 0.4 }}
+          >
+            {busy ? 'Syncing…' : mode === 'link' ? 'Sync this link' : 'Sync selection'}
+          </button>
+        </div>
+
+        {/* No notify checkbox here any more. A run tells the creator nothing
+            because a run publishes nothing; the email is offered on Approve,
+            which is the first point at which there is something true to say. */}
+        <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
+          {creator?.display_name ?? 'The creator'} is emailed when you approve a draft in Review, listing what
+          went live and how to edit or unpublish it. Nothing is sent for a sync on its own.
+        </p>
       </div>
 
-      {catalog && !catalog.ok && (
-        <div style={{ ...card, background: '#fff8e1', border: '1px solid #fde68a' }}>
-          <p style={{ margin: 0, fontSize: '13px', color: '#92400e', lineHeight: 1.6 }}>{catalog.detail}</p>
-        </div>
-      )}
-
-      {catalog?.ok && (
-        <div style={card}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
-            <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#222' }}>
-              {catalog.entries.length} item{catalog.entries.length === 1 ? '' : 's'} published
-            </h3>
-            {catalog.feed && (
-              <a href={catalog.feed.url} target="_blank" rel="noopener noreferrer nofollow" style={{ fontSize: '11px', color: '#2563eb' }}>
-                {catalog.feed.url}
-              </a>
-            )}
-            {catalog.entries.length === 0 && catalog.nextPageToken && (
-              <span style={{ fontSize: '11px', color: '#b45309' }} data-testid="empty-page">
-                Every upload on this page is private or unreadable. There is more behind it.
-              </span>
-            )}
-            {catalog.truncated && !catalog.nextPageToken && (
-              <span style={{ fontSize: '11px', color: '#b45309' }}>
-                Showing the most recent {catalog.entries.length}; sync those, then reload for more.
-              </span>
-            )}
-            {/* The other budget. A dollar cost buys extractions; this buys
-                listings and description writes, and it is shared and daily. */}
-            {quotaUnits > 0 && (
-              <span style={{ fontSize: '11px', color: '#aaa' }} data-testid="quota-spent">
-                {quotaUnits} YouTube quota {quotaUnits === 1 ? 'unit' : 'units'} spent on this screen, of 10,000/day
-              </span>
-            )}
-          </div>
-
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-            <button onClick={selectAllNew} style={secondaryButton}>
-              Select all not yet imported ({unimported.length})
-            </button>
-            <button onClick={() => setSelected([])} style={secondaryButton}>Clear selection</button>
-          </div>
-
-          <div style={{ maxHeight: '360px', overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: '8px' }}>
-            {catalog.entries.map((entry, i) => (
-              <label
-                key={entry.itemId}
-                style={{
-                  display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '8px 12px',
-                  borderTop: i === 0 ? 'none' : '1px solid #f7f7f7', cursor: 'pointer',
-                  background: isImported(entry) ? '#fafafa' : 'white',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={selected.includes(entry.itemId)}
-                  onChange={() => toggle(entry.itemId)}
-                  aria-label={entry.title || entry.url}
-                  style={{ accentColor: '#dd0031', marginTop: '3px' }}
-                />
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ fontSize: '13px', color: '#222', fontWeight: 500 }}>{entry.title || entry.url}</span>
-                  <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {formatDate(entry.publishedAt)} · {entry.url}
-                  </span>
-                </span>
-                {entry.record && (
-                  <span style={{
-                    fontSize: '11px', fontWeight: 700, borderRadius: '99px', padding: '2px 8px', flexShrink: 0,
-                    background: entry.record.status === 'imported' ? '#e6f9ed' : '#f3f4f6',
-                    color: entry.record.status === 'imported' ? '#1a7a3a' : '#6b7280',
-                  }}>
-                    {entry.record.status === 'imported' ? 'Already imported' : entry.record.status}
-                  </span>
-                )}
-              </label>
-            ))}
-          </div>
-
-          {/* One press, one page, one unit. A back catalogue is walked because
-              somebody asked for it, never because a screen was opened. */}
-          {catalog.nextPageToken && (
-            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-              <button onClick={loadMore} disabled={loadingCatalog} style={{ ...secondaryButton, cursor: loadingCatalog ? 'wait' : 'pointer' }}>
-                {loadingCatalog ? 'Reading…' : 'Load 50 more'}
-              </button>
-              <span style={{ fontSize: '11px', color: '#aaa' }}>
-                There is more back catalogue than this. Each page costs 1–2 quota units and your selection is kept.
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {creatorId && (
-        <div style={card}>
-          {/* No notify checkbox here any more. A run tells the creator nothing
-              because a run publishes nothing; the email is offered on Approve,
-              which is the first point at which there is something true to say. */}
-          <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-            {creator?.display_name ?? 'The creator'} is emailed when you approve a draft in Review, listing what
-            went live and how to edit or unpublish it. Nothing is sent for a sync on its own.
-          </p>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
-            <button onClick={start} disabled={!canStart || busy} style={{ ...primaryButton(busy), opacity: canStart ? 1 : 0.4 }}>
-              {busy ? 'Syncing…' : mode === 'link' ? 'Sync this link' : 'Sync selection'}
-            </button>
-            {mode === 'catalog' && (
-              <span style={{ fontSize: '13px', fontWeight: 600, color: selected.length > 0 ? '#222' : '#aaa' }} data-testid="cost-estimate">
-                {formatSelectionCost(selected.length)}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: '#c40029' }}>
-          {error}
-        </div>
-      )}
-
+      {/* ── What the run did ─────────────────────────────────────────────────
+             Not a numbered step: it is the answer to step 4, and it appears in
+             place rather than as another card further down the page. */}
       {run && totals && (
-        <div style={card}>
+        <div style={sectionRow}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#222' }}>
+            <h3 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#222' }}>
               {run.status === 'done' ? 'Run finished' : 'Running…'}
             </h3>
-            <span style={{ fontSize: '11px', color: '#aaa' }}>${totals.costUsd.toFixed(4)} spent</span>
+            <span style={hint}>${totals.costUsd.toFixed(4)} spent</span>
             {run.status !== 'done' && !busy && (
-              <button onClick={resume} style={secondaryButton}>Resume</button>
+              <button onClick={resume} style={{ ...secondaryButton, marginLeft: 'auto' }}>Resume</button>
             )}
           </div>
 
@@ -661,7 +898,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             </p>
           )}
 
-          <div style={{ marginTop: '12px', maxHeight: '360px', overflowY: 'auto' }}>
+          <div style={{ marginTop: '12px', maxHeight: '340px', overflowY: 'auto' }}>
             {run.items.map((item, i) => {
               const style = ITEM_STYLES[item.status];
               return (
@@ -690,81 +927,98 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
         </div>
       )}
 
-      {/* ── Link their videos back to Mealio (MEAL-79) ────────────────────── */}
+      {/* ── Afterwards: link their videos back to Mealio (MEAL-79) ───────────
+             Folded away by default. It is not part of the sequence — it acts on
+             meals already approved — and for most creators the honest answer is
+             a refusal, so it should not take up the screen until asked for. */}
       {creatorId && (
-        <div style={card} data-testid="append-panel">
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#222' }}>
-              Add the Mealio link to their videos
-            </h3>
-            <button onClick={loadAppendable} disabled={appendBusy === 'list'} style={secondaryButton}>
+        <div style={sectionRow} data-testid="append-panel">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setAppendOpen(open => !open)}
+              aria-expanded={appendOpen}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', minWidth: 0, flex: '1 1 240px' }}
+            >
+              <span style={{ ...stepTitle, whiteSpace: 'normal' }}>Add the Mealio link to their videos</span>
+              <span style={{ fontSize: '11px', color: '#9ca3af' }}>{appendOpen ? 'Hide' : 'Show'}</span>
+            </button>
+            <button
+              onClick={loadAppendable}
+              disabled={appendBusy === 'list'}
+              style={secondaryButton}
+            >
               {appendBusy === 'list' ? 'Checking…' : appendable ? 'Reload' : 'Check what can be linked'}
             </button>
           </div>
 
-          <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-            Only meals we imported <em>from one of their videos</em> are offered, and only when the creator has
-            turned on description editing. Adding a link twice does nothing. Turning consent off stops future
-            writes — it does not remove links already added, because we cannot un-tell a viewer.
-          </p>
+          {appendOpen && (
+            <>
+              <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
+                Only meals we imported <em>from one of their videos</em> are offered, and only when the creator has
+                turned on description editing. Adding a link twice does nothing. Turning consent off stops future
+                writes — it does not remove links already added, because we cannot un-tell a viewer.
+              </p>
 
-          {/* The refusal, in place of the list. Which of the three gates was
-              shut is the whole content, so the sentence is shown verbatim. */}
-          {appendRefusal && (
-            <p
-              style={{ margin: '12px 0 0', fontSize: '12px', color: '#92400e', background: '#fff8e1', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 12px', lineHeight: 1.6 }}
-              data-testid="append-refusal"
-            >
-              {appendRefusal}
-            </p>
-          )}
-
-          {appendable && appendable.length === 0 && (
-            <p style={{ margin: '12px 0 0', fontSize: '12px', color: '#888' }}>
-              Nothing yet. A meal becomes linkable once it has been imported from one of their videos and
-              approved in <strong>Review</strong>.
-            </p>
-          )}
-
-          {/* There is no cursor past the ceiling, so saying so is the whole
-              remedy: a creator past it would otherwise have their older imports
-              become unlinkable with the screen showing nothing about it. */}
-          {appendTruncated && (
-            <p style={{ margin: '12px 0 0', fontSize: '11px', color: '#b45309' }} data-testid="append-truncated">
-              Showing the {appendable?.length ?? 0} most recently approved. This creator has more, and there is
-              no way to reach them from here yet — link these, then reload.
-            </p>
-          )}
-
-          {appendable && appendable.length > 0 && (
-            <div style={{ marginTop: '12px', maxHeight: '360px', overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: '8px' }}>
-              {appendable.map((meal, i) => (
-                <div
-                  key={meal.draftId}
-                  style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '10px 12px', borderTop: i === 0 ? 'none' : '1px solid #f7f7f7' }}
+              {/* The refusal, in place of the list. Which of the three gates was
+                  shut is the whole content, so the sentence is shown verbatim. */}
+              {appendRefusal && (
+                <p
+                  style={{ margin: '12px 0 0', fontSize: '12px', color: '#92400e', background: '#fff8e1', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 12px', lineHeight: 1.6 }}
+                  data-testid="append-refusal"
                 >
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ fontSize: '13px', color: '#222', fontWeight: 500 }}>{meal.mealName}</span>
-                    <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {meal.videoUrl} → {meal.mealUrl}
-                    </span>
-                    {appendResults[meal.draftId] && (
-                      <span style={{ display: 'block', fontSize: '11px', color: '#555', lineHeight: 1.5, marginTop: '2px' }}>
-                        {appendResults[meal.draftId]}
+                  {appendRefusal}
+                </p>
+              )}
+
+              {appendable && appendable.length === 0 && (
+                <p style={{ margin: '12px 0 0', fontSize: '12px', color: '#888' }}>
+                  Nothing yet. A meal becomes linkable once it has been imported from one of their videos and
+                  approved in <strong>Review</strong>.
+                </p>
+              )}
+
+              {/* There is no cursor past the ceiling, so saying so is the whole
+                  remedy: a creator past it would otherwise have their older
+                  imports become unlinkable with the screen showing nothing. */}
+              {appendTruncated && (
+                <p style={{ margin: '12px 0 0', fontSize: '11px', color: '#b45309' }} data-testid="append-truncated">
+                  Showing the {appendable?.length ?? 0} most recently approved. This creator has more, and there is
+                  no way to reach them from here yet — link these, then reload.
+                </p>
+              )}
+
+              {appendable && appendable.length > 0 && (
+                <div style={{ marginTop: '12px', maxHeight: '340px', overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: '8px' }}>
+                  {appendable.map((meal, i) => (
+                    <div
+                      key={meal.draftId}
+                      style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '10px 12px', borderTop: i === 0 ? 'none' : '1px solid #f7f7f7' }}
+                    >
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontSize: '13px', color: '#222', fontWeight: 500 }}>{meal.mealName}</span>
+                        <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {meal.videoUrl} → {meal.mealUrl}
+                        </span>
+                        {appendResults[meal.draftId] && (
+                          <span style={{ display: 'block', fontSize: '11px', color: '#555', lineHeight: 1.5, marginTop: '2px' }}>
+                            {appendResults[meal.draftId]}
+                          </span>
+                        )}
                       </span>
-                    )}
-                  </span>
-                  <button
-                    onClick={() => appendOne(meal)}
-                    disabled={Boolean(appendBusy)}
-                    aria-label={`Append the Mealio link for ${meal.mealName}`}
-                    style={{ ...secondaryButton, flexShrink: 0, cursor: appendBusy ? 'wait' : 'pointer' }}
-                  >
-                    {appendBusy === meal.draftId ? 'Writing…' : 'Append link'}
-                  </button>
+                      <button
+                        onClick={() => appendOne(meal)}
+                        disabled={Boolean(appendBusy)}
+                        aria-label={`Append the Mealio link for ${meal.mealName}`}
+                        style={{ ...secondaryButton, flexShrink: 0, cursor: appendBusy ? 'wait' : 'pointer' }}
+                      >
+                        {appendBusy === meal.draftId ? 'Writing…' : 'Append link'}
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </div>
       )}
