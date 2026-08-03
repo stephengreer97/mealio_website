@@ -3,7 +3,8 @@ import { jsonRequest } from '../helpers/request';
 
 vi.mock('@/lib/supabase', async () =>
   (await import('../helpers/supabase-mock')).mockSupabaseModule());
-vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
+const log = vi.fn();
+vi.mock('@/lib/logger', () => ({ log: (...args: unknown[]) => log(...args) }));
 
 const runPollPass = vi.fn();
 vi.mock('@/lib/creator-poller', async () => {
@@ -24,7 +25,8 @@ import { GET } from '@/app/api/cron/poll/route';
 
 const PASS = {
   eligible: 3, polled: 2, notModified: 1, baselined: 0, drafted: 4,
-  rejected: 1, failed: 0, deferred: 0, blocked: 0, emailsSent: 2, skipped: 0, signals: [],
+  rejected: 1, failed: 0, retried: 0, deferred: 0, blocked: 0, sourcesFailed: 0,
+  emailsSent: 2, skipped: 0, signals: [],
 };
 
 function cronRequest(secret = 'cron-secret') {
@@ -33,6 +35,7 @@ function cronRequest(secret = 'cron-secret') {
 
 beforeEach(() => {
   process.env.CRON_SECRET = 'cron-secret';
+  log.mockReset();
   runPollPass.mockReset();
   runPollPass.mockResolvedValue(PASS);
 });
@@ -67,6 +70,18 @@ describe('/api/cron/poll', () => {
     // A source that has started blocking us must not present as a creator who
     // stopped publishing, and a log line at `error` is where that goes to die.
     expect(body.signals).toEqual(['chefsarah.test has started refusing us']);
+  });
+
+  it('does not log a pass in which every source failed as a success', async () => {
+    // No signal fires here — nothing CHANGED, each source simply failed — and
+    // the counts are the counts of a quiet pass. Fifty creators not being polled
+    // has to look different from fifty creators having nothing new.
+    runPollPass.mockResolvedValue({ ...PASS, polled: 0, drafted: 0, emailsSent: 0, sourcesFailed: 3 });
+
+    const body = await (await GET(cronRequest())).json();
+
+    expect(body.sourcesFailed).toBe(3);
+    expect(log.mock.calls.map((call) => (call[0] as { status: string }).status)).toContain('error');
   });
 
   it('reports a thrown pass as a failure rather than a quiet 200', async () => {

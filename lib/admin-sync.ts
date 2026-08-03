@@ -31,7 +31,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { createImportDraft, reviewDraft, type ImportDraft } from '@/lib/import-drafts';
+import { createImportDraft, reviewDraft, type DraftReviewBy, type ImportDraft } from '@/lib/import-drafts';
 import { log } from '@/lib/logger';
 import {
   isConnectedPlatform,
@@ -195,6 +195,18 @@ export interface SyncDeps {
    * post the creator never offered us (MEAL-75).
    */
   gateMode?: GateMode;
+  /**
+   * Whose queue a draft lands in. Defaults to `admin`, which is the truth for an
+   * operator-driven run: they started it and they are the ones reading it.
+   *
+   * The poller sets `creator`, and that is not cosmetic — the email it sends
+   * says "Review and publish" and points at the creator portal (MEAL-76), so a
+   * draft left in the operator's queue is a creator asked to act on something
+   * they cannot see. A seam rather than a constant because these are two
+   * different products of the same engine, and the engine must not have to
+   * guess which one it is running for.
+   */
+  reviewBy?: DraftReviewBy;
   /** The import pipeline seam. Tests substitute a stub; production runs the real thing. */
   importer?: (url: string, options: RunImportOptions) => Promise<ImportResult>;
   /** Where an extraction lands. There is no publisher seam here any more — a run cannot publish. */
@@ -313,8 +325,43 @@ export interface CatalogEntry {
    * The `creator_source_items` record, when there is one. Drives the
    * already-imported marker, and the row starts deselected because select-all on
    * a catalog half of which is already in is the obvious expensive mistake.
+   *
+   * `at` is when we last touched it and `firstSeenAt` when we first met it. Both,
+   * because the poller's retry sweep is bounded from the first meeting and leased
+   * from the last one, and one timestamp cannot say both (MEAL-75).
    */
-  record: { status: string; detail: string | null; at: string | null } | null;
+  record: { status: string; detail: string | null; at: string | null; firstSeenAt: string | null } | null;
+}
+
+/**
+ * The `creator_source_items` id for an entry from a website feed.
+ *
+ * **Derived from the entry's URL, never from the feed's own guid**, because the
+ * id must not depend on which rung of the discovery ladder answered. A creator
+ * with no confirmed `feed_url` walks the whole ladder on every poll, and the
+ * rungs disagree: RSS and Atom carry a guid, a sitemap carries only a location.
+ * One 503 on `/feed` falls through to `/sitemap.xml`, every already-baselined
+ * post is unseen again, and the back catalogue is re-imported — quietly, because
+ * a handful of posts sits under the flood cap (MEAL-75).
+ *
+ * The cost is real and much smaller: a post whose permalink genuinely moves
+ * reads as a new post, where a permalink-guid feed would have recognised it.
+ * Normalising absorbs the cases that are a move in name only — scheme, `www.`,
+ * a trailing slash, a fragment — so what is left is one re-imported post against
+ * a whole archive. The query string is kept: `/?p=123` is a permalink on every
+ * WordPress site that never switched away from the default.
+ */
+export function websiteItemId(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.host.toLowerCase().replace(/^www\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '');
+    return `${host}${path || '/'}${parsed.search}`;
+  } catch {
+    // Not a URL we could parse is not a URL we fetched either; the raw string is
+    // still stable, which is the only property this needs.
+    return url;
+  }
 }
 
 export type CatalogResult =
@@ -412,7 +459,10 @@ export async function buildCatalog(
     creator,
     source,
     discovery.feed.entries.map((entry) => ({
-      itemId: entry.id,
+      // Not `entry.id`. See `websiteItemId` — the guid is only as stable as the
+      // rung that happened to answer, and the URL is the one thing all of them
+      // agree about.
+      itemId: websiteItemId(entry.url),
       url: entry.url,
       title: entry.title,
       publishedAt: entry.publishedAt,
@@ -431,12 +481,28 @@ export async function buildCatalog(
 }
 
 /**
+ * Rows read per request, and the number of requests allowed.
+ *
+ * PostgREST answers with at most `max-rows` (1000 on Supabase) unless a range
+ * says otherwise, **and says nothing about having truncated**. A creator whose
+ * `creator_source_items` has grown past that would silently get a partial record
+ * map, and a missing record does not read as "unknown" anywhere here — it reads
+ * as *new*, which on the poller's side means importing a post we have already
+ * imported. So the read is paged explicitly and ordered, since an unordered
+ * OFFSET may repeat one row and skip another.
+ *
+ * The page ceiling is a bound on a screen draw, not a limit on a creator: 20k
+ * items is two orders of magnitude past the largest catalog we will list.
+ */
+const RECORD_PAGE_SIZE = 1000;
+const MAX_RECORD_PAGES = 20;
+
+/**
  * Marks each listed item with what already happened to it.
  *
- * One query for the whole catalog, keyed the way the record is keyed. This and
- * the feed read are the entire cost of drawing the screen — the property that
- * lets an operator open a 200-post blog, or a channel, without spending
- * anything.
+ * One query per page, keyed the way the record is keyed. This and the feed read
+ * are the entire cost of drawing the screen — the property that lets an operator
+ * open a 200-post blog, or a channel, without spending anything.
  */
 async function withImportRecords(
   deps: SyncDeps,
@@ -444,19 +510,28 @@ async function withImportRecords(
   source: PlatformSource,
   entries: Array<Omit<CatalogEntry, 'record'>>,
 ): Promise<CatalogEntry[]> {
-  const { data: records } = await deps.supabase
-    .from('creator_source_items')
-    .select('item_id, status, detail, updated_at')
-    .eq('creator_id', creator.id)
-    .eq('source', source);
+  const byItemId = new Map<string, NonNullable<CatalogEntry['record']>>();
 
-  const byItemId = new Map<string, { status: string; detail: string | null; at: string | null }>();
-  for (const row of (records ?? []) as Array<Record<string, any>>) {
-    byItemId.set(String(row.item_id), {
-      status: String(row.status),
-      detail: row.detail ?? null,
-      at: row.updated_at ?? null,
-    });
+  for (let page = 0; page < MAX_RECORD_PAGES; page++) {
+    const from = page * RECORD_PAGE_SIZE;
+    const { data: records } = await deps.supabase
+      .from('creator_source_items')
+      .select('item_id, status, detail, created_at, updated_at')
+      .eq('creator_id', creator.id)
+      .eq('source', source)
+      .order('item_id', { ascending: true })
+      .range(from, from + RECORD_PAGE_SIZE - 1);
+
+    const rows = (records ?? []) as Array<Record<string, any>>;
+    for (const row of rows) {
+      byItemId.set(String(row.item_id), {
+        status: String(row.status),
+        detail: row.detail ?? null,
+        at: row.updated_at ?? null,
+        firstSeenAt: row.created_at ?? null,
+      });
+    }
+    if (rows.length < RECORD_PAGE_SIZE) break;
   }
 
   return entries.map((entry) => ({ ...entry, record: byItemId.get(entry.itemId) ?? null }));
@@ -716,19 +791,34 @@ export async function processSyncItem(
   // Already in, from an earlier run or the poller. Skipped rather than
   // re-imported: an operator ticking a row they were warned about should not be
   // able to publish the same recipe twice under a creator's name.
-  const { data: existing } = await supabase
+  const { data: found } = await supabase
     .from('creator_source_items')
-    .select('status')
+    .select('status, detail, updated_at')
     .eq('creator_id', creator.id)
     .eq('source', run.source)
     .eq('item_id', item.itemId)
     .maybeSingle();
+  const existing = (found ?? null) as ItemRecord | null;
 
-  if (existing && (existing as Record<string, any>).status === 'imported') {
+  if (existing?.status === 'imported') {
     return {
       ...item,
       status: 'skipped',
       detail: 'Already imported — skipped so the same recipe is not queued twice.',
+    };
+  }
+
+  // Claimed BEFORE the extraction, not recorded after it. The UNIQUE key on
+  // `(creator_id, source, item_id)` is documented as the idempotency guarantee
+  // for a cron that will eventually overlap itself, and it can only be that if
+  // the row exists before the money is spent — written afterwards it deduplicates
+  // the record while both passes still queue a draft, and
+  // `creator_import_drafts` has no unique key to catch the second one.
+  if (!(await claimItem(deps, creator, run, item, existing))) {
+    return {
+      ...item,
+      status: 'skipped',
+      detail: 'Another import of this post is already in flight, so this one stood down.',
     };
   }
 
@@ -809,7 +899,7 @@ export async function processSyncItem(
       // every import and then dropped on the floor, so the greens on this path
       // were claims nobody had ever looked at.
       confidence: result.confidence,
-      reviewBy: 'admin',
+      reviewBy: deps.reviewBy ?? 'admin',
     });
 
     // Counted here rather than on the review screen so an operator watching a
@@ -860,6 +950,101 @@ const EMPTY_DRAFT_FIELDS = {
   publishedMealId: null,
   createdAt: null,
 } satisfies Omit<ImportDraft, 'id' | 'creatorId' | 'sourceUrl' | 'draft' | 'confidence'>;
+
+/**
+ * What a claimed item says while its extraction is in flight.
+ *
+ * `failed` rather than a status of its own, because the set is fixed by a CHECK
+ * constraint and `failed` already means the one thing that is true here: we
+ * started reading this and have not come back with an answer. A worker that dies
+ * mid-extraction therefore leaves a retryable row rather than a wedged one.
+ */
+export const CLAIM_DETAIL =
+  'An import of this post started and has not reported back yet. If it still says this, ' +
+  'whatever was reading it stopped — the retry sweep will pick it up.';
+
+/**
+ * How long a claim stands before the item is considered abandoned.
+ *
+ * Comfortably longer than an extraction — a fetch and two model calls — and far
+ * shorter than a poll cycle, so a genuinely interrupted item is retryable within
+ * the same cycle rather than the next one. Only ever applied to a row still
+ * carrying `CLAIM_DETAIL`: a *finished* failure is retryable immediately, which
+ * is what an operator clicking Retry on a failed item is entitled to.
+ */
+export const CLAIM_LEASE_MS = 10 * 60_000;
+
+/** The columns of an item's record that decide whether we may take it. */
+interface ItemRecord {
+  status: string;
+  detail: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * Takes an item before anything is spent on it.
+ *
+ * Returns false when somebody else already has it, which the caller reports as
+ * `skipped`. Two mechanisms, one for each shape of the race:
+ *
+ *   - **No row yet** — `insert`, so the UNIQUE key rejects the second pass. This
+ *     is the overlap the schema comment has always promised to handle.
+ *   - **A row we are retrying** — a compare-and-swap on `updated_at`. Under READ
+ *     COMMITTED the second UPDATE re-checks the predicate against the row the
+ *     first one committed, so exactly one of them matches.
+ *
+ * A write that fails for some other reason also stands the item down. That is
+ * the right way round: an item nobody recorded is simply new again next pass,
+ * whereas an extraction whose outcome cannot be written is money spent twice.
+ */
+async function claimItem(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  run: ItemContext,
+  item: SyncItem,
+  existing: ItemRecord | null,
+): Promise<boolean> {
+  const now = deps.now?.() ?? Date.now();
+  const at = new Date(now).toISOString();
+
+  if (!existing) {
+    const { error } = await deps.supabase.from('creator_source_items').insert({
+      creator_id: creator.id,
+      source: run.source,
+      item_id: item.itemId,
+      url: item.url,
+      title: item.title,
+      published_at: item.publishedAt,
+      status: 'failed',
+      detail: CLAIM_DETAIL,
+      updated_at: at,
+    });
+    return !error;
+  }
+
+  // Somebody took it moments ago and is still working. The compare-and-swap
+  // below cannot see this — they would swap on the value we just read — so the
+  // live claim is what says no.
+  const heldSince = Date.parse(existing.updated_at ?? '');
+  if (existing.detail === CLAIM_DETAIL && Number.isFinite(heldSince) && now - heldSince < CLAIM_LEASE_MS) {
+    return false;
+  }
+
+  const claim = deps.supabase
+    .from('creator_source_items')
+    .update({ status: 'failed', detail: CLAIM_DETAIL, updated_at: at })
+    .eq('creator_id', creator.id)
+    .eq('source', run.source)
+    .eq('item_id', item.itemId);
+  // `eq(null)` matches nothing in PostgREST, so a row that has never been
+  // touched is swapped on `is null` instead.
+  const guarded = existing.updated_at === null
+    ? claim.is('updated_at', null)
+    : claim.eq('updated_at', existing.updated_at);
+
+  const { data } = await guarded.select('item_id');
+  return Array.isArray(data) && data.length > 0;
+}
 
 /**
  * Writes the durable per-item record.

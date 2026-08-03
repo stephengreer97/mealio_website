@@ -589,10 +589,15 @@ export async function safeFetch(
     const timer = setTimeout(() => controller.abort(), remaining);
     const isExpired = () => now() >= deadline;
 
+    // Validators are only sent to the origin they were collected from, so
+    // whether *this* hop asked a conditional question is a property of the hop,
+    // not of the call. Read again below, where the answer comes back.
+    const sameOrigin = credentialOrigin !== null && new URL(current).origin === credentialOrigin;
+    const askedConditionally = isConditional && sameOrigin;
+
     try {
       let response: Response;
       try {
-        const sameOrigin = credentialOrigin !== null && new URL(current).origin === credentialOrigin;
         response = await fetchImpl(current, {
           method: 'GET',
           redirect: 'manual',
@@ -614,8 +619,12 @@ export async function safeFetch(
       // Checked before the redirect band, which 304 shares a hundreds digit
       // with and nothing else. Only for a request that actually carried a
       // validator: without one this stays what it was, an `http-error` about a
-      // server answering a question nobody asked.
-      if (response.status === 304 && isConditional) {
+      // server answering a question nobody asked. **Per hop**, because the
+      // validators are dropped after an off-origin redirect — a feed that 302s
+      // to a CDN answering 304 to an unconditional request would otherwise read
+      // as `not-modified` forever, and the poller would report a source that
+      // never changes rather than one it can no longer read.
+      if (response.status === 304 && askedConditionally) {
         await discard(response);
         return fail('not-modified', `${new URL(current).hostname} reports nothing has changed since we last read it.`);
       }

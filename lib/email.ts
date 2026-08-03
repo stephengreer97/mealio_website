@@ -318,7 +318,7 @@ export async function sendCreatorDraftsReadyEmail(
     })
     .join('');
 
-  await resend.emails.send({
+  const { error } = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to,
     subject,
@@ -343,6 +343,15 @@ export async function sendCreatorDraftsReadyEmail(
       </div>
     `,
   });
+
+  // resend-node reports an API refusal in `{ error }` rather than by throwing,
+  // so a send that never happened returns exactly like one that did. The caller
+  // counts what it believes it sent and the drafts are already recorded
+  // `imported` — so a swallowed error here is a creator who is never told about
+  // recipes that will never be new again (MEAL-76).
+  if (error) {
+    throw new Error(`Resend refused the drafts-ready email: ${error.message ?? JSON.stringify(error)}`);
+  }
 }
 
 export async function sendOtpEmail(to: string, code: string) {

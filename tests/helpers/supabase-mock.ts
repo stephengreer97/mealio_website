@@ -17,6 +17,18 @@ export type QueryResult = { data?: any; error?: any; count?: number | null };
  */
 export const URL_LIMIT_BYTES = 8 * 1024;
 
+/**
+ * Rows a select returns when nothing asked for more, as Supabase configures
+ * PostgREST.
+ *
+ * It is a CEILING, not an error: the response is truncated and says nothing
+ * about it, so code that reads a whole table in one call gets a partial answer
+ * that looks complete. A mock without this cannot tell a paged read from an
+ * unpaged one, which is how a partial `creator_source_items` map — where a
+ * missing record reads as "this post is new" — survives a green suite.
+ */
+export const MAX_ROWS = 1000;
+
 type Filter = { op: string; column: string; value: any };
 
 function compare(a: any, b: any): number {
@@ -130,11 +142,25 @@ function project(row: any, columns?: string): any {
 export class FakeSupabase {
   private queues = new Map<string, QueryResult[]>();
   private tables = new Map<string, any[]>();
+  private uniques = new Map<string, string[]>();
   calls: Array<{ table: string; method: string; args: any[] }> = [];
 
   queue(table: string, result: QueryResult): this {
     if (!this.queues.has(table)) this.queues.set(table, []);
     this.queues.get(table)!.push(result);
+    return this;
+  }
+
+  /**
+   * Declare a UNIQUE constraint, so `insert` can lose a race the way it does in
+   * Postgres — a 23505 rather than a second row.
+   *
+   * Opt-in per table because it is the constraint that makes a claim-first write
+   * meaningful: without it two overlapping passes both insert, both proceed, and
+   * the duplicate work is invisible.
+   */
+  unique(table: string, columns: string[]): this {
+    this.uniques.set(table, columns);
     return this;
   }
 
@@ -168,6 +194,7 @@ export class FakeSupabase {
   reset(): void {
     this.queues.clear();
     this.tables.clear();
+    this.uniques.clear();
     this.calls = [];
   }
 
@@ -186,6 +213,7 @@ export class FakeSupabase {
     const filters: Filter[] = [];
     let orderBy: { column: string; ascending: boolean; nullsFirst: boolean } | null = null;
     let rowLimit: number | null = null;
+    let rowRange: { from: number; to: number } | null = null;
 
     const builder: any = {};
     const record = (method: string, args: any[]) => { this.calls.push({ table, method, args }); };
@@ -222,9 +250,15 @@ export class FakeSupabase {
       filters.push({ op: 'or', column: '', value: args[0] });
       return builder;
     };
-    for (const method of ['contains', 'filter', 'range']) {
+    for (const method of ['contains', 'filter']) {
       builder[method] = (...args: any[]) => { record(method, args); return builder; };
     }
+    // Inclusive at both ends, like PostgREST's `Range` header.
+    builder.range = (...args: any[]) => {
+      record('range', args);
+      rowRange = { from: args[0], to: args[1] };
+      return builder;
+    };
     builder.order = (...args: any[]) => {
       record('order', args);
       const ascending = args[1]?.ascending !== false;
@@ -259,6 +293,21 @@ export class FakeSupabase {
         case 'insert':
         case 'upsert': {
           const incoming = Array.isArray(payload) ? payload : [payload];
+          const key = this.uniques.get(table);
+          if (op === 'insert' && key) {
+            const clash = incoming.find((value) => rows.some((row) => key.every((c) => row[c] === value[c])));
+            if (clash) {
+              // Postgres fails the whole statement, so nothing is written.
+              return {
+                data: null,
+                count: null,
+                error: {
+                  code: '23505',
+                  message: `duplicate key value violates unique constraint on ${table} (${key.join(', ')})`,
+                },
+              };
+            }
+          }
           const written: any[] = [];
           for (const value of incoming) {
             const existing = op === 'upsert' && conflict.length > 0
@@ -283,7 +332,11 @@ export class FakeSupabase {
             const { column, ascending, nullsFirst } = orderBy;
             out.sort((a, b) => compareOrdered(a[column], b[column], ascending, nullsFirst));
           }
-          if (rowLimit !== null) out = out.slice(0, rowLimit);
+          if (rowRange) out = out.slice(rowRange.from, rowRange.to + 1);
+          else if (rowLimit !== null) out = out.slice(0, rowLimit);
+          // Whatever the caller asked for, the server never returns more than
+          // this and never says it truncated. See MAX_ROWS.
+          out = out.slice(0, MAX_ROWS);
           return { data: out.map((r) => project(r, columns)), error: null, count: out.length };
         }
       }

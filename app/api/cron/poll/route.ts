@@ -44,9 +44,16 @@ export async function GET(request: NextRequest) {
     // trends; a signal is a specific creator whose source has started behaving
     // differently, and it is in the response body rather than only in the log so
     // that whoever is watching the cron sees it without going looking.
+    //
+    // `sourcesFailed` counts with it. A pass in which every feed returned a 500
+    // raises no signal — nothing *changed*, each source simply failed — and
+    // reported `polled: 0` with everything else zero, which is character for
+    // character what a quiet healthy pass looks like. Fifty creators silently
+    // not being polled is exactly the thing a cron log is for.
+    const wrong = pass.signals.length > 0 || pass.sourcesFailed > 0;
     log({
       event: 'CRON:POLL',
-      status: pass.signals.length > 0 ? 'error' : 'success',
+      status: wrong ? 'error' : 'success',
       detail: JSON.stringify({ intervalMinutes: POLL_INTERVAL_MINUTES, ...pass }),
     });
 

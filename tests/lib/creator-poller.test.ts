@@ -23,6 +23,7 @@ import {
   eligibleCreators,
   pollCreator,
   runPollPass,
+  POLL_CREATOR_BATCH,
   POLL_INTERVAL_MINUTES,
   POLL_ITEM_CAP,
   type PollDeps,
@@ -87,6 +88,17 @@ function feedWith(n: number, extra = ''): string {
   return `<rss><channel>${extra}${items}</channel></rss>`;
 }
 
+/**
+ * The `creator_source_items` id for one of those posts.
+ *
+ * The URL, normalised — not the feed's guid. Which is the point: the id has to
+ * survive the listing being answered by a different rung of the ladder, and only
+ * the URL is common to all of them.
+ */
+function postId(i: number): string {
+  return `chefsarah.test/post-${i}`;
+}
+
 function feedRoutes(body: string, headers: Record<string, string> = {}) {
   return stubFetch({
     'https://chefsarah.test/robots.txt': { body: 'User-agent: *\nAllow: /' },
@@ -143,6 +155,21 @@ describe('the schedule is one constant', () => {
     // poller follows because they are all expressed off the same constant.
     expect(cronScheduleFor(15)).toBe('*/15 * * * *');
     expect(cronScheduleFor(360)).toBe('0 */6 * * *');
+  });
+
+  it('refuses an interval no cron expression can honestly carry', () => {
+    // A step restarts at the top of its field, so 45 minutes fires at :00 and
+    // :45 — a 45-minute gap and then a 15-minute one — and 90 minutes rounds to
+    // two hours. Returning those keeps the drift test green while the constant
+    // and the deployed cadence disagree, which is the one failure this function
+    // exists to catch.
+    expect(() => cronScheduleFor(45)).toThrow(/no honest cron expression/);
+    expect(() => cronScheduleFor(90)).toThrow(/no honest cron expression/);
+    expect(() => cronScheduleFor(0)).toThrow(/no honest cron expression/);
+    expect(() => cronScheduleFor(2880)).toThrow(/no honest cron expression/);
+    // And the ones it can carry are unchanged.
+    expect(cronScheduleFor(30)).toBe('*/30 * * * *');
+    expect(cronScheduleFor(120)).toBe('0 */2 * * *');
   });
 
   it('agrees with vercel.json, so the two cannot drift apart unnoticed', () => {
@@ -221,14 +248,14 @@ describe('the first poll of a source imports nothing', () => {
   it('does not downgrade an item an operator already synced', async () => {
     const { impl } = feedRoutes(feedWith(3));
     fakeDb.seed('creator_source_items', [
-      { creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'imported', draft_id: 'draft-9' },
+      { creator_id: 'c1', source: 'website', item_id: postId(1), status: 'imported', draft_id: 'draft-9' },
     ]);
 
     await pollCreator(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }), creator(), null);
 
     // `imported` still points at its draft. Overwriting it with `seen` would
     // lose the link between the post and what was published from it.
-    const already = items().find((row) => row.item_id === 'guid-1');
+    const already = items().find((row) => row.item_id === postId(1));
     expect(already).toMatchObject({ status: 'imported', draft_id: 'draft-9' });
     expect(items().filter((row) => row.status === 'seen')).toHaveLength(2);
   });
@@ -251,12 +278,55 @@ describe('the first poll of a source imports nothing', () => {
     expect(state()?.last_polled_at).toBeNull();
     expect(state()?.consecutive_failures).toBe(1);
   });
+
+  it('stays a first poll when the baseline rows could not be written', async () => {
+    // The same trap by the other door, and the expensive one. The feed reads
+    // fine and the `creator_source_items` write fails — a deadlock, a 414, a
+    // transient 5xx. Nothing is marked seen. If `last_polled_at` is written
+    // anyway, the next pass is no longer a first poll: 200 archived posts are
+    // all unseen, five are extracted and the creator is emailed about them, and
+    // it repeats for forty passes — about $13 and forty emails.
+    const { impl } = feedRoutes(feedWith(200));
+    const importer = vi.fn(async () => success);
+    const fetchOptions = { fetchImpl: impl, lookup: publicLookup };
+    // The record lookup behind the catalog answers normally; the baseline upsert
+    // after it is the one that fails.
+    fakeDb.queue('creator_source_items', { data: [] });
+    fakeDb.queue('creator_source_items', { error: { message: 'deadlock detected' } });
+
+    const first = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions }),
+      creator(),
+      null,
+    );
+
+    expect(first.status).toBe('failed');
+    expect(items()).toHaveLength(0);
+    expect(state()?.last_polled_at).toBeNull();
+
+    // The next pass, reading the state this one wrote.
+    const second = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions }),
+      creator(),
+      {
+        etag: state()?.etag ?? null,
+        lastModified: state()?.last_modified ?? null,
+        lastPolledAt: state()?.last_polled_at ?? null,
+        pollAfter: state()?.poll_after ?? null,
+        consecutiveFailures: state()?.consecutive_failures ?? 0,
+      },
+    );
+
+    expect(importer).not.toHaveBeenCalled();
+    expect(second.status).toBe('baselined');
+    expect(second.baselined).toBe(200);
+  });
 });
 
 // ── What counts as new ───────────────────────────────────────────────────────
 
 describe('what we have seen is a set, never a high-water mark', () => {
-  const seen = { creator_id: 'c1', source: 'website', item_id: 'guid-0', status: 'seen' };
+  const seen = { creator_id: 'c1', source: 'website', item_id: postId(0), status: 'seen' };
   const polled = { lastPolledAt: '2027-01-14T08:00:00.000Z', etag: null, lastModified: null, pollAfter: null, consecutiveFailures: 0 };
 
   it('imports a backdated entry that sorts BELOW everything already seen', async () => {
@@ -279,7 +349,7 @@ describe('what we have seen is a set, never a high-water mark', () => {
 
     expect(result.newItems).toBe(1);
     expect(result.drafted).toBe(1);
-    expect(items().find((row) => row.item_id === 'guid-older')).toMatchObject({ status: 'imported' });
+    expect(items().find((row) => row.item_id === 'chefsarah.test/older')).toMatchObject({ status: 'imported' });
   });
 
   it('does not re-draft an item that was already rejected by the gate', async () => {
@@ -312,10 +382,207 @@ describe('what we have seen is a set, never a high-water mark', () => {
     expect(result.deferred).toBe(20 - POLL_ITEM_CAP);
     // A site republishing its archive after a migration looks exactly like a
     // burst of new posts, so exceeding the cap is a signal, not just a cost.
-    expect(result.signal?.kind).toBe('flood');
+    expect(result.signals[0]?.kind).toBe('flood');
     // The deferred items have no record, so they are simply new again next
     // cycle — no separate queue to keep true.
     expect(items()).toHaveLength(POLL_ITEM_CAP);
+  });
+});
+
+// ── Item identity, across the rungs of the ladder ────────────────────────────
+
+describe('an item id does not depend on which rung answered', () => {
+  const polled = { lastPolledAt: '2027-01-14T08:00:00.000Z', etag: null, lastModified: null, pollAfter: null, consecutiveFailures: 0 };
+
+  /**
+   * The whole discovery ladder, which is what a creator with no confirmed
+   * `feed_url` walks on every single poll. `feedStatus` is what the RSS rungs
+   * answer with; the sitemap below them lists the same three posts by URL.
+   */
+  function ladderRoutes(feedStatus: number) {
+    const sitemap =
+      '<urlset>' +
+      [0, 1, 2]
+        .map((i) => `<url><loc>https://chefsarah.test/post-${i}</loc><lastmod>2026-07-29</lastmod></url>`)
+        .join('') +
+      '</urlset>';
+    const down = { status: feedStatus, body: 'service unavailable' };
+    return stubFetch({
+      'https://chefsarah.test/robots.txt': { body: '' },
+      'https://chefsarah.test/': { body: '<html><head></head><body>Chef Sarah</body></html>' },
+      'https://chefsarah.test/feed':
+        feedStatus === 200 ? { body: feedWith(3), headers: { 'content-type': 'application/rss+xml' } } : down,
+      'https://chefsarah.test/rss': down,
+      'https://chefsarah.test/feed.xml': down,
+      'https://chefsarah.test/sitemap.xml': { body: sitemap, headers: { 'content-type': 'application/xml' } },
+    });
+  }
+
+  it('does not re-import the archive when a 503 drops the poll onto the sitemap rung', async () => {
+    // RSS keys by guid and a sitemap keys by URL, so under the feed's own ids a
+    // single 503 on `/feed` makes every already-baselined post new again — and
+    // three posts is under the flood cap, so nothing says a word about it.
+    const importer = vi.fn(async () => success);
+    const undiscovered = creator({ feed_url: null });
+
+    const first = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: ladderRoutes(200).impl, lookup: publicLookup } }),
+      undiscovered,
+      null,
+    );
+    expect(first.baselined).toBe(3);
+
+    const second = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: ladderRoutes(503).impl, lookup: publicLookup } }),
+      undiscovered,
+      polled,
+    );
+
+    expect(second.newItems).toBe(0);
+    expect(importer).not.toHaveBeenCalled();
+    expect(second.signals).toEqual([]);
+    expect(items()).toHaveLength(3);
+  });
+
+  it('reads the same post at http and at https as one item', async () => {
+    // The other half of the same rule: a scheme or trailing-slash move is not a
+    // new post, and normalising is what keeps it from reading as one.
+    const secure = '<item><title>Recipe 0</title><link>https://chefsarah.test/post-0/</link>' +
+      '<guid>guid-brand-new</guid><pubDate>Tue, 29 Jul 2026 09:00:00 +0000</pubDate></item>';
+    const { impl } = feedRoutes(`<rss><channel>${secure}</channel></rss>`);
+    fakeDb.seed('creator_source_items', [
+      { creator_id: 'c1', source: 'website', item_id: postId(0), status: 'seen' },
+    ]);
+
+    const result = await pollCreator(
+      deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.newItems).toBe(0);
+  });
+
+  it('says so when a listing contains nothing we recognise, even under the flood cap', async () => {
+    // Three posts, all new, on a source we have polled before. `flood` cannot
+    // see this — three is under a cap of five — and it is the common shape of an
+    // id change, so the signal has to fire on the shape rather than the volume.
+    const { impl } = feedRoutes(feedWith(3));
+
+    const result = await pollCreator(
+      deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.signals.map((signal) => signal.kind)).toEqual(['all-new']);
+    expect(result.signals[0].detail).toContain('changed item id');
+  });
+
+  it('does not cry reset over a two-entry feed, where everything new means nothing', async () => {
+    const { impl } = feedRoutes(feedWith(2));
+
+    const result = await pollCreator(
+      deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.signals).toEqual([]);
+  });
+});
+
+// ── Retrying what failed ─────────────────────────────────────────────────────
+
+describe('a failed item is retried, and its loss is said out loud', () => {
+  const polled = { lastPolledAt: '2027-01-14T08:00:00.000Z', etag: null, lastModified: null, pollAfter: null, consecutiveFailures: 0 };
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+
+  /** A post we tried to extract and could not, first met and last touched when it says. */
+  function failedItem(firstSeenAgo: number, touchedAgo: number) {
+    return {
+      creator_id: 'c1',
+      source: 'website',
+      item_id: postId(0),
+      url: 'https://chefsarah.test/post-0',
+      status: 'failed',
+      detail: 'The model timed out.',
+      created_at: new Date(NOW - firstSeenAgo).toISOString(),
+      updated_at: new Date(NOW - touchedAgo).toISOString(),
+    };
+  }
+
+  it('gives it another go on the next pass', async () => {
+    // The comment in the poller, the schema comment on `status` and the
+    // `idx_source_items_failed` index all promise this. Without it one model
+    // timeout loses one recipe permanently, and nothing anywhere says so.
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    fakeDb.seed('creator_source_items', [failedItem(DAY, DAY)]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.newItems).toBe(0);
+    expect(result.retried).toBe(1);
+    expect(result.drafted).toBe(1);
+    expect(items()[0]).toMatchObject({ status: 'imported' });
+  });
+
+  it('leaves an item alone while its extraction may still be running', async () => {
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    fakeDb.seed('creator_source_items', [failedItem(DAY, 60_000)]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.retried).toBe(0);
+    expect(importer).not.toHaveBeenCalled();
+  });
+
+  it('stops retrying once the attempts are spent, rather than paying forever', async () => {
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    fakeDb.seed('creator_source_items', [failedItem(4 * DAY, 4 * DAY)]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.retried).toBe(0);
+    expect(importer).not.toHaveBeenCalled();
+  });
+
+  it('raises a signal on the attempt that turns out to be the last one', async () => {
+    // The point of bounding the retries is that they end; the point of the
+    // signal is that a recipe ending is a thing somebody is told about.
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async (url: string): Promise<ImportResult> => ({
+      status: 'rejected', url, stage: 'extract', reason: 'timeout',
+      detail: 'The model timed out again.', meta: { cached: false },
+    }));
+    fakeDb.seed('creator_source_items', [failedItem(2.5 * DAY, DAY)]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.retried).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.signals.map((signal) => signal.kind)).toEqual(['lost']);
+    expect(result.signals[0].detail).toContain('https://chefsarah.test/post-0');
   });
 });
 
@@ -342,7 +609,7 @@ describe('each item stands alone', () => {
     expect(result.failed).toBe(1);
     // `failed`, not `rejected`: the gate said nothing about this post, we just
     // did not manage to read it. Retryable is the whole difference.
-    expect(items().find((row) => row.item_id === 'guid-1')).toMatchObject({ status: 'failed' });
+    expect(items().find((row) => row.item_id === postId(1))).toMatchObject({ status: 'failed' });
   });
 
   it('drops a gate rejection silently — no draft, no email', async () => {
@@ -382,6 +649,45 @@ describe('each item stands alone', () => {
     // `manual` attempts an unsure verdict because an operator picked the URL and
     // is watching. Nobody is watching here.
     expect(importer.mock.calls[0][1].mode).toBe('poller');
+  });
+
+  it('queues the draft for the CREATOR, who is the one the email tells to review it', async () => {
+    // The email says "Review and publish" and links to the creator portal. A
+    // draft filed in the operator's queue makes that a request to act on
+    // something they cannot open — and MEAL-89's page not existing yet is a
+    // reason for the data to be right, not a reason for it to be wrong.
+    const { impl } = feedRoutes(feedWith(1));
+    const queue = vi.fn(async (_supabase: unknown, input: unknown) => { void input; return 'draft-1'; });
+
+    await pollCreator(
+      deps({ queue: queue as unknown as PollDeps['queue'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(queue.mock.calls[0][1]).toMatchObject({ reviewBy: 'creator' });
+  });
+
+  it('does not draft the same post twice when two passes overlap', async () => {
+    // A 15-minute cron retried by Vercel, or an operator opening the endpoint by
+    // hand. The UNIQUE key is documented as the guarantee against this, and it
+    // can only be one if the row exists before the money is spent.
+    fakeDb.unique('creator_source_items', ['creator_id', 'source', 'item_id']);
+    const { impl } = feedRoutes(feedWith(1));
+    const queue = vi.fn(async () => 'draft-1');
+    const shared = deps({
+      queue: queue as unknown as PollDeps['queue'],
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+    });
+
+    const [one, two] = await Promise.all([
+      pollCreator(shared, creator(), polled),
+      pollCreator(shared, creator(), polled),
+    ]);
+
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(items()).toHaveLength(1);
+    expect([one.drafted, two.drafted].sort()).toEqual([0, 1]);
   });
 
   it('never publishes', async () => {
@@ -470,9 +776,12 @@ describe('polling hygiene', () => {
     expect(state()).toMatchObject({ poll_after: new Date(NOW + day * 4).toISOString(), consecutive_failures: 2 });
 
     // And then it stops doubling. Past a week a source is not "busy", it is a
-    // thing to go and look at, and an ever-growing interval hides that.
+    // thing to go and look at, and an ever-growing interval hides that. A WEEK,
+    // spelled out: `day * 7` is only the ceiling while the interval happens to
+    // be a day, so it would follow the constant instead of pinning it.
+    const week = 7 * 24 * 60 * 60_000;
     await poll(9);
-    expect(state()?.poll_after).toBe(new Date(NOW + day * 7).toISOString());
+    expect(state()?.poll_after).toBe(new Date(NOW + week).toISOString());
   });
 
   it('does not poll a source before its poll_after', async () => {
@@ -503,8 +812,8 @@ describe('polling hygiene', () => {
     expect(result.status).toBe('blocked');
     // The point of the signal: a creator's site blocking us must not present as
     // that creator having stopped publishing.
-    expect(result.signal?.kind).toBe('blocked');
-    expect(result.signal?.detail).toContain('previously working');
+    expect(result.signals[0]?.kind).toBe('blocked');
+    expect(result.signals[0]?.detail).toContain('previously working');
   });
 
   it('does not call a first-ever 403 a change — there is nothing it changed from', async () => {
@@ -516,7 +825,7 @@ describe('polling hygiene', () => {
     const result = await pollCreator(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }), creator(), null);
 
     expect(result.status).toBe('blocked');
-    expect(result.signal).toBeNull();
+    expect(result.signals).toEqual([]);
   });
 
   it('sends the honest User-Agent with a contact URL', async () => {
@@ -590,13 +899,20 @@ describe('one email per batch (MEAL-76)', () => {
     expect(typeof drafts[0].needALook).toBe('number');
   });
 
-  it('sends nothing when nothing was drafted', async () => {
+  it('sends nothing after a poll that worked and found nothing new', async () => {
+    // The quiet healthy case, which is the common one. A zero-entry feed does
+    // NOT test it: it fails to parse, so the pass reports `no-feed` and never
+    // reaches the email at all — the silence came from the failure path.
     fakeDb.seed('creators', [creatorRow()]);
-    const { impl } = feedRoutes(feedWith(0));
+    fakeDb.seed('creator_source_items', [
+      { creator_id: 'c1', source: 'website', item_id: postId(0), status: 'seen' },
+    ]);
+    const { impl } = feedRoutes(feedWith(1));
     const notifier = vi.fn(async () => undefined);
 
     const pass = await runPollPass(deps({ notifier, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
 
+    expect(pass.polled).toBe(1);
     expect(pass.drafted).toBe(0);
     expect(notifier).not.toHaveBeenCalled();
   });
@@ -705,11 +1021,118 @@ describe('the pass', () => {
     fakeDb.seed('creator_source_state', [
       { creator_id: 'c1', source: 'website', last_polled_at: '2027-01-14T08:00:00.000Z', poll_after: null, consecutive_failures: 0 },
     ]);
+    // One post already known, so this is a burst of new items rather than a
+    // listing in which nothing is recognised — the second of those raises its
+    // own signal, and this test is about the first.
+    fakeDb.seed('creator_source_items', [{ creator_id: 'c1', source: 'website', item_id: postId(0), status: 'seen' }]);
     const { impl } = feedRoutes(feedWith(20));
 
     const pass = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
 
     expect(pass.signals).toHaveLength(1);
-    expect(pass.signals[0]).toContain('20 new items');
+    expect(pass.signals[0]).toContain('19 new items');
+  });
+
+  it('counts sources whose listing failed, so a pass where everything failed is not a clean one', async () => {
+    // `failed` counts ITEMS, and a source that could not be listed has no items
+    // — so fifty creators all returning 500 reported polled: 0 and everything
+    // else zero, which is character for character a quiet healthy pass.
+    fakeDb.seed('creators', [creatorRow()]);
+    fakeDb.seed('creator_source_state', [
+      { creator_id: 'c1', source: 'website', last_polled_at: '2027-01-14T08:00:00.000Z', poll_after: null, consecutive_failures: 0 },
+    ]);
+    const { impl } = stubFetch({
+      'https://chefsarah.test/robots.txt': { body: '' },
+      'https://chefsarah.test/feed': { status: 500, body: 'boom' },
+    });
+
+    const pass = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+
+    expect(pass.sourcesFailed).toBe(1);
+    expect(pass.polled).toBe(0);
+    expect(state()?.consecutive_failures).toBe(1);
+  });
+
+  it('reaches the longest-waiting creator even when more are eligible than a pass can hold', async () => {
+    // 101 opted-in creators. Truncating to 100 in the query and sorting the
+    // survivors sorts the wrong hundred: Postgres returns the same rows every
+    // time, so the one at the back is never polled and nothing says so.
+    const rows = Array.from({ length: 101 }, (_, i) =>
+      creatorRow({
+        id: `c${i}`,
+        user_id: `u${i}`,
+        website_url: `https://c${i}.test/`,
+        feed_url: `https://c${i}.test/feed`,
+      }),
+    );
+    fakeDb.seed('creators', rows);
+    fakeDb.seed(
+      'creator_source_state',
+      rows.map((row, i) => ({
+        creator_id: row.id,
+        source: 'website',
+        // The last row is the one waiting longest — and the one a bare LIMIT
+        // drops.
+        last_polled_at: i === 100 ? '2020-01-01T00:00:00.000Z' : '2027-01-15T07:00:00.000Z',
+        poll_after: null,
+        consecutive_failures: 0,
+      })),
+    );
+    const { impl, calls } = stubFetch(
+      Object.fromEntries(
+        rows.flatMap((row) => [
+          [`https://c${row.id.slice(1)}.test/robots.txt`, { body: '' }],
+          [`https://c${row.id.slice(1)}.test/feed`, { body: feedWith(1), headers: { 'content-type': 'application/rss+xml' } }],
+        ]),
+      ),
+    );
+
+    const pass = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+
+    expect(calls).toContain('https://c100.test/feed');
+    expect(pass.polled).toBe(POLL_CREATOR_BATCH);
+    expect(pass.skipped).toBe(1);
+    // And the state read that decided the order is chunked, because an `.in()`
+    // travels in the query string and the pool is ten times what fits in one.
+    const stateReads = fakeDb.calls.filter((call) => call.table === 'creator_source_state' && call.method === 'in');
+    expect(stateReads).toHaveLength(2);
+    expect(Math.max(...stateReads.map((call) => call.args[1].length))).toBeLessThanOrEqual(POLL_CREATOR_BATCH);
+  });
+
+  it('emails each creator as their drafts land, not after every creator has been polled', async () => {
+    // The pass has a 240s budget under a 300s function limit, and the deadline
+    // is checked before each item — so one long extraction can overshoot and the
+    // send loop at the end never runs. The drafts are already recorded
+    // `imported`, so they are never new again: nobody is ever told, and there is
+    // no path by which they could be.
+    const order: string[] = [];
+    fakeDb.seed('creators', [
+      creatorRow({ id: 'first', user_id: 'u-first', website_url: 'https://first.test/', feed_url: 'https://first.test/feed' }),
+      creatorRow({ id: 'second', user_id: 'u-second', website_url: 'https://second.test/', feed_url: 'https://second.test/feed' }),
+    ]);
+    fakeDb.seed('creator_source_state', [
+      { creator_id: 'first', source: 'website', last_polled_at: '2027-01-01T00:00:00.000Z', poll_after: null, consecutive_failures: 0 },
+      { creator_id: 'second', source: 'website', last_polled_at: '2027-01-10T00:00:00.000Z', poll_after: null, consecutive_failures: 0 },
+    ]);
+    fakeDb.seed('user_profiles', [
+      { id: 'u-first', email: 'first@test' },
+      { id: 'u-second', email: 'second@test' },
+    ]);
+    const impl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/feed')) order.push(`poll:${new URL(url).hostname}`);
+      return new Response(url.endsWith('robots.txt') ? '' : feedWith(1), {
+        status: 200,
+        headers: { 'content-type': 'application/rss+xml' },
+      });
+    }) as unknown as typeof fetch;
+    const notifier = vi.fn(async (to: string) => {
+      order.push(`email:${to}`);
+    });
+
+    const pass = await runPollPass(deps({ notifier, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+
+    expect(pass.emailsSent).toBe(2);
+    expect(order).toEqual(['poll:first.test', 'email:first@test', 'poll:second.test', 'email:second@test']);
   });
 });

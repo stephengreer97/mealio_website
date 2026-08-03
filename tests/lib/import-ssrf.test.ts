@@ -563,4 +563,27 @@ describe('import/ssrf — conditional requests (MEAL-75)', () => {
     expect(seen[0].headers['if-none-match']).toBe('"v1"');
     expect(seen[1].headers['if-none-match']).toBeUndefined();
   });
+
+  it('does not call a 304 from off-origin not-modified, having asked that host nothing', async () => {
+    // The validators are correctly dropped at the redirect — so the CDN answered
+    // 304 to a request that carried no condition, which is a broken server, not
+    // an unchanged feed. Read as `not-modified` it would be permanent: the
+    // poller counts that as a successful poll, refreshes `last_polled_at` and
+    // asks again next cycle, so a creator's feed would quietly never be read
+    // again while every counter said the source was fine.
+    const impl = (async (input: RequestInfo | URL) =>
+      String(input).includes('chefsarah')
+        ? new Response(null, { status: 302, headers: { location: 'https://cdn.example.com/feed' } })
+        : new Response(null, { status: 304 })) as unknown as typeof fetch;
+
+    const result = await safeFetch('https://chefsarah.test/feed', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+      conditional: { etag: '"v1"' },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('http-error');
+  });
 });
