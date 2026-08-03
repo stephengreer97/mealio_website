@@ -11,14 +11,12 @@ import {
   __resetUploadsPlaylistCache,
   assertAppendAllowed,
   channelIdForCreator,
-  channelIdFromUrl,
   exchangeYouTubeCode,
   fetchOwnChannel,
   fetchVideoSnippet,
   fetchVideos,
   isUploadsPageToken,
   listUploads,
-  resolveChannelId,
   srtToText,
   updateVideoDescription,
   withMealioLink,
@@ -151,55 +149,10 @@ describe('youtube — the channel id comes from the grant', () => {
 // ── Channel ids from links ───────────────────────────────────────────────────
 
 describe('youtube — resolving a channel id from a creator link', () => {
-  it('reads a /channel/ link without any request at all', async () => {
-    expect(channelIdFromUrl(`https://youtube.com/channel/${CHANNEL_ID}`)).toBe(CHANNEL_ID);
-    expect(channelIdFromUrl('https://youtube.com/@sarah')).toBeNull();
-    // Shape-checked, so a path segment that is not a channel id never becomes one.
-    expect(channelIdFromUrl('https://youtube.com/channel/../../etc')).toBeNull();
-  });
 
-  it('reads a /channel/ id only off youtube.com — the path is one anybody can serve', async () => {
-    // The host used to be checked only *after* this had already answered, so a
-    // creator whose link points at a site they control could hand back a channel
-    // id for somebody else's channel without a request being made at all.
-    expect(channelIdFromUrl(`https://anything.test/channel/${CHANNEL_ID}`)).toBeNull();
-    expect(channelIdFromUrl(`https://m.youtube.com/channel/${CHANNEL_ID}`)).toBe(CHANNEL_ID);
-  });
 
-  it('reads it off the channel page for an @handle', async () => {
-    const { impl, calls } = stubFetch({
-      'https://youtube.com/@sarah': {
-        body: `<html><link rel="canonical" href="https://www.youtube.com/channel/${CHANNEL_ID}"></html>`,
-      },
-    });
 
-    const result = await resolveChannelId('https://youtube.com/@sarah', { fetchImpl: impl, lookup: publicLookup });
 
-    expect(result).toEqual({ ok: true, channelId: CHANNEL_ID });
-    // A page nobody invited us to read, so robots.txt is consulted first — the
-    // same treatment every other page fetch in this codebase gets.
-    expect(calls).toEqual(['https://youtube.com/robots.txt', 'https://youtube.com/@sarah']);
-  });
-
-  it('refuses rather than guessing when the page names no channel', async () => {
-    const { impl } = stubFetch({ 'https://youtube.com/@sarah': { body: '<html>nothing here</html>' } });
-    const result = await resolveChannelId('https://youtube.com/@sarah', { fetchImpl: impl, lookup: publicLookup });
-    expect(result.ok).toBe(false);
-  });
-
-  it('reads a channel id only off youtube.com, and fetches nothing else', async () => {
-    const { impl, calls } = stubFetch({
-      'https://sarahcooks.example/links': { body: `<html>{"channelId":"${CHANNEL_ID}"}</html>` },
-    });
-
-    const result = await resolveChannelId('https://sarahcooks.example/links', { fetchImpl: impl, lookup: publicLookup });
-
-    // `creators.youtube_url` is a link a creator typed. Without a host check,
-    // one pointing at a page they control can name somebody else's channel and
-    // the catalog lists that person's videos under their name.
-    expect(result.ok).toBe(false);
-    expect(calls).toEqual([]);
-  });
 });
 
 // ── The uploads playlist ─────────────────────────────────────────────────────

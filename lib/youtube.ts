@@ -21,11 +21,9 @@
  *      quantities, which are exactly what a recipe needs. Captions are the
  *      fallback, they cost real quota, and they are only ever fetched for a video
  *      whose description is too thin for the gate to judge.
- *   3. **The channel id comes from the grant.** A creator is never asked to type
- *      one. `resolveChannelId` reads it off their own channel page for the one
- *      case the grant cannot answer — a connection stored without a channel id —
- *      and that page is a creator-supplied URL, so it goes through the guarded
- *      fetcher like any other.
+ *   3. **The channel id comes from the grant, and only from the grant.** A
+ *      creator is never asked to type one, and no link they supply is ever read
+ *      for it. A page can say anything; a token cannot.
  *
  * The write half is MEAL-78/79: `assertAppendAllowed` is the single consent gate
  * both must go through, and `updateVideoDescription` is the only thing here that
@@ -232,94 +230,6 @@ export function isYouTubeHost(link: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * A `/channel/UC…` link answers without a request. Every other shape does not.
- *
- * The host is checked **first**, and that ordering is the whole guard: a
- * `/channel/UC…` path is one anybody can serve, so reading the id before asking
- * whose site it is means `https://anything.test/channel/UC…` names a channel id
- * for somebody else's channel. `resolveChannelId` checks the host too, and used
- * to check it only after this had already answered.
- */
-export function channelIdFromUrl(link: string): string | null {
-  if (!isYouTubeHost(link)) return null;
-  try {
-    const path = new URL(link).pathname.split('/').filter(Boolean);
-    const index = path.indexOf('channel');
-    const candidate = index >= 0 ? path[index + 1] : undefined;
-    return isChannelId(candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The channel id for a creator-supplied YouTube link.
- *
- * `/@handle`, `/c/name` and `/user/name` carry no id, so the channel page is
- * read and the id taken off its canonical link. That page is a URL a creator
- * chose, which is why it goes through `safeFetch` — the same treatment any other
- * creator-supplied link gets.
- *
- * **Never an ownership anchor, and nothing on the read or write path calls it.**
- * A page can say anything and a token cannot, so the question "whose channel may
- * we list, extract from and write to" is answered by the grant alone — see
- * `channelIdForCreator`. This used to be its fallback for a connection stored
- * without a channel id, and that made the ownership check self-consistent rather
- * than grant-anchored: a legacy row plus a `youtube_url` pointing at a stranger
- * listed the stranger's uploads under this creator's name, and the run's channel
- * filter compared each video against the stranger's id and passed it. Removed
- * from that path on the MEAL-79 review; kept here as the one way to read an id
- * off a link a human is looking at, and it may not creep back.
- */
-export async function resolveChannelId(
-  link: string,
-  fetchOptions?: SafeFetchOptions,
-): Promise<{ ok: true; channelId: string } | { ok: false; detail: string }> {
-  const direct = channelIdFromUrl(link);
-  if (direct) return { ok: true, channelId: direct };
-
-  // The id is taken from whatever the page says, so the page has to be one
-  // YouTube served. Without this, a creator whose `youtube_url` points at a
-  // site they control can emit `"channelId":"UC…"` for somebody else's channel
-  // and have the catalog list that person's videos under their own name.
-  if (!isYouTubeHost(link)) {
-    return {
-      ok: false,
-      detail: `${link} is not a youtube.com link, so no channel id can be read from it.`,
-    };
-  }
-
-  // This is a crawl of a page nobody invited us to read, so it is subject to
-  // robots.txt like every other page fetch in this codebase. YouTube allows
-  // channel pages; a future Disallow should stop us rather than be discovered
-  // by someone else.
-  const allowed = await checkRobots(link, fetchOptions);
-  if (!allowed.allowed) return { ok: false, detail: allowed.detail };
-
-  const fetched = await safeFetch(link, fetchOptions);
-  if (!fetched.ok) {
-    return { ok: false, detail: `Could not read ${link}: ${fetched.detail}` };
-  }
-
-  // Both shapes YouTube serves: the canonical link on a rendered page, and the
-  // `channelId` field in the embedded config. Bounded patterns — the body is 2 MB
-  // of someone else's markup.
-  const canonical = /<link[^>]{0,200}?rel=["']canonical["'][^>]{0,200}?href=["'][^"']{0,200}?\/channel\/(UC[A-Za-z0-9_-]{22})/i.exec(fetched.html);
-  const embedded = /"(?:channelId|externalId)":"(UC[A-Za-z0-9_-]{22})"/.exec(fetched.html);
-  const channelId = canonical?.[1] ?? embedded?.[1] ?? null;
-
-  if (!channelId) {
-    return {
-      ok: false,
-      detail:
-        `${link} did not name a channel id, so there is nothing to list. Use the channel's ` +
-        '`/channel/UC…` link, or connect the channel so the id comes from the grant.',
-    };
-  }
-  return { ok: true, channelId };
 }
 
 // ── Quota ────────────────────────────────────────────────────────────────────
@@ -1166,7 +1076,7 @@ export async function youtubeSourceDocument(
  * creator supplied makes the check self-consistent rather than grant-anchored.
  * It can then catch a wrong video id and never a wrong channel.
  *
- * It used to fall back to `resolveChannelId(creator.youtube_url)` for a
+ * It used to fall back to reading the id off `creator.youtube_url` for a
  * connection stored without a channel id. With that fallback, a legacy row plus
  * a `youtube_url` naming somebody else's channel listed **that** channel's
  * uploads, and the filter compared each of the stranger's videos against the
