@@ -61,7 +61,8 @@ function normIng(raw: any): Ingredient {
 
 function fmtMeasurement(ing: Ingredient): string {
   if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
-  return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
+  const amount = ing.measure ?? '';
+  return amount ? `${ing.ingredientName}, ${amount} ${ing.unit}` : `${ing.ingredientName}, ${ing.unit}`;
 }
 
 interface SharedMeal {

@@ -179,15 +179,25 @@ sells them separately for this recipe.
 Keep split rows adjacent and in the order the line named them, and set derivation to "normalized"
 with the whole original line as the evidence span.
 
-### No stated amount means no amount
+### No stated amount means no amount — but keep the word the line used
 
-If a line gives no number, set measure to null and unit to "qty". **Do not convert a vague amount
-into a precise one.** "a knob of butter", "a handful of parsley", "a pinch of saffron", "a splash
-of cream", "salt to taste" all give measure null and unit "qty" — not 1 tbsp, not 2 tbsp.
+If a line gives no number, **measure is null**. Never convert a vague amount into a precise one:
+"a knob of butter", "a handful of parsley", "a pinch of saffron", "many grinds of black pepper"
+are not 1 tbsp and not 2 tbsp. A guessed number reads as fact to the creator reviewing the draft
+and to the cook following it, and there is nothing in the source to check it against. An amount
+left empty costs a creator one keystroke; an invented one is wrong quietly.
 
-A guessed number reads as fact to the creator reviewing the draft and to the cook following it,
-and there is nothing in the source to check it against. An amount left empty costs a creator one
-keystroke; an invented one is wrong quietly.
+That rule is about the **number**, not the word. If the line names a unit, keep it:
+
+- "a handful of parsley"          -> measure null, unit "handfuls"
+- "many grinds of black pepper"   -> measure null, unit "grinds"
+- "3 cloves garlic"               -> measure "3",  unit "cloves"
+- "1 can chopped tomatoes"        -> measure "1",  unit "cans"
+
+Use "qty" only when the line names **no unit at all** — "salt to taste", "2 onions", "eggs".
+
+Dropping the word loses something the source actually said. "parsley" alone does not tell a cook
+they need a handful of it, and there was no guessing involved in reading the word off the page.
 
 Set derivation to "json-ld" or "page-text" when you split a line without changing any value, and
 "normalized" when you restated one.

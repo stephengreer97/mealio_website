@@ -30,10 +30,13 @@
       },
       {
         "ingredientName": "chives",
-        "qty": 1,
-        "unit": "qty",
-        "measure": null
+        "unit": "handfuls"
       }
     ]
-  }
+  },
+  "why": [
+    "Updated 2026-08-02. \"a handful of chives\" now keeps its unit: the no-guessing rule is about",
+    "the number, not the word, and \"handfuls\" was read off the page rather than invented.",
+    "\"a knob of butter\" stays qty because knob is not a unit anything can display."
+  ]
 }
