@@ -71,6 +71,18 @@ ALTER TABLE creator_import_drafts
 -- The existing status CHECK already allows 'cancelled'; nothing to add. There is
 -- deliberately no ON DELETE rule and no trigger — a real deletion by a human at
 -- the SQL prompt is a considered act, and should not be silently prevented.
+--
+-- One deletion IS silent, and it is worth knowing about before it happens:
+-- `creator_import_drafts.creator_id` is NOT NULL REFERENCES creators(id) ON
+-- DELETE CASCADE, so removing a creator removes every draft of theirs that was
+-- still pending — recipes nobody had decided yet — while `creator_source_items`
+-- rows for the same posts survive saying `imported`. A re-sync therefore will
+-- not bring those recipes back. Decide or cancel a creator's pending drafts
+-- before deleting them, or expect the extractions to be gone for good.
+--
+-- (This is also the answer to a question the review queue used to raise: a
+-- draft whose `creators` row "no longer exists" cannot occur. NOT NULL plus the
+-- cascade means the draft goes with the creator; there are no orphans to find.)
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------

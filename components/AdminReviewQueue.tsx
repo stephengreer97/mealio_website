@@ -36,7 +36,10 @@ import type { DraftReview, QueuedDraft } from '@/lib/import-drafts';
  * draft the poller queued for a creator is not the operator's work — and the
  * cost of that is a draft in neither query, which nothing shows to anybody. The
  * mode asks by status alone, says on screen that it is on, and says how many
- * rows are there only because of it.
+ * rows are there only because of it. It reads a page at a time, so it also says
+ * how many pending drafts exist in total and whether this is all of them —
+ * "nothing can be unreachable" is a claim the page size can withdraw, and an
+ * operator who believes it stops looking.
  *
  * Four actions, and **Send to creator** is the one that matters most: it is the
  * escape hatch for "this looks right but I am not the person who cooked it".
@@ -46,6 +49,35 @@ import type { DraftReview, QueuedDraft } from '@/lib/import-drafts';
 
 /** What GET returns: the queue rows with their rendered review attached. */
 type ReviewRow = QueuedDraft & { review: DraftReview };
+
+/**
+ * All a stranded row is on screen: a name, who it would go out under, where it
+ * came from, and the id that takes it back.
+ *
+ * `unqueued` arrives in exactly this shape rather than as a full draft. There is
+ * no card to open here, so the `draft` and `confidence` jsonb and a computed
+ * review would be several kilobytes a row shipped to draw three strings.
+ */
+type StrandedRow = { id: string; name: string; sourceUrl: string; creatorName: string | null };
+
+/** A queue row, reduced to what the stranded list draws. */
+const stranded = (row: ReviewRow): StrandedRow => ({
+  id: row.id,
+  name: row.draft?.name ?? '',
+  sourceUrl: row.sourceUrl,
+  creatorName: row.creatorName,
+});
+
+/**
+ * What `?scope=all` says about the database, as opposed to about the rows on
+ * screen.
+ *
+ * `allPending` is the database's own `count`, not the length of the page, so the
+ * screen can tell the difference between "that is all of them" and "that is the
+ * first 500 of them". `null` while the mode is off: nobody counted, and a zero
+ * would read as "checked, and there are none".
+ */
+type ScopeTotals = { allPending: number; truncated: boolean; limit: number };
 
 type Action = 'approve' | 'send-to-creator' | 'delete' | 'reclaim';
 
@@ -155,8 +187,9 @@ type Scope = 'default' | 'all';
 export default function AdminReviewQueue() {
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
   const [handedOver, setHandedOver] = useState<ReviewRow[]>([]);
-  const [unqueued, setUnqueued] = useState<ReviewRow[]>([]);
+  const [unqueued, setUnqueued] = useState<StrandedRow[]>([]);
   const [scope, setScope] = useState<Scope>('default');
+  const [totals, setTotals] = useState<ScopeTotals | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -186,11 +219,32 @@ export default function AdminReviewQueue() {
     const res = await fetch(`/api/admin/import-drafts${query}`, { headers: { Authorization: `Bearer ${token()}` } });
     const data = await res.json().catch(() => ({}));
     if (!mountedRef.current) return;
-    if (!res.ok) { setError(data.error || 'Could not read the queue.'); setRows([]); return; }
+    if (!res.ok) {
+      // Everything derived from a payload goes with the payload. The banner is a
+      // claim about the drafts on screen — leaving it up beside a 403, over rows
+      // from a response that is now arbitrarily old, is the exact failure this
+      // screen exists to prevent.
+      setError(data.error || 'Could not read the queue.');
+      setRows([]);
+      setHandedOver([]);
+      setUnqueued([]);
+      setTotals(null);
+      setScope('default');
+      setSelected([]);
+      return;
+    }
+    const all = data.scope === 'all';
     setRows((data.drafts ?? []) as ReviewRow[]);
     setHandedOver((data.handedOver ?? []) as ReviewRow[]);
-    setUnqueued((data.unqueued ?? []) as ReviewRow[]);
-    setScope(data.scope === 'all' ? 'all' : 'default');
+    setUnqueued((data.unqueued ?? []) as StrandedRow[]);
+    setTotals(all
+      ? {
+          allPending: Number(data.totals?.allPending ?? 0),
+          truncated: Boolean(data.totals?.truncated),
+          limit: Number(data.totals?.limit ?? 0),
+        }
+      : null);
+    setScope(all ? 'all' : 'default');
     setSelected([]);
   };
 
@@ -204,8 +258,17 @@ export default function AdminReviewQueue() {
     setNotice('');
     setOpenId(null);
     setEditingId(null);
-    await load(next);
-    if (mountedRef.current) setBusy(false);
+    // `finally`, because `load` does not guard the fetch itself: offline, DNS or
+    // an aborted request rejects out of here, and a `busy` left true disables
+    // approve, decline, edit, reclaim and this button until the page is
+    // reloaded — a frozen screen with nothing on it saying why.
+    try {
+      await load(next);
+    } catch {
+      if (mountedRef.current) setError('Could not read the queue. Check the connection and try again.');
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
   };
 
   /**
@@ -231,7 +294,13 @@ export default function AdminReviewQueue() {
     if (!mountedRef.current) return;
     setBusy(false);
     if (!res.ok) { setError(data.error || 'That did not work.'); return; }
-    if (Array.isArray(data.errors) && data.errors.length > 0) setError(data.errors.join(' '));
+    // A per-draft failure comes back 200 with a populated `errors[]`, so the
+    // success notices are gated on it. "Back in your queue" printed under
+    // "That draft is already in your queue." is the screen contradicting itself
+    // about the one thing the operator came here to do.
+    const refused = Array.isArray(data.errors) && data.errors.length > 0;
+    if (refused) setError(data.errors.join(' '));
+    const landed = !refused && Number(data.done ?? 0) > 0;
     if (action === 'approve' && data.published?.length > 0) {
       setNotice(
         `Published ${data.published.map((meal: { name: string }) => meal.name).join(', ')}.` +
@@ -240,8 +309,8 @@ export default function AdminReviewQueue() {
           : ''),
       );
     }
-    if (action === 'reclaim') setNotice('Back in your queue. It is yours to decide again.');
-    if (action === 'delete') setNotice('Declined. It will not be imported again by a later sync or poll.');
+    if (action === 'reclaim' && landed) setNotice('Back in your queue. It is yours to decide again.');
+    if (action === 'delete' && landed) setNotice('Declined. It will not be imported again by a later sync or poll.');
     setOpenId(null);
     setEditingId(null);
     await load();
@@ -339,12 +408,33 @@ export default function AdminReviewQueue() {
           <h3 style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 700, color: '#92400e' }}>
             Showing every pending draft
           </h3>
+          {/*
+            What this paragraph may say is bounded by what the response knows.
+            `allPending` is the database's own count and `truncated` is that
+            count against the page size, so the completeness claim is made only
+            when the payload supports it — a screen that says "nothing can be
+            unreachable" while sitting on the oldest 500 of 812 is worse than one
+            that says nothing, because an operator stops looking.
+          */}
           <p style={{ margin: 0, fontSize: '12px', color: '#92400e', lineHeight: 1.6 }}>
             The normal queue asks only for drafts marked as yours, plus the ones an operator handed to a creator. Any
-            other pending draft — everything the poller queued for a creator, and anything whose creator record has
-            since gone — is in no queue at all and nothing shows it to anybody. This mode asks for them by status
-            alone, so nothing can be unreachable. {unqueued.length === 0
-              ? 'There are none right now: every pending draft is already in one of the lists below.'
+            other pending draft — everything the poller queued for a creator, waiting on a review queue that was never
+            built — is in no queue at all and nothing shows it to anybody. This mode asks for them by status alone.{' '}
+            {totals?.truncated
+              ? <>
+                  It reads a page at a time, and <strong>this page is full</strong>: {totals.allPending} drafts are
+                  pending in all and these are the oldest {totals.limit}. Decide or take back some of them and the
+                  rest come into reach — until then the ones past {totals.limit} are as unreachable as they were
+                  before this mode existed.
+                </>
+              : <>
+                  All {totals?.allPending ?? 0} pending {(totals?.allPending ?? 0) === 1 ? 'draft is' : 'drafts are'}{' '}
+                  on this screen, so none of them is unreachable.
+                </>}{' '}
+            {unqueued.length === 0
+              ? (totals?.truncated
+                  ? 'None on this page are in no queue at all.'
+                  : 'There are none right now: every pending draft is already in one of the lists below.')
               : `${unqueued.length} ${unqueued.length === 1 ? 'draft is' : 'drafts are'} on this screen only because this mode is on.`}
           </p>
         </div>
@@ -427,7 +517,7 @@ export default function AdminReviewQueue() {
         blurb="These were sent to their creator before that button was switched off. The creator’s review queue does not
           exist yet (MEAL-89), so nothing is showing them to anyone — and a later sync will not re-import the post,
           because it is already recorded as imported. Take one back to decide it here."
-        rows={handedOver}
+        rows={handedOver.map(stranded)}
         busy={busy}
         onReclaim={id => act('reclaim', [id])}
       />
@@ -439,15 +529,21 @@ export default function AdminReviewQueue() {
         creator queue that would show it was never built. Taking one back is the
         same move as for a handed-over draft — it makes the only person who can
         currently decide it able to see it.
+
+        The blurb names the deletion hazard because this list is where it bites:
+        these drafts belong to creators nobody is currently looking at, and
+        `creator_import_drafts.creator_id` cascades on delete, so removing a
+        creator takes their pending recipes with them while
+        `creator_source_items` goes on saying those posts were imported.
       */}
       {scope === 'all' && (
         <StrandedList
           testId="unqueued"
           title={`In no queue at all (${unqueued.length})`}
-          blurb="Pending drafts that neither list above asks for — queued for a creator who has no queue, or belonging to
-            a creator record that no longer resolves, in which case there is not even a name on the row. Nothing shows
-            these to anyone and no later sync re-imports the post, because it is already recorded as imported. Take one
-            back to decide it here."
+          blurb="Pending drafts that neither list above asks for: queued for a creator who has no queue to be waiting in.
+            Nothing shows these to anyone and no later sync re-imports the post, because it is already recorded as
+            imported. Deleting the creator deletes these too, and that record of the import survives them — so the
+            recipes would not come back on a re-sync either. Take one back to decide it here."
           rows={unqueued}
           busy={busy}
           onReclaim={id => act('reclaim', [id])}
@@ -463,6 +559,10 @@ export default function AdminReviewQueue() {
  * Shared by the two ways a row ends up in no queue — handed to a creator queue
  * that does not exist, or never in the admin's queue to begin with — because the
  * only difference between them is why, and the copy says which.
+ *
+ * Takes `StrandedRow`, not a draft: three strings and an id is the whole of what
+ * it draws, and asking for more is what put megabytes of recipe jsonb on the
+ * wire for a list with no card to open.
  */
 function StrandedList({
   testId, title, blurb, rows, busy, onReclaim,
@@ -470,7 +570,7 @@ function StrandedList({
   testId: string;
   title: string;
   blurb: string;
-  rows: ReviewRow[];
+  rows: StrandedRow[];
   busy: boolean;
   onReclaim: (id: string) => void;
 }) {
@@ -482,7 +582,7 @@ function StrandedList({
       {rows.map(row => (
         <div key={row.id} style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0', display: 'flex', gap: '10px', alignItems: 'center' }}>
           <span style={{ flex: 1, minWidth: 0 }}>
-            <span style={{ fontSize: '13px', fontWeight: 600, color: '#222' }}>{row.draft.name || row.sourceUrl}</span>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#222' }}>{row.name || row.sourceUrl}</span>
             <span style={{ display: 'block', fontSize: '11px', color: '#aaa' }}>
               {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
             </span>

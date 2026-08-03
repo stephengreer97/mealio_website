@@ -578,10 +578,67 @@ export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200
 }
 
 /**
+ * The columns a stranded row needs, and no more.
+ *
+ * `?scope=all` renders three strings per row — the name, the creator, the host —
+ * and posts the id back to reclaim it. `review_by` and `sent_to_creator_at` are
+ * here because they are what says *which* of the three lists a pending draft
+ * belongs to (see `queueOf`), not because anything renders them.
+ *
+ * Deliberately not `DRAFT_COLUMNS`: that carries the full `draft` and
+ * `confidence` jsonb for a card nothing on this path draws, at roughly 6 KB a
+ * row before the review is even computed.
+ */
+const PENDING_COLUMNS =
+  'id, source_url, draft, review_by, sent_to_creator_at, created_at, creators!creator_id ( display_name )';
+
+/** A pending draft as the escape hatch reads it: enough to name it and to place it. */
+export interface PendingDraft {
+  id: string;
+  /** The draft's meal name, which may be empty — the row still has a source URL. */
+  name: string;
+  sourceUrl: string;
+  creatorName: string | null;
+  reviewBy: DraftReviewBy;
+  sentToCreatorAt: string | null;
+  createdAt: string | null;
+}
+
+/**
+ * Which of the three lists a pending draft belongs to, decided by the row.
+ *
+ * `review_by` is CHECK-constrained to `'admin' | 'creator'`, so these three
+ * cases are exhaustive and mutually exclusive, and they are exactly the WHERE
+ * clauses of `listDraftQueue('admin')`, `listHandedOverDrafts` and the gap
+ * between them.
+ *
+ * Decided from the row rather than by subtracting the other two lists' ids: both
+ * of those are capped at 200, so a set difference calls the 201st row of the
+ * admin's own queue "in no queue at all" and then fails to reclaim it.
+ */
+export function queueOf(draft: PendingDraft): 'admin' | 'handed-over' | 'none' {
+  if (draft.reviewBy === 'admin') return 'admin';
+  return draft.sentToCreatorAt ? 'handed-over' : 'none';
+}
+
+/** What `listAllPendingDrafts` found, and whether it found all of it. */
+export interface AllPendingDrafts {
+  drafts: PendingDraft[];
+  /**
+   * Every pending draft there is, counted by the database rather than by the
+   * length of the page above. `truncated` is the difference between the two, and
+   * it exists so no screen can promise a completeness the page size withholds.
+   */
+  total: number;
+  limit: number;
+  truncated: boolean;
+}
+
+/**
  * Every draft still waiting on somebody, whatever queue it nominally belongs to.
  *
- * The escape hatch, and the only query here that cannot leave a row unreachable.
- * The other two are both narrower than "pending", on purpose:
+ * The escape hatch. The other two queries are both narrower than "pending", on
+ * purpose:
  *
  *   - `listDraftQueue(supabase, 'admin')` wants `review_by = 'admin'`.
  *   - `listHandedOverDrafts` wants `review_by = 'creator'` **and** a
@@ -590,29 +647,61 @@ export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200
  *
  * Between them sits a real gap: a poller draft (`review_by` defaults to
  * `'creator'`, `sent_to_creator_at` never set) is in neither list, and the
- * creator queue that would show it does not exist (MEAL-89). If the `creators`
- * embed also fails to resolve — a `creator_id` pointing at a row that was
- * deleted — there is not even a name to notice it by. Such a draft is invisible
- * to everyone while `creator_source_items` records the post as imported, so no
+ * creator queue that would show it does not exist (MEAL-89). It is invisible to
+ * everyone while `creator_source_items` records the post as imported, so no
  * later sync brings it back.
  *
- * Keyed on `status` alone for that reason. No `review_by`, no
- * `sent_to_creator_at`, no join condition that a missing creator can fail: if a
- * row is pending, it comes back. This is not the default view — the filtering
- * above is deliberate and the operator opts into this — but it is the view that
- * makes "nothing is unreachable" a fact rather than a hope.
+ * Keyed on `status` alone for that reason: if a row is pending, it comes back.
+ * But a page is still a page — `limit` rows of it, oldest first — so the count
+ * is asked for **exactly** and returned separately. A caller that reports
+ * `drafts.length` as a total is reporting the page size; `total` and `truncated`
+ * are what let a screen say "the oldest 500 of 812" instead of a guarantee it
+ * cannot keep.
+ *
+ * Related hazard, since this is the query people will read looking for it:
+ * `creator_import_drafts.creator_id` is `NOT NULL REFERENCES creators(id) ON
+ * DELETE CASCADE`, so deleting a creator deletes their pending drafts outright —
+ * while `creator_source_items` goes on recording those posts as imported, so a
+ * re-sync will not bring the recipes back. Nothing here can surface that; a
+ * cascaded row is gone, not stranded.
  */
-export async function listAllPendingDrafts(supabase: SupabaseClient, limit = 500): Promise<QueuedDraft[]> {
-  const { data } = await supabase
+export async function listAllPendingDrafts(
+  supabase: SupabaseClient,
+  limit = 500,
+): Promise<AllPendingDrafts> {
+  const { data, count } = await supabase
     .from('creator_import_drafts')
-    .select(DRAFT_COLUMNS)
+    // `count: 'exact'` is a second aggregate over the same WHERE clause, not a
+    // second round trip, and it is what makes the total independent of `limit`.
+    .select(PENDING_COLUMNS, { count: 'exact' })
     .eq('status', 'pending_review')
     .order('created_at', { ascending: true })
     .limit(limit);
 
-  return ((data ?? []) as Array<Record<string, any>>)
-    .map(toImportDraft)
-    .map((draft) => ({ ...draft, summary: reviewDraft(draft).summary }));
+  const drafts = ((data ?? []) as Array<Record<string, any>>).map(toPendingDraft);
+  const counted = typeof count === 'number' ? count : null;
+  // With a count, truncation is arithmetic. Without one — an older PostgREST, a
+  // proxy that dropped the Content-Range — a full page is the only signal there
+  // is, and "there may be more" is the reading that cannot mislead.
+  return {
+    drafts,
+    total: counted ?? drafts.length,
+    limit,
+    truncated: counted === null ? drafts.length >= limit : counted > drafts.length,
+  };
+}
+
+function toPendingDraft(row: Record<string, any>): PendingDraft {
+  const creator = row.creators as { display_name?: string } | null | undefined;
+  return {
+    id: row.id,
+    name: (row.draft as CreatorMealDraft | null)?.name ?? '',
+    sourceUrl: row.source_url,
+    creatorName: creator?.display_name ?? null,
+    reviewBy: row.review_by ?? 'creator',
+    sentToCreatorAt: row.sent_to_creator_at ?? null,
+    createdAt: row.created_at ?? null,
+  };
 }
 
 /**

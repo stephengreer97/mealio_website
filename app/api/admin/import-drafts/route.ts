@@ -14,6 +14,7 @@ import {
   listDraftQueue,
   listHandedOverDrafts,
   notifyApproved,
+  queueOf,
   reclaimDraft,
   reviewDraft,
   sendDraftToCreator,
@@ -56,26 +57,30 @@ export async function GET(request: NextRequest) {
   const scope = request.nextUrl.searchParams.get('scope') === 'all' ? 'all' : 'default';
 
   const supabase = createServerSupabaseClient();
-  const drafts = await listDraftQueue(supabase, 'admin');
-  // Anything an operator handed to a creator before that button was switched
-  // off. There is no creator queue to have received it, so these rows are in no
-  // queue at all — listing them is what keeps that recoverable instead of
-  // silent.
-  const handedOver = await listHandedOverDrafts(supabase);
+  // Three independent reads, so they go together. Nothing here depends on
+  // anything else here — `unqueued` is decided from each row's own columns, not
+  // by subtracting one result from another.
+  const [drafts, handedOver, everything] = await Promise.all([
+    listDraftQueue(supabase, 'admin'),
+    // Anything an operator handed to a creator before that button was switched
+    // off. There is no creator queue to have received it, so these rows are in
+    // no queue at all — listing them is what keeps that recoverable instead of
+    // silent.
+    listHandedOverDrafts(supabase),
+    // The escape hatch, and only when asked for: a poller draft with no
+    // `sent_to_creator_at` is in neither list above and nothing shows it to
+    // anybody.
+    scope === 'all' ? listAllPendingDrafts(supabase) : null,
+  ]);
 
-  // The rows neither query reaches — a poller draft with no `sent_to_creator_at`
-  // is the ordinary case, and one whose `creator_id` resolves to no `creators`
-  // row is the one nothing else can even name. Returned as the *difference*
-  // rather than the whole list, so the screen can say which rows are on it
-  // solely because this mode is on, and why.
-  let unqueued: typeof drafts = [];
-  let allPending: number | null = null;
-  if (scope === 'all') {
-    const everything = await listAllPendingDrafts(supabase);
-    allPending = everything.length;
-    const alreadyShown = new Set([...drafts, ...handedOver].map((draft) => draft.id));
-    unqueued = everything.filter((draft) => !alreadyShown.has(draft.id));
-  }
+  // `queueOf` reads the row, so this is exact whether or not the two lists above
+  // were truncated by their own limits. An id already on screen is skipped as
+  // well, which only matters if a row changed queue between the queries — but
+  // showing the same draft twice under contradictory headings is the one thing
+  // this screen must not do.
+  const alreadyShown = new Set([...drafts, ...handedOver].map((draft) => draft.id));
+  const unqueued = (everything?.drafts ?? [])
+    .filter((draft) => queueOf(draft) === 'none' && !alreadyShown.has(draft.id));
 
   // Rendered on the card, not recomputed there: the rules that decide which
   // fields get called out live in `lib/import/draft-form.ts`, and a second copy
@@ -86,15 +91,30 @@ export async function GET(request: NextRequest) {
     scope,
     drafts: drafts.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
     handedOver: handedOver.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
-    unqueued: unqueued.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
+    // Four fields, not a draft: this list renders a name, a creator and a host,
+    // and posts the id back to reclaim one. Shipping the full `draft` and
+    // `confidence` jsonb plus a computed review — ~6 KB a row, megabytes at the
+    // cap — to draw three strings is a response nobody can afford to page.
+    unqueued: unqueued.map((draft) => ({
+      id: draft.id,
+      name: draft.name,
+      sourceUrl: draft.sourceUrl,
+      creatorName: draft.creatorName,
+    })),
     totals: {
       waiting: drafts.length,
       flagged: drafts.filter((draft) => draft.summary.needALook > 0).length,
       handedOver: handedOver.length,
       // `null`, not `0`, in the default mode: nobody counted, and a zero here
-      // would read as "checked, and there are none".
-      allPending,
-      unqueued: scope === 'all' ? unqueued.length : null,
+      // would read as "checked, and there are none". In `all` mode it is the
+      // database's own `count`, so it is a total and not a page length.
+      allPending: everything?.total ?? null,
+      unqueued: everything ? unqueued.length : null,
+      // What the screen needs to stop promising completeness it does not have:
+      // beyond `limit` pending drafts, the oldest `limit` are what came back and
+      // the rest are as unreachable as they were before this mode existed.
+      truncated: everything?.truncated ?? null,
+      limit: everything?.limit ?? null,
     },
   });
 }

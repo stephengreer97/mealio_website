@@ -217,6 +217,7 @@ export class FakeSupabase {
     let op: 'select' | 'insert' | 'update' | 'delete' | 'upsert' | null = null;
     let payload: any = null;
     let columns: string | undefined;
+    let exactCount = false;
     let conflict: string[] = [];
     let returning = false;
     const filters: Filter[] = [];
@@ -231,6 +232,11 @@ export class FakeSupabase {
       // `.select()` after a write is PostgREST's "return the rows you changed";
       // before one it IS the query.
       if (op === null) { op = 'select'; columns = args[0]; } else { returning = true; columns = args[0]; }
+      // `{ count: 'exact' }` is a second aggregate over the WHERE clause, which
+      // PostgREST answers in Content-Range BEFORE the limit is applied. A mock
+      // that returns the page length instead makes a truncated read look
+      // complete — the exact confusion the count is asked for to settle.
+      if (args[1]?.count) exactCount = true;
       return builder;
     };
     builder.insert = (...args: any[]) => { record('insert', args); op = 'insert'; payload = args[0]; return builder; };
@@ -320,7 +326,11 @@ export class FakeSupabase {
             out.sort((a, b) => compareOrdered(a[column], b[column], ascending, nullsFirst));
           }
           if (rowLimit !== null) out = out.slice(0, rowLimit);
-          return { data: out.map((r) => project(r, columns)), error: null, count: out.length };
+          return {
+            data: out.map((r) => project(r, columns)),
+            error: null,
+            count: exactCount ? matched.length : out.length,
+          };
         }
       }
     };

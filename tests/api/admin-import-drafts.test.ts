@@ -231,6 +231,10 @@ describe('GET /api/admin/import-drafts', () => {
       // `null`, not `0`: nobody counted. A zero would read as "checked, none".
       expect(body.totals.allPending).toBeNull();
       expect(body.totals.unqueued).toBeNull();
+      // Same for the completeness claim — no page was read, so there is nothing
+      // to say about whether it held everything.
+      expect(body.totals.truncated).toBeNull();
+      expect(body.totals.limit).toBeNull();
     });
 
     it('surfaces a pending draft that neither default query returns', async () => {
@@ -249,10 +253,32 @@ describe('GET /api/admin/import-drafts', () => {
       expect(res.status).toBe(200);
       expect(body.scope).toBe('all');
       expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['d-poll']);
-      expect(body.totals).toMatchObject({ waiting: 0, handedOver: 0, allPending: 1, unqueued: 1 });
-      // Rendered like every other row, so it can actually be judged rather than
-      // only counted.
-      expect(body.unqueued[0].review.summary.needALook).toBeGreaterThan(0);
+      expect(body.totals).toMatchObject({
+        waiting: 0, handedOver: 0, allPending: 1, unqueued: 1, truncated: false, limit: 500,
+      });
+      // Named, attributed and placed — enough to decide whether to take it back.
+      expect(body.unqueued[0]).toEqual({
+        id: 'd-poll',
+        name: 'Best Guacamole',
+        sourceUrl: 'https://chefsarah.test/guacamole',
+        creatorName: 'Chef Sarah',
+      });
+    });
+
+    it('sends three strings a row, not a recipe apiece', async () => {
+      // The list draws a name, a creator and a host, and posts the id back. The
+      // full `draft` and `confidence` jsonb plus a computed review is ~6 KB a row
+      // — megabytes at the cap — for a section with no card to open.
+      asAdmin();
+      const stranded = { ...draftRow({ id: 'd-poll', review_by: 'creator' }), creators: { display_name: 'Chef Sarah' } };
+      fakeDb.queue('creator_import_drafts', { data: [] });
+      fakeDb.queue('creator_import_drafts', { data: [] });
+      fakeDb.queue('creator_import_drafts', { data: [stranded] });
+
+      const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
+
+      expect(Object.keys(body.unqueued[0]).sort()).toEqual(['creatorName', 'id', 'name', 'sourceUrl']);
+      expect(JSON.stringify(body.unqueued[0]).length).toBeLessThan(500);
     });
 
     it('asks on status alone, with no review_by and no sent_to_creator_at', async () => {
@@ -286,10 +312,81 @@ describe('GET /api/admin/import-drafts', () => {
 
       const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
 
-      // `unqueued` is the difference, so the screen can say which rows are on it
-      // solely because the mode is on — three pending, one of them extra.
+      // `unqueued` is only what neither list above holds, so the screen can say
+      // which rows are on it solely because the mode is on — three pending, one
+      // of them extra.
       expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['d3']);
       expect(body.totals).toMatchObject({ waiting: 1, handedOver: 1, allPending: 3, unqueued: 1 });
+    });
+
+    /**
+     * The page boundary, from the route's side.
+     *
+     * The whole premise of this mode is that pending poller drafts accumulate
+     * and nothing drains them, so passing a page size is the steady state. Two
+     * things must not happen: the response must not report its own page length
+     * as a total, and rows the *other* two queries truncated away must not be
+     * relabelled "in no queue at all".
+     */
+    describe('past the page size', () => {
+      /** `n` pending rows, distinct and ordered, so a limit cuts deterministically. */
+      function many(n: number, prefix: string, overrides: Record<string, unknown> = {}) {
+        return Array.from({ length: n }, (_, i) => ({
+          ...draftRow({
+            id: `${prefix}-${String(i).padStart(4, '0')}`,
+            created_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+            ...overrides,
+          }),
+          creators: { display_name: 'Chef Sarah' },
+        }));
+      }
+
+      it('reports the real total and says the page did not hold it', async () => {
+        asAdmin();
+        // One more pending draft than the escape hatch reads in a page.
+        storeDrafts(...many(501, 'poll', { review_by: 'creator' }));
+
+        const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
+
+        expect(body.unqueued).toHaveLength(500);
+        // Not 500: the count comes from the database over the same WHERE clause,
+        // so it is a total rather than the length of what fitted.
+        expect(body.totals.allPending).toBe(501);
+        expect(body.totals).toMatchObject({ unqueued: 500, truncated: true, limit: 500 });
+      });
+
+      it('does not call the admin’s own overflow “in no queue at all”', async () => {
+        asAdmin();
+        // `listDraftQueue` stops at 200, so ten of these are absent from the
+        // admin list while still being the admin's own work. Subtracting one
+        // list's ids from another's puts them under "In no queue at all", where
+        // Take it back then fails with "already in your queue".
+        storeDrafts(
+          ...many(210, 'mine', { review_by: 'admin' }),
+          ...many(1, 'poll', { review_by: 'creator' }),
+        );
+
+        const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
+
+        expect(body.totals.waiting).toBe(200);
+        expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['poll-0000']);
+        expect(body.totals).toMatchObject({ allPending: 211, unqueued: 1, truncated: false });
+      });
+
+      it('does not call a handed-over row past its own page stranded either', async () => {
+        asAdmin();
+        // Same failure on the other narrow list: `listHandedOverDrafts` stops at
+        // 200 too, and its overflow is still handed over, not unqueued.
+        storeDrafts(
+          ...many(205, 'sent', { review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }),
+          ...many(1, 'poll', { review_by: 'creator' }),
+        );
+
+        const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
+
+        expect(body.totals.handedOver).toBe(200);
+        expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['poll-0000']);
+      });
     });
 
     it('is behind the admin guard like everything else here', async () => {
