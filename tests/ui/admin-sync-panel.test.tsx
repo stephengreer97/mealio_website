@@ -155,6 +155,79 @@ describe('AdminSyncPanel — the checklist', () => {
   });
 });
 
+describe('AdminSyncPanel — one card, four steps', () => {
+  it('folds a settled step down to a summary you can click back into', async () => {
+    harness();
+    await loadCatalog();
+
+    // Step 1 has an answer, so it is a line of text rather than a form.
+    expect(screen.queryByLabelText('Creator')).toBeNull();
+    expect(screen.getByText('Chef Sarah')).toBeTruthy();
+
+    // And it is one click away from being a form again, at any point in the
+    // sequence — this is not a wizard that has to be restarted.
+    fireEvent.click(screen.getByRole('button', { name: /Creator/ }));
+    expect(screen.getByLabelText('Creator')).toBeTruthy();
+  });
+
+  it('keeps the checklist open when the first item is ticked', async () => {
+    harness();
+    await loadCatalog();
+
+    // Ticking is the work of this step, not the end of it. A screen that folded
+    // the list away on the first tick would be unusable for the 12-item
+    // selection it exists to support.
+    fireEvent.click(checkbox('Guacamole'));
+    expect(checkbox('Black bean soup')).toBeTruthy();
+    expect(checkbox('Black bean soup').checked).toBe(false);
+  });
+
+  it('keeps the cost on screen while an earlier step is reopened', async () => {
+    harness();
+    await loadCatalog();
+    fireEvent.click(checkbox('Guacamole'));
+
+    fireEvent.click(screen.getByRole('button', { name: /Creator/ }));
+
+    // The guard rail is not a step. Whatever else is expanded or folded, what
+    // pressing Sync would spend stays visible beside the button that spends it.
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.02');
+    expect(screen.getByRole('button', { name: 'Sync selection' })).toBeTruthy();
+  });
+
+  it('folds the checklist away once the run has something to report', async () => {
+    harness({
+      run: { id: 'r1', status: 'done', items: [] },
+      totals: { selected: 1, pending: 0, drafted: 1, rejected: 0, failed: 0, skipped: 0, costUsd: 0.067, needALook: 0 },
+    });
+    await loadCatalog();
+    fireEvent.click(checkbox('Guacamole'));
+    fireEvent.click(screen.getByRole('button', { name: 'Sync selection' }));
+    await screen.findByTestId('run-summary');
+
+    // What the run did is what the screen is now about. A 200-row checklist
+    // sitting on top of the result is the pile this card replaced — and the
+    // header still says "1 of 3 selected" and still opens on a click.
+    expect(screen.queryByRole('checkbox', { name: 'Guacamole' })).toBeNull();
+    expect(screen.getByText('1 of 3 selected')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Choose what to import/ }));
+    expect(checkbox('Guacamole').checked).toBe(true);
+  });
+
+  it('folds the append offer away until an operator asks for it', async () => {
+    harness({ creators: YT_CREATORS, appendList: { body: { meals: APPENDABLE } } });
+    chooseCreator();
+
+    // It acts on meals already approved, so it is not step 5 of anything, and
+    // for most creators the answer is a refusal. It stays out of the way.
+    expect(screen.queryByText(/turned on description editing/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+    expect(await screen.findByText(/turned on description editing/)).toBeTruthy();
+  });
+});
+
 describe('AdminSyncPanel — a finished run', () => {
   it('explains why 3 selected produced 1 draft', async () => {
     harness({
@@ -418,6 +491,11 @@ describe('AdminSyncPanel — offering to write the Mealio link back', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
     await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' });
 
+    // Step 1 folds to its summary once a creator is chosen, so switching to
+    // another one is: click the header, then pick. The header is on screen at
+    // every point of the sequence — changing the creator mid-run must never
+    // mean starting the screen again.
+    fireEvent.click(screen.getByRole('button', { name: /Creator/ }));
     fireEvent.change(screen.getByLabelText('Creator'), { target: { value: 'c2' } });
 
     // A stale list of somebody else's videos beside an Append button is the
