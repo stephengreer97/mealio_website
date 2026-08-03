@@ -1058,6 +1058,34 @@ describe('advanceRun', () => {
     expect(totals.drafted).toBeLessThan(6);
   });
 
+  it('records a resolver failure on the item instead of wedging the run', async () => {
+    // The bug this exists for: the resolver call sat outside the try, so a
+    // platform API throwing escaped `processSyncItem`, rejected the wave's
+    // `Promise.all`, escaped `advanceRun` and 500'd the route BEFORE the
+    // release — leaving the run `running` behind a lease nobody held, every
+    // item still `pending`, and no detail anywhere saying why. Three real runs
+    // wedged exactly that way and the screen could only say "already being
+    // worked on somewhere else".
+    storeRun(runRow([item({ itemId: 'vid0000000B', url: 'https://www.youtube.com/watch?v=vid0000000B' })], { source: 'youtube' }));
+    fakeDb.seed('creator_platform_accounts', [connectionRow()]);
+
+    const run = await advanceRun(
+      deps({
+        importer: async () => success,
+        sourceDocument: async () => { throw new Error('videos.list said 403'); },
+      }),
+      'r1',
+    );
+
+    expect(run).not.toBeNull();
+    const failed = run!.items[0];
+    expect(failed.status).toBe('failed');
+    // The operator gets the actual reason, not a shrug.
+    expect(failed.detail).toContain('videos.list said 403');
+    // And the run is finished rather than parked behind a lease.
+    expect(run!.status).toBe('done');
+  });
+
   it('re-reads only what a resumed run still has to do', async () => {
     const items = [
       item({ itemId: 'vid0000000A', url: 'https://www.youtube.com/watch?v=vid0000000A', status: 'drafted' }),

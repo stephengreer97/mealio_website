@@ -940,7 +940,34 @@ export async function processSyncItem(
     // No hint when one item is being run on its own: the id in front of us is
     // the whole selection as far as this call knows.
     const resolve = deps.sourceDocument ?? createSourceDocumentResolver(deps, [item.itemId]);
-    const built = await resolve(creator, run.source, item);
+
+    // Wrapped, and this is load-bearing rather than defensive.
+    //
+    // The resolver reaches a platform API — a token refresh, a `videos.list`,
+    // a DNS lookup through the SSRF-safe fetcher — and any of those can throw.
+    // Unwrapped, that throw left `processSyncItem`, rejected the `Promise.all`
+    // of the wave, escaped `advanceRun`, and 500'd the route **before the
+    // release**, so the lease stayed held for its full three minutes and the
+    // run sat at `running` with every item still `pending` and no detail on
+    // any of them. Three identical wedged runs and not one word about why:
+    // the code that records the reason was the code being skipped.
+    //
+    // A resolver failure is an item failure, which is the same class as an
+    // import failure below and belongs in the same place — on the item, where
+    // an operator can read it and press Retry.
+    let built: SourceDocument | null;
+    try {
+      built = await resolve(creator, run.source, item);
+    } catch (err) {
+      return await recordItem(deps, creator, run, {
+        ...item,
+        status: 'failed',
+        detail: `Could not read this post from ${SOURCE_LABELS[run.source]}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+    }
+
     if (!built) {
       return await recordItem(deps, creator, run, {
         ...item,
@@ -1315,9 +1342,37 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
       if (!isTerminal(items[i])) wave.push(i);
     }
 
-    const processed = await Promise.all(
-      wave.map((index) => processSyncItem(chunkDeps, { id: run.id, source: run.source }, creator, items[index])),
-    );
+    let processed: SyncItem[];
+    try {
+      processed = await Promise.all(
+        wave.map((index) => processSyncItem(chunkDeps, { id: run.id, source: run.source }, creator, items[index])),
+      );
+    } catch (err) {
+      // `processSyncItem` records its own failures, so reaching here means
+      // something escaped it. Whatever it was, the lease must not go with it:
+      // a throw between claiming and releasing leaves the run at `running`
+      // with a lease nobody holds, and the screen tells the operator it is
+      // "already being worked on somewhere else" for three minutes — the least
+      // useful sentence available, because the worker is gone.
+      //
+      // So: hand the lease back and let the error out. `queued` is the honest
+      // status, the items keep whatever state they had, and Resume works
+      // immediately rather than after the lease expires.
+      await writeLeased(deps, runId, lease, {
+        items,
+        status: 'queued',
+        lease_until: null,
+        updated_at: new Date(now()).toISOString(),
+      });
+      log({
+        event: 'ADMIN:SYNC_RUN',
+        status: 'error',
+        detail: `run=${runId} threw mid-wave; lease released so Resume works: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+      throw err;
+    }
     wave.forEach((index, position) => {
       items[index] = processed[position];
     });
