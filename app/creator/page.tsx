@@ -77,7 +77,7 @@ interface IngredientForm {
   qty: number;
 }
 
-const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
+const UNITS = ['qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
   // Units a cook writes that convert to nothing. Display only — the cart searches
   // by name and counts packages with productQty — so carrying the word costs
   // nothing and stops '3 cloves garlic' reading as 'garlic, 3'.
@@ -107,14 +107,14 @@ function toFormIng(ing: Ingredient): IngredientForm {
     // that into the box reads as a quantity we read rather than one we assumed.
     // `fromFormIng` parses an empty measure straight back to 1.
     measure: ing.unit === 'qty' ? ((ing.qty ?? 1) > 1 ? String(ing.qty) : '') : (ing.measure ?? ''),
-    unit: ing.unit === 'qty' ? 'Qty' : ing.unit,
+    unit: ing.unit ?? 'qty',
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
   };
 }
 
 function fromFormIng(form: IngredientForm): Ingredient {
-  if (form.unit === 'Qty') {
+  if (form.unit === 'qty') {
     const q = parseInt(form.measure) || 1;
     return {
       ingredientName: form.ingredientName.trim(),
@@ -566,11 +566,11 @@ function EditPresetMealModal({
                     style={{ ...modalInputStyle, flex: 1, marginBottom: 0 }}
                   />
                   <input
-                    type={ing.unit === 'Qty' ? 'number' : 'text'}
+                    type={ing.unit === 'qty' ? 'number' : 'text'}
                     value={ing.measure}
-                    min={ing.unit === 'Qty' ? 1 : undefined}
+                    min={ing.unit === 'qty' ? 1 : undefined}
                     onChange={e => updateFormField(i, 'measure', e.target.value)}
-                    placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                    placeholder={ing.unit === 'qty' ? '1' : 'amt'}
                     style={{ ...modalInputStyle, width: '52px', marginBottom: 0, textAlign: 'center' }}
                   />
                   <select
@@ -586,7 +586,7 @@ function EditPresetMealModal({
             </div>
             <button
               type="button"
-              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
+              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }])}
               style={{ fontSize: '13px', color: '#dd0031', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
               + Add ingredient
@@ -785,7 +785,7 @@ export default function CreatorPortal() {
   const [mealServes, setMealServes]   = useState('');
   const [mealDifficulty, setMealDifficulty] = useState<number | null>(null);
   const [mealIngredients, setMealIngredients] = useState<IngredientForm[]>([
-    { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 },
+    { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 },
   ]);
   const [mealTags, setMealTags]           = useState<string[]>([]);
   const [photoFile, setPhotoFile]         = useState<File | null>(null);
@@ -1078,7 +1078,7 @@ export default function CreatorPortal() {
   };
 
   const addIngredientRow = () => {
-    setMealIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
+    setMealIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
     setFieldStates(prev => appendIngredientState(prev));
     markEdited('ingredients');
   };
@@ -1136,7 +1136,7 @@ export default function CreatorPortal() {
     setMealServes(''); setMealDifficulty(null); setMealTags([]);
     setPhotoFile(null); setPhotoPreview('');
     setThumbs([]); setFulls([]); setSelectedIdx(null);
-    setMealIngredients([{ ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
+    setMealIngredients([{ ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
     setFieldStates(null); setImportInfo(null); setImportedPhotoUrl(null); setTagsNote(null);
     setPublishError('');
     // The bar aborts the request; this drops the bookkeeping that went with it,
@@ -2001,11 +2001,11 @@ export default function CreatorPortal() {
                               className={`${pInputCls} flex-1 min-w-0`}
                             />
                             <input
-                              type={ing.unit === 'Qty' ? 'number' : 'text'}
+                              type={ing.unit === 'qty' ? 'number' : 'text'}
                               value={ing.measure}
-                              min={ing.unit === 'Qty' ? 1 : undefined}
+                              min={ing.unit === 'qty' ? 1 : undefined}
                               onChange={e => updateIngredientForm(i, 'measure', e.target.value)}
-                              placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                              placeholder={ing.unit === 'qty' ? '1' : 'amt'}
                               aria-label={`${rowName} amount`}
                               className={`${pInputCls} !w-16 text-center !px-1`}
                             />

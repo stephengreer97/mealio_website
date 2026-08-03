@@ -35,7 +35,7 @@ interface IngredientForm {
   productQty?: number;
 }
 
-const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
+const UNITS = ['qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
   // Units a cook writes that convert to nothing. Display only — the cart searches
   // by name and counts packages with productQty — so carrying the word costs
   // nothing and stops '3 cloves garlic' reading as 'garlic, 3'.
@@ -71,7 +71,7 @@ function toFormIng(ing: Ingredient): IngredientForm {
     // that into the box reads as a quantity we read rather than one we assumed.
     // `fromFormIng` parses an empty measure straight back to 1.
     measure: ing.unit === 'qty' ? ((ing.qty ?? 1) > 1 ? String(ing.qty) : '') : (ing.measure ?? ''),
-    unit: ing.unit === 'qty' ? 'Qty' : ing.unit,
+    unit: ing.unit ?? 'qty',
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
     productQty: ing.productQty ?? ing.qty ?? 1,
@@ -79,7 +79,7 @@ function toFormIng(ing: Ingredient): IngredientForm {
 }
 
 function fromFormIng(form: IngredientForm): Ingredient {
-  if (form.unit === 'Qty') {
+  if (form.unit === 'qty') {
     const q = parseInt(form.measure) || 1;
     return {
       ingredientName: form.ingredientName.trim(),
@@ -942,11 +942,11 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
                     style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                   />
                   <input
-                    type={ing.unit === 'Qty' ? 'number' : 'text'}
+                    type={ing.unit === 'qty' ? 'number' : 'text'}
                     value={ing.measure}
-                    min={ing.unit === 'Qty' ? 1 : undefined}
+                    min={ing.unit === 'qty' ? 1 : undefined}
                     onChange={e => updateFormField(i, 'measure', e.target.value)}
-                    placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                    placeholder={ing.unit === 'qty' ? '1' : 'amt'}
                     className="rounded-lg px-2 py-1.5 text-xs focus:outline-none text-center"
                     style={{ width: '52px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                   />
@@ -964,7 +964,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
             </div>
             <button
               type="button"
-              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
+              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }])}
               className="text-xs transition-colors"
               style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
@@ -1102,7 +1102,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   const [photoUrl, setPhotoUrl] = useState('');
   const [photoPreview, setPhotoPreview] = useState('');
   const [pendingPhotoDataUrl, setPendingPhotoDataUrl] = useState<string | null>(null);
-  const [ingredients, setIngredients] = useState<IngredientForm[]>([{ ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
+  const [ingredients, setIngredients] = useState<IngredientForm[]>([{ ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
@@ -1407,11 +1407,11 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
                     style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                   />
                   <input
-                    type={ing.unit === 'Qty' ? 'number' : 'text'}
+                    type={ing.unit === 'qty' ? 'number' : 'text'}
                     value={ing.measure}
-                    min={ing.unit === 'Qty' ? 1 : undefined}
+                    min={ing.unit === 'qty' ? 1 : undefined}
                     onChange={e => updateFormField(i, 'measure', e.target.value)}
-                    placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                    placeholder={ing.unit === 'qty' ? '1' : 'amt'}
                     className="rounded-lg px-2 py-1.5 text-xs focus:outline-none text-center"
                     style={{ width: '52px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
                   />
@@ -1429,7 +1429,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
             </div>
             <button
               type="button"
-              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
+              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }])}
               className="text-xs transition-colors"
               style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >

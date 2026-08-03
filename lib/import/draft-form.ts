@@ -70,8 +70,9 @@ export interface DraftFormIngredient {
 /**
  * `DraftIngredient` → one form row.
  *
- * The pipeline already forces units into the picker's vocabulary, so the only
- * translation left is the picker's 'Qty' label for the internal 'qty' token.
+ * The pipeline already forces units into the picker's vocabulary, and the
+ * picker's countable option is now spelled the same as the stored token, so
+ * there is no translation left to do.
  */
 export function draftIngredientToForm(ing: DraftIngredient): DraftFormIngredient {
   const countable = !ing.unit || ing.unit === 'qty';
@@ -84,7 +85,7 @@ export function draftIngredientToForm(ing: DraftIngredient): DraftFormIngredient
     // quantity we found rather than one we defaulted to. Blank is also what a
     // creator would have typed, and `fromFormIng` parses it straight back to 1.
     measure: countable ? (count > 1 ? String(count) : '') : (ing.measure ?? ''),
-    unit: countable ? 'Qty' : ing.unit,
+    unit: countable ? 'qty' : ing.unit,
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
   };
@@ -325,8 +326,31 @@ export function appendIngredientState(states: FormFieldStates | null): FormField
  */
 export const EVIDENCE_MAX_CHARS = 120;
 
+/** Matched outer quote pairs, straight and curly. */
+const QUOTE_PAIRS: [string, string][] = [
+  ['"', '"'],
+  ['“', '”'],
+  ['‘', '’'],
+  ["'", "'"],
+];
+
+function unwrapQuotes(text: string): string {
+  for (const [open, close] of QUOTE_PAIRS) {
+    if (text.length > open.length + close.length && text.startsWith(open) && text.endsWith(close)) {
+      return text.slice(open.length, -close.length).trim();
+    }
+  }
+  return text;
+}
+
 export function truncateEvidence(span: string, max = EVIDENCE_MAX_CHARS): string {
-  const text = span.replace(/\s+/g, ' ').trim();
+  // The UI wraps every span in its own quotation marks, so a span that already
+  // carries them renders as ""…"". Recipe lines quite reasonably contain quotes
+  // — a heading, an aside, a model copying a quoted line character for
+  // character as it was told to. Strip only a matched outer pair, and only
+  // once: a span that genuinely opens with a quote and closes without one is
+  // left alone rather than silently rebalanced.
+  const text = unwrapQuotes(span.replace(/\s+/g, ' ').trim());
   if (text.length <= max) return text;
   // Cut on a word boundary so the tail is not a fragment of a word.
   const cut = text.slice(0, max);

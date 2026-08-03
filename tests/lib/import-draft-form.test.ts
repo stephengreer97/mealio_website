@@ -156,6 +156,20 @@ describe('draft-form — evidence length', () => {
     expect(truncateEvidence(long).endsWith('…')).toBe(true);
   });
 
+  it('drops a matched outer quote pair, because the UI adds its own', () => {
+    // The notice wraps every span in quotation marks, so a span that already
+    // carries them renders as ""…"". Straight and curly both.
+    expect(truncateEvidence('"many grinds of black pepper"')).toBe('many grinds of black pepper');
+    expect(truncateEvidence('“many grinds of black pepper”')).toBe('many grinds of black pepper');
+  });
+
+  it('leaves an unmatched quote alone rather than rebalancing it', () => {
+    // A span that opens with a quote and closes without one is quoting
+    // something. Stripping one side would misrepresent what the page said.
+    expect(truncateEvidence('"a quote that runs on')).toBe('"a quote that runs on');
+    expect(truncateEvidence('he said "hello"')).toBe('he said "hello"');
+  });
+
   it('leaves a short span exactly as written', () => {
     expect(truncateEvidence('juice of 1 lime')).toBe('juice of 1 lime');
   });
@@ -205,7 +219,7 @@ describe('draft-form — ingredients', () => {
   it('maps a countable ingredient onto the picker’s Qty option', () => {
     expect(draftIngredientToForm({
       ingredientName: 'avocados', qty: 4, productQty: 4, unit: 'qty', measure: null, searchTerm: null,
-    })).toEqual({ ingredientName: 'avocados', measure: '4', unit: 'Qty', searchTerm: null, qty: 4 });
+    })).toEqual({ ingredientName: 'avocados', measure: '4', unit: 'qty', searchTerm: null, qty: 4 });
   });
 
   it('keeps a measured ingredient’s amount and unit', () => {
@@ -221,7 +235,7 @@ describe('draft-form — ingredients', () => {
     // is what a creator would have left, and it round-trips back to 1 on save.
     expect(draftIngredientToForm({
       ingredientName: 'black pepper', qty: 1, productQty: 1, unit: 'qty', measure: null, searchTerm: null,
-    })).toEqual({ ingredientName: 'black pepper', measure: '', unit: 'Qty', searchTerm: null, qty: 1 });
+    })).toEqual({ ingredientName: 'black pepper', measure: '', unit: 'qty', searchTerm: null, qty: 1 });
   });
 });
 
@@ -233,7 +247,7 @@ describe('draft-form — filling the form from a real import', () => {
     expect(values.name).toBe('Best Guacamole');
     expect(values.source).toBe(result.url);
     expect(values.ingredients.map(i => i.ingredientName)).toEqual(['avocados', 'lime juice', 'smoked paprika']);
-    expect(values.ingredients[0].unit).toBe('Qty');
+    expect(values.ingredients[0].unit).toBe('qty');
     // The recorded page publishes only "2 1/2 cups guacamole" — a volume, not a
     // head count — so the pipeline emits no serves and the box stays empty.
     expect(values.serves).toBe('');
