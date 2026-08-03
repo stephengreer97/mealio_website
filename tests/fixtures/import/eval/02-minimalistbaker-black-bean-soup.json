@@ -26,7 +26,9 @@
       },
       {
         "ingredientName": "black beans",
-        "unit": "qty"
+        "unit": "cans",
+        "qty": 1,
+        "measure": "2"
       }
     ]
   }
