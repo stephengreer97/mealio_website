@@ -315,6 +315,139 @@ describe('AdminReviewQueue — deciding', () => {
   });
 });
 
+// ── Show every pending draft ─────────────────────────────────────────────────
+
+/**
+ * The escape hatch, from the operator's side.
+ *
+ * The default queue is narrow deliberately, and what that costs is a pending
+ * draft in neither of its two queries — nothing shows it to anyone. The mode has
+ * to be opt-in (a poller draft is the creator's work, not the operator's), so
+ * the things worth asserting are that it is *reachable*, that the extra rows are
+ * *labelled as extra*, and that turning it on does not quietly become the
+ * normal view.
+ */
+describe('AdminReviewQueue — showing every pending draft', () => {
+  const rendered = (row: ImportDraft) => ({ ...row, summary: reviewDraft(row).summary, review: reviewDraft(row) });
+
+  /** Serves the default payload until `?scope=all` is asked for, recording every URL. */
+  function scopeHarness(unqueued: ImportDraft[], mine: ImportDraft[] = []) {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method !== 'GET') return json({ done: 1, published: [], emailsSent: 0, errors: [] });
+      urls.push(url);
+      const all = url.includes('scope=all');
+      return json({
+        scope: all ? 'all' : 'default',
+        drafts: mine.map(rendered),
+        handedOver: [],
+        unqueued: all ? unqueued.map(rendered) : [],
+        totals: {
+          waiting: mine.length, flagged: 0, handedOver: 0,
+          allPending: all ? mine.length + unqueued.length : null,
+          unqueued: all ? unqueued.length : null,
+        },
+      });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+    return { urls };
+  }
+
+  it('does not ask for every draft until an operator asks', async () => {
+    const { urls } = scopeHarness([draft({ id: 'd9', reviewBy: 'creator' })]);
+
+    await screen.findByTestId('toggle-scope');
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toMatch(/scope=all/);
+    // The default view is unchanged: no banner, no extra section.
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+    expect(screen.queryByTestId('unqueued')).toBeNull();
+  });
+
+  it('reaches a draft that is in no queue, and says why it is on screen', async () => {
+    // `review_by = 'creator'` with nothing that ever sent it there: the admin
+    // query skips it, the handed-over query skips it, and the creator queue that
+    // would show it was never built (MEAL-89).
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    const { urls } = scopeHarness([stranded]);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    const section = await screen.findByTestId('unqueued');
+    await waitFor(() => expect(urls.some((u) => u.includes('scope=all'))).toBe(true));
+    expect(section.textContent).toMatch(/In no queue at all \(1\)/);
+    expect(section.textContent).toMatch(/Best Guacamole/);
+
+    // The mode is named on screen, and so is the reason the extra row is there —
+    // an operator must not mistake this for the queue having grown.
+    const banner = screen.getByTestId('scope-banner');
+    expect(banner.textContent).toMatch(/Showing every pending draft/);
+    expect(banner.textContent).toMatch(/1 draft is on this screen only because this mode is on/);
+  });
+
+  it('is honest when the escape hatch turns nothing up', async () => {
+    scopeHarness([], [draft()]);
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    const banner = await screen.findByTestId('scope-banner');
+    expect(banner.textContent).toMatch(/There are none right now/);
+    // No empty section pretending to be a finding.
+    expect(screen.queryByTestId('unqueued')).toBeNull();
+  });
+
+  it('takes a stranded draft back into the queue that can decide it', async () => {
+    const posted: Array<{ method: string; body: any }> = [];
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (init?.body) posted.push({ method, body: JSON.parse(String(init.body)) });
+      if (method !== 'GET') return json({ done: 1, published: [], emailsSent: 0, errors: [] });
+      const all = String(input).includes('scope=all');
+      return json({
+        scope: all ? 'all' : 'default',
+        drafts: [], handedOver: [], unqueued: all ? [rendered(stranded)] : [],
+        totals: { waiting: 0, flagged: 0, handedOver: 0, allPending: all ? 1 : null, unqueued: all ? 1 : null },
+      });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+    const section = await screen.findByTestId('unqueued');
+    fireEvent.click(within(section).getByRole('button', { name: 'Take it back' }));
+
+    await waitFor(() => expect(posted.some((b) => b.method === 'POST')).toBe(true));
+    expect(posted.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'reclaim', ids: ['d9'] });
+  });
+
+  it('goes back to the normal queue, and stops showing the extra rows', async () => {
+    const { urls } = scopeHarness([draft({ id: 'd9', reviewBy: 'creator' })]);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+    await screen.findByTestId('unqueued');
+
+    fireEvent.click(screen.getByTestId('toggle-scope'));
+    await waitFor(() => expect(screen.queryByTestId('unqueued')).toBeNull());
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+    expect(urls.at(-1)).not.toMatch(/scope=all/);
+  });
+
+  it('believes the response about which mode it is in, not the click', async () => {
+    // A server that ignores the parameter must not leave the screen announcing a
+    // mode it is not showing — the banner is a claim about the data on screen.
+    vi.stubGlobal('fetch', (async () =>
+      json({ scope: 'default', drafts: [], handedOver: [], unqueued: [], totals: { waiting: 0, flagged: 0, handedOver: 0, allPending: null, unqueued: null } })
+    ) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    await waitFor(() => expect(screen.getByTestId('toggle-scope').textContent).toMatch(/Show every pending draft/));
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+  });
+});
+
 // ── Edit ─────────────────────────────────────────────────────────────────────
 
 describe('AdminReviewQueue — editing', () => {

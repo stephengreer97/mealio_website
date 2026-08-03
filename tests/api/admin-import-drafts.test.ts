@@ -208,6 +208,97 @@ describe('GET /api/admin/import-drafts', () => {
     expect(body.totals).toMatchObject({ waiting: 0, handedOver: 1 });
     expect(body.handedOver[0].id).toBe('d1');
   });
+
+  /**
+   * `?scope=all` — the escape hatch.
+   *
+   * The two default queries are narrow on purpose, and the cost of that is a
+   * pending draft in neither of them, which no screen shows to anyone. These
+   * assert the mode reaches those rows, does not change the default, and tells
+   * the client which mode the payload is from.
+   */
+  describe('?scope=all', () => {
+    it('does not run the third query, or claim a count, unless it is asked for', async () => {
+      asAdmin();
+      fakeDb.queue('creator_import_drafts', { data: [] });
+      fakeDb.queue('creator_import_drafts', { data: [] });
+
+      const body = await (await GET(jsonRequest('/api/admin/import-drafts', { method: 'GET', token }))).json();
+
+      expect(fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'select')).toHaveLength(2);
+      expect(body.scope).toBe('default');
+      expect(body.unqueued).toEqual([]);
+      // `null`, not `0`: nobody counted. A zero would read as "checked, none".
+      expect(body.totals.allPending).toBeNull();
+      expect(body.totals.unqueued).toBeNull();
+    });
+
+    it('surfaces a pending draft that neither default query returns', async () => {
+      asAdmin();
+      // The poller's own row: `review_by` defaults to 'creator' and nothing ever
+      // set `sent_to_creator_at`, so the admin query skips it, the handed-over
+      // query skips it, and the creator queue that would show it does not exist.
+      const stranded = { ...draftRow({ id: 'd-poll', review_by: 'creator' }), creators: { display_name: 'Chef Sarah' } };
+      fakeDb.queue('creator_import_drafts', { data: [] });
+      fakeDb.queue('creator_import_drafts', { data: [] });
+      fakeDb.queue('creator_import_drafts', { data: [stranded] });
+
+      const res = await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }));
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.scope).toBe('all');
+      expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['d-poll']);
+      expect(body.totals).toMatchObject({ waiting: 0, handedOver: 0, allPending: 1, unqueued: 1 });
+      // Rendered like every other row, so it can actually be judged rather than
+      // only counted.
+      expect(body.unqueued[0].review.summary.needALook).toBeGreaterThan(0);
+    });
+
+    it('asks on status alone, with no review_by and no sent_to_creator_at', async () => {
+      asAdmin();
+      fakeDb.queue('creator_import_drafts', { data: [] });
+      fakeDb.queue('creator_import_drafts', { data: [] });
+      fakeDb.queue('creator_import_drafts', { data: [] });
+
+      await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }));
+
+      const eqs = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq').map((c) => c.args);
+      expect(eqs).toEqual([
+        ['status', 'pending_review'], ['review_by', 'admin'],
+        ['status', 'pending_review'], ['review_by', 'creator'],
+        // The third query: no second filter, so nothing pending can be missed.
+        ['status', 'pending_review'],
+      ]);
+    });
+
+    it('does not repeat a row the operator can already see', async () => {
+      asAdmin();
+      const mine = { ...draftRow({ id: 'd1' }), creators: { display_name: 'Chef Sarah' } };
+      const handed = {
+        ...draftRow({ id: 'd2', review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }),
+        creators: { display_name: 'Chef Sarah' },
+      };
+      const stranded = { ...draftRow({ id: 'd3', review_by: 'creator' }), creators: { display_name: 'Chef Sarah' } };
+      fakeDb.queue('creator_import_drafts', { data: [mine] });
+      fakeDb.queue('creator_import_drafts', { data: [handed] });
+      fakeDb.queue('creator_import_drafts', { data: [mine, handed, stranded] });
+
+      const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
+
+      // `unqueued` is the difference, so the screen can say which rows are on it
+      // solely because the mode is on — three pending, one of them extra.
+      expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['d3']);
+      expect(body.totals).toMatchObject({ waiting: 1, handedOver: 1, allPending: 3, unqueued: 1 });
+    });
+
+    it('is behind the admin guard like everything else here', async () => {
+      asAdmin(false);
+      const res = await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }));
+      expect(res.status).toBe(403);
+      expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts')).toBe(false);
+    });
+  });
 });
 
 // ── Decisions ────────────────────────────────────────────────────────────────

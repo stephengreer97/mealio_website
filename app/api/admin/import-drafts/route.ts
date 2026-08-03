@@ -10,6 +10,7 @@ import {
   editDraft,
   editableDraft,
   HANDOFF_UNAVAILABLE,
+  listAllPendingDrafts,
   listDraftQueue,
   listHandedOverDrafts,
   notifyApproved,
@@ -23,6 +24,8 @@ import {
  * The admin review queue (MEAL-91).
  *
  * GET   — everything waiting on an operator, flagged items first.
+ *         `?scope=all` additionally lists every pending draft, whichever queue
+ *         it belongs to, for the rows the two narrow queries cannot reach.
  * POST  — approve / send to creator / delete, one or many at a time.
  * PATCH — save an operator's edits to one draft, without deciding it.
  *
@@ -46,24 +49,52 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
+  // Opt-in, and it has to stay that way: the two queries below are narrow on
+  // purpose (poller drafts are not the admin's work), so widening the default
+  // would put every creator's inbox on this screen. `?scope=all` is the escape
+  // hatch for when a draft is in neither list and nobody can see it.
+  const scope = request.nextUrl.searchParams.get('scope') === 'all' ? 'all' : 'default';
+
   const supabase = createServerSupabaseClient();
   const drafts = await listDraftQueue(supabase, 'admin');
   // Anything an operator handed to a creator before that button was switched
   // off. There is no creator queue to have received it, so these rows are in no
   // queue at all — listing them is what keeps that recoverable instead of
-  // silent, and it is why nothing here can end up invisible.
+  // silent.
   const handedOver = await listHandedOverDrafts(supabase);
+
+  // The rows neither query reaches — a poller draft with no `sent_to_creator_at`
+  // is the ordinary case, and one whose `creator_id` resolves to no `creators`
+  // row is the one nothing else can even name. Returned as the *difference*
+  // rather than the whole list, so the screen can say which rows are on it
+  // solely because this mode is on, and why.
+  let unqueued: typeof drafts = [];
+  let allPending: number | null = null;
+  if (scope === 'all') {
+    const everything = await listAllPendingDrafts(supabase);
+    allPending = everything.length;
+    const alreadyShown = new Set([...drafts, ...handedOver].map((draft) => draft.id));
+    unqueued = everything.filter((draft) => !alreadyShown.has(draft.id));
+  }
 
   // Rendered on the card, not recomputed there: the rules that decide which
   // fields get called out live in `lib/import/draft-form.ts`, and a second copy
   // of them in the browser is a second copy to keep true.
   return NextResponse.json({
+    // Echoed rather than assumed by the client: the screen states which mode it
+    // is showing, and it should be saying so about the data it actually has.
+    scope,
     drafts: drafts.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
     handedOver: handedOver.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
+    unqueued: unqueued.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
     totals: {
       waiting: drafts.length,
       flagged: drafts.filter((draft) => draft.summary.needALook > 0).length,
       handedOver: handedOver.length,
+      // `null`, not `0`, in the default mode: nobody counted, and a zero here
+      // would read as "checked, and there are none".
+      allPending,
+      unqueued: scope === 'all' ? unqueued.length : null,
     },
   });
 }

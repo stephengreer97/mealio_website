@@ -31,6 +31,13 @@ import type { DraftReview, QueuedDraft } from '@/lib/import-drafts';
  *     operator with forty drafts should be able to see where the work is
  *     without opening anything.
  *
+ * Beside them sits **Show every pending draft**, an opt-in mode rather than a
+ * third group. The queries behind the normal view are narrow deliberately — a
+ * draft the poller queued for a creator is not the operator's work — and the
+ * cost of that is a draft in neither query, which nothing shows to anybody. The
+ * mode asks by status alone, says on screen that it is on, and says how many
+ * rows are there only because of it.
+ *
  * Four actions, and **Send to creator** is the one that matters most: it is the
  * escape hatch for "this looks right but I am not the person who cooked it".
  * Without it an unsure operator has only approve or delete, and both are worse
@@ -134,9 +141,22 @@ function asPresetMeal(row: ReviewRow): PresetMeal {
   };
 }
 
+/**
+ * Which set of rows the screen is showing.
+ *
+ * `default` is the two deliberate queries — the admin's own queue, plus what was
+ * handed to a creator queue that does not exist. `all` adds every other pending
+ * draft, which is an escape hatch rather than a better default: a poller draft
+ * belongs to its creator, and putting all of them on this screen every time
+ * would bury the work that is actually the operator's.
+ */
+type Scope = 'default' | 'all';
+
 export default function AdminReviewQueue() {
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
   const [handedOver, setHandedOver] = useState<ReviewRow[]>([]);
+  const [unqueued, setUnqueued] = useState<ReviewRow[]>([]);
+  const [scope, setScope] = useState<Scope>('default');
   const [openId, setOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
@@ -155,17 +175,38 @@ export default function AdminReviewQueue() {
 
   const token = () => localStorage.getItem('accessToken');
 
-  const load = async () => {
-    const res = await fetch('/api/admin/import-drafts', { headers: { Authorization: `Bearer ${token()}` } });
+  /**
+   * `next` is passed in rather than read off state, because the toggle has to
+   * reload in the mode it just switched to and a `setScope` is not visible to
+   * the call in the same tick. The scope the screen then reports is the one the
+   * *response* carries, so the banner cannot claim a mode the data is not from.
+   */
+  const load = async (next: Scope = scope) => {
+    const query = next === 'all' ? '?scope=all' : '';
+    const res = await fetch(`/api/admin/import-drafts${query}`, { headers: { Authorization: `Bearer ${token()}` } });
     const data = await res.json().catch(() => ({}));
     if (!mountedRef.current) return;
     if (!res.ok) { setError(data.error || 'Could not read the queue.'); setRows([]); return; }
     setRows((data.drafts ?? []) as ReviewRow[]);
     setHandedOver((data.handedOver ?? []) as ReviewRow[]);
+    setUnqueued((data.unqueued ?? []) as ReviewRow[]);
+    setScope(data.scope === 'all' ? 'all' : 'default');
     setSelected([]);
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { load('default'); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  const toggleScope = async () => {
+    if (busy) return;
+    const next: Scope = scope === 'all' ? 'default' : 'all';
+    setBusy(true);
+    setError('');
+    setNotice('');
+    setOpenId(null);
+    setEditingId(null);
+    await load(next);
+    if (mountedRef.current) setBusy(false);
+  };
 
   /**
    * One request for however many drafts, which is what makes the batching in
@@ -273,7 +314,41 @@ export default function AdminReviewQueue() {
                 {flagged.length} with something flagged. Open one to see the card as a saver would, then decide.
               </>}
         </p>
+        {/*
+          The escape hatch, and it is a mode rather than a widening of the list
+          above: the queries behind "Waiting on you" are narrow deliberately, so
+          a poller draft belongs to its creator and not on this screen. What that
+          leaves is a gap — a pending draft in neither query, which nothing shows
+          anyone. This is how an operator looks into it, and it says so.
+        */}
+        <button
+          onClick={toggleScope}
+          disabled={busy}
+          style={{ ...secondaryButton, marginTop: '12px' }}
+          data-testid="toggle-scope"
+        >
+          {scope === 'all' ? 'Back to my queue' : 'Show every pending draft'}
+        </button>
       </div>
+
+      {scope === 'all' && (
+        <div
+          style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '14px 16px' }}
+          data-testid="scope-banner"
+        >
+          <h3 style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 700, color: '#92400e' }}>
+            Showing every pending draft
+          </h3>
+          <p style={{ margin: 0, fontSize: '12px', color: '#92400e', lineHeight: 1.6 }}>
+            The normal queue asks only for drafts marked as yours, plus the ones an operator handed to a creator. Any
+            other pending draft — everything the poller queued for a creator, and anything whose creator record has
+            since gone — is in no queue at all and nothing shows it to anybody. This mode asks for them by status
+            alone, so nothing can be unreachable. {unqueued.length === 0
+              ? 'There are none right now: every pending draft is already in one of the lists below.'
+              : `${unqueued.length} ${unqueued.length === 1 ? 'draft is' : 'drafts are'} on this screen only because this mode is on.`}
+          </p>
+        </div>
+      )}
 
       {rows.length > 0 && (
         <div style={card}>
@@ -346,31 +421,77 @@ export default function AdminReviewQueue() {
         in no queue at all and nobody would ever know they existed. Take it back
         puts one in front of the only person who can currently decide it.
       */}
-      {handedOver.length > 0 && (
-        <div style={card} data-testid="handed-over">
-          <h3 style={{ margin: '0 0 2px', fontSize: '14px', fontWeight: 700, color: '#b45309' }}>
-            Handed over, waiting on nobody ({handedOver.length})
-          </h3>
-          <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-            These were sent to their creator before that button was switched off. The creator’s review queue does not
-            exist yet (MEAL-89), so nothing is showing them to anyone — and a later sync will not re-import the post,
-            because it is already recorded as imported. Take one back to decide it here.
-          </p>
-          {handedOver.map(row => (
-            <div key={row.id} style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0', display: 'flex', gap: '10px', alignItems: 'center' }}>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ fontSize: '13px', fontWeight: 600, color: '#222' }}>{row.draft.name || row.sourceUrl}</span>
-                <span style={{ display: 'block', fontSize: '11px', color: '#aaa' }}>
-                  {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
-                </span>
-              </span>
-              <button onClick={() => act('reclaim', [row.id])} disabled={busy} style={secondaryButton}>
-                Take it back
-              </button>
-            </div>
-          ))}
-        </div>
+      <StrandedList
+        testId="handed-over"
+        title={`Handed over, waiting on nobody (${handedOver.length})`}
+        blurb="These were sent to their creator before that button was switched off. The creator’s review queue does not
+          exist yet (MEAL-89), so nothing is showing them to anyone — and a later sync will not re-import the post,
+          because it is already recorded as imported. Take one back to decide it here."
+        rows={handedOver}
+        busy={busy}
+        onReclaim={id => act('reclaim', [id])}
+      />
+
+      {/*
+        Only reachable in `all` mode, and only ever the rows the two normal
+        queries do not return. A poller draft is the ordinary member: `review_by`
+        defaults to `creator`, nothing ever set `sent_to_creator_at`, and the
+        creator queue that would show it was never built. Taking one back is the
+        same move as for a handed-over draft — it makes the only person who can
+        currently decide it able to see it.
+      */}
+      {scope === 'all' && (
+        <StrandedList
+          testId="unqueued"
+          title={`In no queue at all (${unqueued.length})`}
+          blurb="Pending drafts that neither list above asks for — queued for a creator who has no queue, or belonging to
+            a creator record that no longer resolves, in which case there is not even a name on the row. Nothing shows
+            these to anyone and no later sync re-imports the post, because it is already recorded as imported. Take one
+            back to decide it here."
+          rows={unqueued}
+          busy={busy}
+          onReclaim={id => act('reclaim', [id])}
+        />
       )}
+    </div>
+  );
+}
+
+/**
+ * Drafts nobody is looking at, and the one button that fixes that.
+ *
+ * Shared by the two ways a row ends up in no queue — handed to a creator queue
+ * that does not exist, or never in the admin's queue to begin with — because the
+ * only difference between them is why, and the copy says which.
+ */
+function StrandedList({
+  testId, title, blurb, rows, busy, onReclaim,
+}: {
+  testId: string;
+  title: string;
+  blurb: string;
+  rows: ReviewRow[];
+  busy: boolean;
+  onReclaim: (id: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div style={card} data-testid={testId}>
+      <h3 style={{ margin: '0 0 2px', fontSize: '14px', fontWeight: 700, color: '#b45309' }}>{title}</h3>
+      <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>{blurb}</p>
+      {rows.map(row => (
+        <div key={row.id} style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0', display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#222' }}>{row.draft.name || row.sourceUrl}</span>
+            <span style={{ display: 'block', fontSize: '11px', color: '#aaa' }}>
+              {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
+            </span>
+          </span>
+          <button onClick={() => onReclaim(row.id)} disabled={busy} style={secondaryButton}>
+            Take it back
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

@@ -578,6 +578,44 @@ export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200
 }
 
 /**
+ * Every draft still waiting on somebody, whatever queue it nominally belongs to.
+ *
+ * The escape hatch, and the only query here that cannot leave a row unreachable.
+ * The other two are both narrower than "pending", on purpose:
+ *
+ *   - `listDraftQueue(supabase, 'admin')` wants `review_by = 'admin'`.
+ *   - `listHandedOverDrafts` wants `review_by = 'creator'` **and** a
+ *     `sent_to_creator_at`, so the poller's own drafts stay off an admin screen
+ *     they do not belong on.
+ *
+ * Between them sits a real gap: a poller draft (`review_by` defaults to
+ * `'creator'`, `sent_to_creator_at` never set) is in neither list, and the
+ * creator queue that would show it does not exist (MEAL-89). If the `creators`
+ * embed also fails to resolve — a `creator_id` pointing at a row that was
+ * deleted — there is not even a name to notice it by. Such a draft is invisible
+ * to everyone while `creator_source_items` records the post as imported, so no
+ * later sync brings it back.
+ *
+ * Keyed on `status` alone for that reason. No `review_by`, no
+ * `sent_to_creator_at`, no join condition that a missing creator can fail: if a
+ * row is pending, it comes back. This is not the default view — the filtering
+ * above is deliberate and the operator opts into this — but it is the view that
+ * makes "nothing is unreachable" a fact rather than a hope.
+ */
+export async function listAllPendingDrafts(supabase: SupabaseClient, limit = 500): Promise<QueuedDraft[]> {
+  const { data } = await supabase
+    .from('creator_import_drafts')
+    .select(DRAFT_COLUMNS)
+    .eq('status', 'pending_review')
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  return ((data ?? []) as Array<Record<string, any>>)
+    .map(toImportDraft)
+    .map((draft) => ({ ...draft, summary: reviewDraft(draft).summary }));
+}
+
+/**
  * Brings a handed-over draft back into the admin queue.
  *
  * The action that did not exist, which is half of why the handoff was a

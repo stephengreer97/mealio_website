@@ -25,6 +25,7 @@ import {
   editDraft,
   editableDraft,
   HANDOFF_UNAVAILABLE,
+  listAllPendingDrafts,
   listDraftQueue,
   listHandedOverDrafts,
   notifyApproved,
@@ -467,6 +468,70 @@ describe('drafts already handed over — nothing is left in neither queue', () =
     // draft an admin *sent* is one this screen has anything to say about.
     fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
     expect(await listHandedOverDrafts(supabase)).toHaveLength(0);
+  });
+
+  /**
+   * The escape hatch, and the reason it has to exist.
+   *
+   * `listDraftQueue('admin')` and `listHandedOverDrafts` are both narrower than
+   * "pending", so between them is a gap that no screen reaches. These assert the
+   * rows that fall into it come back — because the failure mode is not a wrong
+   * count, it is a recipe nobody can ever see again.
+   */
+  describe('listAllPendingDrafts', () => {
+    it('returns the poller’s drafts, which neither normal query asks for', async () => {
+      const poller = queueRow({ id: 'd-poll', review_by: 'creator' });
+      fakeDb.seed('creator_import_drafts', [poller]);
+
+      // Invisible to both of the queries the screen normally runs...
+      expect(await listDraftQueue(supabase, 'admin')).toHaveLength(0);
+      expect(await listHandedOverDrafts(supabase)).toHaveLength(0);
+      // ...and reachable by the one that asks on status alone.
+      expect((await listAllPendingDrafts(supabase)).map((d) => d.id)).toEqual(['d-poll']);
+    });
+
+    it('returns a draft whose creator record no longer resolves', async () => {
+      // The one nothing else can even name: `creator_id` points at a `creators`
+      // row that is gone, so the join yields nothing and the row has no display
+      // name to be noticed by. It is still a pending recipe.
+      const orphan = { ...queueRow({ id: 'd-orphan', review_by: 'creator' }), creators: null };
+      fakeDb.seed('creator_import_drafts', [orphan]);
+
+      const all = await listAllPendingDrafts(supabase);
+
+      expect(all.map((d) => d.id)).toEqual(['d-orphan']);
+      expect(all[0].creatorName).toBeNull();
+    });
+
+    it('is not filtered on review_by or sent_to_creator_at at all', async () => {
+      fakeDb.seed('creator_import_drafts', [
+        queueRow({ id: 'a', review_by: 'admin' }),
+        queueRow({ id: 'b', review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }),
+        queueRow({ id: 'c', review_by: 'creator' }),
+      ]);
+
+      const all = await listAllPendingDrafts(supabase);
+
+      expect(all.map((d) => d.id).sort()).toEqual(['a', 'b', 'c']);
+      const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
+      expect(filters.map((c) => c.args)).toEqual([['status', 'pending_review']]);
+      expect(fakeDb.calls.some((c) => c.method === 'not')).toBe(false);
+    });
+
+    it('still leaves decided drafts out — this widens the queue, it does not undo a decision', async () => {
+      fakeDb.seed('creator_import_drafts', [
+        queueRow({ id: 'gone', review_by: 'creator', status: 'cancelled' }),
+        queueRow({ id: 'live', review_by: 'creator', status: 'approved' }),
+        queueRow({ id: 'waiting', review_by: 'creator' }),
+      ]);
+
+      expect((await listAllPendingDrafts(supabase)).map((d) => d.id)).toEqual(['waiting']);
+    });
+
+    it('carries the same flag counts as the normal queue, so a row can be judged', async () => {
+      fakeDb.seed('creator_import_drafts', [queueRow({ review_by: 'creator' })]);
+      expect((await listAllPendingDrafts(supabase))[0].summary.needALook).toBeGreaterThan(0);
+    });
   });
 
   it('takes one back into the admin queue', async () => {
