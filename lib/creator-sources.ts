@@ -622,7 +622,7 @@ export function summariseCreatorViability(
   const unsupported = present.filter((source) => outcomes[source] === 'unsupported');
   const ruledOut = unsupported.length > 0
     ? ` ${unsupported.map((source) => SOURCE_LABELS[source]).join(', ')} was ruled out without fetching ` +
-      'anything — see the known-unsupported list for why.'
+      'anything — the badge on that source says why.'
     : '';
 
   return {
