@@ -88,7 +88,7 @@ export async function GET(request: NextRequest) {
   // updates keeps whatever it had — so a creator whose row disappeared would
   // have gone on being told three recipes were waiting, in a queue that would
   // then render empty.
-  if (!creator) return NextResponse.json({ waiting: 0, drafts: [], totals: { waiting: 0, flagged: 0 } });
+  if (!creator) return NextResponse.json({ waiting: 0, drafts: [], totals: { waiting: 0, showing: 0, flagged: 0 } });
 
   // The badge asks for this on every portal load and every app foreground, and
   // wants a number rather than ten jsonb recipes to count. `countPendingDrafts`
@@ -98,6 +98,14 @@ export async function GET(request: NextRequest) {
   }
 
   const drafts = await listDraftQueue(supabase, 'creator', { creatorId: creator.id });
+
+  // Counted, not measured off the list. `listDraftQueue` returns at most 200
+  // rows and `countPendingDrafts` counts all of them, so the two are the same
+  // number right up until they are not — and both clients used to badge from
+  // the list. A creator with 250 pending watched the badge fall to 200 the
+  // moment they opened the queue, with no decision made, and jump back to 249
+  // when they approved one.
+  const waiting = await countPendingDrafts(supabase, creator.id);
 
   // Rendered here, not on the client: which fields get called out, with what
   // reason and which source span, is decided by `lib/import/draft-form.ts`, and
@@ -111,6 +119,13 @@ export async function GET(request: NextRequest) {
   // creator happens to have installed. Sending the sentences means the phone
   // and the browser cannot disagree about which fields were verified.
   return NextResponse.json({
+    // Top level as well as under `totals`, so the full read and `?count=1`
+    // answer the same question under the same key. Without it a caller reading
+    // `data.waiting` off the full GET got `undefined` for a creator and `0` for
+    // a non-creator — the same shape as the bug the count fix was for, and
+    // inverted, so a badge reading `typeof waiting === 'number'` kept its old
+    // value for exactly the people who have a queue.
+    waiting,
     drafts: drafts.map((draft) => {
       const review = reviewDraft(draft);
       return {
@@ -119,7 +134,10 @@ export async function GET(request: NextRequest) {
       };
     }),
     totals: {
-      waiting: drafts.length,
+      /** Everything pending on this creator. The badge's number. */
+      waiting,
+      /** How much of it is in `drafts` — what "3 of 10" counts against. */
+      showing: drafts.length,
       flagged: drafts.filter((draft) => draft.summary.needALook > 0).length,
     },
   });

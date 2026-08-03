@@ -171,6 +171,41 @@ describe('GET — what is waiting on this creator', () => {
     expect(select?.args[1]).toMatchObject({ head: true, count: 'exact' });
   });
 
+  it('carries `waiting` on the full read too, not only on `?count=1`', async () => {
+    // The mirror of the bug the count shape was fixed for. A non-creator got
+    // `{waiting: 0, …}` and a creator got no top-level `waiting` at all, so a
+    // caller reading `data.waiting` off the full GET saw `undefined` for
+    // precisely the people who have a queue — and a badge that updates on
+    // `typeof waiting === 'number'` kept whatever it had.
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow(), draftRow({ id: 'd2' })]);
+
+    const body = await (await GET(jsonRequest('/api/creator/import-drafts', { method: 'GET', token }))).json();
+
+    expect(body.waiting).toBe(2);
+    expect(body.totals).toMatchObject({ waiting: 2, showing: 2 });
+  });
+
+  it('counts what is waiting rather than measuring the page it returned', async () => {
+    // `listDraftQueue` reads at most 200 rows and `countPendingDrafts` counts
+    // all of them. Both clients badged from the list, so a creator with more
+    // than 200 pending watched the badge fall to 200 the moment they opened the
+    // queue — with nothing decided — and jump back up on the next decision.
+    asCreator();
+    fakeDb.seed(
+      'creator_import_drafts',
+      Array.from({ length: 205 }, (_, i) => draftRow({ id: `d${i}`, created_at: `2026-08-02T10:${String(i % 60).padStart(2, '0')}:00.000Z` })),
+    );
+
+    const body = await (await GET(jsonRequest('/api/creator/import-drafts', { method: 'GET', token }))).json();
+
+    expect(body.drafts).toHaveLength(200);
+    expect(body.totals.showing).toBe(200);
+    // The number a creator is shown is the number there are.
+    expect(body.waiting).toBe(205);
+    expect(body.totals.waiting).toBe(205);
+  });
+
   it('answers zero for a user who is not a creator, rather than failing', async () => {
     // So the header and the app can ask unconditionally instead of gating the
     // call on a creator check with a round trip and a moment of being wrong.
@@ -353,6 +388,46 @@ describe('a creator can only decide their own drafts', () => {
     expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ draft: guacamole.draft, edited_at: null });
   });
 
+  it('will not approve a draft an operator has taken back', async () => {
+    // Reclaim was defeated by an authorisation check that asked only *whose*
+    // draft it is. `creator_id` never changes, so a creator holding the queue
+    // open when an operator pressed "Take it back" could still publish it to
+    // Discover — out of their own GET, out of their badge, and live anyway.
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'admin' })]);
+
+    const body = await (await POST(jsonRequest('/api/creator/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }))).json();
+
+    expect(body.done).toBe(0);
+    expect(publishCreatorMeal).not.toHaveBeenCalled();
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'pending_review', review_by: 'admin' });
+  });
+
+  it('will not decline a draft an operator has taken back', async () => {
+    // The mirror of the approve case, and the quieter one: declining it out
+    // from under an operator who is mid-review leaves them looking at a card
+    // for a recipe that has already been refused.
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'admin' })]);
+
+    await POST(jsonRequest('/api/creator/import-drafts', { token, body: { action: 'cancel', ids: ['d1'] } }));
+
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'pending_review' });
+  });
+
+  it('will not edit a draft an operator has taken back', async () => {
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'admin' })]);
+
+    const res = await PATCH(jsonRequest('/api/creator/import-drafts', {
+      method: 'PATCH', token, body: { id: 'd1', draft: { ...guacamole.draft, name: 'Rewritten underneath them' } },
+    }));
+
+    expect(res.status).toBe(400);
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ edited_at: null });
+    expect(fakeDb.row('creator_import_drafts', 'd1').draft.name).toBe(guacamole.draft.name);
+  });
+
   it('refuses a decision from a user who is not a creator at all', async () => {
     asCreator(null);
     fakeDb.seed('creator_import_drafts', [draftRow()]);
@@ -432,6 +507,55 @@ describe('PATCH — an edit is a fix, not a decision', () => {
 
     expect(res.status).toBe(400);
     expect(fakeDb.row('creator_import_drafts', 'd1').draft.name).toBe(guacamole.draft.name);
+  });
+
+  it('refuses more tags than a meal is shown under, rather than storing them', async () => {
+    // The cap was in both editors and in neither server. A PATCH that did not
+    // come from one of them stored everything it was sent and approving
+    // published all of it — `MealCard` renders `.slice(0, 3)`, so the extras
+    // were invisible on the card and still filterable in Discover.
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+
+    const res = await PATCH(jsonRequest('/api/creator/import-drafts', {
+      method: 'PATCH',
+      token,
+      body: { id: 'd1', draft: { ...guacamole.draft, tags: ['Mexican', 'No Cook', 'Appetizer', 'Italian', 'Vegan'] } },
+    }));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/at most 3/);
+    expect(fakeDb.row('creator_import_drafts', 'd1').draft.tags).toEqual(guacamole.draft.tags);
+  });
+
+  it('still accepts the cap itself', async () => {
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+
+    const res = await PATCH(jsonRequest('/api/creator/import-drafts', {
+      method: 'PATCH',
+      token,
+      body: { id: 'd1', draft: { ...guacamole.draft, tags: ['Mexican', 'No Cook', 'Vegan'] } },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(fakeDb.row('creator_import_drafts', 'd1').draft.tags).toEqual(['Mexican', 'No Cook', 'Vegan']);
+  });
+
+  it('counts tags after dropping the ones outside the vocabulary', async () => {
+    // Otherwise "five tags, two of them nonsense" is refused for being five
+    // when what would have been stored is three.
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+
+    const res = await PATCH(jsonRequest('/api/creator/import-drafts', {
+      method: 'PATCH',
+      token,
+      body: { id: 'd1', draft: { ...guacamole.draft, tags: ['Mexican', 'not-a-tag', 'No Cook', 'also-not', 'Vegan'] } },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(fakeDb.row('creator_import_drafts', 'd1').draft.tags).toEqual(['Mexican', 'No Cook', 'Vegan']);
   });
 
   it('refuses an edit that lands on a draft already decided', async () => {

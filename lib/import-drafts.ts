@@ -42,7 +42,7 @@ import {
   type ImportSummary,
 } from '@/lib/import/draft-form';
 import { canonicalizeIngredient } from '@/lib/import/ingredients';
-import { canonicalizeDifficulty, canonicalizeTags, SERVES_PATTERN } from '@/lib/import/vocab';
+import { canonicalizeDifficulty, canonicalizeTags, MAX_MEAL_TAGS, SERVES_PATTERN } from '@/lib/import/vocab';
 import type { CreatorMealDraft, FieldConfidence, ImportConfidence } from '@/lib/import/types';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -113,17 +113,28 @@ export interface DraftDeps {
   notifier?: typeof sendCreatorSyncPublishedEmail;
   now?: () => number;
   /**
-   * Which queue the decision came from. Changes **nothing** but the log event,
-   * and that is the point of it existing at all: the rules for approving,
-   * editing and declining are identical on both sides — same conditional
-   * writes, same publish, same refusal to delete a cancelled row — so a second
-   * set of functions for the creator would be a second set to keep correct.
+   * Which queue the decision is being made **for**.
    *
-   * The log is the one place they must differ. MEAL-77's consent story turns on
-   * *who* decided, and every line in this file said `ADMIN:` — so a creator
-   * approving their own recipe was recorded as an operator publishing under
-   * their name, which is exactly the distinction the audit trail exists to
-   * make. Defaults to admin, which is what every caller before MEAL-89 was.
+   * The rules for approving, editing and declining are identical on both sides
+   * — same conditional writes, same publish, same refusal to delete a cancelled
+   * row — so a second set of functions for the creator would be a second set to
+   * keep correct. Two things do turn on this one field:
+   *
+   * **The log event.** MEAL-77's consent story turns on *who* decided, and
+   * every line in this file said `ADMIN:` — so a creator approving their own
+   * recipe was recorded as an operator publishing under their name, which is
+   * exactly the distinction the audit trail exists to make.
+   *
+   * **The queue the write is allowed to touch.** `review_by` used to be a read
+   * filter and nothing else: it decided what a creator was *shown* and never
+   * what they could *decide*. An operator pressing "Take it back" flipped the
+   * column, the draft left the creator's GET and their badge — and the creator
+   * still holding that row could approve it straight to Discover, because
+   * `creator_id` had not changed and that was the only thing anyone checked.
+   * Every decision below now names the queue it is acting for and `decideDraft`
+   * carries it as a predicate, so a draft that has moved refuses the write.
+   *
+   * Defaults to admin, which is what every caller before MEAL-89 was.
    */
   role?: DraftReviewBy;
 }
@@ -403,16 +414,29 @@ export interface ApprovedMeal {
  * Takes a draft out of `pending_review`, or reports that somebody else already did.
  *
  * Every decision in this file is a conditional write, and it is the same three
- * lines each time: patch the row **only while it is still pending**, ask for the
- * rows that changed, and act only if one came back. Read the status, check it in
- * JavaScript, then write — the shape this replaces — is three round trips with
- * two gaps in it, and two tabs or one retried `fetch` fit through either.
- * Postgres re-evaluates the predicate under the row lock, so of two simultaneous
- * callers exactly one is handed a row.
+ * lines each time: patch the row **only while it is still pending and still in
+ * the queue the caller is acting for**, ask for the rows that changed, and act
+ * only if one came back. Read the status, check it in JavaScript, then write —
+ * the shape this replaces — is three round trips with two gaps in it, and two
+ * tabs or one retried `fetch` fit through either. Postgres re-evaluates the
+ * predicate under the row lock, so of two simultaneous callers exactly one is
+ * handed a row.
+ *
+ * `queue` is the second half of that, and it is why authority lives here rather
+ * than at the two route handlers. `review_by` is what "Take it back" flips and
+ * what `sendDraftToCreator` flips the other way, so a decision made against the
+ * queue a draft has just left is a decision by somebody it is no longer waiting
+ * on. Checking it before the write instead would be a real TOCTOU gap — unlike
+ * `creator_id`, which is set at insert and never updated, `review_by` changes
+ * under a reviewer who has the card open, which is the entire scenario.
+ *
+ * A draft is in exactly one queue: `review_by` is a single column, so this
+ * predicate can never be true of both callers at once.
  */
 async function decideDraft(
   deps: DraftDeps,
   id: string,
+  queue: DraftReviewBy,
   patch: Record<string, unknown>,
 ): Promise<boolean> {
   const { data } = await deps.supabase
@@ -420,8 +444,24 @@ async function decideDraft(
     .update(patch)
     .eq('id', id)
     .eq('status', 'pending_review')
+    .eq('review_by', queue)
     .select('id');
   return Array.isArray(data) && data.length > 0;
+}
+
+/**
+ * The sentence for a decision aimed at a queue the draft is no longer in.
+ *
+ * Read before the write for the wording only — the refusal itself is the
+ * predicate in `decideDraft`, which is what holds when the handover lands
+ * between this read and that write. Said plainly and from the reviewer's side:
+ * a creator whose recipe was taken back is not being refused, they are being
+ * told somebody else is looking at it.
+ */
+function movedQueues(draft: ImportDraft, queue: DraftReviewBy): string {
+  return queue === 'creator'
+    ? 'The Mealio team took that one back to look at it themselves, so it is not waiting on you any more.'
+    : `That draft is waiting on ${draft.creatorName || 'the creator'}. Take it back before deciding it.`;
 }
 
 /**
@@ -446,6 +486,7 @@ export async function approveDraft(
 ): Promise<{ ok: true; approved: ApprovedMeal } | { ok: false; error: string }> {
   const publisher = deps.publisher ?? publishCreatorMeal;
   const now = deps.now ?? Date.now;
+  const queue = deps.role ?? 'admin';
 
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
@@ -454,18 +495,23 @@ export async function approveDraft(
   if (draft.status !== 'pending_review') {
     return { ok: false, error: `That draft was already ${draft.status.replace('_', ' ')}.` };
   }
+  // Publishing is the decision that cannot be taken back, so it is the one this
+  // matters most for: a creator holding a draft an operator has just reclaimed
+  // must not be able to put it on Discover under their own name.
+  if (draft.reviewBy !== queue) return { ok: false, error: movedQueues(draft, queue) };
 
   const nowIso = new Date(now()).toISOString();
-  const claimed = await decideDraft(deps, id, {
+  const claimed = await decideDraft(deps, id, queue, {
     status: draft.editedAt ? 'edited' : 'approved',
     decided_at: nowIso,
     decided_by: adminUserId,
     updated_at: nowIso,
   });
   if (!claimed) {
-    // Somebody else decided it between the read above and this write. Which way
-    // does not matter: it is no longer ours to publish.
-    return { ok: false, error: 'That draft was already decided in another tab.' };
+    // Somebody else decided it, or moved it to the other queue, between the read
+    // above and this write. Which does not matter: it is no longer ours to
+    // publish.
+    return { ok: false, error: 'That draft was already decided or taken back in another tab.' };
   }
 
   let meal: PublishedMeal;
@@ -611,13 +657,16 @@ export async function sendDraftToCreator(
   }
 
   const nowIso = new Date(now()).toISOString();
-  const moved = await decideDraft(deps, id, {
+  // Acting on the admin queue, which is the one a draft has to be in to be
+  // handed over. The `reviewBy === 'creator'` refusal above is the friendly
+  // wording; this is the predicate that holds when it changes underneath.
+  const moved = await decideDraft(deps, id, 'admin', {
     review_by: 'creator',
     sent_to_creator_at: nowIso,
     sent_to_creator_by: adminUserId,
     updated_at: nowIso,
   });
-  if (!moved) return { ok: false, error: 'That draft was already decided in another tab.' };
+  if (!moved) return { ok: false, error: 'That draft was already decided or handed over in another tab.' };
 
   log({
     event: 'ADMIN:DRAFT_HANDOFF',
@@ -685,8 +734,11 @@ export async function reclaimDraft(deps: DraftDeps, id: string, adminUserId: str
   }
 
   const nowIso = new Date(now()).toISOString();
-  const taken = await decideDraft(deps, id, { review_by: 'admin', updated_at: nowIso });
-  if (!taken) return { ok: false, error: 'That draft was already decided in another tab.' };
+  // The queue it is being taken FROM, not the one it is going to — this is the
+  // one caller whose `role` and whose target queue are different things, which
+  // is why `decideDraft` takes the queue rather than reading `deps.role`.
+  const taken = await decideDraft(deps, id, 'creator', { review_by: 'admin', updated_at: nowIso });
+  if (!taken) return { ok: false, error: 'That draft was already decided or taken back in another tab.' };
 
   log({
     event: 'ADMIN:DRAFT_RECLAIM',
@@ -708,24 +760,29 @@ export async function reclaimDraft(deps: DraftDeps, id: string, adminUserId: str
  */
 export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: string): Promise<DraftDecision> {
   const now = deps.now ?? Date.now;
+  const queue = deps.role ?? 'admin';
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
   if (loaded.draft.status !== 'pending_review') {
     return { ok: false, error: `That draft was already ${loaded.draft.status.replace('_', ' ')}.` };
   }
+  // Declining is permanent in the way that matters — the row stays `cancelled`
+  // and no later poll re-offers the post — so a creator must not be able to
+  // decline a draft out from under the operator who took it back to look at.
+  if (loaded.draft.reviewBy !== queue) return { ok: false, error: movedQueues(loaded.draft, queue) };
 
   const nowIso = new Date(now()).toISOString();
   // Conditional for the same reason approve is: a decline interleaved with an
   // approval must not leave the row `cancelled` — out of the queue, nobody
   // looking at it again — with a live meal on Discover behind it that nobody
   // will ever unpublish.
-  const declined = await decideDraft(deps, id, {
+  const declined = await decideDraft(deps, id, queue, {
     status: 'cancelled',
     decided_at: nowIso,
     decided_by: adminUserId,
     updated_at: nowIso,
   });
-  if (!declined) return { ok: false, error: 'That draft was already decided in another tab.' };
+  if (!declined) return { ok: false, error: 'That draft was already decided or taken back in another tab.' };
 
   log({
     event: events(deps.role).cancel,
@@ -742,14 +799,23 @@ const EDITED_REASON = 'An operator changed this, so our check of the model’s v
 /**
  * Validates the nine fields the edit form posts back.
  *
- * The same shape and the same constraints `POST /api/creator/meals` publishes,
- * because Approve feeds this straight into `publishCreatorMeal` — a draft that
- * would be rejected at publish time is better rejected while the operator is
- * still looking at it than left in the queue to fail later.
+ * The same shape `publishCreatorMeal` takes, because Approve feeds this
+ * straight into it — a draft that would be rejected at publish time is better
+ * rejected while the reviewer is still looking at it than left in the queue to
+ * fail later.
  *
  * The vocabularies are re-applied rather than trusted: tags outside the picker
  * and units outside the editor's list are what the pipeline already normalises,
  * and a hand-edited request is exactly where an unknown one would arrive.
+ *
+ * The constraints are this module's, NOT `POST /api/creator/meals`'s. That
+ * route enforces neither the tag cap nor `SERVES_PATTERN`, and the mobile
+ * portal's publish form offers an uncapped tag picker on top of it — so making
+ * these rules retrospective there would silently drop tags creators are
+ * choosing today. It is a real gap and it wants its own change, with the app's
+ * picker moved in the same release. Here they are enforced because both editors
+ * that reach this function already refuse a fourth tag, and a rule the client
+ * shows and the server does not hold is a rule only for people using the UI.
  */
 export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, error: 'draft is required' };
@@ -778,6 +844,20 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
     return { ok: false, error: 'Serves must be a number or a range, like 4 or 2-4.' };
   }
 
+  // Refused rather than trimmed, for the same reason `serves` is: a draft can
+  // arrive from extraction carrying more than the cap, and quietly dropping the
+  // ones past the third would take away tags the reviewer is looking at without
+  // saying which. Neither editor can produce this — both stop at the cap — so
+  // the only ways here are a draft that came in with more, and a hand-written
+  // request.
+  const tags = canonicalizeTags(Array.isArray(input.tags) ? input.tags.map(String) : []);
+  if (tags.length > MAX_MEAL_TAGS) {
+    return {
+      ok: false,
+      error: `That is ${tags.length} tags. Keep at most ${MAX_MEAL_TAGS} — a meal is only shown under three.`,
+    };
+  }
+
   const text = (value: unknown): string | null => {
     const trimmed = typeof value === 'string' ? value.trim() : '';
     return trimmed || null;
@@ -793,7 +873,7 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
       story: text(input.story),
       photoUrl: text(input.photoUrl),
       difficulty: canonicalizeDifficulty(typeof input.difficulty === 'number' ? input.difficulty : null),
-      tags: canonicalizeTags(Array.isArray(input.tags) ? input.tags.map(String) : []),
+      tags,
       serves: serves || null,
     },
   };
@@ -847,11 +927,16 @@ export async function editDraft(
   adminUserId: string,
 ): Promise<DraftDecision> {
   const now = deps.now ?? Date.now;
+  const queue = deps.role ?? 'admin';
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
   if (loaded.draft.status !== 'pending_review') {
     return { ok: false, error: `That draft was already ${loaded.draft.status.replace('_', ' ')}.` };
   }
+  // The quietest of the three, and the reason it is refused rather than merged:
+  // an edit from the other queue rewrites the recipe under whoever is reading
+  // the card right now, and neither of them is told the other exists.
+  if (loaded.draft.reviewBy !== queue) return { ok: false, error: movedQueues(loaded.draft, queue) };
 
   const confidence = stripEditedConfidence(loaded.draft.draft, next, loaded.draft.confidence);
   const nowIso = new Date(now()).toISOString();
@@ -859,13 +944,13 @@ export async function editDraft(
   // Also conditional: an edit landing on a draft somebody else has just approved
   // would rewrite the recipe out from under a meal already on Discover, and the
   // operator would be told their correction was saved.
-  const saved = await decideDraft(deps, id, {
+  const saved = await decideDraft(deps, id, queue, {
     draft: next,
     confidence,
     edited_at: nowIso,
     updated_at: nowIso,
   });
-  if (!saved) return { ok: false, error: 'That draft was decided in another tab before this could be saved.' };
+  if (!saved) return { ok: false, error: 'That draft was decided or taken back in another tab before this could be saved.' };
 
   log({ event: events(deps.role).edit, status: 'success', userId: adminUserId, detail: `draft=${id}` });
 

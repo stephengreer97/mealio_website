@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { UNITS } from '@/lib/import/ingredients';
-import { MEAL_TAGS } from '@/lib/import/vocab';
+import { ALL_UNITS } from '@/lib/import/ingredients';
+import { MAX_MEAL_TAGS, MEAL_TAGS } from '@/lib/import/vocab';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
 
 /**
@@ -107,9 +107,11 @@ export default function DraftEditor({
     setForm(prev => {
       const tags = prev.tags ?? [];
       if (tags.includes(tag)) return { ...prev, tags: tags.filter(t => t !== tag) };
-      // Three is what the publish form accepts, and a fourth would be silently
-      // dropped on save rather than visibly refused here.
-      return tags.length >= 3 ? prev : { ...prev, tags: [...tags, tag] };
+      // The same constant `editableDraft` refuses on, rather than a literal
+      // three in each of them. The cap was client-only in both editors until
+      // MEAL-89's review: a PATCH that did not come from one of them stored as
+      // many tags as it was sent, and approving published all of them.
+      return tags.length >= MAX_MEAL_TAGS ? prev : { ...prev, tags: [...tags, tag] };
     });
 
   return (
@@ -144,7 +146,13 @@ export default function DraftEditor({
       </div>
 
       <div>
-        <label style={label}>Tags (up to 3)</label>
+        {/* The count as well as the cap, because a draft can arrive from
+            extraction carrying more than the cap — the model is asked for up to
+            eight — and the picker refusing a fourth is confusing next to five
+            already-lit chips. Saving says which. */}
+        <label style={label}>
+          Tags ({(form.tags ?? []).length} of {MAX_MEAL_TAGS})
+        </label>
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '110px', overflowY: 'auto' }} data-testid="tag-picker">
           {MEAL_TAGS.map(tag => {
             const on = (form.tags ?? []).includes(tag);
@@ -190,8 +198,18 @@ export default function DraftEditor({
               value={row.unit}
               onChange={e => setIngredient(i, { unit: e.target.value })}
             >
+              {/*
+                ALL_UNITS, not UNITS: the pipeline canonicalises to
+                UNITS + COOK_UNITS, so offering only the eleven measured ones
+                left a `cloves` row matching no option. The select fell back to
+                its first and the row read "garlic, 3, Qty" — the exact failure
+                COOK_UNITS was added to prevent, on the screen whose job is
+                catching wrong measures. A blind save still wrote `cloves`, so
+                the trap was one-way: touching the dropdown lost the unit and
+                there was no way to put it back.
+              */}
               <option value="qty">Qty</option>
-              {UNITS.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+              {ALL_UNITS.map(unit => <option key={unit} value={unit}>{unit}</option>)}
             </select>
             <button type="button" onClick={() => removeIngredient(i)} style={{ ...secondaryButton, padding: '6px 10px' }}>×</button>
           </div>

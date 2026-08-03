@@ -100,6 +100,26 @@ function asPresetMeal(row: ReviewRow): PresetMeal {
 
 export default function CreatorReviewQueue() {
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
+  /**
+   * The read failed, as distinct from the queue being empty.
+   *
+   * Two different facts that rendered identically: `setRows([])` on a failure
+   * made "we looked and there is nothing" out of "we could not look". The
+   * header badge deliberately does *not* zero on a failed read — it keeps the
+   * last number it was told, which is right — so the pair put "3 recipes
+   * waiting" and a portal with no queue on the same screen, and the half that
+   * looked reassuring was the wrong one.
+   */
+  const [failed, setFailed] = useState(false);
+  /**
+   * Everything pending, which is not the same as `rows.length`.
+   *
+   * The queue reads at most 200 drafts and the count is uncapped, so the
+   * heading says how many there are and the position says where in the loaded
+   * page they stand. They agree in every ordinary case and the heading is the
+   * one that must not go quietly wrong when they do not.
+   */
+  const [waiting, setWaiting] = useState(0);
   const [cursor, setCursor] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -129,21 +149,40 @@ export default function CreatorReviewQueue() {
   };
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/creator/import-drafts', { headers: { Authorization: `Bearer ${token()}` } });
-    const data = await res.json().catch(() => ({}));
+    let res: Response;
+    let data: { drafts?: unknown; waiting?: unknown };
+    try {
+      res = await fetch('/api/creator/import-drafts', { headers: { Authorization: `Bearer ${token()}` } });
+      data = await res.json().catch(() => ({}));
+    } catch {
+      // A dropped connection is a failed read like any other. Left unhandled it
+      // rejected out of the effect and stranded the card in its loading state,
+      // which renders as nothing — the same wrong answer by a different route.
+      if (mountedRef.current) { setRows([]); setFailed(true); }
+      return;
+    }
     if (!mountedRef.current) return;
     if (!res.ok) {
-      // Not surfaced as an error banner. This card is one thing on a portal full
-      // of other things, and a creator who came here to edit a published meal
+      // Still not an error banner. This card is one thing on a portal full of
+      // other things, and a creator who came here to edit a published meal
       // should not be met with a red box about a queue they were not thinking
-      // about. It is logged by the server; here it renders as no card.
+      // about. But it must not render as an empty queue either: `announce` is
+      // deliberately not called, so the badge keeps whatever it had, and the
+      // card below says we could not look rather than that there is nothing.
       setRows([]);
+      setFailed(true);
       return;
     }
 
     const list = (data.drafts ?? []) as ReviewRow[];
     setRows(list);
-    announce(list.length);
+    setFailed(false);
+    // The server's count, not the length of this list: the list is capped at
+    // 200 and the count is not. Badging from the list rewrote a creator's "250"
+    // to "200" the moment they opened the queue, before they had decided
+    // anything.
+    setWaiting(typeof data.waiting === 'number' ? data.waiting : list.length);
+    announce(typeof data.waiting === 'number' ? data.waiting : list.length);
 
     // Resume where they were. A cursor pointing at a draft that is no longer
     // pending — decided here, decided on the phone, taken back by an operator —
@@ -202,7 +241,10 @@ export default function CreatorReviewQueue() {
       setNotice('Declined. We will not offer that one again.');
     }
 
-    if (typeof data.waiting === 'number') announce(data.waiting);
+    // The server counts what is left as part of the decision, so the heading and
+    // the badge both settle without a second round trip — and a draft decided in
+    // another tab is reflected on this one.
+    if (typeof data.waiting === 'number') { setWaiting(data.waiting); announce(data.waiting); }
 
     // Advance to the next undecided draft, or to the previous one if this was
     // the last. Deciding should never end with an empty card and no next step.
@@ -236,8 +278,28 @@ export default function CreatorReviewQueue() {
     setNotice('Saved. It is still waiting on you — editing does not publish it.');
   };
 
-  // Nothing waiting, or not a creator, or the read failed: no card at all. The
-  // portal does not grow an empty box to tell a creator there is nothing to do.
+  // The read failed. Said plainly, because the badge on this same screen is
+  // still showing whatever it last heard: a creator looking at "3" and a portal
+  // with no queue card would conclude the queue is broken or that the badge is
+  // lying, and one of those is true but neither is something to leave them to
+  // work out. Quiet rather than alarming — no red box, and a way to try again.
+  if (failed) {
+    return (
+      <div style={card} data-testid="creator-review-queue">
+        <h2 style={{ margin: '0 0 6px', fontSize: '15px', fontWeight: 700, color: '#111' }}>
+          We could not load your queue
+        </h2>
+        <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }} data-testid="queue-unreadable">
+          Something went wrong at our end, so we do not know what is waiting for you right now. Nothing has been
+          decided and nothing has been published.
+        </p>
+        <button onClick={() => void load()} style={secondaryButton} data-testid="queue-retry">Try again</button>
+      </div>
+    );
+  }
+
+  // Nothing waiting, or not a creator: no card at all. The portal does not grow
+  // an empty box to tell a creator there is nothing to do.
   //
   // The one exception is the message from the decision that just emptied it.
   // Without it, approving the last draft made the whole card disappear mid-tap
@@ -257,19 +319,30 @@ export default function CreatorReviewQueue() {
   }
 
   const notices = noticesFor(current.review.states) as MealNotices;
+  // The count can only lag the list while a decision is in flight; never let the
+  // heading claim fewer recipes than the card is willing to page through.
+  const total = Math.max(waiting, rows.length);
 
   return (
     <div style={card} data-testid="creator-review-queue">
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#111' }}>
-          {rows.length === 1 ? 'A recipe is waiting for you' : `${rows.length} recipes are waiting for you`}
+          {total === 1 ? 'A recipe is waiting for you' : `${total} recipes are waiting for you`}
         </h2>
         {/* Position, so the end is visible. An unbounded stack is the thing
-            people give up on. */}
+            people give up on. Against the loaded page rather than the total,
+            because that is the set these buttons move through. */}
         <span style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280' }} data-testid="queue-position">
           {index + 1} of {rows.length}
         </span>
       </div>
+      {/* Only ever seen past the 200-row read, and better said than left as a
+          heading and a position that quietly disagree. */}
+      {total > rows.length && (
+        <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#aaa' }} data-testid="queue-truncated">
+          Showing the first {rows.length}. The rest are still here — decide these and reload for more.
+        </p>
+      )}
       <p style={{ margin: '4px 0 14px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
         We read {hostOf(current.sourceUrl)} and filled this in. Nothing is live until you approve it, and nothing here
         is in a hurry — come back to it whenever.

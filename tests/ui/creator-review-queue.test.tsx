@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { CreatorMealDraft, ImportConfidence, ImportSuccess } from '@/lib/import/types';
 
 // `lib/import-drafts` is imported for `reviewDraft` alone, so the queue payload
@@ -72,15 +72,21 @@ function cleanDraft(id = 'd2'): ImportDraft {
   return draft({ id, draft: body, confidence, createdAt: '2026-08-03T00:00:00.000Z' });
 }
 
-/** The payload GET returns: each row with its rendered review attached. */
-function payload(drafts: ImportDraft[]) {
+/**
+ * The payload GET returns: each row with its rendered review attached.
+ *
+ * `waiting` is a separate argument from the list because the server counts it
+ * separately — the list is capped at 200 rows and the count is not.
+ */
+function payload(drafts: ImportDraft[], waiting = drafts.length) {
   const rows = drafts.map((row) => {
     const review = reviewDraft(row);
     return { ...row, summary: review.summary, review };
   });
   return {
+    waiting,
     drafts: rows,
-    totals: { waiting: rows.length, flagged: rows.filter((r) => r.summary.needALook > 0).length },
+    totals: { waiting, showing: rows.length, flagged: rows.filter((r) => r.summary.needALook > 0).length },
   };
 }
 
@@ -120,12 +126,62 @@ describe('the queue never gets in the way', () => {
     await waitFor(() => expect(screen.queryByTestId('creator-review-queue')).toBeNull());
   });
 
-  it('renders nothing when the queue cannot be read, rather than a red box', async () => {
-    // This card is one thing on a portal full of other things. A creator who
-    // came here to do something else should not be met with an error about a
-    // queue they were not thinking about; the server logs it.
+  it('says it could not look, rather than that there is nothing to look at', async () => {
+    // The badge in the header deliberately keeps its last number on a failed
+    // read. Rendering nothing here put "3 recipes waiting" and a portal with no
+    // queue on one screen — two contradictory statements, the reassuring one
+    // wrong. Still not a red box: this card is one thing on a portal full of
+    // other things.
     vi.stubGlobal('fetch', (async () => json({ error: 'nope' }, 500)) as unknown as typeof fetch);
     render(<CreatorReviewQueue />);
+
+    expect((await screen.findByTestId('queue-unreadable')).textContent).toMatch(/we do not know what is waiting/i);
+    // And no count, in either direction: the card claims neither a number nor
+    // an emptiness it did not observe.
+    expect(screen.queryByTestId('queue-position')).toBeNull();
+    expect(screen.queryByText(/^That’s everything$/)).toBeNull();
+    expect(screen.getByTestId('queue-retry')).toBeTruthy();
+  });
+
+  it('does not tell the badge the queue is empty when it could not read it', async () => {
+    // The failure the badge's own rule exists to prevent, from the other side:
+    // announcing 0 here would zero a count nobody verified.
+    const announced: number[] = [];
+    window.addEventListener('mealio:draft-queue-changed', (event) => {
+      announced.push((event as CustomEvent<{ waiting: number }>).detail.waiting);
+    });
+    vi.stubGlobal('fetch', (async () => json({ error: 'nope' }, 500)) as unknown as typeof fetch);
+    render(<CreatorReviewQueue />);
+
+    await screen.findByTestId('queue-unreadable');
+    expect(announced).toEqual([]);
+  });
+
+  it('treats a dropped connection as a failed read, not as a queue that never loads', async () => {
+    // An unhandled rejection out of the effect left the card in its loading
+    // state forever, which renders as nothing — the same wrong answer by a
+    // different route.
+    vi.stubGlobal('fetch', (async () => { throw new TypeError('Failed to fetch'); }) as unknown as typeof fetch);
+    render(<CreatorReviewQueue />);
+
+    expect(await screen.findByTestId('queue-unreadable')).toBeTruthy();
+  });
+
+  it('recovers on Try again without a reload', async () => {
+    let fail = true;
+    vi.stubGlobal('fetch', (async () => (fail ? json({ error: 'nope' }, 500) : json(payload([draft()])))) as unknown as typeof fetch);
+    render(<CreatorReviewQueue />);
+
+    await screen.findByTestId('queue-unreadable');
+    fail = false;
+    fireEvent.click(screen.getByTestId('queue-retry'));
+
+    expect((await screen.findByTestId('queue-position')).textContent).toBe('1 of 1');
+  });
+
+  it('still renders nothing when the queue really is empty', async () => {
+    // The distinction only means something if the empty case is unchanged.
+    harness([]);
     await waitFor(() => expect(screen.queryByTestId('creator-review-queue')).toBeNull());
   });
 });
@@ -281,6 +337,58 @@ describe('approve, edit, decline — and no approve-all', () => {
     expect(bodies.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'cancel', ids: ['d1'] });
   });
 
+  /**
+   * A draft carrying a cook's unit — the shape `canonicalizeIngredient` really
+   * produces for "3 cloves garlic". `qty` stays 1 because the amount is three
+   * cloves and not three heads.
+   */
+  const withCloves = () => {
+    const ingredients = guacamole.draft.ingredients.map((row, i) =>
+      i === 0 ? { ...row, ingredientName: 'garlic', unit: 'cloves', measure: '3', qty: 1 } : row);
+    return draft({ draft: { ...guacamole.draft, ingredients } });
+  };
+
+  it('keeps a cook’s unit selectable, rather than showing it back as "Qty"', async () => {
+    // The editor offered the eleven MEASURED units, and the pipeline
+    // canonicalises to ALL_UNITS. A `cloves` row therefore matched no option,
+    // the select fell back to its first, and the row read "garlic, 3, Qty" — the
+    // exact failure COOK_UNITS was added to prevent ("told the cart to buy three
+    // heads of garlic for three cloves"), shown on the screen whose job is
+    // catching wrong measures.
+    harness([withCloves()]);
+    await screen.findByTestId('queue-position');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit first' }));
+
+    const editor = await screen.findByTestId('draft-editor');
+    const unit = within(editor).getByLabelText('Ingredient 1 unit') as HTMLSelectElement;
+
+    expect(unit.value).toBe('cloves');
+    // And it is a real option, so touching the dropdown is not a one-way trip:
+    // a creator who opened it could not previously get `cloves` back.
+    expect([...unit.options].map((option) => option.value)).toContain('cloves');
+  });
+
+  it('saves the cook’s unit it displayed, after the creator has opened the picker', async () => {
+    // The trap was one-way rather than immediate: a blind save preserved
+    // `cloves`, so the bug only bit the creator who actually used the control.
+    const { bodies } = harness([withCloves()]);
+    await screen.findByTestId('queue-position');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit first' }));
+
+    const editor = await screen.findByTestId('draft-editor');
+    const unit = within(editor).getByLabelText('Ingredient 1 unit');
+    fireEvent.change(unit, { target: { value: 'tbsp' } });
+    fireEvent.change(unit, { target: { value: 'cloves' } });
+    fireEvent.click(within(editor).getByRole('button', { name: 'Save edits' }));
+
+    await waitFor(() => expect(bodies.some((b) => b.method === 'PATCH')).toBe(true));
+    expect(bodies.find((b) => b.method === 'PATCH')!.body.draft.ingredients[0]).toMatchObject({
+      ingredientName: 'garlic',
+      unit: 'cloves',
+      measure: '3',
+    });
+  });
+
   it('edits in place, and saving does not publish', async () => {
     const { bodies } = harness([draft()]);
     await screen.findByTestId('queue-position');
@@ -314,5 +422,43 @@ describe('telling the header what the count is', () => {
     await waitFor(() => expect(seen).toEqual([2, 1]));
 
     window.removeEventListener('mealio:draft-queue-changed', listener);
+  });
+
+  it('announces the server’s count, not the length of the page it loaded', async () => {
+    // The read is capped at 200 rows and the count is not. Announcing the list
+    // rewrote a creator's 250 down to 200 the moment they opened the queue,
+    // before they had decided anything — and the next decision put it back to
+    // 249.
+    const seen: number[] = [];
+    const listener = (e: Event) => seen.push((e as CustomEvent<{ waiting: number }>).detail.waiting);
+    window.addEventListener('mealio:draft-queue-changed', listener);
+
+    const loaded = [draft(), cleanDraft()];
+    vi.stubGlobal('fetch', (async () => json(payload(loaded, 250))) as unknown as typeof fetch);
+    render(<CreatorReviewQueue />);
+
+    await screen.findByTestId('queue-position');
+    expect(seen).toEqual([250]);
+
+    window.removeEventListener('mealio:draft-queue-changed', listener);
+  });
+
+  it('says how many there are and how many of them it loaded', async () => {
+    const loaded = [draft(), cleanDraft()];
+    vi.stubGlobal('fetch', (async () => json(payload(loaded, 250))) as unknown as typeof fetch);
+    render(<CreatorReviewQueue />);
+
+    // The heading is the true number; the position is where they are in the
+    // page. A heading of 2 next to a badge of 250 is the disagreement.
+    expect(await screen.findByText('250 recipes are waiting for you')).toBeTruthy();
+    expect(screen.getByTestId('queue-position').textContent).toBe('1 of 2');
+    expect(screen.getByTestId('queue-truncated').textContent).toMatch(/Showing the first 2\b/);
+  });
+
+  it('says nothing about truncation when nothing was truncated', async () => {
+    harness([draft(), cleanDraft()]);
+    await screen.findByTestId('queue-position');
+    expect(screen.getByText('2 recipes are waiting for you')).toBeTruthy();
+    expect(screen.queryByTestId('queue-truncated')).toBeNull();
   });
 });
