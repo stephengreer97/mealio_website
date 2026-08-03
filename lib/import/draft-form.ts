@@ -75,9 +75,15 @@ export interface DraftFormIngredient {
  */
 export function draftIngredientToForm(ing: DraftIngredient): DraftFormIngredient {
   const countable = !ing.unit || ing.unit === 'qty';
+  const count = ing.qty ?? 1;
   return {
     ingredientName: ing.ingredientName,
-    measure: countable ? String(ing.qty ?? 1) : (ing.measure ?? ''),
+    // A count of one is left blank rather than typed as "1". Every line the
+    // source gave no amount for — "many grinds of black pepper", "salt to
+    // taste" — arrives here as a countable 1, and printing that reads as a
+    // quantity we found rather than one we defaulted to. Blank is also what a
+    // creator would have typed, and `fromFormIng` parses it straight back to 1.
+    measure: countable ? (count > 1 ? String(count) : '') : (ing.measure ?? ''),
     unit: countable ? 'Qty' : ing.unit,
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,

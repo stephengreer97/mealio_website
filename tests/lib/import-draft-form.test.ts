@@ -213,6 +213,16 @@ describe('draft-form — ingredients', () => {
       ingredientName: 'lime juice', qty: 1, productQty: 1, unit: 'tbsp', measure: '3', searchTerm: null,
     })).toEqual({ ingredientName: 'lime juice', measure: '3', unit: 'tbsp', searchTerm: null, qty: 1 });
   });
+
+  it('leaves the amount blank for a line the source never quantified', () => {
+    // "many grinds of black pepper" reaches canonicalisation with no number, so
+    // it becomes a countable 1 — indistinguishable from "1 lemon" by the time it
+    // gets here. Typing "1" into the box states a quantity we never read; blank
+    // is what a creator would have left, and it round-trips back to 1 on save.
+    expect(draftIngredientToForm({
+      ingredientName: 'black pepper', qty: 1, productQty: 1, unit: 'qty', measure: null, searchTerm: null,
+    })).toEqual({ ingredientName: 'black pepper', measure: '', unit: 'Qty', searchTerm: null, qty: 1 });
+  });
 });
 
 describe('draft-form — filling the form from a real import', () => {

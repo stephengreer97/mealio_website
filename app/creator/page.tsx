@@ -102,7 +102,11 @@ function fmtMeasurement(ing: Ingredient): string {
 function toFormIng(ing: Ingredient): IngredientForm {
   return {
     ingredientName: ing.ingredientName,
-    measure: ing.unit === 'qty' ? String(ing.qty ?? 1) : (ing.measure ?? ''),
+    // Blank rather than "1" for a plain count: a line the source gave no amount
+    // for ("many grinds of black pepper") arrives as a countable 1, and typing
+    // that into the box reads as a quantity we read rather than one we assumed.
+    // `fromFormIng` parses an empty measure straight back to 1.
+    measure: ing.unit === 'qty' ? ((ing.qty ?? 1) > 1 ? String(ing.qty) : '') : (ing.measure ?? ''),
     unit: ing.unit === 'qty' ? 'Qty' : ing.unit,
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
