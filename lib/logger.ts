@@ -56,6 +56,10 @@ export type EventType =
   // Connecting a publishing account by OAuth (MEAL-74, and MEAL-82/83 after it).
   | 'CREATOR:SOURCE_CONNECT'
   | 'CREATOR:SOURCE_DISCONNECT'
+  // A creator moved the link we were polling, so `import_opt_in` was cleared and
+  // an operator was emailed about it (MEAL-94). Logged only when that email
+  // fails — the email is the signal, this is the record that it did not arrive.
+  | 'CREATOR:SOURCE_MOVED_ALERT'
   // Consent to let Mealio edit the creator's own YouTube descriptions. Separate
   // from `import_opt_in` on purpose: reading and writing are different
   // permissions over different property (MEAL-77).

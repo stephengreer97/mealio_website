@@ -6,19 +6,40 @@ vi.mock('@/lib/supabase', async () =>
   (await import('../helpers/supabase-mock')).mockSupabaseModule());
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
+type MovedAlert = Parameters<typeof import('@/lib/email')['sendCreatorSourceMovedEmail']>[0];
+const sendCreatorSourceMovedEmail = vi.fn<(opts: MovedAlert) => Promise<void>>(async () => {});
+vi.mock('@/lib/email', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/email')>('@/lib/email');
+  return {
+    // The recipient resolution is real — a signal addressed to nobody is not a
+    // signal, and that is a property of this feature rather than of Resend.
+    adminNotifyEmails: actual.adminNotifyEmails,
+    sendCreatorSourceMovedEmail: (opts: MovedAlert) => sendCreatorSourceMovedEmail(opts),
+  };
+});
+
 import { PATCH } from '@/app/api/creator/me/route';
+import { PATCH as ADMIN_PATCH } from '@/app/api/admin/creators/route';
 import { clearRevocationCache, createAccessToken } from '@/lib/tokens';
 
 /**
  * A creator editing their own platform links (MEAL-94).
  *
- * Two properties this file exists for, and neither is "the PATCH worked":
+ * Three properties this file exists for, and none of them is "the PATCH worked":
  *
  * 1. **Adding a link never starts polling.** `primary_source` and
  *    `import_opt_in` are an operator's decision (MEAL-81), so no request a
- *    creator can make may write either.
- * 2. **Clearing a link never leaves a creator opted into polling a source they
- *    just removed.** Refused, with the reason.
+ *    creator can make may write either the other way.
+ * 2. **Moving the link Mealio is polling stops the polling.** The edit is
+ *    allowed — a creator who renames a channel or moves a blog has no other way
+ *    to tell us — but `import_opt_in` goes off in the same write, so the
+ *    substitution it would otherwise permit reaches nothing until an operator
+ *    has looked. Removing that link is still refused.
+ * 3. **The pause is never silent.** The creator is told in the same response,
+ *    and an operator is emailed which creator, which link, from where to where,
+ *    and that polling is off. Without that half, a creator's edit reverses an
+ *    operator's decision with nobody told, which is what made refusing look
+ *    like the safer answer in the first place.
  *
  * Asserted on the row afterwards rather than on the call, because what a write
  * *sent* is not the property worth defending — the state it left is.
@@ -56,6 +77,7 @@ describe('PATCH /api/creator/me — platform links', () => {
 
   beforeEach(async () => {
     fakeDb.reset();
+    sendCreatorSourceMovedEmail.mockClear();
     token = await createAccessToken('u1', 'sarah@chefsarah.test');
   });
 
@@ -161,8 +183,8 @@ describe('PATCH /api/creator/me — platform links', () => {
     });
   });
 
-  describe('clearing a link that is being polled', () => {
-    it('refuses, with the reason, and leaves the row untouched', async () => {
+  describe('the link that is being polled', () => {
+    it('refuses to remove it, with the reason, and leaves the row untouched', async () => {
       asUser();
       fakeDb.seed('creators', [
         creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
@@ -179,7 +201,7 @@ describe('PATCH /api/creator/me — platform links', () => {
       expect(row?.primary_source).toBe('website');
     });
 
-    it('refuses repointing it at somebody else’s channel', async () => {
+    it('lets it be repointed, and stops polling in the same write', async () => {
       asUser();
       fakeDb.seed('creators', [
         creatorRow({
@@ -189,37 +211,155 @@ describe('PATCH /api/creator/me — platform links', () => {
         }),
       ]);
 
-      // The one that matters. With no OAuth grant `channelIdForCreator` reads
-      // the channel off this column, so replacing it substitutes a stranger's
-      // uploads feed under this creator's name — and the host guards cannot see
-      // it, because both links really are on youtube.com and the videos really
-      // are from the channel the row now names. Moving a polled link is the
-      // operator's, and a creator asks for it in the error below.
+      // The hostile version of the edit. With no OAuth grant
+      // `channelIdForCreator` reads the channel off this column, so replacing it
+      // substitutes a stranger's uploads under this creator's name — and no host
+      // guard can see it, because both links really are on youtube.com and the
+      // videos really are from the channel the row now names.
+      //
+      // Refusing it also blocked the creator who genuinely renamed their
+      // channel, so the edit lands and the polling stops instead: nothing is
+      // read from the new link until an operator turns import back on.
       const res = await patch(token, { links: { youtube: 'youtube.com/@somebodyelse' } });
 
-      expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/can't be changed or removed here/i);
+      expect(res.status).toBe(200);
       const row = fakeDb.row('creators', 'c1');
-      expect(row?.youtube_url).toBe('https://youtube.com/@chefsarah');
-      expect(row?.import_opt_in).toBe(true);
+      expect(row?.youtube_url).toBe('https://youtube.com/@somebodyelse');
+      expect(row?.import_opt_in).toBe(false);
+      // The operator's choice of *which* source is still theirs. The creator has
+      // told us where they publish now, not what we should poll.
+      expect(row?.primary_source).toBe('youtube');
     });
 
-    it('refuses moving it even when the new link is the creator’s own', async () => {
+    it('tells the creator their import is paused, in the same response', async () => {
+      asUser();
+      fakeDb.seed('creators', [
+        creatorRow({
+          youtube_url: 'https://youtube.com/@chefsarah',
+          primary_source: 'youtube',
+          import_opt_in: true,
+        }),
+      ]);
+
+      const body = await (await patch(token, { links: { youtube: 'youtube.com/@sarahcooks' } })).json();
+
+      // Saved *and* paused. Letting them find out by noticing nothing arrives is
+      // the failure this sentence exists to prevent.
+      expect(body.notices.join(' ')).toMatch(/paused that import/i);
+      expect(body.notices.join(' ')).toMatch(/saved/i);
+      // And as a fact the card can act on, rather than prose it has to match.
+      expect(body.importPaused).toBe(true);
+    });
+
+    it('raises an operator alert naming the creator, the link and the pause', async () => {
+      asUser();
+      fakeDb.seed('user_profiles', [{ id: 'admin-1', email: 'admin@mealio.co', is_admin: true }]);
+      fakeDb.seed('creators', [
+        creatorRow({
+          display_name: 'Chef Sarah',
+          youtube_url: 'https://youtube.com/@chefsarah',
+          primary_source: 'youtube',
+          import_opt_in: true,
+        }),
+      ]);
+
+      await patch(token, { links: { youtube: 'youtube.com/@somebodyelse' } });
+
+      // The half that makes clearing the opt-in acceptable at all. An operator's
+      // decision has just been reversed by somebody else's request; they are
+      // told which creator, which link, where it went, and that polling is off —
+      // without reading a log, and without waiting for a creator to complain
+      // that their imports stopped.
+      expect(sendCreatorSourceMovedEmail).toHaveBeenCalledTimes(1);
+      expect(sendCreatorSourceMovedEmail.mock.calls[0][0]).toMatchObject({
+        adminEmails: ['admin@mealio.co'],
+        creatorName: 'Chef Sarah',
+        handle: 'chefsarah',
+        sourceLabel: 'YouTube',
+        previousUrl: 'https://youtube.com/@chefsarah',
+        newUrl: 'https://youtube.com/@somebodyelse',
+      });
+    });
+
+    it('raises nothing when no polled link moved', async () => {
+      asUser();
+      fakeDb.seed('user_profiles', [{ id: 'admin-1', email: 'admin@mealio.co', is_admin: true }]);
+      fakeDb.seed('creators', [
+        creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
+      ]);
+
+      // An operator alert for every link a creator touches is an operator alert
+      // nobody reads.
+      await patch(token, { links: { tiktok: 'tiktok.com/@chefsarah' } });
+
+      expect(sendCreatorSourceMovedEmail).not.toHaveBeenCalled();
+    });
+
+    it('still saves the link when the alert cannot be sent', async () => {
+      asUser();
+      fakeDb.seed('user_profiles', [{ id: 'admin-1', email: 'admin@mealio.co', is_admin: true }]);
+      fakeDb.seed('creators', [
+        creatorRow({
+          youtube_url: 'https://youtube.com/@chefsarah',
+          primary_source: 'youtube',
+          import_opt_in: true,
+        }),
+      ]);
+      sendCreatorSourceMovedEmail.mockRejectedValueOnce(new Error('Resend is down'));
+
+      const res = await patch(token, { links: { youtube: 'youtube.com/@sarahcooks' } });
+
+      // The write has already landed by the time the alert is attempted, and the
+      // safe half of it — polling off — landed with it. Failing the request here
+      // would tell a creator their save did not happen when it did.
+      expect(res.status).toBe(200);
+      expect(fakeDb.row('creators', 'c1')?.youtube_url).toBe('https://youtube.com/@sarahcooks');
+      expect(fakeDb.row('creators', 'c1')?.import_opt_in).toBe(false);
+    });
+
+    it('lets a creator move their blog, and leaves the operator’s feed pairing to be re-confirmed', async () => {
       asUser();
       fakeDb.seed('creators', [
         creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
       ]);
 
-      // A genuine blog move is refused too, and deliberately: `feed_url` is a
-      // pairing an operator confirmed against the old host, and a creator who
-      // could move the site out from under it would leave the poller reading a
-      // feed nobody has looked at. The message tells them how to ask.
+      // The case refusing cost most: a creator whose blog has moved, who had no
+      // way at all to say so. `feed_url` is left exactly as the operator
+      // confirmed it — it is the record of what they looked at, and the stale
+      // pairing is precisely what stops import going back on by accident.
       const res = await patch(token, { links: { website: 'sarahcooks.test' } });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
       const row = fakeDb.row('creators', 'c1');
-      expect(row?.website_url).toBe('https://chefsarah.test/');
+      expect(row?.website_url).toBe('https://sarahcooks.test/');
       expect(row?.feed_url).toBe('https://chefsarah.test/feed');
+      expect(row?.import_opt_in).toBe(false);
+    });
+
+    it('leaves the operator with an invariant they still have to satisfy', async () => {
+      asUser();
+      fakeDb.seed('user_profiles', [{ id: 'admin-1', email: 'admin@mealio.co', is_admin: true }]);
+      fakeDb.seed('creators', [
+        creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
+      ]);
+
+      await patch(token, { links: { website: 'sarahcooks.test' } });
+
+      // Turning it back on is the operator's, and it is not a rubber stamp: the
+      // feed they confirmed is on the old host, so `checkPollingInvariants`
+      // refuses until they look at the new site. Pausing has to leave the row in
+      // a state the admin route judges, not one it waves through.
+      clearRevocationCache();
+      fakeDb.queue('user_profiles', { data: { tokens_invalidated_at: null } });
+      fakeDb.queue('user_profiles', { data: { is_admin: true } });
+      const adminToken = await createAccessToken('admin-1', 'admin@mealio.co');
+      const res = await ADMIN_PATCH(
+        jsonRequest('/api/admin/creators', { method: 'PATCH', token: adminToken, body: { id: 'c1', importOptIn: true } }),
+      );
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/not on the creator's own site/i);
+      expect(fakeDb.row('creators', 'c1')?.import_opt_in).toBe(false);
     });
 
     it('lets the polled link be re-sent in a spelling that means the same place', async () => {
@@ -233,10 +373,13 @@ describe('PATCH /api/creator/me — platform links', () => {
 
       const res = await patch(token, { links: { website: 'chefsarah.test', tiktok: 'tiktok.com/@chefsarah' } });
 
-      // Otherwise a creator on such a row could never save any link at all: every
-      // save would read as repointing the source at itself.
+      // Otherwise a creator on such a row would pause their own import every
+      // time they saved anything: every save would read as repointing the source
+      // at itself.
       expect(res.status).toBe(200);
       expect(fakeDb.row('creators', 'c1')?.tiktok_url).toBe('https://tiktok.com/@chefsarah');
+      expect(fakeDb.row('creators', 'c1')?.import_opt_in).toBe(true);
+      expect(sendCreatorSourceMovedEmail).not.toHaveBeenCalled();
     });
 
     it('allows changing a link nothing is polling', async () => {

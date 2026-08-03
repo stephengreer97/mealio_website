@@ -99,6 +99,28 @@ export async function sendCreatorRejectedEmail(to: string, displayName: string) 
   });
 }
 
+/**
+ * Who an operator-facing email goes to.
+ *
+ * The `is_admin` rows first, with `ADMIN_EMAIL` as the fallback for an
+ * environment that has none yet — otherwise the very first thing needing an
+ * operator on a fresh deploy notifies nobody, which is the one case where it
+ * matters most. Shared by every route that raises something for an operator,
+ * because a second copy of this is how one of them ends up without the
+ * fallback and silently addresses an empty list.
+ *
+ * Typed structurally rather than against the Supabase client so this module
+ * stays free of a runtime dependency on it; it is the only query in here.
+ */
+export async function adminNotifyEmails(
+  supabase: { from: (table: string) => any },
+): Promise<string[]> {
+  const { data } = await supabase.from('user_profiles').select('email').eq('is_admin', true);
+  const fromDb = ((data ?? []) as Array<{ email: string }>).map((row) => row.email).filter(Boolean);
+  if (fromDb.length > 0) return fromDb;
+  return process.env.ADMIN_EMAIL ? [process.env.ADMIN_EMAIL] : [];
+}
+
 export async function sendCreatorApplicationEmail(applicantName: string, applicantEmail: string, adminEmails: string[]) {
   if (adminEmails.length === 0) return;
   await resend.emails.send({
@@ -113,6 +135,73 @@ export async function sendCreatorApplicationEmail(applicantName: string, applica
         <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 24px;">
           <tr><td style="padding: 8px 0; color: #999; width: 120px;">Name</td><td style="padding: 8px 0; color: #222; font-weight: 600;">${applicantName}</td></tr>
           <tr><td style="padding: 8px 0; color: #999;">Email</td><td style="padding: 8px 0; color: #222;">${applicantEmail}</td></tr>
+        </table>
+        <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Review in Admin</a>
+      </div>
+    `,
+  });
+}
+
+/**
+ * A creator has moved the link Mealio was polling, and the import is now off
+ * (MEAL-94).
+ *
+ * The edit itself is allowed. A creator who renames their channel or moves their
+ * blog has no other way to tell us, and refusing it made a human the only route
+ * for an entirely ordinary change. What the permission opens up is substitution:
+ * with `primary_source = 'youtube'` and no OAuth grant the channel is resolved
+ * straight off `youtube_url`, so the same edit can point an actively-polled
+ * source at a stranger's uploads — and every host guard downstream passes,
+ * because the videos really are from the channel the row now names.
+ *
+ * Clearing `import_opt_in` in the same write is what stops that: nothing is
+ * polled until an operator turns it back on. This email is what stops *that*
+ * being silent. Somebody else's request has just reversed an operator's
+ * decision, so the operator is told which creator, which link, where it moved
+ * from and to, and that polling is off — rather than finding out weeks later
+ * because a creator's imports stopped arriving.
+ *
+ * Same shape as `broken_reason` on a grant, and for the same reason: a poller
+ * that finds nothing must never be the first sign. It could not reuse that
+ * column — `broken_reason` describes an OAuth grant, exists for three platforms
+ * only, and a creator polled off their website link has no grant row at all.
+ */
+export async function sendCreatorSourceMovedEmail(opts: {
+  adminEmails: string[];
+  creatorName: string;
+  handle: string | null;
+  sourceLabel: string;
+  previousUrl: string;
+  newUrl: string;
+}) {
+  if (opts.adminEmails.length === 0) return;
+  // Every value below is a string a creator typed, on its way into an inbox that
+  // renders HTML. The application email above predates this helper; anything
+  // reaching a URL bar or a link text here goes through it.
+  const name = escapeHtml(opts.creatorName);
+  const handle = opts.handle ? escapeHtml(opts.handle) : '—';
+  const source = escapeHtml(opts.sourceLabel);
+  const was = escapeHtml(opts.previousUrl);
+  const now = escapeHtml(opts.newUrl);
+  await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to: opts.adminEmails,
+    subject: `Import paused: ${opts.creatorName} moved their ${opts.sourceLabel} link`,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Polled link changed — import paused</h2>
+        <p style="color: #666; font-size: 14px; margin: 0 0 24px;">
+          This creator changed the link Mealio was importing from. Nothing is being polled for them now, and nothing
+          will be until you turn import back on. Check that the new link is still theirs before you do.
+        </p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 24px;">
+          <tr><td style="padding: 8px 0; color: #999; width: 120px;">Creator</td><td style="padding: 8px 0; color: #222; font-weight: 600;">${name}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Handle</td><td style="padding: 8px 0; color: #222;">${handle}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Source</td><td style="padding: 8px 0; color: #222;">${source}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Was</td><td style="padding: 8px 0; color: #222; word-break: break-all;">${was}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Now</td><td style="padding: 8px 0; color: #222; word-break: break-all;">${now}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Import</td><td style="padding: 8px 0; color: #c40029; font-weight: 600;">Paused</td></tr>
         </table>
         <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Review in Admin</a>
       </div>
