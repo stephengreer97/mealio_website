@@ -16,6 +16,7 @@
     "@vercel/analytics": "^1.6.1",
     "@vercel/edge-config": "^1.4.3",
     "bcryptjs": "^2.4.3",
+    "expo-server-sdk": "^6.1.0",
     "jose": "^5.2.0",
     "lucide-react": "^1.16.0",
     "next": "^16.1.6",

@@ -35,6 +35,7 @@ import { log } from '@/lib/logger';
 import {
   fieldStatesFor,
   importedFormValues,
+  SCALAR_FIELDS,
   summarise,
   type FormFieldStates,
   type ImportedFormValues,
@@ -159,7 +160,16 @@ export interface DraftReview {
 export function reviewDraft(draft: ImportDraft): DraftReview {
   const values = importedFormValues({ draft: draft.draft, url: draft.sourceUrl });
   const written = values.provided as Partial<Record<ImportField, boolean>>;
-  const states = fieldStatesFor(confidenceOf(draft), values, written);
+  // `empty` is all-true and `previous` is null because there is no form here:
+  // the queue renders a stored draft into fresh boxes, so nothing is mid-edit
+  // and no earlier import's states are on screen to preserve.
+  const states = fieldStatesFor({
+    confidence: confidenceOf(draft),
+    values,
+    written,
+    empty: Object.fromEntries(SCALAR_FIELDS.map((f) => [f, true])) as Record<(typeof SCALAR_FIELDS)[number], boolean>,
+    previous: null,
+  });
   return { values, states, summary: summarise(states) };
 }
 

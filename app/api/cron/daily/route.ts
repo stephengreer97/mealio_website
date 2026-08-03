@@ -4,16 +4,24 @@ import { runCreatorReminders, runUserUpsellDrip } from '@/lib/email-campaigns';
 import { resumeStalledSyncRuns } from '@/lib/admin-sync';
 import { refreshExpiringTokens } from '@/lib/platform-tokens';
 import { createServerSupabaseClient } from '@/lib/supabase';
+import { checkPushReceipts } from '@/lib/push';
 
 export const dynamic = 'force-dynamic';
 
-// Single daily cron for all lifecycle email passes — kept to one job so we stay
-// within Vercel Hobby's cron limits (see vercel.json). Vercel injects
-// `Authorization: Bearer <CRON_SECRET>` on scheduled invocations.
+// Daily cron for the lifecycle passes that must run exactly once a day —
+// everything email. Vercel injects `Authorization: Bearer <CRON_SECRET>` on
+// scheduled invocations.
 //
-// Both passes route through sendMarketingEmail() (suppression + dedup + the
-// physical-address gate handled there), so nothing sends until
+// The two email passes route through sendMarketingEmail() (suppression + dedup
+// + the physical-address gate handled there), so nothing sends until
 // MEALIO_MAILING_ADDRESS is set to a real address.
+//
+// The push pass sends nothing — it reads settled Expo delivery receipts and
+// prunes the tokens of uninstalled apps (MEAL-88). It rides along here so a
+// receipt written just after the other sweep still gets read the same day; the
+// second, offset pass lives at /api/cron/push-receipts, which explains why a
+// once-daily sweep is not enough. The pass is idempotent, so running it from
+// two schedules is free.
 export async function GET(request: NextRequest) {
   // Fail CLOSED if the cron secret isn't configured — never run unauthenticated.
   const secret = process.env.CRON_SECRET;
@@ -29,6 +37,7 @@ export async function GET(request: NextRequest) {
   const results = {
     creatorReminders: 0,
     userUpsell: 0,
+    pushTokensPruned: 0,
     syncRunsResumed: 0,
     tokensRefreshed: 0,
     tokensBroken: 0,
@@ -45,6 +54,11 @@ export async function GET(request: NextRequest) {
     results.userUpsell = await runUserUpsellDrip();
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'userUpsell', reason: err.message });
+  }
+  try {
+    results.pushTokensPruned = (await checkPushReceipts()).revoked;
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'pushReceipts', reason: err.message });
   }
   // Admin sync runs are driven by the admin screen, so closing the tab stops the
   // loop. This is the backstop: a half-finished run gets finished, and — the

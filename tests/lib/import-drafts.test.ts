@@ -521,8 +521,10 @@ describe('editableDraft — the same rules the publish form has', () => {
   });
 
   it('forces a unit outside the editor’s vocabulary into a count', () => {
-    // The cart cannot act on "1 bunch", and the editor cannot display it.
-    const result = editableDraft({ ...base, ingredients: [{ ingredientName: 'cilantro', measure: '1', unit: 'bunch', qty: 1 }] });
-    expect(result.ok && result.draft.ingredients[0]).toMatchObject({ ingredientName: 'cilantro', unit: 'qty', qty: 1 });
+    // The cart cannot act on "1 knob", and the editor cannot display it. ("bunch"
+    // used to be the example here; MEAL-89 gave the picker a cook's-units row, so
+    // the case now needs a unit that really is outside the vocabulary.)
+    const result = editableDraft({ ...base, ingredients: [{ ingredientName: 'butter', measure: '1', unit: 'knob', qty: 1 }] });
+    expect(result.ok && result.draft.ingredients[0]).toMatchObject({ ingredientName: 'butter', unit: 'qty', qty: 1 });
   });
 });

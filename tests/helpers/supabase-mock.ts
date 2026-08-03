@@ -2,83 +2,111 @@ import { vi } from 'vitest';
 
 export type QueryResult = { data?: any; error?: any; count?: number | null };
 
-type Row = Record<string, any>;
+/**
+ * PostgREST's URI ceiling, in bytes, as the fake enforces it.
+ *
+ * Filters go in the QUERY STRING, not the body, so `.in('id', ids)` grows the
+ * URL linearly with the id count. Supabase fronts PostgREST with Cloudflare and
+ * Kong/nginx, which reject long URIs in the 8-16 KB range. Measured against
+ * supabase-js: 2000 uuids in one `.in()` is a 78 KB DELETE URL and 2000 Expo
+ * tokens is a 96 KB PATCH URL - both far past any proxy's limit.
+ *
+ * 8 KB is the conservative end of that range, so code that stays under it here
+ * stays under it everywhere. This is the constraint that makes "chunk your
+ * filters" testable instead of a thing you find out in production.
+ */
+export const URL_LIMIT_BYTES = 8 * 1024;
 
-/** One `.eq('status', 'x')`-style predicate, kept until the query is evaluated. */
-interface Filter {
-  method: string;
-  args: any[];
+type Filter = { op: string; column: string; value: any };
+
+function compare(a: any, b: any): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }
 
-const clone = <T>(value: T): T => (value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T));
-
-/**
- * Evaluates one PostgREST filter against a stored row.
- *
- * Only the operators this codebase actually issues. An unknown one throws
- * rather than passing, because a filter the stub silently ignores is exactly
- * the hole that lets a mis-written predicate go on passing its test.
- */
-function matches(row: Row, filter: Filter): boolean {
-  const [column, value] = filter.args as [string, any];
-  const cell = column === undefined ? undefined : row[column];
-  switch (filter.method) {
-    case 'eq': return cell === value;
-    case 'neq': return cell !== value;
-    case 'is': return value === null ? cell === null || cell === undefined : cell === value;
-    case 'in': return Array.isArray(value) && value.includes(cell);
-    case 'gt': return cell != null && cell > value;
-    case 'gte': return cell != null && cell >= value;
-    case 'lt': return cell != null && cell < value;
-    case 'lte': return cell != null && cell <= value;
-    case 'not':
-      // `.not('col', 'is', null)` — the only spelling in use.
-      return !matches(row, { method: String(filter.args[1]), args: [column, filter.args[2]] });
+/** Postgres three-valued logic: a comparison against NULL never matches. */
+function matchesFilter(row: any, f: Filter): boolean {
+  const cell = row[f.column];
+  switch (f.op) {
+    case 'eq': return cell === f.value;
+    case 'neq': return cell !== f.value;
+    case 'in': return Array.isArray(f.value) && f.value.includes(cell);
+    case 'is': return f.value === null ? cell === null || cell === undefined : cell === f.value;
+    case 'not': return !matchesFilter(row, { op: f.value[0], column: f.column, value: f.value[1] });
+    case 'lt': return cell !== null && cell !== undefined && compare(cell, f.value) < 0;
+    case 'lte': return cell !== null && cell !== undefined && compare(cell, f.value) <= 0;
+    case 'gt': return cell !== null && cell !== undefined && compare(cell, f.value) > 0;
+    case 'gte': return cell !== null && cell !== undefined && compare(cell, f.value) >= 0;
     case 'or':
-      // `col.op.value,col.op.value` — OR of the same simple terms. Values with
-      // commas in them are not supported and nothing here has any.
-      return String(filter.args[0])
+      // `col.op.value,col.op.value` - an OR of the same simple terms. Values
+      // containing commas are not supported and nothing here has any.
+      return String(f.value)
         .split(',')
         .some((term) => {
-          const [col, op, ...rest] = term.split('.');
+          const [column, op, ...rest] = term.split('.');
           const raw = rest.join('.');
-          const parsed = op === 'is' && raw === 'null' ? null : raw;
-          return matches(row, { method: op, args: [col, parsed] });
+          return matchesFilter(row, { op, column, value: op === 'is' && raw === 'null' ? null : raw });
         });
-    default:
-      throw new Error(`FakeSupabase: unsupported filter .${filter.method}(${JSON.stringify(filter.args)})`);
+    default: return true;
   }
 }
 
+/** What supabase-js would put after the `?`, near enough to measure. */
+function queryStringBytes(filters: Filter[]): number {
+  const parts = filters.map((f) => {
+    const value = f.op === 'in' && Array.isArray(f.value)
+      ? `in.(${f.value.map((v) => encodeURIComponent(String(v))).join(',')})`
+      : `${f.op}.${encodeURIComponent(String(f.value))}`;
+    return `${encodeURIComponent(f.column)}=${value}`;
+  });
+  return Buffer.byteLength(parts.join('&'));
+}
+
+function project(row: any, columns?: string): any {
+  if (!columns || columns.trim() === '*') return { ...row };
+  const wanted = columns.split(',').map((c) => c.trim()).filter(Boolean);
+  const out: any = {};
+  for (const c of wanted) out[c] = row[c] ?? null;
+  return out;
+}
+
 /**
- * Chainable fake for the supabase-js query builder, in two flavours.
+ * Chainable fake for the supabase-js query builder, in two modes.
  *
- * **Queued (FIFO).** `db.queue('meals', { count: 3 })` hands the next query on
- * that table a canned result, in the order the route issues them. Enough for a
- * route that reads one row and writes one row, and how most of these tests are
- * written:
+ * QUEUE MODE (the original, and still the default) records every builder call
+ * and replays results queued per table, FIFO:
  *
  *   db.queue('user_profiles', { data: { subscription_tier: 'free' } });
  *   db.queue('meals', { count: 3 });
  *
- * **Stored rows.** `db.seed('creator_sync_runs', [row])` puts a real row in the
- * stub and every subsequent query on that table runs against it: filters decide
- * which rows match, an update mutates them and `.select()` returns the ones it
- * actually changed. That last part is the point. A canned `{ data: [] }` proves
- * a *branch* was taken; it cannot tell a correct conditional write from one
- * whose predicate is misspelled, dropped, or missing its `.select()` — and
- * three of the concurrency defects on this branch (double publish, the
- * whole-array blind write, and a lease released by whoever finished last) were
- * invisible to the FIFO stub for exactly that reason.
+ * That is enough to assert the SHAPE of a query, and nothing more. Four push
+ * bugs (a 78 KB DELETE URL, a revoke count that counted its own input, an
+ * upsert that reassigned another user's device, a revoke that raced a
+ * re-register) all survived a green suite because shape was all anyone could
+ * assert.
  *
- * Queued results win where both exist, so seeding a table changes nothing for
- * tests that were written against the FIFO behaviour.
+ * TABLE MODE closes that. `db.seed(table, rows)` gives a table real rows, and
+ * from then on queries against it are EVALUATED: filters select, updates mutate
+ * and report how many rows they actually touched, deletes remove, and `upsert`
+ * resolves `onConflict` against the rows already there. `db.rows(table)` is the
+ * resulting state, so a test can assert an effect rather than a call. That last
+ * part is the point - a canned `{ data: [] }` proves a BRANCH was taken; it
+ * cannot tell a correct conditional write from one whose predicate is
+ * misspelled, dropped, or missing its `.select()`.
  *
- * Every method call is still recorded in `calls` for assertions on query shape.
+ *   db.seed('push_tokens', [{ token: 'a', user_id: 'u1', revoked_at: null }]);
+ *   await POST(...);
+ *   expect(db.rows('push_tokens')[0].revoked_at).not.toBeNull();
+ *
+ * Both modes enforce URL_LIMIT_BYTES, because an over-long filter list is a
+ * transport failure that happens before the database sees anything.
+ *
+ * A queued result still wins over a seeded table, so a test can inject an error
+ * on one specific query of an otherwise live table.
  */
 export class FakeSupabase {
   private queues = new Map<string, QueryResult[]>();
-  private tables = new Map<string, Row[]>();
+  private tables = new Map<string, any[]>();
   calls: Array<{ table: string; method: string; args: any[] }> = [];
 
   queue(table: string, result: QueryResult): this {
@@ -87,30 +115,30 @@ export class FakeSupabase {
     return this;
   }
 
-  /** Stores rows so queries on this table run against real state. */
-  seed(table: string, rows: Row[]): this {
-    this.tables.set(table, rows.map(clone));
+  /** Give `table` real rows, switching it to table mode. Rows are copied. */
+  seed(table: string, rows: any[]): this {
+    this.tables.set(table, rows.map((r) => ({ ...r })));
     return this;
   }
 
-  /** The stored rows, as they are now. A copy — mutate via `patch`. */
-  rows(table: string): Row[] {
-    return (this.tables.get(table) ?? []).map(clone);
+  /** Current contents of a seeded table - the state a test asserts on. */
+  rows(table: string): any[] {
+    return this.tables.get(table) ?? [];
   }
 
   /** One stored row by primary key, as it is now. */
-  row(table: string, id: string): Row | null {
-    return this.rows(table).find((row) => row.id === id) ?? null;
+  row(table: string, id: string): any | null {
+    return this.rows(table).find((r) => r.id === id) ?? null;
   }
 
   /**
-   * Writes to a stored row behind the code's back — a second worker, another
+   * Writes to a stored row behind the code's back - a second worker, another
    * tab, the cron. How an interleaving is staged in a test.
    */
-  patch(table: string, id: string, values: Row): this {
-    const target = (this.tables.get(table) ?? []).find((row) => row.id === id);
+  patch(table: string, id: string, values: Record<string, any>): this {
+    const target = this.rows(table).find((r) => r.id === id);
     if (!target) throw new Error(`FakeSupabase: no ${table} row with id ${id}`);
-    Object.assign(target, clone(values));
+    Object.assign(target, values);
     return this;
   }
 
@@ -121,132 +149,129 @@ export class FakeSupabase {
   }
 
   from(table: string) {
-    const nextQueued = (): QueryResult | null => {
+    const queued = (): QueryResult | null => {
       const q = this.queues.get(table);
       return q && q.length > 0 ? q.shift()! : null;
     };
 
-    const filters: Filter[] = [];
-    let operation: 'select' | 'insert' | 'update' | 'upsert' | 'delete' = 'select';
+    // Accumulated across the chain; read once the builder is awaited.
+    let op: 'select' | 'insert' | 'update' | 'delete' | 'upsert' | null = null;
     let payload: any = null;
-    let onConflict: string[] = [];
+    let columns: string | undefined;
+    let conflict: string[] = [];
     let returning = false;
-    let limit: number | null = null;
-    let order: { column: string; ascending: boolean } | null = null;
-
-    const stored = (): Row[] | null => this.tables.get(table) ?? null;
-
-    /** Runs the collected query against stored rows. */
-    const evaluate = (single: boolean): QueryResult => {
-      const rows = stored()!;
-      const hit = (row: Row) => filters.every((filter) => matches(row, filter));
-
-      if (operation === 'insert' || operation === 'upsert') {
-        const incoming = (Array.isArray(payload) ? payload : [payload]).map(clone);
-        const written: Row[] = [];
-        for (const record of incoming) {
-          const conflict = onConflict.length > 0
-            ? rows.find((row) => onConflict.every((column) => row[column] === record[column]))
-            : undefined;
-          if (conflict && operation === 'upsert') {
-            Object.assign(conflict, record);
-            written.push(conflict);
-          } else {
-            const inserted = { id: record.id ?? `${table}-${rows.length + 1}`, ...record };
-            rows.push(inserted);
-            written.push(inserted);
-          }
-        }
-        const data = single ? written[0] ?? null : written;
-        return { data: clone(data), error: null, count: written.length };
-      }
-
-      if (operation === 'update') {
-        // The affected count is the whole reason this stub exists: a
-        // conditional write that matched nothing must come back empty, not
-        // succeed silently.
-        const affected = rows.filter(hit);
-        for (const row of affected) Object.assign(row, clone(payload));
-        // PostgREST returns rows only when the caller asked with `.select()`.
-        const data = returning ? (single ? affected[0] ?? null : affected) : null;
-        return { data: clone(data), error: null, count: affected.length };
-      }
-
-      if (operation === 'delete') {
-        const affected = rows.filter(hit);
-        this.tables.set(table, rows.filter((row) => !hit(row)));
-        return { data: returning ? clone(affected) : null, error: null, count: affected.length };
-      }
-
-      let found = rows.filter(hit);
-      if (order) {
-        const { column, ascending } = order;
-        found = [...found].sort((a, b) => {
-          const left = a[column] ?? '';
-          const right = b[column] ?? '';
-          if (left === right) return 0;
-          return (left < right ? -1 : 1) * (ascending ? 1 : -1);
-        });
-      }
-      if (limit !== null) found = found.slice(0, limit);
-      const data = single ? found[0] ?? null : found;
-      return { data: clone(data), error: null, count: found.length };
-    };
-
-    const resolve = (single: boolean): QueryResult => {
-      const queued = nextQueued();
-      if (queued) return queued;
-      if (stored()) return evaluate(single);
-      return { data: null, error: null, count: null };
-    };
+    const filters: Filter[] = [];
+    let orderBy: { column: string; ascending: boolean } | null = null;
+    let rowLimit: number | null = null;
 
     const builder: any = {};
-    const filterMethods = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'is', 'not', 'contains', 'filter', 'or'];
-    for (const method of filterMethods) {
-      builder[method] = (...args: any[]) => {
-        this.calls.push({ table, method, args });
-        filters.push({ method, args });
-        return builder;
-      };
-    }
+    const record = (method: string, args: any[]) => { this.calls.push({ table, method, args }); };
 
     builder.select = (...args: any[]) => {
-      this.calls.push({ table, method: 'select', args });
-      // After a write, `.select()` is the "return me the rows you touched" flag.
-      if (operation === 'select') operation = 'select';
-      returning = true;
+      record('select', args);
+      // `.select()` after a write is PostgREST's "return the rows you changed";
+      // before one it IS the query.
+      if (op === null) { op = 'select'; columns = args[0]; } else { returning = true; columns = args[0]; }
       return builder;
     };
-    for (const method of ['insert', 'update', 'upsert', 'delete'] as const) {
-      builder[method] = (...args: any[]) => {
-        this.calls.push({ table, method, args });
-        operation = method;
-        payload = args[0];
-        const conflict = args[1]?.onConflict;
-        if (typeof conflict === 'string') onConflict = conflict.split(',').map((column: string) => column.trim());
-        return builder;
-      };
-    }
-    builder.order = (column: string, options: { ascending?: boolean } = {}) => {
-      this.calls.push({ table, method: 'order', args: [column, options] });
-      order = { column, ascending: options.ascending !== false };
-      return builder;
-    };
-    builder.limit = (count: number) => {
-      this.calls.push({ table, method: 'limit', args: [count] });
-      limit = count;
-      return builder;
-    };
-    builder.range = (...args: any[]) => {
-      this.calls.push({ table, method: 'range', args });
+    builder.insert = (...args: any[]) => { record('insert', args); op = 'insert'; payload = args[0]; return builder; };
+    builder.update = (...args: any[]) => { record('update', args); op = 'update'; payload = args[0]; return builder; };
+    builder.delete = (...args: any[]) => { record('delete', args); op = 'delete'; return builder; };
+    builder.upsert = (...args: any[]) => {
+      record('upsert', args);
+      op = 'upsert';
+      payload = args[0];
+      conflict = String(args[1]?.onConflict ?? '').split(',').map((c) => c.trim()).filter(Boolean);
       return builder;
     };
 
-    builder.single = () => Promise.resolve(resolve(true));
-    builder.maybeSingle = () => Promise.resolve(resolve(true));
+    for (const method of ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'is', 'not']) {
+      builder[method] = (...args: any[]) => {
+        record(method, args);
+        filters.push({ op: method, column: args[0], value: method === 'not' ? args.slice(1) : args[1] });
+        return builder;
+      };
+    }
+    // `.or()` takes the whole predicate as its first argument, so it has no
+    // column of its own; matchesFilter parses the string.
+    builder.or = (...args: any[]) => {
+      record('or', args);
+      filters.push({ op: 'or', column: '', value: args[0] });
+      return builder;
+    };
+    for (const method of ['contains', 'filter', 'range']) {
+      builder[method] = (...args: any[]) => { record(method, args); return builder; };
+    }
+    builder.order = (...args: any[]) => {
+      record('order', args);
+      orderBy = { column: args[0], ascending: args[1]?.ascending !== false };
+      return builder;
+    };
+    builder.limit = (...args: any[]) => { record('limit', args); rowLimit = args[0]; return builder; };
+
+    const evaluate = (): QueryResult => {
+      const fromQueue = queued();
+      if (fromQueue) return fromQueue;
+
+      const bytes = queryStringBytes(filters);
+      if (bytes > URL_LIMIT_BYTES) {
+        // What a proxy in front of PostgREST does with an over-long URI. The
+        // request never reaches the database, so nothing is written.
+        return {
+          data: null,
+          count: null,
+          error: { code: '414', message: `Request-URI Too Long (${bytes} bytes of filters)` },
+        };
+      }
+
+      const rows = this.tables.get(table);
+      if (!rows) return { data: null, error: null, count: null };
+
+      const matched = rows.filter((row) => filters.every((f) => matchesFilter(row, f)));
+
+      switch (op) {
+        case 'insert':
+        case 'upsert': {
+          const incoming = Array.isArray(payload) ? payload : [payload];
+          const written: any[] = [];
+          for (const value of incoming) {
+            const existing = op === 'upsert' && conflict.length > 0
+              ? rows.find((row) => conflict.every((c) => row[c] === value[c]))
+              : undefined;
+            if (existing) { Object.assign(existing, value); written.push(existing); }
+            else { const row = { ...value }; rows.push(row); written.push(row); }
+          }
+          return { data: returning ? written.map((r) => project(r, columns)) : null, error: null, count: written.length };
+        }
+        case 'update': {
+          for (const row of matched) Object.assign(row, payload);
+          return { data: returning ? matched.map((r) => project(r, columns)) : null, error: null, count: matched.length };
+        }
+        case 'delete': {
+          for (const row of matched) rows.splice(rows.indexOf(row), 1);
+          return { data: returning ? matched.map((r) => project(r, columns)) : null, error: null, count: matched.length };
+        }
+        default: {
+          let out = [...matched];
+          if (orderBy) {
+            const { column, ascending } = orderBy;
+            out.sort((a, b) => (ascending ? 1 : -1) * compare(a[column], b[column]));
+          }
+          if (rowLimit !== null) out = out.slice(0, rowLimit);
+          return { data: out.map((r) => project(r, columns)), error: null, count: out.length };
+        }
+      }
+    };
+
+    const single = () => {
+      const result = evaluate();
+      if (Array.isArray(result.data)) return { ...result, data: result.data[0] ?? null };
+      return result;
+    };
+    builder.single = () => Promise.resolve(single());
+    builder.maybeSingle = () => Promise.resolve(single());
     // Thenable: `await supabase.from(t).select().eq(...)` resolves here.
-    builder.then = (onFulfilled: any, onRejected: any) =>
-      Promise.resolve(resolve(false)).then(onFulfilled, onRejected);
+    builder.then = (resolve: any, reject: any) => Promise.resolve(evaluate()).then(resolve, reject);
     return builder;
   }
 }

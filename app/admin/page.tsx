@@ -18,7 +18,17 @@ import type { ViabilityReport } from '@/lib/import/viability';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 
-type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email';
+type Tab =
+  | 'applications'
+  | 'sources'
+  | 'sync'
+  | 'review'
+  | 'meals'
+  | 'stats'
+  | 'broadcast'
+  | 'storage'
+  | 'email'
+  | 'automation';
 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
@@ -35,6 +45,71 @@ const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
   { id: 'metro_market', label: 'Metro Market' }, { id: 'pay_less', label: 'Pay-Less' }, { id: 'harris_teeter', label: 'Harris Teeter' },
   { id: 'united', label: 'United Supermarkets' }, { id: 'wegmans', label: 'Wegmans' },
 ];
+
+// Per-store add-to-cart reliability funnel (GET /api/admin/automation-funnel).
+// Rates are null when there is no denominator — rendered as "—" rather than 0%,
+// because "no data" and "everything failed" must not look the same.
+interface StepStats {
+  step: string;
+  total: number;
+  outcomes: Record<string, number>;
+  okRate: number | null;
+  p50DurationMs: number | null;
+  p95DurationMs: number | null;
+}
+
+interface StoreFunnel {
+  storeId: string;
+  runs: number;
+  runsSucceeded: number;
+  runsAbandoned: number;
+  itemsRequested: number;
+  itemsAdded: number;
+  steps: StepStats[];
+  confirmRate: number | null;
+  firstClickConfirmRate: number | null;
+  blockedRate: number | null;
+  alerting: boolean;
+}
+
+interface FunnelResponse {
+  days: number;
+  since: string;
+  truncated: boolean;
+  stepRowsScanned: number;
+  stores: StoreFunnel[];
+  alerting: string[];
+}
+
+interface ConfigVersion {
+  id: string;
+  version: number;
+  config: Record<string, unknown>;
+  is_active: boolean;
+  notes: string | null;
+  created_at: string;
+}
+
+// A rate of null means "no denominator" — no runs, or no add clicks. Rendering it
+// as "—" rather than 0% keeps "we have no data" visually distinct from "everything
+// failed", which is the difference between ignoring a store and paging someone.
+function pct(v: number | null): string {
+  return v == null ? '—' : `${(v * 100).toFixed(1)}%`;
+}
+
+function ms(v: number | null): string {
+  if (v == null) return '—';
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`;
+}
+
+function Metric({ label, value, bad }: { label: string; value: string; bad?: boolean }) {
+  return (
+    <div>
+      <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: '20px', fontWeight: 700, color: bad ? '#b91c1c' : '#333' }}>{value}</div>
+    </div>
+  );
+}
 
 interface Broadcast {
   id: string;
@@ -163,6 +238,13 @@ export default function AdminPage() {
   const [selectedQuarter, setSelectedQuarter] = useState<AvailableQuarter | null>(null);
   const [emailStats, setEmailStats] = useState<EmailStats | null>(null);
   const [emailSearch, setEmailSearch] = useState('');
+
+  const [funnel, setFunnel] = useState<FunnelResponse | null>(null);
+  const [funnelDays, setFunnelDays] = useState(7);
+  const [configVersions, setConfigVersions] = useState<ConfigVersion[]>([]);
+  const [configDraft, setConfigDraft] = useState('');
+  const [configNotes, setConfigNotes] = useState('');
+  const [configMsg, setConfigMsg] = useState<string | null>(null);
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -293,6 +375,60 @@ export default function AdminPage() {
     if (res.ok) setEmailStats(await res.json());
   };
 
+  const loadFunnel = async (days = funnelDays) => {
+    const res = await fetch(`/api/admin/automation-funnel?days=${days}`, {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    if (res.ok) setFunnel(await res.json());
+  };
+
+  const loadAutomationConfig = async () => {
+    const res = await fetch('/api/admin/automation-config', {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    setConfigVersions(data.versions ?? []);
+    // Seed the editor with the active config so a push is an EDIT of what is
+    // live, not a blank slate someone has to reconstruct from memory.
+    if (data.active) setConfigDraft(JSON.stringify(data.active.config, null, 2));
+  };
+
+  const publishConfig = async () => {
+    setConfigMsg(null);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(configDraft || '{}');
+    } catch (e) {
+      setConfigMsg(`Invalid JSON: ${(e as Error).message}`);
+      return;
+    }
+    setActionLoading('publish-config');
+    const res = await fetch('/api/admin/automation-config', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: parsed, notes: configNotes || undefined }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setActionLoading(null);
+    setConfigMsg(res.ok ? `Published v${data.version}` : `Failed: ${data.error ?? res.status}`);
+    if (res.ok) { setConfigNotes(''); loadAutomationConfig(); }
+  };
+
+  const activateConfigVersion = async (version: number) => {
+    if (!confirm(`Roll back to config v${version}? Clients pick it up within a few minutes.`)) return;
+    setActionLoading(`activate-${version}`);
+    const res = await fetch('/api/admin/automation-config', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activateVersion: version }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setActionLoading(null);
+    setConfigMsg(res.ok ? `Activated v${version}` : `Failed: ${data.error ?? res.status}`);
+    if (res.ok) loadAutomationConfig();
+  };
+
   const switchTab = (t: Tab) => {
     setTab(t);
     if (t === 'sources' && creators.length === 0) loadCreators();
@@ -301,6 +437,7 @@ export default function AdminPage() {
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
     if (t === 'email' && !emailStats) loadEmailStats();
+    if (t === 'automation') { if (!funnel) loadFunnel(); if (configVersions.length === 0) loadAutomationConfig(); }
   };
 
   const loadBroadcasts = async () => {
@@ -473,6 +610,7 @@ export default function AdminPage() {
         <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
         <button style={tabStyle('storage')} onClick={() => switchTab('storage')}>Storage</button>
         <button style={tabStyle('email')} onClick={() => switchTab('email')}>Email</button>
+        <button style={tabStyle('automation')} onClick={() => switchTab('automation')}>Automation</button>
       </div>
 
       <div style={{ maxWidth: '1000px', margin: '32px auto', padding: '0 20px' }}>
@@ -1240,6 +1378,206 @@ export default function AdminPage() {
                 <span style={{ fontSize: '13px', color: bcStatus === 'Added.' ? '#16a34a' : '#dd0031' }}>
                   {bcStatus}
                 </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Automation Tab — add-to-cart reliability funnel + remote store config */}
+        {tab === 'automation' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+            {/* ── Funnel ─────────────────────────────────────────────────── */}
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+              <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Add-to-cart funnel</h2>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  {[1, 7, 30].map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => { setFunnelDays(d); loadFunnel(d); }}
+                      style={{
+                        border: '1px solid ' + (funnelDays === d ? '#dd0031' : '#e0e0e0'),
+                        background: funnelDays === d ? '#fff1f3' : 'white',
+                        color: funnelDays === d ? '#dd0031' : '#666',
+                        borderRadius: '6px', padding: '4px 12px', fontSize: '13px', cursor: 'pointer',
+                        fontWeight: funnelDays === d ? 600 : 400,
+                      }}
+                    >
+                      {d}d
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => loadFunnel()}
+                  style={{ marginLeft: 'auto', border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '4px 12px', fontSize: '13px', cursor: 'pointer', color: '#666' }}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {!funnel && <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>Loading…</p>}
+
+              {funnel && funnel.alerting.length > 0 && (
+                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                  <strong>Confirm rate below threshold:</strong> {funnel.alerting.join(', ')}
+                </div>
+              )}
+
+              {funnel && funnel.truncated && (
+                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
+                  Showing a partial window — the step row cap was hit. Narrow the range for accurate numbers.
+                </div>
+              )}
+
+              {funnel && funnel.stores.length === 0 && (
+                <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>
+                  No runs in the last {funnel.days} day{funnel.days === 1 ? '' : 's'}.
+                </p>
+              )}
+
+              {funnel && funnel.stores.map((s) => (
+                <div key={s.storeId} style={{ borderTop: '1px solid #f0f0f0', padding: '20px 24px' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700 }}>{s.storeId}</h3>
+                    {s.alerting && (
+                      <span style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
+                        ALERTING
+                      </span>
+                    )}
+                    <span style={{ fontSize: '13px', color: '#666' }}>
+                      {s.runs} run{s.runs === 1 ? '' : 's'} · {s.runsSucceeded} full success · {s.runsAbandoned} abandoned
+                    </span>
+                    <span style={{ fontSize: '13px', color: '#666', marginLeft: 'auto' }}>
+                      {s.itemsAdded}/{s.itemsRequested} items added
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                    <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < 0.9} />
+                    <Metric label="First-click confirm" value={pct(s.firstClickConfirmRate)} />
+                    <Metric label="Blocked rate" value={pct(s.blockedRate)} bad={!!s.blockedRate && s.blockedRate > 0.05} />
+                  </div>
+
+                  {s.steps.length === 0 ? (
+                    <p style={{ fontSize: '13px', color: '#888', margin: 0 }}>
+                      No step telemetry — runs from a build that predates step reporting.
+                    </p>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '560px' }}>
+                        <thead>
+                          <tr style={{ textAlign: 'left', color: '#888', fontSize: '12px' }}>
+                            <th style={{ padding: '6px 8px' }}>Step</th>
+                            <th style={{ padding: '6px 8px' }}>Total</th>
+                            <th style={{ padding: '6px 8px' }}>OK</th>
+                            <th style={{ padding: '6px 8px' }}>Outcomes</th>
+                            <th style={{ padding: '6px 8px' }}>p50</th>
+                            <th style={{ padding: '6px 8px' }}>p95</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {s.steps.map((st) => (
+                            <tr key={st.step} style={{ borderTop: '1px solid #f5f5f5' }}>
+                              <td style={{ padding: '6px 8px', fontWeight: 600 }}>{st.step}</td>
+                              <td style={{ padding: '6px 8px' }}>{st.total}</td>
+                              <td style={{ padding: '6px 8px', color: st.okRate != null && st.okRate < 0.9 ? '#b91c1c' : '#333' }}>
+                                {pct(st.okRate)}
+                              </td>
+                              <td style={{ padding: '6px 8px', color: '#666' }}>
+                                {Object.entries(st.outcomes)
+                                  .filter(([k]) => k !== 'ok')
+                                  .map(([k, v]) => `${k} ${v}`)
+                                  .join(', ') || '—'}
+                              </td>
+                              <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p50DurationMs)}</td>
+                              <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p95DurationMs)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* ── Remote config ──────────────────────────────────────────── */}
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+              <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
+                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Store config</h2>
+                <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#888' }}>
+                  Partial overrides on top of the app&apos;s bundled defaults. Publishing creates a new
+                  version and activates it; clients pick it up on their next launch. Keys the app
+                  does not recognize, and values outside their safe range, are ignored by the client.
+                </p>
+              </div>
+
+              <div style={{ padding: '20px 24px' }}>
+                <textarea
+                  value={configDraft}
+                  onChange={(e) => { setConfigMsg(null); setConfigDraft(e.target.value); }}
+                  spellCheck={false}
+                  placeholder={'{\n  "stores": {\n    "albertsons": {\n      "selectors": { "atc": "button[aria-label^=Add]" }\n    }\n  }\n}'}
+                  style={{
+                    width: '100%', minHeight: '220px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: '13px', padding: '12px', border: '1px solid #e0e0e0', borderRadius: '8px',
+                    resize: 'vertical', boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '12px', flexWrap: 'wrap' }}>
+                  <input
+                    value={configNotes}
+                    onChange={(e) => setConfigNotes(e.target.value)}
+                    placeholder="What changed and why (shown in version history)"
+                    style={{ flex: 1, minWidth: '240px', padding: '8px 12px', border: '1px solid #e0e0e0', borderRadius: '8px', fontSize: '13px', boxSizing: 'border-box' }}
+                  />
+                  <button
+                    onClick={publishConfig}
+                    disabled={actionLoading === 'publish-config'}
+                    style={{ background: '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: actionLoading === 'publish-config' ? 'not-allowed' : 'pointer', opacity: actionLoading === 'publish-config' ? 0.7 : 1 }}
+                  >
+                    Publish
+                  </button>
+                </div>
+                {configMsg && (
+                  <p style={{ margin: '12px 0 0', fontSize: '13px', color: configMsg.startsWith('Failed') || configMsg.startsWith('Invalid') ? '#b91c1c' : '#16a34a' }}>
+                    {configMsg}
+                  </p>
+                )}
+              </div>
+
+              {configVersions.length > 0 && (
+                <div style={{ borderTop: '1px solid #f0f0f0', padding: '16px 24px' }}>
+                  <h3 style={{ margin: '0 0 10px', fontSize: '13px', color: '#888', fontWeight: 600 }}>Version history</h3>
+                  {configVersions.map((v) => (
+                    <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 0', borderTop: '1px solid #f8f8f8', fontSize: '13px', flexWrap: 'wrap' }}>
+                      <strong style={{ minWidth: '40px' }}>v{v.version}</strong>
+                      {v.is_active && (
+                        <span style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
+                          ACTIVE
+                        </span>
+                      )}
+                      <span style={{ color: '#888' }}>{new Date(v.created_at).toLocaleString()}</span>
+                      <span style={{ color: '#666', flex: 1, minWidth: '160px' }}>{v.notes ?? '—'}</span>
+                      <button
+                        onClick={() => setConfigDraft(JSON.stringify(v.config, null, 2))}
+                        style={{ border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#666' }}
+                      >
+                        Load
+                      </button>
+                      {!v.is_active && (
+                        <button
+                          onClick={() => activateConfigVersion(v.version)}
+                          disabled={actionLoading === `activate-${v.version}`}
+                          style={{ border: '1px solid #dd0031', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#dd0031' }}
+                        >
+                          Activate
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>

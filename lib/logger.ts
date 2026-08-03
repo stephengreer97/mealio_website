@@ -77,6 +77,8 @@ export type EventType =
   | 'ADMIN:BROADCAST'
   | 'ADMIN:CREATOR_SOURCE'     // which of a creator's links we poll (MEAL-81)
   | 'ADMIN:CREATOR_VIABILITY'  // the onboarding importability measurement (MEAL-81)
+  | 'ADMIN:AUTOMATION_CONFIG'  // publish / roll back the remote store config
+  | 'ADMIN:AUTOMATION_FUNNEL'  // per-store add-to-cart reliability dashboard
   | 'ADMIN:SYNC_RUN'           // an operator-triggered sync run (MEAL-90)
   | 'ADMIN:SYNC_ITEM'          // one item inside a run: recorded, or retried
   // The four decisions in the admin review queue (MEAL-91). Every publish under
@@ -97,14 +99,23 @@ export type EventType =
   | 'EMAIL:SUPPRESSED'
   | 'EMAIL:UNSUBSCRIBE'
   | 'EMAIL:WEBHOOK'
+  // ── Push (MEAL-88) ────────────────────────────────────────────────────────
+  | 'PUSH:REGISTER'
+  | 'PUSH:UNREGISTER'
+  | 'PUSH:SEND'
+  | 'PUSH:RECEIPTS'         // deferred delivery-receipt sweep
+  | 'PUSH:REVOKE'           // token pruned (DeviceNotRegistered)
   // ── Cron ──────────────────────────────────────────────────────────────────
   | 'CRON:DAILY'
-  | 'CRON:TOKEN_REFRESH'      // the shared platform-grant refresh sweep (MEAL-74)
+  | 'CRON:TOKEN_REFRESH'    // the shared platform-grant refresh sweep (MEAL-74)
+  | 'CRON:PUSH_RECEIPTS'    // second, offset receipt sweep
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'
   | 'USAGE:OPEN'
-  | 'USAGE:AUTOMATION';
+  | 'USAGE:AUTOMATION'
+  | 'USAGE:AUTOMATION_STEPS'    // per-step funnel telemetry ingest
+  | 'AUTOMATION:CONFIG';        // client fetching the remote store config
 
 export type Status = 'success' | 'failed' | 'pending' | 'error';
 
