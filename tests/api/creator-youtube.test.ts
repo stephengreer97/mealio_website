@@ -129,9 +129,14 @@ describe('POST /api/creator/youtube/connect', () => {
     expect(cookie?.httpOnly).toBe(true);
     // Identity that round-trips through a third party and comes back in a query
     // string is identity anyone can supply — and what is being attached here is
-    // write access to a creator's channel.
+    // write access to a creator's channel. So `state` must be a bare nonce and
+    // nothing else.
+    //
+    // Asserted as a shape, not as "does not contain 'c1'": a random 32-char hex
+    // string contains that pair about 12% of the time, which made this test fail
+    // roughly one run in eight for no reason at all.
     const url = new URL((await res.json()).url);
-    expect(url.searchParams.get('state')).not.toContain('c1');
+    expect(url.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
     expect(cookie?.value.split('.')).toHaveLength(3);
   });
 
