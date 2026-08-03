@@ -12,21 +12,32 @@
 -- creators outside it are never polled again. No error, no signal — the exact
 -- silent-starvation shape this codebase has now been bitten by twice.
 --
--- The last-polled time lives in `creator_source_state`, keyed per source, so a
--- query over `creators` cannot ORDER BY it without a join it cannot afford.
--- This is that value denormalised onto the row the query already reads.
+-- Named for what it is rather than for what it looks like. There is already a
+-- `creator_source_state.last_polled_at`, and it answers a different question:
+-- "when did we last successfully READ this source", which deliberately does not
+-- advance on a failure — because a failed read recorded as a poll makes the next
+-- successful one treat a whole back catalogue as new. This column answers "when
+-- was this creator last at the front of the queue", and it advances every turn
+-- whatever the outcome, so one permanently-failing creator cannot hold a slot
+-- forever. Two columns, two facts; calling them both `last_polled_at` invited
+-- exactly one bug and this name closes it.
 --
 -- Null sorts first on ASC (Postgres puts NULLs last, so the poller asks for
 -- `nullsFirst`) and that is the behaviour wanted: a creator never polled is the
 -- one who has waited longest.
+--
+-- Already applied and since renamed in place. On a database that ran the earlier
+-- version of this file:
+--   ALTER TABLE creators RENAME COLUMN last_polled_at TO poll_queue_position_at;
+-- The index follows the rename; nothing else needs doing.
 -- ---------------------------------------------------------------------------
 
 ALTER TABLE creators
-  ADD COLUMN IF NOT EXISTS last_polled_at timestamptz;
+  ADD COLUMN IF NOT EXISTS poll_queue_position_at timestamptz;
 
 -- The poll query: opted-in creators with a source, longest-waiting first.
 CREATE INDEX IF NOT EXISTS idx_creators_poll_order
-  ON creators (last_polled_at)
+  ON creators (poll_queue_position_at)
   WHERE import_opt_in = true AND primary_source <> 'none';
 
 -- ---------------------------------------------------------------------------
