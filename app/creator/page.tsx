@@ -1772,7 +1772,10 @@ export default function CreatorPortal() {
                     // so widening it past a point wastes the window rather than
                     // helping anyone read it.
                     <div
-                      style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '10px' }}
+                      // `min(430px, 100%)`, not a bare 430px: auto-fill honours
+                      // the minimum even when the window is narrower than it,
+                      // which is a 390px phone scrolling sideways.
+                      style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(430px, 100%), 1fr))', gap: '10px' }}
                       data-testid="published-meals"
                     >
                       {meals.map(meal => (
@@ -1949,7 +1952,7 @@ export default function CreatorPortal() {
             {/* Capped at three columns' worth: these are forms, and a fourth
                 column of them across a wide monitor is a wall to scan rather
                 than a settings page to read. */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '16px', alignItems: 'start', maxWidth: '1180px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: '16px', alignItems: 'start', maxWidth: '1180px' }}>
 
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 {!editingProfile ? (
