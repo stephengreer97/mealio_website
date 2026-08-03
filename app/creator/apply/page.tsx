@@ -6,6 +6,16 @@ import { CheckCircle2 } from 'lucide-react';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import { HANDLE_RE, normalizeHandle } from '@/lib/handles';
+import { normalizePlatformUrl, PLATFORM_SOURCES, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
+
+// Placeholders per platform. Deliberately shown without a scheme — that is how
+// people type links, and the validator accepts it.
+const LINK_PLACEHOLDERS: Record<PlatformSource, string> = {
+  website: 'chefsarah.com',
+  youtube: 'youtube.com/@chefsarah',
+  instagram: 'instagram.com/chefsarah',
+  tiktok: 'tiktok.com/@chefsarah',
+};
 
 export default function CreatorApply() {
   const router = useRouter();
@@ -19,6 +29,11 @@ export default function CreatorApply() {
   const [handle, setHandle] = useState('');
   const [phone, setPhone] = useState('');
   const [findUs, setFindUs] = useState('');
+  // All four optional (MEAL-81). We store every link a creator has and poll
+  // exactly one of them; which one is decided during review, not here.
+  const [links, setLinks] = useState<Record<PlatformSource, string>>({
+    website: '', youtube: '', instagram: '', tiktok: '',
+  });
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [photoUrl, setPhotoUrl] = useState('');
   const [photoPreview, setPhotoPreview] = useState('');
@@ -91,6 +106,12 @@ export default function CreatorApply() {
     if (!HANDLE_RE.test(normalizeHandle(handle))) { setError('Handle must be 3–30 characters: letters, numbers, hyphens, or underscores.'); return; }
     if (!photoUrl) { setError('A profile photo is required.'); return; }
     if (!findUs.trim()) { setError('Please tell us where we can find you online.'); return; }
+    // Same rules the route enforces, run here so a typo is caught before the
+    // round trip rather than after it.
+    for (const source of PLATFORM_SOURCES) {
+      const result = normalizePlatformUrl(source, links[source]);
+      if (!result.ok) { setError(`${SOURCE_LABELS[source]}: ${result.error}`); return; }
+    }
     if (!agreedToTerms) { setError('You must agree to the Terms and Conditions to apply.'); return; }
     setError('');
     setSubmitting(true);
@@ -100,7 +121,10 @@ export default function CreatorApply() {
       const res = await fetch('/api/creator/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ displayName, handle: normalizeHandle(handle), phone, findUs, photoUrl: photoUrl || null }),
+        body: JSON.stringify({
+          displayName, handle: normalizeHandle(handle), phone, findUs, photoUrl: photoUrl || null,
+          websiteUrl: links.website, youtubeUrl: links.youtube, instagramUrl: links.instagram, tiktokUrl: links.tiktok,
+        }),
       });
 
       if (!res.ok) {
@@ -229,6 +253,33 @@ export default function CreatorApply() {
                     How can we find you? <span style={{ color: '#dd0031' }}>*</span>
                   </label>
                   <input value={findUs} onChange={e => setFindUs(e.target.value)} placeholder="e.g. instagram.com/chefsarah, chefsarah.com" style={{ width: '100%', padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box', outline: 'none' }} />
+                </div>
+
+                {/* Platform links — all optional. Stored in full; at most one is
+                    ever polled, chosen by us during review. */}
+                <div style={{ marginBottom: '24px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '2px' }}>
+                    Where do you publish? <span style={{ color: '#999', fontWeight: 400 }}>(all optional)</span>
+                  </label>
+                  <p style={{ margin: '0 0 10px', fontSize: '12px', color: '#999' }}>
+                    Add any of these and we can help fill in your meals from what you already post. Leave blank to add your meals yourself.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {PLATFORM_SOURCES.map(source => (
+                      <div key={source} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '13px', color: '#666', width: '78px', flexShrink: 0 }}>{SOURCE_LABELS[source]}</span>
+                        <input
+                          value={links[source]}
+                          onChange={e => setLinks(prev => ({ ...prev, [source]: e.target.value }))}
+                          placeholder={LINK_PLACEHOLDERS[source]}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          style={{ flex: 1, minWidth: 0, padding: '10px 12px', border: '1px solid #e0e0e0', borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box', outline: 'none' }}
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 <div style={{ marginBottom: '24px' }}>

@@ -68,6 +68,8 @@ export type EventType =
   | 'ADMIN:APPLICATION_REVIEW'
   | 'ADMIN:MEAL_DELETE'
   | 'ADMIN:BROADCAST'
+  | 'ADMIN:CREATOR_SOURCE'      // which of a creator's links we poll (MEAL-81)
+  | 'ADMIN:CREATOR_VIABILITY'   // the onboarding importability measurement (MEAL-81)
   | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
   | 'ADMIN:AUTOMATION_FUNNEL'   // per-store add-to-cart reliability dashboard
   // ── Account ───────────────────────────────────────────────────────────────
