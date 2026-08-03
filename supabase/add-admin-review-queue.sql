@@ -71,6 +71,24 @@ ALTER TABLE creator_import_drafts
 -- The existing status CHECK already allows 'cancelled'; nothing to add. There is
 -- deliberately no ON DELETE rule and no trigger — a real deletion by a human at
 -- the SQL prompt is a considered act, and should not be silently prevented.
+--
+-- What deleting a creator actually does, since the review queue used to raise a
+-- question about it: `creator_import_drafts`, `creator_source_items`,
+-- `creator_source_state` and `creator_platform_accounts` all cascade, so the
+-- pending drafts go *and* so does the record of which posts were already
+-- imported. Those two moving together is the property that matters — re-adding
+-- the creator re-imports from scratch rather than skipping posts as seen.
+--
+-- So a draft whose `creators` row "no longer exists" cannot occur, and there is
+-- no half-deleted state to hunt for. NOT NULL plus the cascade means the draft
+-- goes with the creator; there are no orphans to find.
+--
+-- Published meals are the one thing a delete will not quietly take:
+-- `preset_meals.creator_id` and `meals.creator_id` are NO ACTION, so the delete
+-- is refused while any published meal still points at the creator. Offboarding
+-- someone therefore has to decide what happens to those meals first — the
+-- column is nullable, and nulling it would leave the meals on Discover with no
+-- attribution, which is a product decision rather than a cleanup step.
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------

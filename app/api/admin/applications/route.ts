@@ -75,7 +75,15 @@ export async function PATCH(request: NextRequest) {
     }
 
     const applicantEmail = (app.user_profiles as unknown as { email: string } | null)?.email;
-    if (applicantEmail) await sendCreatorRejectedEmail(applicantEmail, app.display_name).catch(() => {});
+    // Not fatal — the rejection is already written and re-running it is not a
+    // thing an operator can do — but not nothing either. Resend reports a
+    // refusal in `{ error }`, which `lib/email.ts` turns into a throw, and
+    // swallowing it here meant an applicant who was never told looked exactly
+    // like one who was.
+    if (applicantEmail) {
+      await sendCreatorRejectedEmail(applicantEmail, app.display_name).catch((error) =>
+        log({ event: 'ADMIN:APPLICATION_EMAIL', status: 'error', userId: admin.userId, email: applicantEmail, detail: 'action=reject', error }));
+    }
 
     log({ event: 'ADMIN:APPLICATION_REVIEW', status: 'success', userId: admin.userId, email: admin.email, detail: `action=reject applicant=${applicantEmail ?? app.user_id} name=${app.display_name}` });
     return NextResponse.json({ ok: true });
@@ -130,7 +138,13 @@ export async function PATCH(request: NextRequest) {
 
   // Email the applicant
   const applicantEmail = (app.user_profiles as unknown as { email: string } | null)?.email;
-  if (applicantEmail) await sendCreatorApprovedEmail(applicantEmail, app.display_name).catch(() => {});
+  // Same as the rejection path: the creator row is written and the tier is
+  // comped, so this must not fail the request — but an approved creator who was
+  // never told to go and publish is worth a log line rather than nothing.
+  if (applicantEmail) {
+    await sendCreatorApprovedEmail(applicantEmail, app.display_name).catch((error) =>
+      log({ event: 'ADMIN:APPLICATION_EMAIL', status: 'error', userId: admin.userId, email: applicantEmail, detail: 'action=approve', error }));
+  }
 
   log({ event: 'ADMIN:APPLICATION_REVIEW', status: 'success', userId: admin.userId, email: admin.email, detail: `action=approve applicant=${applicantEmail ?? app.user_id} name=${app.display_name}` });
   return NextResponse.json({ ok: true });
