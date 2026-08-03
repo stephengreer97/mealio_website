@@ -3,7 +3,7 @@ import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { publishCreatorMeal } from '@/lib/creator-meals';
-import { SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
+import { canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import { log } from '@/lib/logger';
 
 async function getCreator(request: NextRequest) {
@@ -38,12 +38,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
   }
 
-  // Both forms cap their pickers at three, so an over-cap list is a client that
-  // has drifted from the rule rather than a creator to be corrected — but it is
-  // still refused here, not trimmed. Uncanonicalised, unlike the draft PATCH:
-  // this route stores what it is given, so the count that matters is the count
-  // that would be written.
-  const tooManyTags = Array.isArray(tags) ? tagCapError(tags) : null;
+  // Canonicalised first, then counted — the order the draft PATCH already uses.
+  // Counting raw made the cap a count of *strings*: three arbitrary ones matched
+  // no Discover filter and looked like typos on the card, and three copies of
+  // 'Vegan' rendered three identical chips and still passed. Both forms pick
+  // from `MEAL_TAGS` and cannot produce either, so nothing a picker sends is
+  // changed by this; it is the hand-written request that is.
+  //
+  // Dropping an out-of-vocabulary tag is not the same concession as trimming an
+  // over-cap one: the tag was never selectable and would never have matched
+  // anything. Over-cap is still refused, not trimmed.
+  const canonicalTags = Array.isArray(tags) ? canonicalizeTags(tags.map(String)) : undefined;
+  const tooManyTags = canonicalTags ? tagCapError(canonicalTags) : null;
   if (tooManyTags) {
     return NextResponse.json({ error: tooManyTags }, { status: 400 });
   }
@@ -65,7 +71,7 @@ export async function POST(request: NextRequest) {
     meal = await publishCreatorMeal(
       supabase,
       { id: creator.id, display_name: creator.display_name, user_id: userId },
-      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves: servesText || null },
+      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags: canonicalTags, serves: servesText || null },
     );
   } catch (err) {
     log({ event: 'CREATOR:MEAL_CREATE', status: 'error', userId: creator.id, detail: String(err) });

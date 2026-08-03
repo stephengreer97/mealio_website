@@ -14,7 +14,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolvePhotoUrl } from '@/lib/photos';
-import { SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
+import { canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft } from '@/lib/import/types';
 
 export interface PublishingCreator {
@@ -60,7 +60,13 @@ export async function publishCreatorMeal(
   // Throwing is what a batch caller already handles: `approveDraft` puts the
   // draft back in the queue with this sentence attached, so the operator can
   // deselect down to the cap and approve again.
-  const tooManyTags = Array.isArray(input.tags) ? tagCapError(input.tags) : null;
+  //
+  // Canonicalised before it is counted, for the same reason and in the same
+  // order as the draft PATCH: the count that matters is the count of tags that
+  // can actually match a Discover filter, and a duplicate renders twice on the
+  // card while passing a count of strings.
+  const tags = Array.isArray(input.tags) ? canonicalizeTags(input.tags.map(String)) : undefined;
+  const tooManyTags = tags ? tagCapError(tags) : null;
   if (tooManyTags) throw new Error(tooManyTags);
   if (input.serves && !SERVES_PATTERN.test(input.serves)) throw new Error(SERVES_ERROR);
 
@@ -82,7 +88,7 @@ export async function publishCreatorMeal(
       photo_url:  photoUrl || null,
       difficulty: input.difficulty || null,
       serves:     input.serves || null,
-      ...(Array.isArray(input.tags) && input.tags.length ? { tags: input.tags } : {}),
+      ...(tags && tags.length ? { tags } : {}),
     })
     .select()
     .single();
