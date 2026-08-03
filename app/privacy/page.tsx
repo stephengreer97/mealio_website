@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 };
 
 export default function PrivacyPage() {
-  const effective = 'June 26, 2026';
+  const effective = 'August 3, 2026';
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
@@ -121,7 +121,23 @@ export default function PrivacyPage() {
         </p>
 
         {/* 7 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>7. Your Rights and Choices</h2>
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>7. Creator Platform Connections (YouTube)</h2>
+        <p>
+          If you are a creator, you may connect a platform account so that Mealio can find recipes you have already published and prepare them for your review. This section describes what that connection allows, and applies in addition to the rest of this policy. Connecting an account is entirely optional — creators who do not connect one publish to Mealio by hand, and nothing described here happens to them.
+        </p>
+        <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
+          <li style={{ marginBottom: '6px' }}><strong>What we access:</strong> With your authorization, Mealio reads the list of videos on the YouTube channel you connect, together with each video&rsquo;s title, description, publication date and thumbnail. We use these to identify posts that contain recipes and to extract the ingredients and steps from them. We only ever read the channel you connected.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we do with it:</strong> An extracted recipe becomes a draft that is shown to you for approval. Nothing extracted from your channel is published on Mealio until you, or an administrator acting on your behalf, approves it. Drafts you decline are not published.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we write, and only if you ask:</strong> Mealio can add a link to your Mealio recipe page at the end of the description of the video that recipe came from. This is a setting that is <strong>off unless you turn it on</strong>, it is offered only to creators who have connected a YouTube channel, and it applies only to videos on that channel. We append our link and do not remove or alter anything else in your description. Turning the setting off stops any further changes.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we never do:</strong> We do not use data obtained from your channel for advertising, we do not sell or transfer it, we do not use it to train machine-learning or AI models, and we do not read, collect or store anything from YouTube beyond what is needed to produce the recipe drafts described above and, where you have enabled it, to append the link.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Stopping and removing it:</strong> You can disconnect the account at any time from your creator settings, which stops all reading immediately. You can also revoke Mealio&rsquo;s access directly through your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>Google Account permissions page</a>. On disconnection we delete the access and refresh tokens we hold for that account.</li>
+        </ul>
+        <p style={{ marginTop: '12px' }}>
+          Mealio&rsquo;s use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>Google API Services User Data Policy</a>, including the Limited Use requirements. By connecting a YouTube channel you are also agreeing to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>YouTube Terms of Service</a>, and Google&rsquo;s handling of your information is described in the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>Google Privacy Policy</a>.
+        </p>
+
+        {/* 8 */}
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>8. Your Rights and Choices</h2>
         <p>Depending on your location, you may have the following rights regarding your personal information:</p>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
           <li style={{ marginBottom: '6px' }}><strong>Access:</strong> Request a copy of the personal information we hold about you.</li>
@@ -134,32 +150,32 @@ export default function PrivacyPage() {
           To exercise any of these rights, contact us at <a href="mailto:contact@mealio.co" style={{ color: '#dd0031' }}>contact@mealio.co</a>. We will respond within 30 days.
         </p>
 
-        {/* 8 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>8. Children's Privacy</h2>
+        {/* 9 */}
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>9. Children's Privacy</h2>
         <p>
           The Service is not directed to children under the age of 13. We do not knowingly collect personal information from children under 13. If we become aware that we have collected personal information from a child under 13, we will take steps to delete that information promptly. If you believe a child under 13 has provided us with personal information, please contact us at contact@mealio.co.
         </p>
 
-        {/* 9 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>9. International Users</h2>
+        {/* 10 */}
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>10. International Users</h2>
         <p>
           The Service is operated from the United States. If you access the Service from outside the United States, your information may be transferred to and processed in the United States, where data protection laws may differ from those in your country. By using the Service, you consent to this transfer. We take steps to ensure that any such transfers comply with applicable data protection requirements.
         </p>
 
-        {/* 10 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>10. Cookies and Local Storage</h2>
+        {/* 11 */}
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>11. Cookies and Local Storage</h2>
         <p>
           We use HTTP-only cookies to maintain your authenticated session on the website. These cookies are strictly necessary for the Service to function and cannot be disabled without logging out. We do not use advertising cookies or third-party tracking cookies. The mobile application stores your authentication tokens in the device's secure storage (the iOS Keychain on iOS, or the Android Keystore on Android).
         </p>
 
-        {/* 11 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>11. Changes to This Policy</h2>
+        {/* 12 */}
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>12. Changes to This Policy</h2>
         <p>
           We may update this Privacy Policy from time to time. We will notify you of material changes by posting the updated policy on this page with a new effective date and, where appropriate, by sending an email to the address associated with your account. We encourage you to review this policy periodically. Your continued use of the Service after any changes constitutes your acceptance of the revised policy.
         </p>
 
-        {/* 12 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>12. Contact Us</h2>
+        {/* 13 */}
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>13. Contact Us</h2>
         <p>
           If you have questions, concerns, or requests relating to this Privacy Policy, please contact us at:
         </p>
