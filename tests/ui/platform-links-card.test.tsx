@@ -11,8 +11,9 @@ import PlatformLinksCard, { type CreatorLinks } from '@/components/PlatformLinks
  * remove the link Mealio is currently reading — those are an operator's to
  * decide (MEAL-81), and a card that could reverse one of them by accident is
  * the failure this ticket is written around. It *can* move the polled link,
- * which stops the import; the card's job there is to say so first and to stop
- * claiming otherwise afterwards.
+ * which stops the import; the card's job there is to pass on the server's
+ * notice saying so, at the save that caused it — and to say nothing about the
+ * import at any other time.
  */
 
 const CREATOR: CreatorLinks = {
@@ -80,20 +81,24 @@ describe('PlatformLinksCard', () => {
     expect(calls.some(call => call.method === 'PATCH')).toBe(false);
   });
 
-  it('says which link is being polled, and what editing it costs', async () => {
+  it('carries no standing paragraph about the link Mealio polls', () => {
+    // Removed on the owner's instruction, and asserted here so it cannot come
+    // back by a different wording. The card is a link editor: a creator opening
+    // Settings to fix a typo in their website was made to read a paragraph
+    // about the import pipeline first, every time, whether or not they were
+    // going anywhere near the polled link.
     harness({ ...CREATOR, primary_source: 'website', import_opt_in: true });
 
-    // A pause is only fair if they knew before they typed, and there is one rule
-    // to state now rather than two: touching this link — changing it or clearing
-    // it — stops the import until someone looks.
-    expect(screen.getByText(/importing your recipes from your Website/i)).toBeTruthy();
-    expect(screen.getByText(/Change or clear it here/i)).toBeTruthy();
-    expect(screen.getByText(/pause the import/i)).toBeTruthy();
-    // And no promise of a refusal that no longer happens.
-    expect(screen.queryByText(/can’t be removed/i)).toBeNull();
+    expect(screen.queryByText(/importing your recipes/i)).toBeNull();
+    expect(screen.queryByText(/Moved, renamed or finished with it/i)).toBeNull();
+    expect(screen.queryByText(/pause the import/i)).toBeNull();
+    expect(screen.queryByText(/before anything starts again/i)).toBeNull();
+
+    // The links themselves are untouched — this was a sentence, not a feature.
+    expect(field('Website').value).toBe('https://chefsarah.test/');
   });
 
-  it('stops claiming an import is running once the server says it paused one', async () => {
+  it('says the import paused at the moment it pauses, in the server’s words', async () => {
     harness(
       { ...CREATOR, primary_source: 'website', import_opt_in: true },
       () => json({ ok: true, notices: ['Your Website link is saved. We have paused that import.'], importPaused: true }),
@@ -102,17 +107,12 @@ describe('PlatformLinksCard', () => {
     fireEvent.change(field('Website'), { target: { value: 'sarahcooks.test' } });
     save();
 
-    // `creator` is the portal's copy of a row this save has just changed. Left
-    // alone, the banner would go on saying "Mealio is importing your recipes"
-    // directly above a notice saying we stopped — and the creator would have to
-    // guess which of the two to believe.
+    // With the standing paragraph gone this is the whole of what a creator is
+    // told about the pause, and it is told where it is news: the save that
+    // caused it. It must not be swallowed, and there must be no leftover
+    // paragraph beside it claiming the import is still running.
     expect(await screen.findByText(/paused that import/i)).toBeTruthy();
-    await waitFor(() => expect(screen.queryByText(/importing your recipes from your Website/i)).toBeNull());
-  });
-
-  it('says nothing about polling when nothing is polled', () => {
-    harness({ ...CREATOR, primary_source: 'website', import_opt_in: false });
-    expect(screen.queryByText(/importing your recipes/i)).toBeNull();
+    await waitFor(() => expect(screen.queryByText(/importing your recipes/i)).toBeNull());
   });
 
   it('shows the server’s refusal rather than claiming a save', async () => {

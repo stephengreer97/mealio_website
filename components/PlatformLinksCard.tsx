@@ -22,8 +22,11 @@ import { normalizePlatformUrl, PLATFORM_SOURCES, SOURCE_LABELS, type PlatformSou
  * polls, and whether it polls at all, stay an operator decision (MEAL-81), so
  * nothing on this card can turn importing on. Touching the link that *is* being
  * polled — changing it or clearing it, one rule for both — can turn it off: the
- * server pauses the import pending review and says so, and this card stops
- * claiming otherwise the moment it hears that back.
+ * server pauses the import pending review and says so in the notice it answers
+ * the save with, which is where that is said now. The card carries no standing
+ * paragraph about the polled link: it is a link editor, and a settings card that
+ * narrates the import pipeline every time it is opened is reading out a state
+ * nobody came here to ask about.
  */
 
 const PLACEHOLDERS: Record<PlatformSource, string> = {
@@ -70,26 +73,6 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [notices, setNotices] = useState<string[]>([]);
-  /**
-   * Set from the save that paused the import, because `creator` is the portal's
-   * copy of a row the server has just changed. Without it the banner below would
-   * go on saying "Mealio is importing your recipes" directly above a notice
-   * saying we have stopped — until something reloaded the page.
-   */
-  const [paused, setPaused] = useState(false);
-
-  /**
-   * The source Mealio actually polls, when it is polling at all.
-   *
-   * Said before they try to edit it rather than only when the save is refused:
-   * "this is where your recipes come from" is why changing that link pauses the
-   * import and why removing it is refused outright, and a creator who reads it
-   * first is never surprised by either.
-   */
-  const polled =
-    !paused && creator.import_opt_in === true && creator.primary_source && creator.primary_source !== 'none'
-      ? (creator.primary_source as PlatformSource)
-      : null;
 
   const save = async () => {
     setError('');
@@ -127,8 +110,9 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
         website: stored.website ?? '', youtube: stored.youtube ?? '',
         instagram: stored.instagram ?? '', tiktok: stored.tiktok ?? '',
       });
+      // Including "we have paused that import", which is the server's to say and
+      // is said at the only moment it is news: the save that caused it.
       setNotices(Array.isArray(data.notices) ? data.notices : []);
-      if (data.importPaused === true) setPaused(true);
       setSaved(true);
       onSaved(stored);
     } catch {
@@ -167,14 +151,6 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
           </div>
         ))}
       </div>
-
-      {polled && (
-        <p className="text-xs text-gray-500 mb-4">
-          Mealio is importing your recipes from your {SOURCE_LABELS[polled]}. Moved, renamed or finished with it?
-          Change or clear it here and we&rsquo;ll pause the import &mdash; it&rsquo;s the one we publish from under
-          your name, so it gets a look before anything starts again.
-        </p>
-      )}
 
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
       {notices.map(notice => (

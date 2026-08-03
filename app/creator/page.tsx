@@ -170,6 +170,16 @@ function newPublishToken(): string {
 
 const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-Hard', 'Hard'];
 
+/**
+ * The three jobs this page does.
+ *
+ * They were one column: the drafts waiting on a creator, then their profile,
+ * then four connection cards, then their meals — so the settings a creator
+ * touches twice a year sat between them and the meals they came to edit, and
+ * the review queue was one card in a stack rather than somewhere to go.
+ */
+type PortalTab = 'meals' | 'drafts' | 'settings';
+
 /** Starting point for the "which boxes are empty" mirror — a form nobody has touched. */
 const EMPTY_FORM: Record<ScalarField, boolean> = {
   name: true, recipe: true, story: true, photoUrl: true, difficulty: true, tags: true, serves: true,
@@ -972,6 +982,40 @@ export default function CreatorPortal() {
   // UI state
   const [showEarnings, setShowEarnings] = useState(false);
 
+  /**
+   * Which section is on screen.
+   *
+   * Meals is the landing tab because publishing and editing is what a creator
+   * opens this page to do — and because the count that would justify opening on
+   * Drafts arrives a round trip later, so choosing the tab from it would move
+   * the page under someone already reading it.
+   */
+  const [tab, setTab] = useState<PortalTab>('meals');
+
+  /**
+   * How many drafts are waiting, for the tab badge and the callout.
+   *
+   * Read from the event the queue already fires rather than from a request of
+   * this page's own — `AppHeader` badges the same number the same way, and a
+   * second GET for a number two components on screen already have is a call
+   * nobody needs. `queueCounted` is the difference between "we heard zero" and
+   * "we have not heard": a failed read announces nothing, and this page must not
+   * turn that silence into "nothing is waiting".
+   */
+  const [draftsWaiting, setDraftsWaiting] = useState(0);
+  const [queueCounted, setQueueCounted] = useState(false);
+
+  useEffect(() => {
+    const onChanged = (event: Event) => {
+      const waiting = (event as CustomEvent<{ waiting?: number }>).detail?.waiting;
+      if (typeof waiting !== 'number') return;
+      setDraftsWaiting(waiting);
+      setQueueCounted(true);
+    };
+    window.addEventListener('mealio:draft-queue-changed', onChanged);
+    return () => window.removeEventListener('mealio:draft-queue-changed', onChanged);
+  }, []);
+
   useEffect(() => { loadPortal(); }, []);
 
   /**
@@ -1518,6 +1562,22 @@ export default function CreatorPortal() {
 
   const annualShare = stats ? stats.sharePercent.toFixed(1) : '0.0';
 
+  /** The admin page's tab, so the two screens are recognisably one product. */
+  const tabStyle = (t: PortalTab): React.CSSProperties => ({
+    display: 'flex',
+    alignItems: 'center',
+    gap: '7px',
+    padding: '10px 18px',
+    border: 'none',
+    borderBottom: tab === t ? '2px solid #dd0031' : '2px solid transparent',
+    background: 'none',
+    fontWeight: tab === t ? 700 : 400,
+    color: tab === t ? '#dd0031' : '#666',
+    cursor: 'pointer',
+    fontSize: '14px',
+    whiteSpace: 'nowrap',
+  });
+
   // Derived live, so both the counts and the flags describe what is on screen
   // right now rather than what the import returned some edits ago.
   const notices = noticesFor(fieldStates);
@@ -1550,284 +1610,550 @@ export default function CreatorPortal() {
       <div className="min-h-screen bg-gray-50">
         <AppHeader />
 
-        <div className="max-w-3xl mx-auto px-4 py-8 space-y-4">
-
-          {/* ── Drafts waiting on this creator (MEAL-89) ──
-              Above the profile because it is the only thing on this page that
-              is waiting on them; everything below is theirs to do whenever.
-              It renders nothing when the queue is empty, so the portal does not
-              grow a box to say there is nothing to do — and it never blocks:
-              a creator who came here to edit a published meal scrolls past. */}
-          <CreatorReviewQueue />
-
-          {/* ── Profile card ── */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            {!editingProfile ? (
-              <div className="p-6">
-                <div className="flex items-start gap-5">
-                  {/* Avatar */}
-                  <div className="flex-shrink-0">
-                    {creator?.photo_url ? (
-                      <img src={creator.photo_url} alt={creator.display_name} className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
-                    ) : (
-                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Creator Portal</p>
-                        <h1 className="text-xl font-bold text-gray-900 leading-tight">{creator?.display_name}</h1>
-                        {creator?.social_handle && (
-                          <p className="text-sm text-gray-500 mt-0.5">{creator.social_handle}</p>
-                        )}
-                        {creator?.bio && (
-                          <p className="text-sm text-gray-600 mt-2 leading-relaxed">{creator.bio}</p>
-                        )}
-                        {creator?.handle && (
-                          <div className="mt-2">
-                            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Your referral link</p>
-                            <div className="inline-flex items-center gap-2">
-                              <a
-                                href={`/${creator.handle}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-medium"
-                              >
-                                mealio.co/{creator.handle}
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                              </a>
-                              <button
-                                onClick={copyReferralLink}
-                                className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2 py-0.5 hover:bg-gray-50 transition-colors"
-                              >
-                                {linkCopied ? 'Copied!' : 'Copy'}
-                              </button>
-                            </div>
-                            <p className="text-[11px] text-gray-400 mt-1">Share this link — new signups from it are credited to you.</p>
-                          </div>
-                        )}
-                      </div>
-                      <button
-                        onClick={openEditProfile}
-                        className="flex-shrink-0 text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors whitespace-nowrap"
-                      >
-                        Edit Profile
-                      </button>
-                    </div>
-                  </div>
+        {/* ── Portal header ──
+            Who they are and the one action that belongs to no section, across
+            the full width. Publishing is here rather than inside the Meals tab
+            because it is what a creator came to do, and it must not become one
+            click further away than it was on the single-column page. */}
+        <div style={{ background: 'white', borderBottom: '1px solid #e5e7eb' }}>
+          <div style={shellStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', padding: '20px 0' }}>
+              {creator?.photo_url ? (
+                <img src={creator.photo_url} alt="" className="w-12 h-12 rounded-full object-cover border-2 border-gray-100 flex-shrink-0" />
+              ) : (
+                <div className="w-12 h-12 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center flex-shrink-0 select-none text-gray-400" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                 </div>
-
-                {/* Placeholder nudge if profile is sparse */}
-                {!creator?.bio && !creator?.handle && (
-                  <p className="mt-4 text-xs text-gray-400 border-t border-gray-50 pt-4">
-                    Add a bio, website, and profile link to make your creator page shine.
-                  </p>
+              )}
+              <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Creator Portal</p>
+                <h1 className="text-xl font-bold text-gray-900 leading-tight truncate">{creator?.display_name}</h1>
+                {creator?.social_handle && (
+                  <p className="text-sm text-gray-500 mt-0.5 truncate">{creator.social_handle}</p>
                 )}
               </div>
-            ) : (
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-5">
-                  <h2 className="text-base font-bold text-gray-900">Edit Profile</h2>
-                  <button onClick={cancelEditProfile} className="text-gray-400 hover:text-gray-600 transition-colors">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
-                </div>
+              <button
+                onClick={() => setShowForm(true)}
+                className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl px-5 py-2.5 text-sm transition-colors flex items-center justify-center gap-2 flex-shrink-0"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Publish New Meal
+              </button>
+            </div>
+          </div>
+        </div>
 
-                {/* Profile photo */}
-                <div className="flex items-center gap-4 mb-5">
-                  <button
-                    type="button"
-                    onClick={() => profilePhotoInputRef.current?.click()}
-                    className="relative group flex-shrink-0 rounded-full focus:outline-none"
-                  >
-                    {profilePhotoPreview ? (
-                      <img src={profilePhotoPreview} alt="" className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
-                    ) : (
-                      <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
-                    )}
-                    <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        {/* ── Sections ──
+            The same tab bar the admin page uses, for the same reason: three
+            unrelated jobs that were stacked down one column, where settings sat
+            between a creator and their own meals. Meals is what they came for
+            and is first; Drafts is what is waiting on them and carries the
+            count; Settings is everything they set once and leave alone. */}
+        <div style={{ background: 'white', borderBottom: '1px solid #e0e0e0' }}>
+          <div style={shellStyle}>
+            <div role="tablist" aria-label="Creator portal sections" style={{ display: 'flex', overflowX: 'auto' }}>
+              <button
+                role="tab"
+                id="portal-tab-meals"
+                aria-selected={tab === 'meals'}
+                aria-controls="portal-panel-meals"
+                style={tabStyle('meals')}
+                onClick={() => setTab('meals')}
+              >
+                Meals
+                {meals.length > 0 && <span style={tabCountStyle}>{meals.length}</span>}
+              </button>
+              <button
+                role="tab"
+                id="portal-tab-drafts"
+                aria-selected={tab === 'drafts'}
+                aria-controls="portal-panel-drafts"
+                style={tabStyle('drafts')}
+                onClick={() => setTab('drafts')}
+              >
+                Drafts
+                {/* The count, not a dot — the same call `AppHeader` makes, and
+                    it is only ever drawn when there is something to draw. */}
+                {draftsWaiting > 0 && (
+                  <span style={tabBadgeStyle} data-testid="drafts-tab-badge">{draftsWaiting}</span>
+                )}
+              </button>
+              <button
+                role="tab"
+                id="portal-tab-settings"
+                aria-selected={tab === 'settings'}
+                aria-controls="portal-panel-settings"
+                style={tabStyle('settings')}
+                onClick={() => setTab('settings')}
+              >
+                Settings
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Every panel stays mounted and hides — the queue below reads on mount
+            and is what tells this page and the header how many drafts are
+            waiting, and a creator halfway through editing a draft or a link must
+            not lose it to a tab click. */}
+        <div style={{ ...shellStyle, paddingTop: '24px', paddingBottom: '48px' }}>
+
+          {/* ══ Meals ══ */}
+          <section
+            id="portal-panel-meals"
+            role="tabpanel"
+            aria-labelledby="portal-tab-meals"
+            hidden={tab !== 'meals'}
+            className="space-y-4"
+          >
+
+            {/* ── Publish success ── */}
+            {publishSuccess && (
+              <div className="bg-green-50 border border-green-200 rounded-2xl px-5 py-3.5 text-sm text-green-700 font-medium flex items-center gap-2">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                {publishSuccess}
+              </div>
+            )}
+
+            {/* ── Drafts waiting on this creator (MEAL-89) ──
+                The first thing on the tab a creator lands on, because it is the
+                only thing on this page waiting on them. It is a pointer rather
+                than the queue itself: the queue lives in one place, on its own
+                tab, so "where do I review my drafts?" has exactly one answer.
+                Nothing is drawn when nothing is waiting — the portal does not
+                grow a box to say there is nothing to do. */}
+            {draftsWaiting > 0 && (
+              <div
+                data-testid="drafts-callout"
+                className="bg-white rounded-2xl border-l-4 border border-gray-100 shadow-sm px-5 py-4 flex items-center gap-4 flex-wrap"
+                style={{ borderLeftColor: '#dd0031' }}
+              >
+                <div style={{ flex: '1 1 260px', minWidth: 0, maxWidth: '62ch' }}>
+                  <p className="text-sm font-bold text-gray-900">
+                    {draftsWaiting === 1
+                      ? 'A recipe is waiting for your review'
+                      : `${draftsWaiting} recipes are waiting for your review`}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+                    We read your posts and filled these in. Nothing is published under your name until you approve it.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setTab('drafts')}
+                  className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl px-4 py-2 text-sm transition-colors flex-shrink-0"
+                >
+                  Review drafts
+                </button>
+              </div>
+            )}
+
+            {/* Their meals, and how those meals are doing, side by side where
+                there is room for both. The list is the work and takes the width;
+                the numbers are a glance and take a rail. Below xl they stack in
+                one column, the list first. */}
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
+
+              <div className="min-w-0 space-y-4">
+
+                {/* ── Published meals ── */}
+                <div>
+                  <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 px-1">
+                    Published Meals {meals.length > 0 && `(${meals.length})`}
+                  </h3>
+
+                  {meals.length === 0 ? (
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
+                      <div className="text-4xl mb-3">🍽️</div>
+                      <p className="text-sm text-gray-400">No meals published yet. Hit the button above to get started!</p>
                     </div>
-                  </button>
-                  <div>
-                    <p className="text-sm font-semibold text-gray-700">Profile photo</p>
-                    <p className="text-xs text-gray-400 mt-0.5">Click avatar to change</p>
-                  </div>
-                  <input
-                    ref={profilePhotoInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={e => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      setProfilePhotoFile(file);
-                      setProfilePhotoPreview(URL.createObjectURL(file));
-                    }}
-                  />
-                </div>
-
-                {/* Bio */}
-                <div className="mb-4">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Bio</label>
-                  <textarea
-                    value={profileBio}
-                    onChange={e => setProfileBio(e.target.value)}
-                    rows={3}
-                    placeholder="Tell people about yourself and your cooking style…"
-                    className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 resize-none transition-colors"
-                  />
-                </div>
-
-                {/* Website / Social */}
-                <div className="mb-4">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Website / Social</label>
-                  <input
-                    type="text"
-                    value={profileWebsite}
-                    onChange={e => setProfileWebsite(e.target.value)}
-                    placeholder="@yourhandle or https://yoursite.com"
-                    className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors"
-                  />
-                </div>
-
-                {/* Profile / referral link — permanent once set */}
-                <div className="mb-5">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Referral link</label>
-                  {creator?.handle ? (
-                    <>
-                      <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
-                        <span className="px-3 py-2.5 text-sm text-gray-400 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
-                        <span className="flex-1 px-3 py-2.5 text-sm text-gray-500">{creator.handle}</span>
-                      </div>
-                      <p className="text-xs text-gray-400 mt-1">Your referral link is permanent and can&apos;t be changed.</p>
-                    </>
                   ) : (
-                    <>
-                      <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-400 transition-colors">
-                        <span className="px-3 py-2.5 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
-                        <input
-                          value={handleInput}
-                          onChange={e => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
-                          placeholder="yourhandle"
-                          maxLength={30}
-                          className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
-                        />
-                      </div>
-                      <p className="text-xs text-red-600 font-semibold mt-1">⚠ Permanent once saved — choose carefully. 3–30 characters: letters, numbers, hyphens, underscores.</p>
-                    </>
+                    // As many columns as the window has room for, and one on a
+                    // phone. A published meal is a row of controls, not a paragraph,
+                    // so widening it past a point wastes the window rather than
+                    // helping anyone read it.
+                    <div
+                      // `min(430px, 100%)`, not a bare 430px: auto-fill honours
+                      // the minimum even when the window is narrower than it,
+                      // which is a 390px phone scrolling sideways.
+                      style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(430px, 100%), 1fr))', gap: '10px' }}
+                      data-testid="published-meals"
+                    >
+                      {meals.map(meal => (
+                        <div key={meal.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center gap-4 p-4 hover:shadow-md transition-shadow">
+                          <button
+                            onClick={() => setViewingMeal(meal)}
+                            className="flex items-center gap-4 flex-1 min-w-0 text-left bg-none border-none p-0 cursor-pointer"
+                          >
+                            {meal.photo_url ? (
+                              <img src={meal.photo_url} alt={meal.name} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" />
+                            ) : (
+                              <div className="w-14 h-14 rounded-xl bg-gray-100 flex-shrink-0 flex items-center justify-center text-2xl select-none">🍽️</div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <div className="font-semibold text-gray-900 text-sm leading-snug truncate">{meal.name}</div>
+                              <div className="text-xs text-gray-400 mt-0.5">
+                                <span className="font-medium text-gray-500">{meal.saves_all.toLocaleString()}</span> save{meal.saves_all !== 1 ? 's' : ''}
+                                <span className="mx-1.5 text-gray-200">·</span>
+                                Trending <span className="font-medium text-gray-500">{meal.trending_score}</span>/100
+                              </div>
+                            </div>
+                          </button>
+
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button
+                              onClick={() => setEditingMeal(meal)}
+                              className="text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-2.5 py-1.5 hover:bg-gray-50 transition-colors"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={async () => {
+                                const url = `${process.env.NEXT_PUBLIC_APP_URL}/meal/p/${meal.id}`;
+                                await navigator.clipboard.writeText(url).catch(() => prompt('Copy this share link:', url));
+                                setCopiedMealId(meal.id);
+                                setTimeout(() => setCopiedMealId(id => (id === meal.id ? null : id)), 3000);
+                              }}
+                              className={`text-xs font-semibold border rounded-lg px-2.5 py-1.5 transition-colors ${
+                                copiedMealId === meal.id
+                                  ? 'text-green-600 bg-green-50 border-green-200'
+                                  : 'text-gray-500 hover:text-gray-800 border-gray-200 hover:bg-gray-50'
+                              }`}
+                            >
+                              {copiedMealId === meal.id ? '✓ Copied' : 'Share'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteMeal(meal.id, meal.name)}
+                              className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors rounded-lg"
+                              title="Unpublish"
+                            >
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6"/>
+                                <path d="M19 6l-1 14H6L5 6"/>
+                                <path d="M10 11v6M14 11v6"/>
+                                <path d="M9 6V4h6v2"/>
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
 
-                {profileError && (
-                  <p className="text-sm text-red-600 mb-4">{profileError}</p>
-                )}
-
-                <div className="flex gap-3">
-                  <button
-                    onClick={saveProfile}
-                    disabled={profileSaving}
-                    className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-2.5 text-sm transition-colors"
-                  >
-                    {profileSaving ? 'Saving…' : 'Save Profile'}
-                  </button>
-                  <button
-                    onClick={cancelEditProfile}
-                    className="px-5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
               </div>
-            )}
-          </div>
 
-          {/* ── Where they publish (MEAL-94), and connecting it (MEAL-74 /
-              MEAL-82 / MEAL-83) ──
-              Every connect card is remounted when the links change: adding the
-              link for a platform is what makes its card appear at all (MEAL-78),
-              and a card that only read its status on first mount would not know.
-              The same argument covers all three, so they share `linksVersion`. */}
-          {creator && <PlatformLinksCard creator={creator} onSaved={handleLinksSaved} />}
-          <YouTubeConnectCard key={linksVersion} />
-          <PlatformConnectCard platform="instagram" key={`ig-${linksVersion}`} />
-          <PlatformConnectCard platform="tiktok" key={`tt-${linksVersion}`} />
+              <aside className="space-y-3 min-w-0">
 
-          {/* ── Stats ── */}
-          {stats && (
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: 'Followers',         value: stats.followers.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> },
-                { label: 'Saves (last 12 mo)', value: stats.savesAnnual.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> },
-                { label: 'Saves all time',    value: stats.savesAll.toLocaleString(),   icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> },
-              ].map(s => (
-                <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-center">
-                  <div className="flex justify-center mb-1.5">{s.icon}</div>
-                  <div className="text-2xl font-bold text-gray-900">{s.value}</div>
-                  <div className="text-xs text-gray-400 mt-0.5 leading-tight">{s.label}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── Earnings ── */}
-          {stats && (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-              <button
-                onClick={() => setShowEarnings(prev => !prev)}
-                className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-gray-800">How earnings work</span>
-                  <span className="text-xs bg-red-50 text-red-600 font-semibold px-2 py-0.5 rounded-full">
-                    Your share: {annualShare}%
-                  </span>
-                </div>
-                <svg
-                  width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round"
-                  style={{ transform: showEarnings ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
-                >
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
-              </button>
-
-              {showEarnings && (
-                <div className="px-5 pb-5 border-t border-gray-50">
-                  <p className="mt-4 text-sm text-gray-500 leading-relaxed">
-                    Each quarter, 1/3 of subscription profit goes to the creator pool. Your share is based entirely on your meal saves over the last 12 months as a percentage of all creator meal saves over the same rolling window:
-                  </p>
-                  <div className="mt-3 bg-orange-50 border border-orange-100 rounded-xl p-4 font-mono text-xs leading-7 text-gray-600">
-                    <div className="text-xs font-sans font-bold text-gray-300 mb-2 tracking-widest uppercase">Example</div>
-                    <div>Saves (last 12 months): 1,940 of 44,500</div>
-                    <div className="border-t border-orange-200 mt-3 pt-3">
-                      Your share: <strong className="text-red-600">4.36%</strong> of the creator pool
+              {/* ── Stats ── */}
+              {stats && (
+                <div className="grid grid-cols-3 xl:grid-cols-1 gap-3">
+                  {[
+                    { label: 'Followers',         value: stats.followers.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> },
+                    { label: 'Saves (last 12 mo)', value: stats.savesAnnual.toLocaleString(),  icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> },
+                    { label: 'Saves all time',    value: stats.savesAll.toLocaleString(),   icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-center">
+                      <div className="flex justify-center mb-1.5">{s.icon}</div>
+                      <div className="text-2xl font-bold text-gray-900">{s.value}</div>
+                      <div className="text-xs text-gray-400 mt-0.5 leading-tight">{s.label}</div>
                     </div>
-                  </div>
-                  <p className="mt-3 text-xs text-gray-400">Payouts above $25 are issued at quarter end via Tremendous.</p>
+                  ))}
                 </div>
               )}
-            </div>
-          )}
 
-          {/* ── Publish success ── */}
-          {publishSuccess && (
-            <div className="bg-green-50 border border-green-200 rounded-2xl px-5 py-3.5 text-sm text-green-700 font-medium flex items-center gap-2">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              {publishSuccess}
-            </div>
-          )}
+              {/* ── Earnings ── */}
+              {stats && (
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                  <button
+                    onClick={() => setShowEarnings(prev => !prev)}
+                    className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-semibold text-gray-800">How earnings work</span>
+                      <span className="text-xs bg-red-50 text-red-600 font-semibold px-2 py-0.5 rounded-full">
+                        Your share: {annualShare}%
+                      </span>
+                    </div>
+                    <svg
+                      width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round"
+                      style={{ transform: showEarnings ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+                    >
+                      <polyline points="6 9 12 15 18 9"/>
+                    </svg>
+                  </button>
 
-          {/* ── Publish button ── */}
-          <button
-            onClick={() => setShowForm(true)}
-            className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold rounded-2xl py-3.5 text-sm transition-colors flex items-center justify-center gap-2"
+                  {showEarnings && (
+                    <div className="px-5 pb-5 border-t border-gray-50">
+                      <p className="mt-4 text-sm text-gray-500 leading-relaxed">
+                        Each quarter, 1/3 of subscription profit goes to the creator pool. Your share is based entirely on your meal saves over the last 12 months as a percentage of all creator meal saves over the same rolling window:
+                      </p>
+                      <div className="mt-3 bg-orange-50 border border-orange-100 rounded-xl p-4 font-mono text-xs leading-7 text-gray-600">
+                        <div className="text-xs font-sans font-bold text-gray-300 mb-2 tracking-widest uppercase">Example</div>
+                        <div>Saves (last 12 months): 1,940 of 44,500</div>
+                        <div className="border-t border-orange-200 mt-3 pt-3">
+                          Your share: <strong className="text-red-600">4.36%</strong> of the creator pool
+                        </div>
+                      </div>
+                      <p className="mt-3 text-xs text-gray-400">Payouts above $25 are issued at quarter end via Tremendous.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              </aside>
+
+            </div>
+
+          </section>
+
+          {/* ══ Drafts ══
+              The queue itself, with room to read it. Capped rather than full
+              width: it is a recipe card and a decision, and a 1,400px line of
+              instructions is not easier to check than a 90-character one. */}
+          <section
+            id="portal-panel-drafts"
+            role="tabpanel"
+            aria-labelledby="portal-tab-drafts"
+            hidden={tab !== 'drafts'}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Publish New Meal
-          </button>
+            <div style={{ maxWidth: '900px' }} className="space-y-3">
+              <div>
+                <h2 className="text-base font-bold text-gray-900">Drafts to review</h2>
+                <p className="text-sm text-gray-500 mt-1 leading-relaxed" style={{ maxWidth: '68ch' }}>
+                  Recipes Mealio read from the posts you publish wait here for you. Approving publishes to Discover
+                  under your name; declining means we will not offer that one again.
+                </p>
+              </div>
+
+              <CreatorReviewQueue />
+
+              {/* Only said once the queue has actually told us it is empty. A
+                  read that failed announces nothing, and "nothing is waiting"
+                  printed under "we could not load your queue" would be the more
+                  reassuring of two contradictory sentences and the wrong one. */}
+              {queueCounted && draftsWaiting === 0 && (
+                <p className="text-sm text-gray-400" data-testid="drafts-empty">
+                  Nothing is waiting for you right now.
+                </p>
+              )}
+            </div>
+          </section>
+
+          {/* ══ Settings ══
+              Everything set once and left alone. Two columns where there is room
+              — these are all short forms, and stacking them made a creator
+              scroll through their own YouTube connection to reach their meals. */}
+          <section
+            id="portal-panel-settings"
+            role="tabpanel"
+            aria-labelledby="portal-tab-settings"
+            hidden={tab !== 'settings'}
+          >
+            {/* Capped at three columns' worth: these are forms, and a fourth
+                column of them across a wide monitor is a wall to scan rather
+                than a settings page to read. */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: '16px', alignItems: 'start', maxWidth: '1180px' }}>
+
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                {!editingProfile ? (
+                  <div className="p-6">
+                    <div className="flex items-start gap-5">
+                      {/* Avatar */}
+                      <div className="flex-shrink-0">
+                        {creator?.photo_url ? (
+                          <img src={creator.photo_url} alt={creator.display_name} className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
+                        ) : (
+                          <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+                        )}
+                      </div>
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            {/* "Creator Portal" and the page's one <h1> moved to
+                                the header band above the tabs when this card
+                                did — this is the profile, not the page. */}
+                            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Your profile</p>
+                            <h2 className="text-base font-bold text-gray-900 leading-tight">{creator?.display_name}</h2>
+                            {creator?.social_handle && (
+                              <p className="text-sm text-gray-500 mt-0.5">{creator.social_handle}</p>
+                            )}
+                            {creator?.bio && (
+                              <p className="text-sm text-gray-600 mt-2 leading-relaxed">{creator.bio}</p>
+                            )}
+                            {creator?.handle && (
+                              <div className="mt-2">
+                                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Your referral link</p>
+                                <div className="inline-flex items-center gap-2">
+                                  <a
+                                    href={`/${creator.handle}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-medium"
+                                  >
+                                    mealio.co/{creator.handle}
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                  </a>
+                                  <button
+                                    onClick={copyReferralLink}
+                                    className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2 py-0.5 hover:bg-gray-50 transition-colors"
+                                  >
+                                    {linkCopied ? 'Copied!' : 'Copy'}
+                                  </button>
+                                </div>
+                                <p className="text-[11px] text-gray-400 mt-1">Share this link — new signups from it are credited to you.</p>
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={openEditProfile}
+                            className="flex-shrink-0 text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors whitespace-nowrap"
+                          >
+                            Edit Profile
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Placeholder nudge if profile is sparse */}
+                    {!creator?.bio && !creator?.handle && (
+                      <p className="mt-4 text-xs text-gray-400 border-t border-gray-50 pt-4">
+                        Add a bio, website, and profile link to make your creator page shine.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-6">
+                    <div className="flex items-center justify-between mb-5">
+                      <h2 className="text-base font-bold text-gray-900">Edit Profile</h2>
+                      <button onClick={cancelEditProfile} className="text-gray-400 hover:text-gray-600 transition-colors">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    </div>
+
+                    {/* Profile photo */}
+                    <div className="flex items-center gap-4 mb-5">
+                      <button
+                        type="button"
+                        onClick={() => profilePhotoInputRef.current?.click()}
+                        className="relative group flex-shrink-0 rounded-full focus:outline-none"
+                      >
+                        {profilePhotoPreview ? (
+                          <img src={profilePhotoPreview} alt="" className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
+                        ) : (
+                          <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+                        )}
+                        <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                        </div>
+                      </button>
+                      <div>
+                        <p className="text-sm font-semibold text-gray-700">Profile photo</p>
+                        <p className="text-xs text-gray-400 mt-0.5">Click avatar to change</p>
+                      </div>
+                      <input
+                        ref={profilePhotoInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={e => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setProfilePhotoFile(file);
+                          setProfilePhotoPreview(URL.createObjectURL(file));
+                        }}
+                      />
+                    </div>
+
+                    {/* Bio */}
+                    <div className="mb-4">
+                      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Bio</label>
+                      <textarea
+                        value={profileBio}
+                        onChange={e => setProfileBio(e.target.value)}
+                        rows={3}
+                        placeholder="Tell people about yourself and your cooking style…"
+                        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 resize-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Website / Social */}
+                    <div className="mb-4">
+                      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Website / Social</label>
+                      <input
+                        type="text"
+                        value={profileWebsite}
+                        onChange={e => setProfileWebsite(e.target.value)}
+                        placeholder="@yourhandle or https://yoursite.com"
+                        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors"
+                      />
+                    </div>
+
+                    {/* Profile / referral link — permanent once set */}
+                    <div className="mb-5">
+                      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Referral link</label>
+                      {creator?.handle ? (
+                        <>
+                          <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
+                            <span className="px-3 py-2.5 text-sm text-gray-400 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
+                            <span className="flex-1 px-3 py-2.5 text-sm text-gray-500">{creator.handle}</span>
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">Your referral link is permanent and can&apos;t be changed.</p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-400 transition-colors">
+                            <span className="px-3 py-2.5 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
+                            <input
+                              value={handleInput}
+                              onChange={e => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                              placeholder="yourhandle"
+                              maxLength={30}
+                              className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
+                            />
+                          </div>
+                          <p className="text-xs text-red-600 font-semibold mt-1">⚠ Permanent once saved — choose carefully. 3–30 characters: letters, numbers, hyphens, underscores.</p>
+                        </>
+                      )}
+                    </div>
+
+                    {profileError && (
+                      <p className="text-sm text-red-600 mb-4">{profileError}</p>
+                    )}
+
+                    <div className="flex gap-3">
+                      <button
+                        onClick={saveProfile}
+                        disabled={profileSaving}
+                        className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-2.5 text-sm transition-colors"
+                      >
+                        {profileSaving ? 'Saving…' : 'Save Profile'}
+                      </button>
+                      <button
+                        onClick={cancelEditProfile}
+                        className="px-5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Where they publish (MEAL-94), and connecting it (MEAL-74 /
+                  MEAL-82 / MEAL-83) ──
+                  Every connect card is remounted when the links change: adding the
+                  link for a platform is what makes its card appear at all (MEAL-78),
+                  and a card that only read its status on first mount would not know.
+                  The same argument covers all three, so they share `linksVersion`. */}
+              {creator && <PlatformLinksCard creator={creator} onSaved={handleLinksSaved} />}
+              <YouTubeConnectCard key={linksVersion} />
+              <PlatformConnectCard platform="instagram" key={`ig-${linksVersion}`} />
+              <PlatformConnectCard platform="tiktok" key={`tt-${linksVersion}`} />
+
+            </div>
+          </section>
 
           {/* ── Share-your-link prompt, shown once right after publishing ── */}
           {publishedMeal && (
@@ -2281,81 +2607,6 @@ export default function CreatorPortal() {
             </div>
           )}
 
-          {/* ── Published meals ── */}
-          <div>
-            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 px-1">
-              Published Meals {meals.length > 0 && `(${meals.length})`}
-            </h3>
-
-            {meals.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center">
-                <div className="text-4xl mb-3">🍽️</div>
-                <p className="text-sm text-gray-400">No meals published yet. Hit the button above to get started!</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {meals.map(meal => (
-                  <div key={meal.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center gap-4 p-4 hover:shadow-md transition-shadow">
-                    <button
-                      onClick={() => setViewingMeal(meal)}
-                      className="flex items-center gap-4 flex-1 min-w-0 text-left bg-none border-none p-0 cursor-pointer"
-                    >
-                      {meal.photo_url ? (
-                        <img src={meal.photo_url} alt={meal.name} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" />
-                      ) : (
-                        <div className="w-14 h-14 rounded-xl bg-gray-100 flex-shrink-0 flex items-center justify-center text-2xl select-none">🍽️</div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-gray-900 text-sm leading-snug truncate">{meal.name}</div>
-                        <div className="text-xs text-gray-400 mt-0.5">
-                          <span className="font-medium text-gray-500">{meal.saves_all.toLocaleString()}</span> save{meal.saves_all !== 1 ? 's' : ''}
-                          <span className="mx-1.5 text-gray-200">·</span>
-                          Trending <span className="font-medium text-gray-500">{meal.trending_score}</span>/100
-                        </div>
-                      </div>
-                    </button>
-
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <button
-                        onClick={() => setEditingMeal(meal)}
-                        className="text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-2.5 py-1.5 hover:bg-gray-50 transition-colors"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={async () => {
-                          const url = `${process.env.NEXT_PUBLIC_APP_URL}/meal/p/${meal.id}`;
-                          await navigator.clipboard.writeText(url).catch(() => prompt('Copy this share link:', url));
-                          setCopiedMealId(meal.id);
-                          setTimeout(() => setCopiedMealId(id => (id === meal.id ? null : id)), 3000);
-                        }}
-                        className={`text-xs font-semibold border rounded-lg px-2.5 py-1.5 transition-colors ${
-                          copiedMealId === meal.id
-                            ? 'text-green-600 bg-green-50 border-green-200'
-                            : 'text-gray-500 hover:text-gray-800 border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        {copiedMealId === meal.id ? '✓ Copied' : 'Share'}
-                      </button>
-                      <button
-                        onClick={() => handleDeleteMeal(meal.id, meal.name)}
-                        className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors rounded-lg"
-                        title="Unpublish"
-                      >
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6"/>
-                          <path d="M19 6l-1 14H6L5 6"/>
-                          <path d="M10 11v6M14 11v6"/>
-                          <path d="M9 6V4h6v2"/>
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
         </div>
       </div>
 
@@ -2377,6 +2628,40 @@ export default function CreatorPortal() {
     </>
   );
 }
+
+/**
+ * The page's own gutter.
+ *
+ * Full width with a cap: the portal has a wide meal grid and a wide settings
+ * grid to fill, and beyond about 1,400px a row of meals stops reading as a list
+ * and starts reading as a horizon. `clamp` keeps the gutter honest on a phone
+ * without a media query, which inline styles cannot express.
+ */
+const shellStyle: React.CSSProperties = {
+  width: '100%',
+  maxWidth: '1440px',
+  margin: '0 auto',
+  padding: '0 clamp(12px, 2.5vw, 24px)',
+};
+
+/** The count beside a tab: how many, in the tab's own colour. */
+const tabCountStyle: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 600,
+  color: '#9ca3af',
+};
+
+/** The one that is waiting on them, so it is the brand red rather than grey. */
+const tabBadgeStyle: React.CSSProperties = {
+  background: '#dd0031',
+  color: 'white',
+  fontSize: '11px',
+  fontWeight: 700,
+  borderRadius: '999px',
+  padding: '1px 7px',
+  lineHeight: 1.6,
+};
+
 
 // ── Modal styles (used by EditPresetMealModal) ────────────────────────────────
 
