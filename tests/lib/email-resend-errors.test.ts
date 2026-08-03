@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 /**
@@ -55,13 +58,96 @@ beforeEach(() => {
   result = { data: { id: 'email-1' }, error: null };
 });
 
+const LIB = fileURLToPath(new URL('../../lib', import.meta.url));
+
+/** Every `.ts` under `lib/`, recursively. */
+function libSources(dir = LIB): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return libSources(path);
+    return entry.isFile() && entry.name.endsWith('.ts') ? [path] : [];
+  });
+}
+
+/**
+ * Blanks comments while keeping every line where it was.
+ *
+ * `throwIfRefused`'s own doc comment quotes `resend.emails.send(...)`, and a
+ * guard that reads prose as code reports a call site nobody can fix.
+ */
+function withoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/.*$/gm, (line, before: string) => before + ' '.repeat(line.length - before.length));
+}
+
+/**
+ * Every `resend.emails.send(` in `lib/`, with the code that follows the call.
+ *
+ * Located in the source rather than by importing anything, because the failure
+ * being guarded against is a call site that exists — the module's own exports
+ * cannot tell you whether a new function reaches Resend, and a naming convention
+ * certainly cannot.
+ *
+ * The window is taken from the line that closes the call, which is `});` at the
+ * statement's own indentation. The payload in between is a page of inline HTML,
+ * so scanning forward a fixed number of lines from the call itself would land in
+ * the middle of an email template.
+ */
+function resendCallSites() {
+  const sites: Array<{ file: string; line: number; assigns: boolean; after: string }> = [];
+  for (const file of libSources()) {
+    const lines = withoutComments(readFileSync(file, 'utf8')).split('\n');
+    lines.forEach((text, index) => {
+      if (!text.includes('emails.send(')) return;
+      const closing = lines.findIndex((l, i) => i > index && /^\s*\}\);\s*$/.test(l));
+      sites.push({
+        file: file.slice(LIB.length + 1),
+        line: index + 1,
+        // A result that is never bound cannot be checked by anybody.
+        assigns: /=\s*await\s+[\w.]*emails\.send\(/.test(text),
+        after: closing === -1 ? '' : lines.slice(closing + 1, closing + 9).join('\n'),
+      });
+    });
+  }
+  return sites;
+}
+
 describe('every sender surfaces a refused send', () => {
-  it('covers every sender in the module', async () => {
-    // A sender added without an entry here is one that can go back to reporting
-    // success on a send that never happened.
-    const module = await import('@/lib/email');
-    const exported = Object.keys(module).filter((key) => key.startsWith('send'));
-    expect(exported.sort()).toEqual(senders.map((s) => s.name).sort());
+  /**
+   * The backstop, and it has to be about Resend calls rather than about names.
+   *
+   * The previous version listed the module's exports beginning with `send` and
+   * compared them to the table below. Adding `sendBrandNewThing` without a
+   * refusal check failed it; adding `notifyBrandNewThing` doing exactly the same
+   * passed — and neither version could see `lib/marketing-email.ts`, which is
+   * where the eighth sender already lived.
+   */
+  it('checks the result of every Resend call under lib/', () => {
+    const sites = resendCallSites();
+
+    // If this ever reads zero the guard has stopped guarding — a moved import,
+    // a renamed client — and everything below it would pass vacuously.
+    expect(sites.length).toBeGreaterThanOrEqual(8);
+
+    const unchecked = sites.filter(
+      (site) => !site.assigns || !/throwIfRefused\(|if\s*\(\s*error\s*\)/.test(site.after),
+    );
+    expect(unchecked.map((site) => `${site.file}:${site.line}`)).toEqual([]);
+  });
+
+  it('exercises every function in lib/email.ts that reaches Resend', () => {
+    // Named from the source, not from a convention: a sender called anything at
+    // all is one that can go back to reporting success on a send that never
+    // happened, and the rejection tests below are what stop that.
+    const source = withoutComments(readFileSync(join(LIB, 'email.ts'), 'utf8'));
+    const declarations = [...source.matchAll(/^export (?:async )?function (\w+)/gm)];
+    const reachesResend = declarations.filter((match, i) => {
+      const end = declarations[i + 1]?.index ?? source.length;
+      return source.slice(match.index!, end).includes('emails.send(');
+    }).map((match) => match[1]);
+
+    expect(reachesResend.sort()).toEqual(senders.map((s) => s.name).sort());
   });
 
   for (const { name, call } of senders) {
