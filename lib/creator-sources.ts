@@ -170,27 +170,6 @@ export function normalizePlatformUrl(source: PlatformSource, raw: unknown): Link
 }
 
 /**
- * Do two URLs live on the same site?
- *
- * True for an exact host match and for a subdomain in either direction, because
- * `feeds.chefsarah.com` and `chefsarah.com` are the same publisher and refusing
- * that pairing rejects real creators. Used wherever a URL has to be shown to
- * belong to the creator it will be attributed to — a cross-host value there is
- * how a stranger's recipes end up published under someone else's name.
- */
-export function isSameSite(siteUrl: string, otherUrl: string): boolean {
-  let site: string;
-  let other: string;
-  try {
-    site = new URL(siteUrl).hostname.toLowerCase();
-    other = new URL(otherUrl).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  return other === site || other.endsWith(`.${site}`) || site.endsWith(`.${other}`);
-}
-
-/**
  * Which of the four sources a bare URL belongs to.
  *
  * Used by the one-link admin sync (MEAL-90), where the operator pastes a URL and
@@ -249,6 +228,42 @@ function comparableHost(url: string): string | null {
 }
 
 /**
+ * Hosts where the *path*, not the host, names the publisher.
+ *
+ * On these, `medium.com/@sarah` and `medium.com/@bob` are two different people
+ * behind one hostname, so host equality alone answers the wrong question — it
+ * would let a URL under any other user's handle count as this creator's own,
+ * which is a stranger's recipe published under their name. Matched only when the
+ * creator's own link is on the bare platform host; a creator with a subdomain of
+ * one (`sarah.medium.com`) is already told apart by the host rule below.
+ *
+ * A short list on purpose. It is not a directory of the web, it is the handful
+ * of hosts a creator's "website" link is plausibly on while belonging to only
+ * part of that host.
+ */
+const PATH_SCOPED_HOSTS = [
+  'medium.com',
+  'substack.com',
+  'patreon.com',
+  'tumblr.com',
+  'blogspot.com',
+  'sites.google.com',
+  'notion.site',
+  'beehiiv.com',
+  'linktr.ee',
+];
+
+/** The first path segment, lowercased, or null for a bare host. */
+function firstSegment(url: string): string | null {
+  try {
+    const segment = new URL(url).pathname.split('/').filter(Boolean)[0];
+    return segment ? decodeURIComponent(segment).toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Is `candidateUrl` on the same site as `siteUrl`?
  *
  * Exact host, a subdomain of it, or the apex of a `www.` site. Deliberately
@@ -262,14 +277,28 @@ function comparableHost(url: string): string | null {
  * `www.chefsarah.test` whose feed sits on the apex, so that is the only one
  * allowed.
  *
- * Used everywhere a creator-supplied URL decides what our server fetches: the
- * stored `feed_url`, the hrefs a homepage advertises, and the item URLs inside
- * the feed itself.
+ * On a `PATH_SCOPED_HOSTS` host the question is finer than the host, and the
+ * first path segment has to match too.
+ *
+ * Used everywhere a creator-supplied URL decides what our server fetches or what
+ * gets attributed to a creator: the stored `feed_url`, the hrefs a homepage
+ * advertises, the item URLs inside a feed, and the selection an operator ticks
+ * off an admin sync catalog. One function rather than one per caller — a second
+ * copy of this rule was how the sync route ended up with the looser version.
  */
 export function isOnSameSite(siteUrl: string, candidateUrl: string): boolean {
   const site = comparableHost(siteUrl);
   const candidate = comparableHost(candidateUrl);
   if (!site || !candidate) return false;
+
+  if (PATH_SCOPED_HOSTS.includes(site.replace(/^www\./, ''))) {
+    // A bare `medium.com` with no handle identifies nobody, so nothing is on
+    // "their" site — refusing is the only safe reading of an empty answer.
+    const owner = firstSegment(siteUrl);
+    if (!owner) return false;
+    return candidate.replace(/^www\./, '') === site.replace(/^www\./, '') && firstSegment(candidateUrl) === owner;
+  }
+
   return candidate === site || candidate.endsWith(`.${site}`) || site === `www.${candidate}`;
 }
 

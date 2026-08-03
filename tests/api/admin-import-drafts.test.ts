@@ -76,17 +76,15 @@ function draftRow(overrides: Record<string, unknown> = {}) {
 }
 
 /**
- * Queues the row a decision reads, and a slot for the write it then issues.
+ * Stores the rows a decision reads and writes.
  *
- * `FakeSupabase` resolves queries FIFO **per table** and models no filter at
- * all, so a route that reads and then writes the same table pops twice. A batch
- * test that queues only the rows would hand the second draft's row back as the
- * first draft's update result and then find nothing left to read — passing, or
- * failing, for reasons that have nothing to do with the code.
+ * Stored rather than queued: every decision is now a conditional write, so what
+ * matters is which rows the predicate matched — a canned result cannot express
+ * that, and a batch of two would have handed the second draft's row back as the
+ * first one's update result.
  */
-function queueDecision(row: Record<string, unknown>, writes = true) {
-  fakeDb.queue('creator_import_drafts', { data: row });
-  if (writes) fakeDb.queue('creator_import_drafts', { data: null });
+function storeDrafts(...rows: Array<Record<string, unknown>>) {
+  fakeDb.seed('creator_import_drafts', rows);
 }
 
 /** Nothing was published, nobody was told, and no row was touched. */
@@ -123,7 +121,7 @@ describe('the admin guard blocks the work, not just the response', () => {
     asAdmin(false);
     // The row is queued so that a guard which ran *after* the read would still
     // find something to publish. It must never get that far.
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
 
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }));
 
@@ -133,7 +131,7 @@ describe('the admin guard blocks the work, not just the response', () => {
 
   it('POST delete — a non-admin cannot decline someone else’s draft', async () => {
     asAdmin(false);
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'delete', ids: ['d1'] } }));
     expect(res.status).toBe(403);
     nothingHappened();
@@ -141,7 +139,7 @@ describe('the admin guard blocks the work, not just the response', () => {
 
   it('POST send-to-creator — a non-admin cannot move a draft between queues', async () => {
     asAdmin(false);
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'send-to-creator', ids: ['d1'] } }));
     expect(res.status).toBe(403);
     nothingHappened();
@@ -149,7 +147,7 @@ describe('the admin guard blocks the work, not just the response', () => {
 
   it('PATCH — a non-admin cannot rewrite a draft', async () => {
     asAdmin(false);
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
 
     const res = await PATCH(jsonRequest('/api/admin/import-drafts', {
       method: 'PATCH',
@@ -182,12 +180,33 @@ describe('GET /api/admin/import-drafts', () => {
     expect(body.drafts[0].draft.name).toBe('Best Guacamole');
   });
 
-  it('asks only for drafts pending on the admin', async () => {
+  it('asks only for drafts pending on the admin, then for what was handed away', async () => {
     asAdmin();
     fakeDb.queue('creator_import_drafts', { data: [] });
+    fakeDb.queue('creator_import_drafts', { data: [] });
+
     await GET(jsonRequest('/api/admin/import-drafts', { method: 'GET', token }));
+
     const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
-    expect(filters.map((c) => c.args)).toEqual([['status', 'pending_review'], ['review_by', 'admin']]);
+    expect(filters.map((c) => c.args)).toEqual([
+      ['status', 'pending_review'], ['review_by', 'admin'],
+      // The second query: rows an operator sent to a queue that does not exist.
+      ['status', 'pending_review'], ['review_by', 'creator'],
+    ]);
+    expect(fakeDb.calls.some((c) => c.method === 'not' && c.args[0] === 'sent_to_creator_at')).toBe(true);
+  });
+
+  it('returns the handed-over drafts so none of them is invisible', async () => {
+    asAdmin();
+    fakeDb.queue('creator_import_drafts', { data: [] });
+    fakeDb.queue('creator_import_drafts', {
+      data: [{ ...draftRow({ review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }), creators: { display_name: 'Chef Sarah' } }],
+    });
+
+    const body = await (await GET(jsonRequest('/api/admin/import-drafts', { method: 'GET', token }))).json();
+
+    expect(body.totals).toMatchObject({ waiting: 0, handedOver: 1 });
+    expect(body.handedOver[0].id).toBe('d1');
   });
 });
 
@@ -196,7 +215,7 @@ describe('GET /api/admin/import-drafts', () => {
 describe('POST /api/admin/import-drafts', () => {
   it('approve publishes, invalidates the feed once, and emails the creator', async () => {
     asAdmin();
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
 
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }));
 
@@ -212,8 +231,7 @@ describe('POST /api/admin/import-drafts', () => {
 
   it('emails once for a batch of approvals rather than once per meal', async () => {
     asAdmin();
-    queueDecision(draftRow({ id: 'd1' }));
-    queueDecision(draftRow({ id: 'd2', item_id: 'guid-2' }));
+    storeDrafts(draftRow({ id: 'd1' }), draftRow({ id: 'd2', item_id: 'guid-2' }));
 
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'approve', ids: ['d1', 'd2'] } }));
 
@@ -226,14 +244,14 @@ describe('POST /api/admin/import-drafts', () => {
 
   it('notification defaults to on', async () => {
     asAdmin();
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
     await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }));
     expect(sendCreatorSyncPublishedEmail).toHaveBeenCalledTimes(1);
   });
 
   it('honours notification being turned off deliberately', async () => {
     asAdmin();
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
     await POST(jsonRequest('/api/admin/import-drafts', {
       token,
       body: { action: 'approve', ids: ['d1'], notifyCreator: false },
@@ -246,7 +264,7 @@ describe('POST /api/admin/import-drafts', () => {
   it('sends no email when nothing published', async () => {
     asAdmin();
     // Refused before any write, so no slot for one.
-    queueDecision(draftRow({ status: 'cancelled' }), false);
+    storeDrafts(draftRow({ status: 'cancelled' }));
 
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }));
 
@@ -257,23 +275,35 @@ describe('POST /api/admin/import-drafts', () => {
     expect(revalidateTag).not.toHaveBeenCalled();
   });
 
-  it('send-to-creator flips review_by and publishes nothing', async () => {
+  it('send-to-creator is refused outright, and the draft does not move', async () => {
     asAdmin();
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
 
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'send-to-creator', ids: ['d1'] } }));
 
+    // 400 with the reason, not 200 with a per-draft error list: there is no
+    // creator queue for *any* draft, so the request cannot partly work.
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/MEAL-89/);
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'admin', status: 'pending_review' });
+    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
+  });
+
+  it('reclaim brings a handed-over draft back into the admin queue', async () => {
+    asAdmin();
+    storeDrafts(draftRow({ review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }));
+
+    const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'reclaim', ids: ['d1'] } }));
+
     expect(res.status).toBe(200);
     expect((await res.json()).done).toBe(1);
-    const update = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'update').at(-1);
-    expect(update?.args[0]).toMatchObject({ review_by: 'creator', sent_to_creator_by: 'admin-1' });
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'admin', status: 'pending_review' });
     expect(publishCreatorMeal).not.toHaveBeenCalled();
-    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
   });
 
   it('delete marks cancelled and issues no delete', async () => {
     asAdmin();
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
 
     const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'delete', ids: ['d1'] } }));
 
@@ -288,8 +318,8 @@ describe('POST /api/admin/import-drafts', () => {
 
   it('reports per-draft failures without sinking the rest of the batch', async () => {
     asAdmin();
-    queueDecision(draftRow({ id: 'd1' }));
-    queueDecision(draftRow({ id: 'd2', status: 'approved' }), false);
+    storeDrafts(draftRow({ id: 'd1' }), draftRow({ id: 'd2', status: 'approved' }));
+    
 
     const body = await (await POST(jsonRequest('/api/admin/import-drafts', {
       token,
@@ -323,7 +353,7 @@ describe('POST /api/admin/import-drafts', () => {
 describe('PATCH /api/admin/import-drafts', () => {
   it('saves an edit and hands back the re-rendered card, without publishing', async () => {
     asAdmin();
-    queueDecision(draftRow());
+    storeDrafts(draftRow());
 
     const res = await PATCH(jsonRequest('/api/admin/import-drafts', {
       method: 'PATCH',

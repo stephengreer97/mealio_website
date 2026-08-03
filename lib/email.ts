@@ -170,12 +170,12 @@ export interface SyncedMealLink {
 /**
  * "We published these under your name" (MEAL-90).
  *
- * Admin sync publishes straight to Discover without waiting for the creator to
- * approve anything — defensible only because a human operator read the
- * extraction first, during an onboarding the creator agreed to. This email is
- * the other half of that bargain: the model is *notify and correct*, not *ask
- * permission*, and it only holds if the creator learns what went live in time to
- * do something about it.
+ * An operator approves a synced recipe and it goes live under the creator's name
+ * without the creator having approved anything — defensible only because a human
+ * read the extraction first, during an onboarding the creator agreed to. This
+ * email is the other half of that bargain: the model is *notify and correct*,
+ * not *ask permission*, and it only holds if the creator learns what went live
+ * in time to do something about it.
  *
  * Transactional, and therefore NOT routed through sendMarketingEmail():
  * `marketing_opt_out` must not suppress it. A creator who unsubscribed from
@@ -183,9 +183,15 @@ export interface SyncedMealLink {
  * name — the unsubscribe page already promises exactly that ("You'll still get
  * important account emails").
  *
- * One message per run, listing only what published. Gate rejections and
- * extraction failures are the operator's problem, not something to explain to a
- * creator who did not ask for the sync.
+ * One message per creator per batch of approvals, listing only what published.
+ * Gate rejections and extraction failures are the operator's problem, not
+ * something to explain to a creator who did not ask for the sync.
+ *
+ * It does not say "from your own site". Catalog mode is host-checked, but the
+ * one-link path deliberately is not — an operator can paste a recipe of theirs
+ * that lives on a magazine's site — and the sentence would be false in exactly
+ * the case where a creator most needs to look. What is true either way is that
+ * these are recipes they published and these are now on their profile.
  */
 export async function sendCreatorSyncPublishedEmail(
   to: string,
@@ -220,7 +226,7 @@ export async function sendCreatorSyncPublishedEmail(
         <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${escapeHtml(displayName)},</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">
-          We imported ${count === 1 ? 'a recipe' : `${count} recipes`} from your own site and published ${count === 1 ? 'it' : 'them'} to your Mealio creator profile.
+          We imported ${count === 1 ? 'a recipe' : `${count} recipes`} you published and put ${count === 1 ? 'it' : 'them'} on your Mealio creator profile.
           <strong>${count === 1 ? 'It is' : 'They are'} live on Discover now</strong> — savers can see ${count === 1 ? 'it' : 'them'} today.
         </p>
         <ul style="margin: 0 0 20px; padding-left: 20px; line-height: 1.7;">${rows}</ul>

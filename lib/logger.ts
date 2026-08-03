@@ -76,6 +76,7 @@ export type EventType =
   // a creator's name now has one of these lines behind it, with the actor on it.
   | 'ADMIN:DRAFT_APPROVE'
   | 'ADMIN:DRAFT_HANDOFF'      // handed to the creator to decide instead
+  | 'ADMIN:DRAFT_RECLAIM'      // and taken back, so a handoff is never one-way
   | 'ADMIN:DRAFT_EDIT'
   | 'ADMIN:DRAFT_CANCEL'       // declined; the row is marked, never removed
   | 'ADMIN:DRAFT_NOTIFY'       // the "these are live now" email to the creator

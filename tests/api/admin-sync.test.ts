@@ -178,8 +178,52 @@ describe('POST /api/admin/sync', () => {
     }));
 
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/not on this creator's own site/i);
+    expect((await res.json()).error).toMatch(/not on this creator's own/i);
     expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('checks the host for a non-website source too, not only for websites', async () => {
+    // The guard used to read `source === 'website' && !isSameSite(...)`, so a
+    // hand-written request naming any other source carried arbitrary URLs
+    // through untouched. `buildCatalog` cannot produce that shape today, which
+    // is exactly why the exemption would still have been there when it could.
+    asAdmin();
+    fakeDb.queue('creators', { data: { ...CREATOR, youtube_url: 'https://www.youtube.com/@chefsarah' } });
+
+    const res = await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: {
+        creatorId: 'c1',
+        mode: 'catalog',
+        source: 'youtube',
+        items: [{ itemId: 'v1', url: 'https://attacker.test/not-their-video' }],
+      },
+    }));
+
+    expect(res.status).toBe(400);
+    expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('gives one link one item_id however it was spelled', async () => {
+    // Three spellings of one post were three item_ids, so an operator pasting
+    // the same link on two different days got two drafts and two published
+    // meals under the creator's name.
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+    fakeDb.queue('creator_sync_runs', { data: insertedRun([]) });
+
+    await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: { creatorId: 'c1', mode: 'link', url: 'http://www.chefsarah.test/guacamole/' },
+    }));
+
+    const insert = fakeDb.calls.find((c) => c.table === 'creator_sync_runs' && c.method === 'insert');
+    expect(insert?.args[0].items[0]).toMatchObject({
+      itemId: 'https://chefsarah.test/guacamole',
+      // Still fetched as it was written: folding the scheme or the `www.` into
+      // what we request would mean asking for a host nobody gave us.
+      url: 'http://www.chefsarah.test/guacamole',
+    });
   });
 
   it('accepts a subdomain of the creator’s site', async () => {
@@ -246,12 +290,14 @@ describe('PATCH /api/admin/sync — retry one item', () => {
 
   it('requeues a failed item on its own', async () => {
     asAdmin();
-    fakeDb.queue('creator_sync_runs', {
-      data: insertedRun([
+    // Stored rather than queued: the retry takes the run's lease and writes
+    // conditionally, so it needs a row that a predicate can match or refuse.
+    fakeDb.seed('creator_sync_runs', [
+      insertedRun([
         { itemId: 'a', url: 'u', title: null, publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'A', needALook: 0, costUsd: 0 },
         { itemId: 'b', url: 'u', title: null, publishedAt: null, status: 'failed', detail: 'timeout', draftId: null, mealName: null, needALook: null, costUsd: 0 },
-      ], { status: 'done' }),
-    });
+      ], { status: 'done', lease_until: null }),
+    ]);
 
     const res = await PATCH(jsonRequest('/api/admin/sync', { method: 'PATCH', token, body: { runId: 'r1', itemId: 'b' } }));
     expect(res.status).toBe(200);

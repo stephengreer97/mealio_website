@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
-import { isSameSite, platformSourceForUrl, SOURCE_COLUMNS, type PlatformSource } from '@/lib/creator-sources';
-import { normalizeUrl } from '@/lib/import/ssrf';
+import { isOnSameSite, platformSourceForUrl, SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
+import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
 import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncItem } from '@/lib/admin-sync';
 
 /**
@@ -102,8 +102,10 @@ export async function POST(request: NextRequest) {
     source = platformSourceForUrl(url);
     // The URL is its own stable id here. A feed guid is better when we have one,
     // and a later catalog sync of the same post will match on it — but for a
-    // pasted link the normalised URL is the only identity available.
-    items = [newItem({ itemId: url, url })];
+    // pasted link the URL is the only identity available, so it is the *folded*
+    // one: `http://x/p`, `https://x/p` and `https://www.x/p` are one post, and
+    // three item_ids for it are three drafts and three published meals.
+    items = [newItem({ itemId: urlIdentity(url) ?? url, url })];
   } else {
     const requested = body.source;
     source = typeof requested === 'string' && requested in SOURCE_COLUMNS ? (requested as PlatformSource) : 'website';
@@ -129,13 +131,18 @@ export async function POST(request: NextRequest) {
     items = [];
     for (const raw of body.items as Array<Record<string, unknown>>) {
       const url = toUrl(raw?.url);
-      const itemId = typeof raw?.itemId === 'string' && raw.itemId ? raw.itemId : url;
+      const itemId = typeof raw?.itemId === 'string' && raw.itemId ? raw.itemId : url && urlIdentity(url);
       if (!url || !itemId) {
         return NextResponse.json({ error: 'Every selected item needs a URL.' }, { status: 400 });
       }
-      if (source === 'website' && !isSameSite(site, url)) {
+      // Checked for every source, not only `website`. `buildCatalog` cannot
+      // produce a YouTube selection today, but the guard's whole value is that
+      // it holds for a hand-written request — and "only for one source" is the
+      // kind of exemption that is still there when the source that needed it
+      // arrives.
+      if (!isOnSameSite(site, url)) {
         return NextResponse.json(
-          { error: `${url} is not on this creator's own site. Refusing the whole selection.` },
+          { error: `${url} is not on this creator's own ${SOURCE_LABELS[source]}. Refusing the whole selection.` },
           { status: 400 },
         );
       }

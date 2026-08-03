@@ -278,8 +278,16 @@ export async function buildCatalog(
  * Two browser tabs polling the same run must not import the same post twice, and
  * a worker killed mid-chunk must not wedge the run forever — so this is a lease
  * with an expiry rather than a boolean.
+ *
+ * The number has to be longer than a wave can possibly take, because a lease
+ * that expires *while its holder is still importing* is worse than no lease: a
+ * second worker claims the run, reads the same still-pending items and imports
+ * them again, and one post ends up as two drafts. With the SDK bound at 30s and
+ * one retry (`lib/import/anthropic.ts`), the arithmetic per item is a 10s fetch
+ * plus a gate call and an extraction of at most ~61s each — 132s worst case,
+ * and a wave runs its items in parallel. 90s did not cover that; 180s does.
  */
-export const LEASE_MS = 90_000;
+export const LEASE_MS = 180_000;
 
 /**
  * Wall-clock budget for one worker invocation, under the 60s function limit with
@@ -480,6 +488,64 @@ async function recordItem(
 }
 
 /**
+ * Takes the run's lease, and hands back the row **as it was at that instant**.
+ *
+ * Every write to `items` goes through a lease, which is what makes the array
+ * safe to write whole: the holder is the only writer, so there is no second
+ * copy of the array to lose an item to. `or` covers both "nobody holds it" and
+ * "whoever held it is gone"; PostgREST re-checks the predicate under the row
+ * lock, so exactly one of two simultaneous claimants gets a row back.
+ *
+ * The returned row matters as much as the boolean. Claiming and then working
+ * from a copy read *before* the claim is the same lost update by another route
+ * — a retry that landed in between would be overwritten.
+ */
+async function claimRun(
+  deps: SyncDeps,
+  runId: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ row: Record<string, any>; lease: string } | null> {
+  const now = deps.now ?? Date.now;
+  const nowIso = new Date(now()).toISOString();
+  const lease = new Date(now() + LEASE_MS).toISOString();
+
+  const { data } = await deps.supabase
+    .from('creator_sync_runs')
+    .update({ lease_until: lease, updated_at: nowIso, ...extra })
+    .eq('id', runId)
+    .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+    .select();
+
+  const rows = (Array.isArray(data) ? data : []) as Array<Record<string, any>>;
+  return rows.length > 0 ? { row: rows[0], lease } : null;
+}
+
+/**
+ * Writes to a run we hold the lease on, or reports that we no longer do.
+ *
+ * `lease_until` doubles as the ownership token: the value we wrote when we
+ * claimed is ours until it expires, and whoever claims next necessarily writes
+ * a later one. Carrying it as a predicate is what stops a worker that overran
+ * its lease from writing its items over the new holder's progress — and, on the
+ * final write, from clearing a lease that is no longer its own and letting a
+ * third driver into a run two workers are already inside.
+ */
+async function writeLeased(
+  deps: SyncDeps,
+  runId: string,
+  lease: string,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  const { data } = await deps.supabase
+    .from('creator_sync_runs')
+    .update(patch)
+    .eq('id', runId)
+    .eq('lease_until', lease)
+    .select();
+  return Array.isArray(data) && data.length > 0;
+}
+
+/**
  * Moves a run forward by one chunk, then returns where it got to.
  *
  * This is the whole background job. It is deliberately *resumable* rather than
@@ -498,31 +564,18 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
 
   const nowIso = new Date(now()).toISOString();
 
-  // Claim the lease. `or` covers both "nobody holds it" and "whoever held it is
-  // gone"; if neither matches, another worker is mid-chunk and we report
+  // If the claim matches nothing, another worker is mid-chunk and we report
   // progress instead of racing it.
-  const { data: claimed } = await supabase
-    .from('creator_sync_runs')
-    .update({
-      status: 'running',
-      lease_until: new Date(now() + LEASE_MS).toISOString(),
-      started_at: row.started_at ?? nowIso,
-      updated_at: nowIso,
-    })
-    .eq('id', runId)
-    .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
-    .select();
+  const claim = await claimRun(deps, runId, { status: 'running', started_at: row.started_at ?? nowIso });
+  if (!claim) return run;
 
-  if (!Array.isArray(claimed) || claimed.length === 0) {
-    return run;
-  }
+  // From here on the claimed row is the truth, not the one read a moment ago.
+  run = toSyncRun(claim.row);
+  let lease = claim.lease;
 
   const creator = await loadSyncCreator(supabase, run.creatorId);
   if (!creator) {
-    await supabase
-      .from('creator_sync_runs')
-      .update({ status: 'done', finished_at: nowIso, lease_until: null, updated_at: nowIso })
-      .eq('id', runId);
+    await writeLeased(deps, runId, lease, { status: 'done', finished_at: nowIso, lease_until: null, updated_at: nowIso });
     log({ event: 'ADMIN:SYNC_RUN', status: 'error', detail: `run=${runId} creator=${run.creatorId} missing` });
     return { ...run, status: 'done' };
   }
@@ -544,15 +597,16 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
     });
 
     // Written after every wave, not at the end: the screen polls this row, and a
-    // run that shows nothing for four minutes looks broken.
-    await supabase
-      .from('creator_sync_runs')
-      .update({
-        items,
-        lease_until: new Date(now() + LEASE_MS).toISOString(),
-        updated_at: new Date(now()).toISOString(),
-      })
-      .eq('id', runId);
+    // run that shows nothing for four minutes looks broken. The renewal moves
+    // the token on, so the predicate for the next write is the new one.
+    const renewed = new Date(now() + LEASE_MS).toISOString();
+    const held = await writeLeased(deps, runId, lease, {
+      items,
+      lease_until: renewed,
+      updated_at: new Date(now()).toISOString(),
+    });
+    if (!held) return lostLease(runId, run, items);
+    lease = renewed;
   }
 
   const finished = items.every(isTerminal);
@@ -561,16 +615,14 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
   // No email here any more. A finished run has published nothing, so there is
   // nothing true to tell a creator yet; the announcement fires from Approve
   // (`notifyApproved`), where the meals are actually live.
-  await supabase
-    .from('creator_sync_runs')
-    .update({
-      items,
-      status: finished ? 'done' : 'queued',
-      finished_at: finished ? new Date(now()).toISOString() : null,
-      lease_until: null,
-      updated_at: new Date(now()).toISOString(),
-    })
-    .eq('id', runId);
+  const released = await writeLeased(deps, runId, lease, {
+    items,
+    status: finished ? 'done' : 'queued',
+    finished_at: finished ? new Date(now()).toISOString() : null,
+    lease_until: null,
+    updated_at: new Date(now()).toISOString(),
+  });
+  if (!released) return lostLease(runId, run, items);
 
   const totals = summariseRun({ ...run, items });
   log({
@@ -585,6 +637,24 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
   });
 
   return { ...run, items, status: finished ? 'done' : 'queued' };
+}
+
+/**
+ * What a worker does when it finds it no longer holds the lease.
+ *
+ * Stop, write nothing further, and say so. The items it did import are not
+ * lost — every one of them wrote its own `creator_source_items` record and its
+ * draft as it went, so the worker that took over skips them rather than
+ * importing them again. What is lost is only this worker's copy of the array,
+ * which is exactly the thing that must not be written.
+ */
+function lostLease(runId: string, run: SyncRun, items: SyncItem[]): SyncRun {
+  log({
+    event: 'ADMIN:SYNC_RUN',
+    status: 'error',
+    detail: `run=${runId} lease lost mid-chunk; another worker owns this run. Wrote nothing further.`,
+  });
+  return { ...run, items, status: 'running' };
 }
 
 /** Reads the creator fields the engine needs. */
@@ -625,10 +695,29 @@ export async function retrySyncItem(
   const { data: row } = await deps.supabase.from('creator_sync_runs').select('*').eq('id', runId).maybeSingle();
   if (!row) return { ok: false, error: 'Run not found' };
 
-  const run = toSyncRun(row as Record<string, any>);
+  // Through the same lease the worker takes, for the same reason. Retry used to
+  // read the row, map the array and write the whole thing back with no
+  // predicate at all: a retry landing while a worker was mid-wave was written,
+  // reported to the operator as requeued, and then silently overwritten by the
+  // worker's older copy of the array. Refusing while somebody is working is a
+  // worse button; telling an operator an item is requeued when it is not is a
+  // worse product.
+  const claim = await claimRun(deps, runId);
+  if (!claim) {
+    return {
+      ok: false,
+      error: 'This run is being worked on right now. Wait for the chunk to finish, then retry.',
+    };
+  }
+
+  const run = toSyncRun(claim.row);
+  const release = (patch: Record<string, unknown>) => writeLeased(deps, runId, claim.lease, patch);
+  const nowIso = new Date(now()).toISOString();
+
   const target = run.items.find((item) => item.itemId === itemId);
-  if (!target) return { ok: false, error: 'That item is not part of this run.' };
-  if (target.status !== 'failed') {
+  if (!target || target.status !== 'failed') {
+    await release({ lease_until: null, updated_at: nowIso });
+    if (!target) return { ok: false, error: 'That item is not part of this run.' };
     return { ok: false, error: `Only failed items can be retried; this one is ${target.status}.` };
   }
 
@@ -636,35 +725,78 @@ export async function retrySyncItem(
     item.itemId === itemId ? { ...item, status: 'pending' as const, detail: null } : item,
   );
 
-  await deps.supabase
-    .from('creator_sync_runs')
-    .update({ items, status: 'queued', finished_at: null, updated_at: new Date(now()).toISOString() })
-    .eq('id', runId);
+  const written = await release({
+    items,
+    status: 'queued',
+    finished_at: null,
+    lease_until: null,
+    updated_at: nowIso,
+  });
+  if (!written) {
+    return { ok: false, error: 'Another worker took this run while we were reading it. Try again.' };
+  }
 
   return { ok: true, run: { ...run, items, status: 'queued' } };
 }
 
 /**
+ * Wall-clock budget for the cron's sweep of stalled runs.
+ *
+ * The cron does two email passes before it gets here and the whole invocation
+ * has to fit inside `maxDuration`. Without this the sweep would start work it
+ * cannot finish: the function is killed mid-chunk having claimed a lease, and
+ * the run it was "recovering" is then unavailable to anyone else until that
+ * lease expires.
+ */
+export const SWEEP_BUDGET_MS = 25_000;
+
+/**
  * Resumes runs nobody is driving.
  *
  * The admin screen calls the worker in a loop, which means closing the tab
- * stops the loop. Without this a 200-item run could sit half-published forever
- * and — worse — the creator would never get the email about the half that did
- * publish. Called from the daily cron, so the recovery is slow but certain.
+ * stops the loop, and this is the backstop for that.
+ *
+ * **It is a backstop, not a queue, and the difference is worth being plain
+ * about.** One cron fire a day advances each stalled run by whatever fits in
+ * the budget below — a chunk or two. A 200-item run whose operator walked away
+ * therefore takes weeks to finish here, not a day: the honest recovery is an
+ * operator reopening the run and pressing Resume, and what this guarantees is
+ * only that no run is *forgotten*. Finishing a large abandoned run in one pass
+ * needs a real job queue, which this project does not have.
+ *
+ * Ordered by least-recently-touched rather than oldest-created. `created_at`
+ * ascending meant the same five old stuck runs were picked every single day and
+ * every newer run starved behind them for good; `updated_at` moves a run to the
+ * back of the line the moment it is advanced, so the sweep is a round robin.
  */
 export async function resumeStalledSyncRuns(deps: SyncDeps, limit = 5): Promise<number> {
-  const nowIso = new Date((deps.now ?? Date.now)()).toISOString();
+  const now = deps.now ?? Date.now;
+  const nowIso = new Date(now()).toISOString();
+  const deadline = now() + SWEEP_BUDGET_MS;
+
   const { data } = await deps.supabase
     .from('creator_sync_runs')
     .select('id')
     .neq('status', 'done')
     .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
-    .order('created_at', { ascending: true })
+    .order('updated_at', { ascending: true })
     .limit(limit);
 
   const rows = (data ?? []) as Array<{ id: string }>;
+  let advanced = 0;
   for (const row of rows) {
+    // Checked before starting a run rather than after: a chunk we begin without
+    // the time to finish it ends as a killed function holding a live lease.
+    if (now() >= deadline) {
+      log({
+        event: 'ADMIN:SYNC_RUN',
+        status: 'pending',
+        detail: `sweep stopped at its ${SWEEP_BUDGET_MS}ms budget with ${rows.length - advanced} run(s) left for the next fire`,
+      });
+      break;
+    }
     await advanceRun(deps, row.id);
+    advanced += 1;
   }
-  return rows.length;
+  return advanced;
 }
