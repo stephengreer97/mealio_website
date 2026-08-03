@@ -16,11 +16,17 @@
  *   - none anywhere      → this creator is **not importable**, and they are told
  *                          so, rather than the feature quietly doing nothing
  *
- * All four sources can be probed now. Two of them cost nothing and can be run at
- * application review: a website has a feed, and a YouTube channel has a public
- * uploads feed. The other two cannot — Instagram and TikTok hand over nothing
- * without an OAuth grant (MEAL-82 / 83), so those probes report `unavailable`
- * until the creator connects, and say why.
+ * All four sources can be probed. **Only the website can be probed before the
+ * creator connects anything**, which moves when the answer is available: a
+ * website has a public feed, and Instagram, TikTok and — since MEAL-79 —
+ * YouTube hand over nothing without an OAuth grant. Those three report
+ * `unavailable` with "not measurable until connected", and say why.
+ *
+ * That cost is accepted rather than worked around (MEAL-74, 2026-08-02). The
+ * alternative was a weaker pre-check off a public page, which is a second,
+ * cheaper code path measuring something different from what the poller will
+ * later read — and whether a creator posts recipes at all is a thirty-second
+ * human judgement an operator makes with their links open in front of them.
  *
  * They are deliberately *not* stubbed to return "viable" when they cannot run. A
  * check that could not run must never look like a check that passed, since that
@@ -42,7 +48,7 @@ import { classifySource } from './gate';
 import { toSourceDocument } from './html';
 import { robotsPerOrigin } from './robots';
 import { safeFetch, type SafeFetchOptions } from './ssrf';
-import { isChannelId, readUploadsFeed, resolveChannelId, youtubeSourceDocument } from '@/lib/youtube';
+import { isChannelId, listUploads, youtubeSourceDocument } from '@/lib/youtube';
 import {
   fetchInstagramMedia,
   hasRecipeText as hasInstagramText,
@@ -284,19 +290,25 @@ export const websiteProbe: SourceProbe = {
 };
 
 /**
- * YouTube probe: read the channel's uploads feed and gate each video on its
- * title and description (MEAL-74).
+ * YouTube probe: list the channel's uploads and gate each video on its title and
+ * description (MEAL-74, amended by MEAL-79).
  *
- * Free, and deliberately so. The uploads feed carries the full description of
- * every recent upload with no API quota and no auth, and creators routinely put
- * the ingredient list there — so a channel can be measured before its owner has
- * connected anything, which is when the operator reviewing their application
- * actually needs the answer.
+ * **This used to run before a creator connected anything, and no longer can.**
+ * The free lister was the uploads feed, and `youtube.com/robots.txt` disallows
+ * it; `playlistItems.list` is the sanctioned replacement and it is an
+ * authenticated call. So YouTube joins Instagram and TikTok: approve, ask them
+ * to connect, *then* measure.
  *
- * Captions are the fallback for a video whose description is too thin to judge,
- * and only when the creator *has* connected — the ticket's ordering, and the
- * quota control that goes with it: a vlog is rejected on title and description
- * before its captions are ever downloaded.
+ * Decided 2026-08-02 rather than papered over with a cheaper pre-check off the
+ * channel page. The check stops being "should I approve this person" — a
+ * thirty-second human judgement an operator makes with the creator's links open
+ * in front of them — and becomes "is this connected source going to produce
+ * anything", which is asked against the credential the poller will actually use
+ * rather than a public proxy for it.
+ *
+ * Captions are the fallback for a video whose description is too thin to judge.
+ * A vlog is rejected on title and description before its captions are ever
+ * downloaded, which is the quota control that ordering exists for.
  *
  * No `feed` is returned. That field exists so an operator can confirm a
  * discovered feed URL before it is stored, and nothing is stored here: the
@@ -306,20 +318,37 @@ export const websiteProbe: SourceProbe = {
 export const youtubeProbe: SourceProbe = {
   source: 'youtube',
 
-  async probe(link, context) {
+  async probe(_link, context) {
+    const accessToken = context.grant?.accessToken;
+    if (!accessToken) return notConnectedYet('youtube');
+
+    // The grant's channel id or nothing. Falling back to the id on `link` — a
+    // URL the creator typed into an application — measures whatever channel that
+    // page names, so a creator whose link points at a stranger gets the
+    // stranger's back catalogue reported as their viability. See
+    // `channelIdForCreator`, which is the same refusal for the same reason.
     const granted = context.grant?.externalId;
-    const channelId = isChannelId(granted)
-      ? { ok: true as const, channelId: granted }
-      : await resolveChannelId(link, context.fetchOptions);
-    if (!channelId.ok) return { ok: false, detail: channelId.detail };
+    if (!isChannelId(granted)) {
+      return {
+        ok: false,
+        detail:
+          'This connection carries no channel id, so there is no channel we can prove is theirs to measure. ' +
+          'Ask them to reconnect YouTube from the creator portal, then run this again.',
+      };
+    }
 
-    const feed = await readUploadsFeed(channelId.channelId, context.fetchOptions);
-    if (!feed.ok) return { ok: false, detail: feed.detail };
+    const listed = await listUploads(accessToken, granted, {
+      limit: context.maxItems,
+      fetchImpl: context.fetchOptions?.fetchImpl as typeof fetch | undefined,
+    });
+    if (!listed.ok) return { ok: false, detail: listed.detail };
 
-    const videos = feed.videos.slice(0, context.maxItems);
+    const videos = listed.videos.slice(0, context.maxItems);
     const items = await mapWithConcurrency(videos, FETCH_CONCURRENCY, async (video): Promise<ProbedItem> => {
       const document = await youtubeSourceDocument(video, {
-        accessToken: context.grant?.accessToken ?? null,
+        accessToken,
+        fetchImpl: context.fetchOptions?.fetchImpl as typeof fetch | undefined,
+        lookup: context.fetchOptions?.lookup,
       });
       return {
         url: document.url,
@@ -347,26 +376,29 @@ export const youtubeProbe: SourceProbe = {
 
 /**
  * The sentence for a platform that cannot be measured until its owner connects
- * it (MEAL-82 / MEAL-83).
+ * it (MEAL-82 / MEAL-83, and MEAL-79 for YouTube).
  *
- * This is the honest cost of Instagram and TikTok, and it is worth stating
- * plainly because it is a real difference from every other source. A website has
- * a feed and a YouTube channel has a public uploads feed, so both can be
- * measured during application review — the moment an operator actually wants the
- * number. Instagram and TikTok hand over nothing at all without a grant, so the
- * order is reversed: approve the creator, ask them to connect, *then* measure.
+ * Three of the four sources now read this way, and only the website can still be
+ * measured during application review. Instagram and TikTok hand over nothing at
+ * all without a grant; YouTube's one free lister was the uploads feed, and
+ * `youtube.com/robots.txt` disallows it, so the compliant call is authenticated
+ * too. For all three the order is: approve the creator, ask them to connect,
+ * *then* measure.
  *
  * It fails loudly rather than returning no items, because "no items" reads as
- * "nothing passed", which is the one thing it must never be confused with.
+ * "nothing passed", which is the one thing it must never be confused with. This
+ * is the sentence the admin Sources tab shows in place of a verdict — **not
+ * measurable until connected**, never "not viable".
  */
 function notConnectedYet(source: PlatformSource): ProbeResult {
   return {
     ok: false,
     detail:
-      `${SOURCE_LABELS[source]} cannot be checked until this creator connects their account: unlike a ` +
-      `website or a YouTube channel, ${SOURCE_LABELS[source]} publishes no feed we can read without a ` +
-      'grant. Ask them to connect it from the creator portal, then run this again. Until then this is ' +
-      '*not* a pass — do not set it as the source of truth on the strength of it.',
+      `Not measurable until connected. ${SOURCE_LABELS[source]} cannot be checked until this creator ` +
+      `connects their account: there is nothing ${SOURCE_LABELS[source]} lets us read without a grant. ` +
+      'Ask them to connect it from the creator portal, then run this again. Until then this is *not* a ' +
+      'pass and *not* a failure — do not set it as the source of truth, and do not rule the creator out ' +
+      'on the strength of it.',
   };
 }
 

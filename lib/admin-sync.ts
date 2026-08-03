@@ -10,10 +10,12 @@
  * Three things this file is careful about, all of them the same worry — that a
  * batch acting on a creator's behalf gets quietly wrong:
  *
- *   1. **Rendering the catalog is free.** Titles, dates and links come from feed
- *      metadata; nothing here fetches a post or calls a model to draw a list.
- *      Opening a 200-post blog costs the feed request and the already-imported
- *      lookup, and nothing else.
+ *   1. **Rendering the catalog spends nothing on extraction.** Titles, dates and
+ *      links come from listing metadata; nothing here fetches a post or calls a
+ *      model to draw a list. Opening a 200-post blog costs the feed request and
+ *      the already-imported lookup, and nothing else. YouTube is the one source
+ *      with a bill attached — `playlistItems.list` spends Data API units, so it
+ *      lists **one page per press** rather than the whole channel (MEAL-79).
  *   2. **The gate still runs.** An operator selecting an item is not a bypass. A
  *      selected post that is not a recipe is dropped with its reason recorded,
  *      so "I selected 12 and got 9" is explainable on screen.
@@ -47,11 +49,10 @@ import { robotsPerOrigin } from '@/lib/import/robots';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
 import {
   channelIdForCreator,
-  readUploadsFeed,
-  uploadsFeedUrl,
-  youtubeAccessToken,
+  fetchVideos,
+  listUploads,
   youtubeSourceDocument,
-  UPLOADS_FEED_MAX,
+  UPLOADS_PAGE_SIZE,
   type YouTubeVideo,
 } from '@/lib/youtube';
 import {
@@ -215,7 +216,7 @@ export interface SyncDeps {
    * Builds the source document for a source that is not a web page.
    *
    * `advanceRun` fills this in with a resolver memoised per run, so a 40-video
-   * selection reads the channel's uploads feed once rather than forty times.
+   * selection reads the platform once rather than forty times.
    */
   sourceDocument?: SourceDocumentResolver;
   now?: () => number;
@@ -241,8 +242,13 @@ export type SourceDocumentResolver = (
  *
  * Each platform's listing and token refresh happen **once per run**, whatever
  * the selection size: a 40-item selection is one API read, not forty.
+ *
+ * `videoIds` is the whole YouTube selection, handed down so the run can read it
+ * in one `videos.list` call (1 quota unit per 50 ids) instead of one per item.
+ * Empty is a valid answer — the single-item path has only the item in front of
+ * it — and the resolver falls back to that id alone.
  */
-export function createSourceDocumentResolver(deps: SyncDeps): SourceDocumentResolver {
+export function createSourceDocumentResolver(deps: SyncDeps, videoIds: string[] = []): SourceDocumentResolver {
   let channel: Promise<{ videos: Map<string, YouTubeVideo>; accessToken: string | null }> | null = null;
   /** Instagram and TikTok reduce to a document per item id at listing time. */
   let instagram: Promise<Map<string, SourceDocument>> | null = null;
@@ -251,24 +257,44 @@ export function createSourceDocumentResolver(deps: SyncDeps): SourceDocumentReso
   return async (creator, source, item) => {
     if (source === 'youtube') {
       channel ??= (async () => {
-        const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
-        if (!resolved.ok) return { videos: new Map<string, YouTubeVideo>(), accessToken: null };
-        const [feed, accessToken] = await Promise.all([
-          readUploadsFeed(resolved.channelId, deps.fetchOptions),
-          // Null when they have not connected: description-only import still
-          // works, it just cannot fall back to captions.
-          youtubeAccessToken({ supabase: deps.supabase }, resolved.connection),
-        ]);
+        const empty = { videos: new Map<string, YouTubeVideo>(), accessToken: null };
+        // A grant, not a link. `playlistItems.list` and `videos.list` are both
+        // authenticated calls now, so an unconnected creator has no read path at
+        // all — where the uploads feed used to give description-only import for
+        // free (MEAL-74, robots.txt).
+        const { connection, token } = await connectedGrant(deps, creator.id, 'youtube');
+        if (!token) return empty;
+        // The grant's channel id, never one derived from `creator.youtube_url`.
+        // The filter below compares against this value, so an id taken from a
+        // link a creator supplied would only ever be checked against itself.
+        const resolved = channelIdForCreator(connection);
+        if (!resolved.ok) return empty;
+
+        // Read by id rather than by re-listing the channel. A selection made
+        // from page 4 of a 300-video catalogue used to be unreadable, because
+        // the run looked for those ids in the most recent 15 uploads.
+        const listed = await fetchVideos(token, [...new Set(videoIds.length ? videoIds : [item.itemId])], {
+          fetchImpl: platformFetch(deps),
+        });
+        if (!listed.ok) return empty;
+
         return {
-          videos: new Map(feed.ok ? feed.videos.map((video) => [video.videoId, video] as const) : []),
-          accessToken,
+          videos: new Map(
+            listed.videos
+              // The id came from a request body. Without this a hand-edited
+              // selection naming somebody else's video would be extracted and
+              // published under this creator's name.
+              .filter((video) => video.channelId === resolved.channelId)
+              .map((video) => [video.videoId, video] as const),
+          ),
+          accessToken: token,
         };
       })();
 
       const { videos, accessToken } = await channel;
       const video = videos.get(item.itemId);
       if (!video) return null;
-      return youtubeSourceDocument(video, { accessToken });
+      return youtubeSourceDocument(video, { accessToken, fetchImpl: platformFetch(deps), lookup: deps.fetchOptions?.lookup });
     }
 
     if (source === 'instagram') {
@@ -373,6 +399,22 @@ export type CatalogResult =
       /** True when the source published more than we will list. */
       truncated: boolean;
       /**
+       * Cursor for the next window of a paged catalogue (YouTube, MEAL-79).
+       *
+       * Present means there is more and an operator can ask for it; absent means
+       * this is everything. Distinct from `truncated`, which says the same thing
+       * for sources that offer no way to go and get the rest.
+       */
+      nextPageToken?: string | null;
+      /**
+       * YouTube Data API units this listing spent, out of a shared 10,000/day.
+       *
+       * Shown on the operator screen for the reason the cost estimate is: a
+       * budget nobody can see is a budget somebody exhausts. Absent on the three
+       * sources that spend none.
+       */
+      quotaUnits?: number;
+      /**
        * Polling bookkeeping, filled in only on the website path (MEAL-75).
        *
        * The other three sources are authenticated JSON APIs read with a bearer
@@ -392,6 +434,15 @@ export type CatalogResult =
        */
       reason: string;
       detail: string;
+      /**
+       * Units a *failed* listing still spent (YouTube, MEAL-79).
+       *
+       * `playlistItems.list` refusing after `channels.list` succeeded has cost a
+       * unit, and a screen that only adds up successes reports less than Google
+       * charged — which is the wrong direction for a number whose job is to make
+       * somebody stop before the budget does.
+       */
+      quotaUnits?: number;
     };
 
 export interface CatalogOptions {
@@ -402,6 +453,11 @@ export interface CatalogOptions {
    * list, not be told it has not changed since a cron read it.
    */
   conditional?: ConditionalValidators;
+  /**
+   * The next window of a paged catalogue, from the previous result's
+   * `nextPageToken`. YouTube only — nothing else here pages.
+   */
+  pageToken?: string | null;
 }
 
 /**
@@ -417,7 +473,7 @@ export async function buildCatalog(
   source: PlatformSource,
   catalogOptions: CatalogOptions = {},
 ): Promise<CatalogResult> {
-  if (source === 'youtube') return buildYouTubeCatalog(deps, creator);
+  if (source === 'youtube') return buildYouTubeCatalog(deps, creator, catalogOptions.pageToken ?? null);
   if (source === 'instagram') return buildInstagramCatalog(deps, creator);
   if (source === 'tiktok') return buildTikTokCatalog(deps, creator);
 
@@ -538,32 +594,62 @@ async function withImportRecords(
 }
 
 /**
- * Lists a creator's YouTube channel from the uploads feed (MEAL-74).
+ * Lists one window of a creator's YouTube back catalogue (MEAL-74 / MEAL-79).
  *
- * Feed metadata only: ids, titles and dates, one unauthenticated request, no API
- * quota. The same rule the website path follows — nothing here fetches a video
- * or calls a model to draw a list — and the reason a channel can be listed at
- * all before its owner has connected anything.
+ * Metadata only: ids, titles, dates and descriptions, from `playlistItems.list`
+ * against the channel's uploads playlist. Nothing here fetches a video or calls
+ * a model to draw a list — the same rule the other three catalogs follow.
+ *
+ * Two things changed with MEAL-79 and both are visible from here:
+ *
+ *   - **It needs a grant**, so an unconnected channel is reported the way an
+ *     unconnected Instagram account is. The uploads feed used to make this work
+ *     with no connection at all; `youtube.com/robots.txt` disallows that feed,
+ *     and the sanctioned replacement is authenticated.
+ *   - **It pages, and one press lists one page.** 50 videos for 2 units, or 1
+ *     once the uploads playlist id is memoised for this channel. The operator
+ *     asks for the next window, so a 300-video channel costs 7 units when
+ *     somebody wants all of it and one instance served every press, 12 if none
+ *     of them hit a warm memo, and 2 when they opened the screen to look.
  *
  * `item_id` is the bare video id. MEAL-79's "this meal came from *that* video"
  * relationship is keyed on it, so it has to be the id YouTube's own API uses.
  */
-async function buildYouTubeCatalog(deps: SyncDeps, creator: SyncCreator): Promise<CatalogResult> {
-  const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
+async function buildYouTubeCatalog(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  pageToken: string | null,
+): Promise<CatalogResult> {
+  const { connection, token, brokenReason } = await connectedGrant(deps, creator.id, 'youtube');
+  if (!token) return notConnectedCatalog('youtube', brokenReason);
+
+  const resolved = channelIdForCreator(connection);
   if (!resolved.ok) {
     return { ok: false, reason: 'not-connected', detail: resolved.detail };
   }
 
-  const feed = await readUploadsFeed(resolved.channelId, deps.fetchOptions);
-  if (!feed.ok) {
-    return { ok: false, reason: 'unreachable', detail: feed.detail };
+  const listed = await listUploads(token, resolved.channelId, {
+    pageToken,
+    limit: UPLOADS_PAGE_SIZE,
+    fetchImpl: platformFetch(deps),
+  });
+  if (!listed.ok) {
+    return { ok: false, reason: 'unreachable', detail: listed.detail, quotaUnits: listed.quotaUnits };
   }
+  // An empty page is not an empty account when there is a cursor behind it.
+  // `listUploads` drops private and deleted placeholders, so a channel whose 50
+  // most recent uploads are private lists nothing on page one — and reporting
+  // that as "this account has nothing posted" is both the one thing an empty
+  // list must never be allowed to mean and a dead end: `emptyAccountCatalog`
+  // carries no cursor, so the public back catalogue behind page one can never be
+  // asked for. With a cursor this is an ordinary short page.
+  if (listed.videos.length === 0 && !pageToken && !listed.nextPageToken) return emptyAccountCatalog('youtube');
 
   const entries = await withImportRecords(
     deps,
     creator,
     'youtube',
-    feed.videos.map((video) => ({
+    listed.videos.map((video) => ({
       itemId: video.videoId,
       url: video.url,
       title: video.title,
@@ -574,12 +660,16 @@ async function buildYouTubeCatalog(deps: SyncDeps, creator: SyncCreator): Promis
   return {
     ok: true,
     source: 'youtube',
-    feed: { url: uploadsFeedUrl(resolved.channelId), kind: 'atom', via: 'uploads-feed' },
+    // No feed URL to offer. There is nothing here an operator could confirm and
+    // store, and handing a `youtube.com` address to the button that writes
+    // `creators.feed_url` only invites an error.
+    feed: null,
     entries,
-    // The uploads feed only ever carries the most recent uploads, so a full one
-    // means there is older material this screen is not showing. Saying so beats
-    // an operator concluding the channel is smaller than it is.
-    truncated: entries.length >= UPLOADS_FEED_MAX,
+    // A next cursor means there is older material this screen is not showing.
+    // Saying so beats an operator concluding the channel is smaller than it is.
+    truncated: Boolean(listed.nextPageToken),
+    nextPageToken: listed.nextPageToken,
+    quotaUnits: listed.quotaUnits,
   };
 }
 
@@ -620,16 +710,24 @@ function notConnectedCatalog(source: ConnectedPlatform, brokenReason: string | n
       ? `This creator's ${SOURCE_LABELS[source]} connection has stopped working: ${brokenReason} ` +
         'Ask them to reconnect it from the creator portal.'
       : `This creator has not connected their ${SOURCE_LABELS[source]} account, and ${SOURCE_LABELS[source]} ` +
-        'shows us nothing without one. Ask them to connect it from the creator portal. Use the one-link ' +
-        'mode for individual posts in the meantime.',
+        'shows us nothing without one. Ask them to connect it from the creator portal. One-link mode is no ' +
+        'help here either: these three are read through the grant and never from their public URL, because ' +
+        'the public URL serves an app shell with no recipe on it.',
   };
 }
 
-/** The grant, plus the reason it is unusable when it is. */
+/**
+ * The grant, plus the reason it is unusable when it is.
+ *
+ * The connection itself comes back too, because YouTube needs the channel id off
+ * it. Loading it twice — once for the token, once for the id — would ask the
+ * same question twice and let the two answers disagree.
+ */
 async function connectedGrant(deps: SyncDeps, creatorId: string, platform: ConnectedPlatform) {
   const connection = await loadConnection(deps.supabase, creatorId, platform);
-  if (!connection) return { token: null, brokenReason: null };
+  if (!connection) return { connection: null, token: null, brokenReason: null };
   return {
+    connection,
     token: await usableAccessToken({ supabase: deps.supabase }, connection),
     brokenReason: connection.brokenReason,
   };
@@ -756,8 +854,9 @@ function isTerminal(item: SyncItem): boolean {
  */
 const MISSING_ITEM_DETAIL: Record<ConnectedPlatform, string> = {
   youtube:
-    "This video is no longer in the channel's recent uploads, so its description could not be read. " +
-    'Re-open the catalog and select it again if it is still listed.',
+    'This video could not be read from the connected channel. It has been deleted or made private, the ' +
+    "YouTube connection has stopped working, or it is not on this creator's channel at all. Re-open the " +
+    'catalog to see which.',
   instagram:
     "This post is no longer in the account's recent media, or the Instagram connection has stopped " +
     'working, so its caption could not be read. Re-open the catalog to see which.',
@@ -838,7 +937,9 @@ export async function processSyncItem(
   // a verdict on the post instead of on our reach.
   let document: SourceDocument | undefined;
   if (isConnectedPlatform(run.source)) {
-    const resolve = deps.sourceDocument ?? createSourceDocumentResolver(deps);
+    // No hint when one item is being run on its own: the id in front of us is
+    // the whole selection as far as this call knows.
+    const resolve = deps.sourceDocument ?? createSourceDocumentResolver(deps, [item.itemId]);
     const built = await resolve(creator, run.source, item);
     if (!built) {
       return await recordItem(deps, creator, run, {
@@ -1194,9 +1295,19 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
   const deadline = now() + CHUNK_BUDGET_MS;
   let items = [...run.items];
 
-  // Built once per invocation rather than per item, so a 40-video selection
-  // reads the uploads feed once and refreshes the grant once.
-  const chunkDeps: SyncDeps = { ...deps, sourceDocument: deps.sourceDocument ?? createSourceDocumentResolver(deps) };
+  // Built once per invocation rather than per item, so a 40-video selection is
+  // one `videos.list` call and one grant refresh. Only the items still to do go
+  // in: the memo cannot outlive the process, so a resumed run re-reads whatever
+  // it is handed, and handing it the terminal ones too meant a 200-video run
+  // spread over five invocations paid for all 200 five times — 20 units rather
+  // than the 14 it actually needs. One invocation that finishes the run still
+  // costs 4.
+  const chunkDeps: SyncDeps = {
+    ...deps,
+    sourceDocument:
+      deps.sourceDocument ??
+      createSourceDocumentResolver(deps, items.filter((entry) => !isTerminal(entry)).map((entry) => entry.itemId)),
+  };
 
   while (items.some((item) => !isTerminal(item)) && now() < deadline) {
     const wave: number[] = [];
