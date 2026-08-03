@@ -212,6 +212,12 @@ describe('ImportLinkBar — rejection', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Creator account required');
     expect(onRejected.mock.calls[0][0].status).toBe('rejected');
+
+    // And the heading does not blame their link. A 403 from our own endpoint
+    // never touched it, so "We couldn't open that link" sends them off to check
+    // a URL that is perfectly fine.
+    expect(alert.textContent).toContain('We couldn’t complete that import');
+    expect(alert.textContent).not.toContain('couldn’t open that link');
   });
 
   it('survives the network being down', async () => {
@@ -248,8 +254,58 @@ describe('ImportLinkBar — quiet by default', () => {
   it('will not fire on an empty box', () => {
     const { onImported } = harness((async () => json({}, 200)) as typeof fetch);
     const button = screen.getByRole('button', { name: 'Import' }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
+    // `aria-disabled`, not `disabled`: a disabled element cannot hold focus, so
+    // the real `disabled` threw a keyboard user back to <body> the moment they
+    // pressed Import. The guard is in `runImport`.
+    expect(button.getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(button);
     expect(onImported).not.toHaveBeenCalled();
+  });
+});
+
+describe('ImportLinkBar — starting over stops the read', () => {
+  it('aborts an in-flight request and refuses its response', async () => {
+    // Clearing the form used to leave the request running, so the response
+    // landed on the empty form a moment later and repopulated it.
+    let release: (r: Response) => void = () => {};
+    const signals: AbortSignal[] = [];
+    const success = await importedGuacamole();
+    const { onImported, onClearDraft } = harness((async (_url, init) => {
+      signals.push((init as RequestInit).signal!);
+      return new Promise<Response>(res => { release = res; });
+    }) as typeof fetch);
+
+    paste('https://cookieandkate.com/best-guacamole-recipe');
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await screen.findByRole('status');
+
+    // Offered mid-read even with no draft yet — it is the only way out of a
+    // request the copy warns can take a minute.
+    fireEvent.click(screen.getByRole('button', { name: /clear and start over/i }));
+
+    expect(onClearDraft).toHaveBeenCalledTimes(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(screen.queryByRole('status')).toBeNull();
+
+    release(json(success, 200));
+    await new Promise(r => setTimeout(r, 0));
+    expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it('can start a fresh import straight afterwards', async () => {
+    const success = await importedGuacamole();
+    let hang = true;
+    const { onImported } = harness((async () =>
+      (hang ? new Promise<Response>(() => {}) : json(success, 200))) as typeof fetch);
+
+    paste('https://cookieandkate.com/one');
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await screen.findByRole('status');
+    fireEvent.click(screen.getByRole('button', { name: /clear and start over/i }));
+
+    hang = false;
+    paste('https://cookieandkate.com/two');
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
   });
 });

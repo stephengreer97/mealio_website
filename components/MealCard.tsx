@@ -38,8 +38,15 @@ export function normIng(raw: any): Ingredient {
 }
 
 export function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
-  return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
+  // A count of one is not information — every line the source never quantified
+  // ("salt to taste", "many grinds of black pepper") arrives as a countable 1,
+  // and printing it states an amount nobody wrote.
+  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
+  // A unit with no measure is the same case one step along: "a handful of
+  // parsley" keeps its unit but has no number, and falling back to `qty` here
+  // printed "parsley, 1 handfuls".
+  const amount = ing.measure ?? '';
+  return amount ? `${ing.ingredientName}, ${amount} ${ing.unit}` : `${ing.ingredientName}, ${ing.unit}`;
 }
 
 export interface PresetMeal {

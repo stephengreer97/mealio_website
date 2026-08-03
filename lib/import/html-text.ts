@@ -49,16 +49,165 @@ const BLOCK_TAGS = new Set([
 ]);
 
 /**
- * Hard ceiling on the input to `htmlToText`.
+ * Hard ceiling on the input to every reader in this module and in `html.ts`.
  *
  * The fetcher already caps a response at 2 MB, but that is a *network* budget,
  * not a CPU one, and this runs before the gate and before any model call — so
  * a page that is expensive to strip burns server time on content we may be
- * about to reject anyway. A recipe post's readable content is a few tens of
- * kilobytes; anything past this is markup, inline data blobs and comment
- * threads, and truncating costs us nothing real.
+ * about to reject anyway.
+ *
+ * It was 512 KB, which is smaller than the recorded pages it was chosen for:
+ * cookieandkate is 566 KB and minimalistbaker 667 KB, so every fixture test in
+ * the suite ran against a page silently truncated by 8% and 21%, and nothing
+ * asserted what was lost. It happened not to matter for those two layouts;
+ * nothing would have told us when it started mattering. A megabyte clears both
+ * with room, and a test now fails the moment a fixture outgrows it.
  */
-const MAX_HTML_CHARS = 512 * 1024;
+export const MAX_HTML_CHARS = 1024 * 1024;
+
+/**
+ * Applies `MAX_HTML_CHARS` to one reader's input.
+ *
+ * Every reader caps its own input rather than trusting the caller to have done
+ * it. Each one is exported, each one is a whole-document scan, and "the entry
+ * point already truncated" is exactly the assumption that stops holding the
+ * first time someone calls one directly — which the pipeline's own telemetry
+ * and eval harness both do.
+ */
+export function capHtml(html: string): string {
+  return html.length > MAX_HTML_CHARS ? html.slice(0, MAX_HTML_CHARS) : html;
+}
+
+/**
+ * Ceiling on one start tag's attribute run.
+ *
+ * Generous on purpose: a responsive `<img srcset>` on a real recipe page runs
+ * to a couple of kilobytes, and skipping the tag that carries an `itemprop`
+ * would cost us the ingredient, not just the attribute.
+ */
+const MAX_ATTRS_CHARS = 16_384;
+
+export interface StartTag {
+  /** Lowercased tag name. */
+  name: string;
+  /** The attribute run verbatim: everything between the name and its `>`. */
+  attrs: string;
+  /** Index of the opening `<`. */
+  index: number;
+  /** Index just past the closing `>`. */
+  end: number;
+}
+
+/** Sticky, so the name is matched at the position we ask about and nowhere else. */
+const TAG_NAME = /[a-zA-Z][a-zA-Z0-9-]*/y;
+
+/**
+ * The next `<name …>` start tag at or after `from`, found without backtracking.
+ *
+ * `<meta[^>]*>` reads as bounded and is not. The `[^>]*` is bounded by a `>`
+ * that a hostile page simply never supplies, so it runs to end of input and then
+ * gives the characters back one at a time — from every one of the document's
+ * `<` positions. Measured on inputs as trivial as `'<meta '.repeat(n)`:
+ * `metaContent` took 758 ms at 64 KB and 15,160 ms at 256 KB, `detectPlatform`
+ * 784 ms and 12,701 ms, a clean 4× per doubling that extrapolates to minutes at
+ * the fetcher's 2 MB cap. End to end a 262 KB body took `runImport` 87 s —
+ * 8.7× the fetcher's own timeout, past the route's `maxDuration`, and on a
+ * single-threaded runtime it stalls every concurrent invocation on the instance
+ * rather than only the attacker's.
+ *
+ * Bounding the quantifier is not enough at that size; the engine still retries
+ * from every start position. So nothing here quantifies over content: the tag
+ * name is matched by a sticky pattern that cannot backtrack, and `>` is found by
+ * `indexOf`. The early `return` when no `>` lies ahead is what makes the
+ * pathological case linear — if there is none after this position there is none
+ * after any later one either.
+ */
+export function nextStartTag(html: string, from: number, only?: string): StartTag | null {
+  const wanted = only?.toLowerCase();
+  let cursor = from;
+
+  for (;;) {
+    const lt = html.indexOf('<', cursor);
+    if (lt === -1) return null;
+
+    TAG_NAME.lastIndex = lt + 1;
+    const name = TAG_NAME.exec(html);
+    if (!name) {
+      // A close tag, a comment, a doctype, or a bare `<` in prose.
+      cursor = lt + 1;
+      continue;
+    }
+    // Read before yielding anything: `TAG_NAME` is shared and these scans nest.
+    const attrsFrom = TAG_NAME.lastIndex;
+
+    const gt = html.indexOf('>', attrsFrom);
+    if (gt === -1) return null;
+
+    const lowerName = name[0].toLowerCase();
+    if ((!wanted || lowerName === wanted) && gt - attrsFrom <= MAX_ATTRS_CHARS) {
+      return { name: lowerName, attrs: html.slice(attrsFrom, gt), index: lt, end: gt + 1 };
+    }
+    cursor = gt + 1;
+  }
+}
+
+/** Every `<name …>` start tag in source order, or every start tag when `only` is omitted. */
+export function* startTags(html: string, only?: string): Generator<StartTag> {
+  let cursor = 0;
+  for (;;) {
+    const tag = nextStartTag(html, cursor, only);
+    if (!tag) return;
+    yield tag;
+    cursor = tag.end;
+  }
+}
+
+/** One `<name …>…</name>` element: its attribute run and its raw content. */
+export interface Element {
+  attrs: string;
+  inner: string;
+}
+
+/**
+ * Every `<name …>…</name>` element in source order.
+ *
+ * Same discipline as `nextStartTag`, plus a forward search for the close tag —
+ * and the same early `return` when there is none, for the same reason.
+ */
+export function* elements(html: string, name: string): Generator<Element> {
+  const close = new RegExp(`</${name}\\s*>`, 'gi');
+  let cursor = 0;
+
+  for (;;) {
+    const tag = nextStartTag(html, cursor, name);
+    if (!tag) return;
+
+    close.lastIndex = tag.end;
+    const closing = close.exec(html);
+    if (!closing) return;
+
+    yield { attrs: tag.attrs, inner: html.slice(tag.end, closing.index) };
+    cursor = closing.index + closing[0].length;
+  }
+}
+
+/**
+ * Reads one attribute out of a start tag's attribute run.
+ *
+ * Values may be double-quoted, single-quoted or unquoted — HTML minifiers strip
+ * quotes, and the MEAL-69 spike hit exactly that on Yoast pages. The name has to
+ * start at a token boundary rather than a `\b` one, or `data-name="x"` answers a
+ * request for `name`.
+ */
+export function attrValue(attrs: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(
+    `(?:^|\\s)${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`,
+    'i',
+  ).exec(attrs);
+  if (!match) return null;
+  return decodeEntities(match[1] ?? match[2] ?? match[3] ?? '').trim();
+}
 
 /**
  * Page furniture that is not the recipe: reader comments, related-post rails,
@@ -117,6 +266,31 @@ function isBoilerplate(tagName: string, tagAttributes: string): boolean {
 }
 
 /**
+ * Elements the page itself hides from a reader.
+ *
+ * Hidden text is still text: it lands in the corpus, so a value cited to a
+ * `display:none` block satisfies value ⊆ span ⊆ source and reads green — while
+ * the creator, checking the page that badge points at, cannot find the sentence
+ * anywhere on it. The page is attacker-controlled and is interpolated into the
+ * extraction prompt, so planting evidence there is a move available to whoever
+ * wrote the page, not a curiosity.
+ *
+ * Dropped from the recipe region only. A hit in hidden text still matches the
+ * whole-page corpus and so caps at amber with a "check it" marker, which is the
+ * honest answer: the text really is on the page, just not where anyone would see
+ * it. Deliberately narrow — only what the markup states outright. Hiding driven
+ * by a stylesheet class is invisible to us, and this is a demotion mechanism
+ * rather than a guarantee.
+ */
+function isHidden(tagName: string, tagAttributes: string): boolean {
+  if (NEVER_DROPPED_TAGS.has(tagName)) return false;
+  if (/(?:^|\s)hidden(?=[\s=>/]|$)/i.test(tagAttributes)) return true;
+  if (/(?:^|\s)aria-hidden\s*=\s*["']?true/i.test(tagAttributes)) return true;
+  const style = attrValue(tagAttributes, 'style');
+  return style !== null && /display\s*:\s*none|visibility\s*:\s*hidden/i.test(style);
+}
+
+/**
  * Index just past the close tag matching an element opened at `openEnd`.
  *
  * Counts depth rather than taking the first close tag, because the regions we
@@ -151,11 +325,17 @@ function skipElement(lower: string, tagName: string, openEnd: number): number {
 
 export interface HtmlToTextOptions {
   /**
-   * Also drop comment threads, related-post rails and disclosure blocks.
+   * Also drop comment threads, related-post rails, disclosure blocks, and
+   * anything the markup states is hidden from a reader.
    *
    * Used to build the corpus that `value ⊆ span ⊆ source` is verified against:
    * without it, a reader comment counts as "the source", and an ingredient
    * lifted from one verifies as green.
+   *
+   * Best effort, and the caller has to treat it as such. Both lists are pattern
+   * matches against `id`/`class`, so a layout that names its furniture something
+   * we do not recognise comes back unnarrowed — see `assessField`, which
+   * compares the two corpora rather than assuming this worked.
    */
   dropBoilerplate?: boolean;
 }
@@ -173,7 +353,7 @@ export interface HtmlToTextOptions {
  * scan below touches each character a bounded number of times.
  */
 export function htmlToText(html: string, options: HtmlToTextOptions = {}): string {
-  const input = html.length > MAX_HTML_CHARS ? html.slice(0, MAX_HTML_CHARS) : html;
+  const input = capHtml(html);
   const dropBoilerplate = options.dropBoilerplate === true;
   const out: string[] = [];
 
@@ -222,7 +402,8 @@ export function htmlToText(html: string, options: HtmlToTextOptions = {}): strin
 
     const drop =
       !closing && nameEnd !== '' &&
-      (DROPPED_TAGS.has(nameEnd) || (dropBoilerplate && isBoilerplate(nameEnd, raw)));
+      (DROPPED_TAGS.has(nameEnd) ||
+        (dropBoilerplate && (isBoilerplate(nameEnd, raw) || isHidden(nameEnd, raw))));
 
     if (drop) {
       // Skip the element's contents. A self-closing form has no contents.
@@ -249,23 +430,18 @@ export function htmlToText(html: string, options: HtmlToTextOptions = {}): strin
 /**
  * Reads a `<meta>` value by `property` or `name`.
  *
- * Attribute values may be double-quoted, single-quoted or unquoted — HTML
- * minifiers strip quotes, and the MEAL-69 spike hit exactly that on Yoast pages.
+ * Reading the attribute run of each tag, rather than matching a pattern across
+ * the whole document, makes attribute order a non-question — the two regexes
+ * this replaces existed only to cover both orderings — and it is what keeps the
+ * scan linear. See `nextStartTag`.
  */
 export function metaContent(html: string, property: string): string | null {
-  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const value = `(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`;
-  const key = `(?:property|name)\\s*=\\s*(?:"${escaped}"|'${escaped}'|${escaped}(?=[\\s>]))`;
-  const patterns = [
-    new RegExp(`<meta[^>]+${key}[^>]*content\\s*=\\s*${value}`, 'i'),
-    new RegExp(`<meta[^>]+content\\s*=\\s*${value}[^>]*${key}`, 'i'),
-  ];
-  for (const pattern of patterns) {
-    const match = pattern.exec(html);
-    if (match) {
-      const raw = match[1] ?? match[2] ?? match[3] ?? '';
-      return decodeEntities(raw).trim();
-    }
+  const wanted = property.toLowerCase();
+  for (const tag of startTags(capHtml(html), 'meta')) {
+    const key = attrValue(tag.attrs, 'property') ?? attrValue(tag.attrs, 'name');
+    if (key?.toLowerCase() !== wanted) continue;
+    const content = attrValue(tag.attrs, 'content');
+    if (content !== null) return content;
   }
   return null;
 }

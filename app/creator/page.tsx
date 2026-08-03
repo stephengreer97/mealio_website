@@ -24,6 +24,7 @@ import {
   type ImportField,
   type ScalarField,
 } from '@/lib/import/draft-form';
+import PublishedLinkModal from '@/components/PublishedLinkModal';
 
 interface Creator {
   id: string;
@@ -76,7 +77,11 @@ interface IngredientForm {
   qty: number;
 }
 
-const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp'];
+const UNITS = ['qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
+  // Units a cook writes that convert to nothing. Display only — the cart searches
+  // by name and counts packages with productQty — so carrying the word costs
+  // nothing and stops '3 cloves garlic' reading as 'garlic, 3'.
+  'cloves', 'cans', 'bunches', 'sprigs', 'pinches', 'handfuls', 'grinds', 'slices'];
 
 function normIng(raw: any): Ingredient {
   return {
@@ -90,22 +95,27 @@ function normIng(raw: any): Ingredient {
 }
 
 function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
-  return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
+  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
+  const amount = ing.measure ?? '';
+  return amount ? `${ing.ingredientName}, ${amount} ${ing.unit}` : `${ing.ingredientName}, ${ing.unit}`;
 }
 
 function toFormIng(ing: Ingredient): IngredientForm {
   return {
     ingredientName: ing.ingredientName,
-    measure: ing.unit === 'qty' ? String(ing.qty ?? 1) : (ing.measure ?? ''),
-    unit: ing.unit === 'qty' ? 'Qty' : ing.unit,
+    // Blank rather than "1" for a plain count: a line the source gave no amount
+    // for ("many grinds of black pepper") arrives as a countable 1, and typing
+    // that into the box reads as a quantity we read rather than one we assumed.
+    // `fromFormIng` parses an empty measure straight back to 1.
+    measure: ing.unit === 'qty' ? ((ing.qty ?? 1) > 1 ? String(ing.qty) : '') : (ing.measure ?? ''),
+    unit: ing.unit ?? 'qty',
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
   };
 }
 
 function fromFormIng(form: IngredientForm): Ingredient {
-  if (form.unit === 'Qty') {
+  if (form.unit === 'qty') {
     const q = parseInt(form.measure) || 1;
     return {
       ingredientName: form.ingredientName.trim(),
@@ -127,6 +137,11 @@ function fromFormIng(form: IngredientForm): Ingredient {
 }
 
 const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-Hard', 'Hard'];
+
+/** Starting point for the "which boxes are empty" mirror — a form nobody has touched. */
+const EMPTY_FORM: Record<ScalarField, boolean> = {
+  name: true, recipe: true, story: true, photoUrl: true, difficulty: true, tags: true, serves: true,
+};
 
 const ALL_TAGS = [
   // Time
@@ -170,6 +185,7 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
       <input
         type="text"
         placeholder="Search tags…"
+        aria-label="Search tags"
         value={search}
         onChange={e => setSearch(e.target.value)}
         style={{
@@ -551,11 +567,11 @@ function EditPresetMealModal({
                     style={{ ...modalInputStyle, flex: 1, marginBottom: 0 }}
                   />
                   <input
-                    type={ing.unit === 'Qty' ? 'number' : 'text'}
+                    type={ing.unit === 'qty' ? 'number' : 'text'}
                     value={ing.measure}
-                    min={ing.unit === 'Qty' ? 1 : undefined}
+                    min={ing.unit === 'qty' ? 1 : undefined}
                     onChange={e => updateFormField(i, 'measure', e.target.value)}
-                    placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                    placeholder={ing.unit === 'qty' ? '1' : 'amt'}
                     style={{ ...modalInputStyle, width: '52px', marginBottom: 0, textAlign: 'center' }}
                   />
                   <select
@@ -571,7 +587,7 @@ function EditPresetMealModal({
             </div>
             <button
               type="button"
-              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }])}
+              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }])}
               style={{ fontSize: '13px', color: '#dd0031', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
               + Add ingredient
@@ -752,12 +768,16 @@ export default function CreatorPortal() {
   const [editingMeal, setEditingMeal] = useState<CreatorMeal | null>(null);
   const [viewingMeal, setViewingMeal] = useState<CreatorMeal | null>(null);
   const publishDragRef = useRef(false);
+  const publishDialogRef = useRef<HTMLDivElement>(null);
+  /** Where focus was when the publish modal opened, so closing can put it back. */
+  const publishOpenerRef = useRef<HTMLElement | null>(null);
 
   // Publish form state
   const [showForm, setShowForm] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const [publishSuccess, setPublishSuccess] = useState('');
+  const [publishedMeal, setPublishedMeal] = useState<{ id: string; name: string; source: string | null } | null>(null);
 
   const [mealName, setMealName]       = useState('');
   const [mealRecipe, setMealRecipe]   = useState('');
@@ -766,7 +786,7 @@ export default function CreatorPortal() {
   const [mealServes, setMealServes]   = useState('');
   const [mealDifficulty, setMealDifficulty] = useState<number | null>(null);
   const [mealIngredients, setMealIngredients] = useState<IngredientForm[]>([
-    { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 },
+    { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 },
   ]);
   const [mealTags, setMealTags]           = useState<string[]>([]);
   const [photoFile, setPhotoFile]         = useState<File | null>(null);
@@ -788,6 +808,8 @@ export default function CreatorPortal() {
     path: string;
     /** Fields the creator was editing while the import ran, which we did not overwrite. */
     kept: string[];
+    /** Rows the import read but could not apply, because the list was being edited. */
+    keptIngredients: number | null;
   } | null>(null);
   const [importedPhotoUrl, setImportedPhotoUrl] = useState<string | null>(null);
   const [tagsNote, setTagsNote] = useState<string | null>(null);
@@ -799,13 +821,50 @@ export default function CreatorPortal() {
    * take a minute, so the response must not land on top of what they typed in
    * the meantime. Their edit wins, and the summary says which fields we left
    * alone rather than letting the difference go unexplained.
+   *
+   * `source` is in here alongside the eight import fields: it is a box the
+   * creator can type in, so it needs the same protection, even though nothing
+   * about it is ever imported *content*.
    */
-  const editedDuringImport = useRef<Set<ImportField>>(new Set());
+  const editedDuringImport = useRef<Set<ImportField | 'source'>>(new Set());
   const importInFlight = useRef(false);
+  /** Set once the creator types their own Recipe URL, which is then theirs to keep. */
+  const creatorTypedSource = useRef(false);
 
-  const markTouched = (field: ImportField) => {
-    if (importInFlight.current) editedDuringImport.current.add(field);
-  };
+  /**
+   * The live publish form, for `handleImported` to read.
+   *
+   * `ImportLinkBar` calls `onImported` through the closure it captured when
+   * Import was pressed, so every render-scope value that handler reads is a
+   * snapshot of that moment — which is how a photo chosen *during* a read came
+   * to be silently thrown away and published over. Reads go through this ref
+   * instead, which is rewritten after every commit and so is never behind.
+   */
+  const formRef = useRef<{
+    photoFile: File | null;
+    selectedIdx: number | null;
+    /** Which boxes are empty. An "add this" notice is only honest over an empty box. */
+    empty: Record<ScalarField, boolean>;
+  }>({ photoFile: null, selectedIdx: null, empty: EMPTY_FORM });
+
+  // No dependency array: this has to hold after *every* commit, because the
+  // commit it misses is the one the response lands after.
+  useEffect(() => {
+    formRef.current = {
+      photoFile,
+      selectedIdx,
+      empty: {
+        name: !mealName.trim(),
+        recipe: !mealRecipe.trim(),
+        story: !mealStory.trim(),
+        serves: !mealServes.trim(),
+        difficulty: mealDifficulty === null,
+        tags: mealTags.length === 0,
+        // "No photo" is the absence of all three ways there can be one.
+        photoUrl: !photoPreview && !photoFile && selectedIdx === null,
+      },
+    };
+  });
 
   // Handle state (kept for backward compat, consumed by saveProfile)
   const [handleInput, setHandleInput]     = useState('');
@@ -827,6 +886,54 @@ export default function CreatorPortal() {
   const [showEarnings, setShowEarnings] = useState(false);
 
   useEffect(() => { loadPortal(); }, []);
+
+  /**
+   * Keyboard and focus behaviour for the publish dialog.
+   *
+   * Pre-existing gaps that this work makes matter more: the modal now holds the
+   * whole import interaction, so a keyboard user who cannot get into it, out of
+   * it, or back to where they were has lost the feature rather than a
+   * convenience. Focus moves in on open and back to the opener on close, Escape
+   * closes, and Tab cycles inside instead of walking off into the portal
+   * underneath.
+   */
+  useEffect(() => {
+    if (!showForm) return;
+
+    publishOpenerRef.current = document.activeElement as HTMLElement | null;
+    publishDialogRef.current?.focus();
+
+    const focusable = () => Array.from(
+      publishDialogRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) ?? [],
+    ).filter(el => el.tabIndex >= 0);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { closePublishForm(); return; }
+      if (e.key !== 'Tab') return;
+
+      const items = focusable();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+
+      if (!e.shiftKey && (active === last || active === publishDialogRef.current)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && (active === first || active === publishDialogRef.current)) {
+        e.preventDefault();
+        last.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      publishOpenerRef.current?.focus();
+    };
+  }, [showForm]);
 
   // Legacy saveHandle — kept for functional compatibility
   const saveHandle = async () => {
@@ -931,8 +1038,8 @@ export default function CreatorPortal() {
     setPhotoFile(file);
     setThumbs([]); setFulls([]); setSelectedIdx(null);
     setImportedPhotoUrl(null);
-    setFieldStates(prev => clearScalarState(prev, 'photoUrl'));
     setPhotoPreview(URL.createObjectURL(file));
+    touched('photoUrl');
   };
 
   const handleGeneratePhoto = async () => {
@@ -942,7 +1049,7 @@ export default function CreatorPortal() {
     setPhotoFile(null);
     setPhotoPreview('');
     setImportedPhotoUrl(null);
-    setFieldStates(prev => clearScalarState(prev, 'photoUrl'));
+    touched('photoUrl');
     try {
       const token = localStorage.getItem('accessToken');
       const res = await fetch('/api/meals/generate-photo', {
@@ -966,18 +1073,21 @@ export default function CreatorPortal() {
 
   const selectSuggestion = (i: number) => {
     setSelectedIdx(prev => prev === i ? null : i);
+    // Picking a suggestion is choosing a photo, so it counts as touching the
+    // field exactly as much as uploading one does.
+    touched('photoUrl');
   };
 
   const addIngredientRow = () => {
-    setMealIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
+    setMealIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
     setFieldStates(prev => appendIngredientState(prev));
-    markTouched('ingredients');
+    markEdited('ingredients');
   };
 
   const removeIngredientRow = (i: number) => {
     setMealIngredients(prev => prev.filter((_, idx) => idx !== i));
     setFieldStates(prev => removeIngredientState(prev, i));
-    markTouched('ingredients');
+    markEdited('ingredients');
   };
 
   const updateIngredientForm = (i: number, field: keyof IngredientForm, value: string | number) => {
@@ -986,15 +1096,38 @@ export default function CreatorPortal() {
       if (field === 'ingredientName') return { ...ing, ingredientName: value as string, searchTerm: null };
       return { ...ing, [field]: value };
     }));
-    // The row is theirs now; our provenance no longer describes it.
-    setFieldStates(prev => clearIngredientState(prev, i));
-    markTouched('ingredients');
+    // Only the name retires the row's flag. A row's level is computed from its
+    // product name alone — `pipeline.ts` hands `assessField` the ingredient
+    // name, because that is the part that reaches the cart and the part a
+    // hallucination invents — so clearing it on an amount edit dropped a red
+    // flag that never described the amount, and published the name unmarked.
+    // The amount and unit are still the creator's work, so an import landing
+    // on them is still an overwrite: the row counts as edited either way.
+    touchIngredient(i, field === 'ingredientName');
   };
 
-  /** Drops one field's flag when the creator edits that field. */
+  /**
+   * The creator has put their own work into a field.
+   *
+   * These three are the only way form state should ever be marked as theirs,
+   * and they always do both halves of it: retire our flag, because our
+   * assessment has stopped describing what is in the box, and record the edit
+   * so an import still in flight cannot land on top of it. Splitting those two
+   * apart, or writing to a box without going through here at all — which is how
+   * the photo handlers and the Recipe URL box worked — is the whole bug class.
+   */
+  const markEdited = (field: ImportField | 'source') => {
+    if (importInFlight.current) editedDuringImport.current.add(field);
+  };
+
   const touched = (field: ScalarField) => {
     setFieldStates(prev => clearScalarState(prev, field));
-    markTouched(field);
+    markEdited(field);
+  };
+
+  const touchIngredient = (index: number, clearsProvenance: boolean) => {
+    if (clearsProvenance) setFieldStates(prev => clearIngredientState(prev, index));
+    markEdited('ingredients');
   };
 
   // ── Import from a link (MEAL-73) ──
@@ -1004,9 +1137,34 @@ export default function CreatorPortal() {
     setMealServes(''); setMealDifficulty(null); setMealTags([]);
     setPhotoFile(null); setPhotoPreview('');
     setThumbs([]); setFulls([]); setSelectedIdx(null);
-    setMealIngredients([{ ingredientName: '', measure: '1', unit: 'Qty', searchTerm: null, qty: 1 }]);
+    setMealIngredients([{ ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
     setFieldStates(null); setImportInfo(null); setImportedPhotoUrl(null); setTagsNote(null);
     setPublishError('');
+    // The bar aborts the request; this drops the bookkeeping that went with it,
+    // so anything typed into the fresh form is not counted as an in-flight edit
+    // against an import that no longer exists.
+    clearImportTracking();
+  };
+
+  /** Forgets an import that is no longer running, or no longer wanted. */
+  const clearImportTracking = () => {
+    importInFlight.current = false;
+    editedDuringImport.current = new Set();
+    creatorTypedSource.current = false;
+  };
+
+  /**
+   * Closing the modal ends the import as far as the form is concerned.
+   *
+   * `ImportLinkBar` unmounts and drops its own request, but the flags and the
+   * in-flight bookkeeping live out here on the portal, which does not — so
+   * without this they stay armed until the next import starts.
+   */
+  const closePublishForm = () => {
+    setShowForm(false);
+    setPublishError('');
+    importInFlight.current = false;
+    editedDuringImport.current = new Set();
   };
 
   const handleImportStart = () => {
@@ -1030,26 +1188,52 @@ export default function CreatorPortal() {
    * all; a field we wrote but could not verify, and a field the source had
    * nothing for, each say what happened. A field the creator was editing says
    * nothing, because we have no claim to make about their wording.
+   *
+   * Nothing below reads render-scope state. This function runs from the closure
+   * `ImportLinkBar` captured when Import was pressed, so a render-scope read is
+   * a snapshot of that moment and blind to everything the creator has done
+   * since — the exact window the progress copy invites them to work in.
+   * `formRef` and the refs beside it are read at call time.
    */
   const handleImported = (result: ImportSuccess) => {
     importInFlight.current = false;
     const edited = editedDuringImport.current;
     editedDuringImport.current = new Set();
+    const form = formRef.current;
 
     const values = importedFormValues(result);
     const written: Partial<Record<ImportField, boolean>> = {};
     const kept: string[] = [];
+    /** Rows we read but did not apply, because the creator was editing the list. */
+    let keptIngredients: number | null = null;
 
     const write = (field: ImportField, apply: () => void) => {
       if (!values.provided[field]) return;
-      if (edited.has(field)) { kept.push(FIELD_LABELS[field]); return; }
+      if (edited.has(field)) {
+        // An ingredient list is written all or nothing — there is no honest way
+        // to interleave our rows with a list someone is halfway through
+        // editing — so one character typed in row 1 costs the whole
+        // extraction. "We kept your own wording for Measurements" hides that;
+        // the count of rows they did not get is the part worth saying.
+        if (field === 'ingredients') keptIngredients = values.ingredients.length;
+        else kept.push(FIELD_LABELS[field]);
+        return;
+      }
       apply();
       written[field] = true;
     };
 
-    // The link itself is never "imported content" — it is what the creator
-    // pasted — so it is always safe to record.
-    setMealSource(values.source);
+    // The link is a record of where the recipe came from rather than imported
+    // content, so an import is free to write it — but never over a URL the
+    // creator put there themselves, whenever they typed it. `values.source` is
+    // the page we finally read after redirects, which is not necessarily what
+    // they pasted, and overwriting their own link with it is a silent edit to
+    // the one field that credits their site.
+    if (creatorTypedSource.current) {
+      if (edited.has('source')) kept.push('Recipe URL');
+    } else {
+      setMealSource(values.source);
+    }
 
     write('name', () => setMealName(values.name));
     write('story', () => setMealStory(values.story));
@@ -1061,8 +1245,11 @@ export default function CreatorPortal() {
 
     // The pipeline stores the photo on our side before handing it over — we
     // never hotlink a creator's blog — so this is a URL we can use directly.
-    // A creator who already chose their own photo keeps it.
-    const chosePhoto = Boolean(photoFile) || selectedIdx !== null;
+    // A creator who chose their own photo keeps it, whether they chose it
+    // before pressing Import or during the read. A `File` they picked cannot be
+    // recovered once it is dropped, which is why this is checked from the ref
+    // and not left to `edited` alone.
+    const chosePhoto = Boolean(form.photoFile) || form.selectedIdx !== null;
     if (!chosePhoto) {
       write('photoUrl', () => {
         setPhotoFile(null);
@@ -1074,8 +1261,16 @@ export default function CreatorPortal() {
       kept.push(FIELD_LABELS.photoUrl);
     }
 
-    setFieldStates(fieldStatesFor(result.confidence, values, written));
-    setImportInfo({ url: result.url, path: pathLabel(result.meta), kept });
+    // Merged onto the states already on screen rather than replacing them: this
+    // import only has something to say about the boxes it just wrote.
+    setFieldStates(prev => fieldStatesFor({
+      confidence: result.confidence,
+      values,
+      written,
+      empty: form.empty,
+      previous: prev,
+    }));
+    setImportInfo({ url: result.url, path: pathLabel(result.meta), kept, keptIngredients });
     setPublishError('');
   };
 
@@ -1146,13 +1341,26 @@ export default function CreatorPortal() {
         }),
       });
 
+      const data = await res.json();
       if (!res.ok) {
-        const data = await res.json();
         setPublishError(data.error || 'Failed to publish meal.');
         return;
       }
 
       setPublishSuccess(`"${mealName}" is now live in Discover!`);
+      // Publishing is the moment the creator can still edit the caption of the
+      // video this came from — on TikTok it is the only window there is — so
+      // hand them the link right here rather than hoping they hunt for it later.
+      // Read before the reset, which clears the name it quotes.
+      if (data.meal?.id) {
+        // Use the stored source: the server normalises it, so a creator who typed
+        // "tiktok.com/…" without a scheme still gets the TikTok guidance.
+        setPublishedMeal({ id: data.meal.id, name: mealName.trim(), source: data.meal.source ?? null });
+      }
+      // `resetPublishForm` supersedes the field-by-field reset this replaced: it
+      // clears the same inputs and also the import bookkeeping — flagged fields,
+      // the imported photo, the tags note, the in-flight guard — which a manual
+      // list has no way to know about.
       resetPublishForm();
       setShowForm(false);
       loadPortal();
@@ -1193,6 +1401,27 @@ export default function CreatorPortal() {
   const notices = noticesFor(fieldStates);
   const counts = summarise(fieldStates);
   const flagged = (field: ScalarField) => (notices[field] ? FLAGGED_FIELD_STYLE : undefined);
+
+  /**
+   * Points a control at its notice.
+   *
+   * The dotted underline and the sentence beneath it are the whole feature, and
+   * neither reaches a screen reader on its own: a forms-mode reader tabs
+   * control to control and never speaks the static text in between. The notice
+   * has to be the control's description, and the control has to say it needs
+   * attention, or an import is silent to anyone not looking at it.
+   */
+  const flaggedAria = (field: ScalarField) =>
+    notices[field] ? { 'aria-describedby': `import-notice-${field}`, 'aria-invalid': true as const } : {};
+
+  /**
+   * The same, for the three fields whose control is a group of buttons rather
+   * than a box. `aria-describedby` is global; `aria-invalid` is not — it is
+   * only defined on widget roles, and `group` is not one — so it is dropped
+   * here rather than written somewhere it means nothing.
+   */
+  const flaggedGroupAria = (field: ScalarField) =>
+    notices[field] ? { 'aria-describedby': `import-notice-${field}` } : {};
 
   return (
     <>
@@ -1459,21 +1688,43 @@ export default function CreatorPortal() {
             Publish New Meal
           </button>
 
+          {/* ── Share-your-link prompt, shown once right after publishing ── */}
+          {publishedMeal && (
+            <PublishedLinkModal
+              mealId={publishedMeal.id}
+              mealName={publishedMeal.name}
+              source={publishedMeal.source}
+              onClose={() => setPublishedMeal(null)}
+            />
+          )}
+
           {/* ── Publish modal ── */}
           {showForm && (
             <div
               className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4"
               onMouseDown={e => { publishDragRef.current = e.target !== e.currentTarget; }}
-              onClick={e => { if (e.target !== e.currentTarget || publishDragRef.current) return; setShowForm(false); setPublishError(''); }}
+              onClick={e => { if (e.target !== e.currentTarget || publishDragRef.current) return; closePublishForm(); }}
             >
-              <div className="bg-white w-full sm:rounded-2xl sm:max-w-lg rounded-t-2xl shadow-2xl flex flex-col max-h-[92vh]">
+              {/* A dialog, and now declared as one. This modal holds the entire
+                  import interaction, so a screen reader that treats it as part
+                  of the page behind loses the form and the callouts in it. */}
+              <div
+                ref={publishDialogRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="publish-modal-title"
+                tabIndex={-1}
+                className="bg-white w-full sm:rounded-2xl sm:max-w-lg rounded-t-2xl shadow-2xl flex flex-col max-h-[92vh] outline-none"
+              >
                 <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
-                  <h3 className="text-base font-bold text-gray-900">Publish a New Meal</h3>
+                  <h3 id="publish-modal-title" className="text-base font-bold text-gray-900">Publish a New Meal</h3>
                   <button
-                    onClick={() => { setShowForm(false); setPublishError(''); }}
+                    type="button"
+                    onClick={closePublishForm}
+                    aria-label="Close"
                     className="text-gray-400 hover:text-gray-600 transition-colors"
                   >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   </button>
                 </div>
 
@@ -1493,7 +1744,14 @@ export default function CreatorPortal() {
 
                 {/* The summary is what makes an unflagged field readable as
                     *checked* rather than *skipped*. Without it, silence is
-                    ambiguous and the whole scheme stops working. */}
+                    ambiguous and the whole scheme stops working.
+
+                    The live region wraps the summary instead of being the
+                    summary, because a region announces changes to itself and a
+                    region that arrives already full has nothing to announce.
+                    `aria-live` rather than `role="status"`: the bar already
+                    owns the one status role on this screen, for progress. */}
+                <div aria-live="polite" aria-atomic="true">
                 {importInfo && (
                   <div
                     className="mt-3 rounded-xl px-4 py-3"
@@ -1509,53 +1767,92 @@ export default function CreatorPortal() {
                         for {importInfo.kept.join(', ')}.
                       </p>
                     )}
+                    {/* Named separately from `kept` because the cost is different in
+                        kind: the list is written all or nothing, so an edit to one
+                        row loses every row we read, and only the count says so. */}
+                    {importInfo.keptIngredients !== null && (
+                      <p
+                        className="text-xs mt-1.5 leading-relaxed font-medium"
+                        style={{ color: '#18181B' }}
+                        data-testid="import-kept-ingredients"
+                      >
+                        You were editing the ingredients, so we kept your list and added
+                        none of the {importInfo.keptIngredients} we read. Clear and start
+                        over to take ours instead.
+                      </p>
+                    )}
                     <p className="text-xs mt-1 leading-relaxed" style={{ color: '#A1A1AA' }}>
                       {importInfo.path} Nothing here is final — edit anything, then publish.
                     </p>
                   </div>
                 )}
+                </div>
               </div>
 
               <form onSubmit={handlePublish} className="p-6 space-y-5">
 
                 {/* Name */}
                 <div>
-                  <label className={pLabelCls}>Meal Name <span className="text-red-500">*</span></label>
+                  <label htmlFor="publish-name" className={pLabelCls}>Meal Name <span className="text-red-500">*</span></label>
                   <input
+                    id="publish-name"
                     value={mealName}
                     onChange={e => { setMealName(e.target.value); touched('name'); }}
                     placeholder="e.g. Spicy Chicken Ramen"
                     className={pInputCls}
                     style={flagged('name')}
+                    {...flaggedAria('name')}
                   />
-                  <ImportFieldNotice notice={notices.name} fieldLabel="Meal name" />
+                  <ImportFieldNotice notice={notices.name} fieldLabel="Meal name" id="import-notice-name" />
                 </div>
 
                 {/* Source — the creator's own link, so it is never flagged. */}
                 <div>
-                  <label className={pLabelCls}>Recipe URL <span className="text-gray-400 font-normal">(optional)</span></label>
-                  <input value={mealSource} onChange={e => setMealSource(e.target.value)} placeholder="https://yourblog.com/recipe" className={pInputCls} />
+                  <label htmlFor="publish-source" className={pLabelCls}>Recipe URL <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input
+                    id="publish-source"
+                    value={mealSource}
+                    // Goes through the same door as every other box: once they
+                    // have typed their own link here, an import must not
+                    // replace it with the URL it happened to end up reading.
+                    onChange={e => { setMealSource(e.target.value); creatorTypedSource.current = true; markEdited('source'); }}
+                    placeholder="https://yourblog.com/recipe"
+                    className={pInputCls}
+                  />
                 </div>
 
                 {/* Photo */}
                 <div>
-                  <label className={pLabelCls}>Photo <span className="text-gray-400 font-normal">(optional)</span></label>
+                  {/* A group rather than a label: the control here is a pair of
+                      buttons, and the notice has to describe both. */}
+                  <span id="publish-photo-label" className={pLabelCls}>Photo <span className="text-gray-400 font-normal">(optional)</span></span>
                   <div
+                    role="group"
+                    aria-labelledby="publish-photo-label"
                     className="flex items-center gap-3 flex-wrap"
                     style={notices.photoUrl ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '10px' } : undefined}
+                    {...flaggedGroupAria('photoUrl')}
                   >
                     {photoPreview && (
                       <div className="relative">
-                        <img src={photoPreview} alt="" className="w-16 h-16 rounded-xl object-cover block border border-gray-100" />
+                        {/* Never decorative. A stand-in we picked is exactly the
+                            photo a creator most needs to be told about, and
+                            alt="" hides the only thing on screen saying so. */}
+                        <img
+                          src={photoPreview}
+                          alt={importedPhotoUrl ? 'Photo from the imported recipe' : 'Photo for this meal'}
+                          className="w-16 h-16 rounded-xl object-cover block border border-gray-100"
+                        />
                         <button
                           type="button"
                           onClick={() => { setPhotoPreview(''); setPhotoFile(null); setImportedPhotoUrl(null); touched('photoUrl'); }}
                           className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-gray-800 text-white border-none cursor-pointer text-xs flex items-center justify-center leading-none"
                           title="Remove photo"
+                          aria-label="Remove photo"
                         >✕</button>
                       </div>
                     )}
-                    <input type="file" accept="image/*" ref={photoInputRef} onChange={handlePhotoChange} className="hidden" />
+                    <input type="file" accept="image/*" ref={photoInputRef} onChange={handlePhotoChange} className="hidden" aria-hidden="true" tabIndex={-1} />
                     <button type="button" onClick={() => photoInputRef.current?.click()} className={pSecBtnCls}>
                       Choose photo
                     </button>
@@ -1575,10 +1872,11 @@ export default function CreatorPortal() {
                           key={i}
                           type="button"
                           onClick={() => selectSuggestion(i)}
+                          aria-pressed={selectedIdx === i}
                           className="flex-1 p-0 border-none rounded-xl overflow-hidden cursor-pointer bg-none"
                           style={{ outline: selectedIdx === i ? '2.5px solid #3b82f6' : '2.5px solid transparent', outlineOffset: '2px' }}
                         >
-                          <img src={thumb} alt="" className="w-full aspect-square object-cover block" />
+                          <img src={thumb} alt={`Suggested photo ${i + 1}`} className="w-full aspect-square object-cover block" />
                         </button>
                       ))}
                     </div>
@@ -1587,31 +1885,37 @@ export default function CreatorPortal() {
                   {/* The one field where our value can be a placeholder *we
                       chose* rather than something we read off the page, so the
                       way out is spelled out rather than left to be found. */}
-                  <ImportFieldNotice notice={notices.photoUrl} fieldLabel="Photo" />
-                  {notices.photoUrl && (
-                    <p
-                      className="text-xs mt-1 leading-relaxed"
-                      style={{ color: '#52525B' }}
-                      data-testid="photo-replace-hint"
-                    >
-                      Use <strong>Choose photo</strong> or <strong>Generate photo</strong> above to
-                      replace it, or the ✕ on the picture to publish without one.
-                    </p>
-                  )}
+                  <div id="import-notice-photoUrl">
+                    <ImportFieldNotice notice={notices.photoUrl} fieldLabel="Photo" />
+                    {notices.photoUrl && (
+                      <p
+                        className="text-xs mt-1 leading-relaxed"
+                        style={{ color: '#52525B' }}
+                        data-testid="photo-replace-hint"
+                      >
+                        Use <strong>Choose photo</strong> or <strong>Generate photo</strong> above to
+                        replace it, or the ✕ on the picture to publish without one.
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 {/* Difficulty */}
                 <div>
-                  <label className={pLabelCls}>Difficulty <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <span id="publish-difficulty-label" className={pLabelCls}>Difficulty <span className="text-gray-400 font-normal">(optional)</span></span>
                   <div
+                    role="group"
+                    aria-labelledby="publish-difficulty-label"
                     className="flex items-center gap-2"
                     style={notices.difficulty ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '10px' } : undefined}
+                    {...flaggedGroupAria('difficulty')}
                   >
                     {[1, 2, 3, 4, 5].map(v => (
                       <button
                         key={v}
                         type="button"
                         onClick={() => { setMealDifficulty(mealDifficulty === v ? null : v); touched('difficulty'); }}
+                        aria-pressed={mealDifficulty === v}
                         className="w-10 h-10 rounded-xl text-sm font-semibold transition-colors"
                         style={{
                           border: `1.5px solid ${mealDifficulty === v ? '#dd0031' : '#e5e7eb'}`,
@@ -1623,34 +1927,38 @@ export default function CreatorPortal() {
                     ))}
                     {mealDifficulty && <span className="text-sm text-gray-400 ml-1">{DIFFICULTY_LABELS[mealDifficulty]}</span>}
                   </div>
-                  <ImportFieldNotice notice={notices.difficulty} fieldLabel="Difficulty" />
+                  <ImportFieldNotice notice={notices.difficulty} fieldLabel="Difficulty" id="import-notice-difficulty" />
                 </div>
 
                 {/* Serves */}
                 <div>
-                  <label className={pLabelCls}>Serves <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <label htmlFor="publish-serves" className={pLabelCls}>Serves <span className="text-gray-400 font-normal">(optional)</span></label>
                   <input
+                    id="publish-serves"
                     value={mealServes}
                     onChange={e => { setMealServes(e.target.value); touched('serves'); }}
                     placeholder="e.g. 4 or 2-4"
                     className={pInputCls}
                     style={flagged('serves')}
+                    {...flaggedAria('serves')}
                   />
-                  <ImportFieldNotice notice={notices.serves} fieldLabel="Serves" />
+                  <ImportFieldNotice notice={notices.serves} fieldLabel="Serves" id="import-notice-serves" />
                 </div>
 
                 {/* Story */}
                 <div>
-                  <label className={pLabelCls}>Story <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <label htmlFor="publish-story" className={pLabelCls}>Story <span className="text-gray-400 font-normal">(optional)</span></label>
                   <textarea
+                    id="publish-story"
                     value={mealStory}
                     onChange={e => { setMealStory(e.target.value); touched('story'); }}
                     rows={3}
                     placeholder={"The story behind the meal or a simple one liner. e.g.\nPerfect for a summer BBQ\nGreat budget-friendly weeknight dinner\nHigh protein, low carb – great for meal prep"}
                     className={`${pInputCls} resize-y font-sans`}
                     style={flagged('story')}
+                    {...flaggedAria('story')}
                   />
-                  <ImportFieldNotice notice={notices.story} fieldLabel="Story" />
+                  <ImportFieldNotice notice={notices.story} fieldLabel="Story" id="import-notice-story" />
                 </div>
 
                 {/* Measurements */}
@@ -1671,6 +1979,13 @@ export default function CreatorPortal() {
                         list and a wall. */}
                     {mealIngredients.map((ing, i) => {
                       const notice = notices.ingredients[i] ?? null;
+                      // Rows repeat, so each control names itself rather than
+                      // borrowing the one "Measurements" label above the list.
+                      const rowName = `Ingredient ${i + 1}${ing.ingredientName ? `, ${ing.ingredientName}` : ''}`;
+                      // The row's notice is about the product name, so only the
+                      // name input claims it — that is also the control the
+                      // level was computed from.
+                      const noticeId = notice ? `import-notice-ingredient-${i}` : undefined;
                       return (
                         <div key={i}>
                           <div
@@ -1681,31 +1996,33 @@ export default function CreatorPortal() {
                               value={ing.ingredientName}
                               onChange={e => updateIngredientForm(i, 'ingredientName', e.target.value)}
                               placeholder="Ingredient name"
+                              aria-label={`${rowName} name`}
+                              aria-describedby={noticeId}
+                              aria-invalid={notice ? true : undefined}
                               className={`${pInputCls} flex-1 min-w-0`}
                             />
                             <input
-                              type={ing.unit === 'Qty' ? 'number' : 'text'}
+                              type={ing.unit === 'qty' ? 'number' : 'text'}
                               value={ing.measure}
-                              min={ing.unit === 'Qty' ? 1 : undefined}
+                              min={ing.unit === 'qty' ? 1 : undefined}
                               onChange={e => updateIngredientForm(i, 'measure', e.target.value)}
-                              placeholder={ing.unit === 'Qty' ? '1' : 'amt'}
+                              placeholder={ing.unit === 'qty' ? '1' : 'amt'}
+                              aria-label={`${rowName} amount`}
                               className={`${pInputCls} !w-16 text-center !px-1`}
                             />
                             <select
                               value={ing.unit}
                               onChange={e => updateIngredientForm(i, 'unit', e.target.value)}
+                              aria-label={`${rowName} unit`}
                               className={`${pInputCls} !w-20`}
                             >
                               {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                             </select>
                             {mealIngredients.length > 1 && (
-                              <button type="button" onClick={() => removeIngredientRow(i)} className="text-gray-300 hover:text-red-400 text-lg leading-none cursor-pointer transition-colors bg-none border-none px-1">×</button>
+                              <button type="button" onClick={() => removeIngredientRow(i)} aria-label={`Remove ${rowName}`} className="text-gray-300 hover:text-red-400 text-lg leading-none cursor-pointer transition-colors bg-none border-none px-1">×</button>
                             )}
                           </div>
-                          <ImportFieldNotice
-                            notice={notice}
-                            fieldLabel={`Ingredient ${i + 1}${ing.ingredientName ? `, ${ing.ingredientName}` : ''}`}
-                          />
+                          <ImportFieldNotice notice={notice} fieldLabel={rowName} id={noticeId} />
                         </div>
                       );
                     })}
@@ -1717,29 +2034,38 @@ export default function CreatorPortal() {
 
                 {/* Recipe */}
                 <div>
-                  <label className={pLabelCls}>Recipe Instructions <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <label htmlFor="publish-recipe" className={pLabelCls}>Recipe Instructions <span className="text-gray-400 font-normal">(optional)</span></label>
                   <textarea
+                    id="publish-recipe"
                     value={mealRecipe}
                     onChange={e => { setMealRecipe(e.target.value); touched('recipe'); }}
                     rows={6}
                     placeholder={'1. Boil 4 cups of water...\n2. Add 200g of noodles...'}
                     className={`${pInputCls} resize-y font-sans`}
                     style={flagged('recipe')}
+                    {...flaggedAria('recipe')}
                   />
-                  <ImportFieldNotice notice={notices.recipe} fieldLabel="Recipe instructions" />
+                  <ImportFieldNotice notice={notices.recipe} fieldLabel="Recipe instructions" id="import-notice-recipe" />
                 </div>
 
                 {/* Tags */}
                 <div>
-                  <label className={pLabelCls}>Tags <span className="text-gray-400 font-normal">(up to 3)</span></label>
-                  <div style={notices.tags ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '10px' } : undefined}>
+                  <span id="publish-tags-label" className={pLabelCls}>Tags <span className="text-gray-400 font-normal">(up to 3)</span></span>
+                  <div
+                    role="group"
+                    aria-labelledby="publish-tags-label"
+                    style={notices.tags ? { ...FLAGGED_FIELD_STYLE, borderBottomWidth: '1px', paddingBottom: '10px' } : undefined}
+                    {...flaggedGroupAria('tags')}
+                  >
                     <TagPicker selected={mealTags} onChange={tags => { setMealTags(tags); touched('tags'); }} />
                   </div>
-                  <ImportFieldNotice notice={notices.tags} fieldLabel="Tags" />
+                  <ImportFieldNotice notice={notices.tags} fieldLabel="Tags" id="import-notice-tags" />
                   {/* Dropping five of eight tags silently would look like the
                       import simply missed them. Shown whether or not the field
-                      is flagged, because the trimming is ours either way. */}
-                  {tagsNote && fieldStates?.tags && (
+                      is flagged — the trimming is ours either way, and gating it
+                      on the field's state meant touching one tag retired a note
+                      about what the *import* did, which no edit can change. */}
+                  {tagsNote && (
                     <p className="text-xs mt-1 leading-relaxed" style={{ color: '#52525B' }} data-testid="tags-trimmed-note">
                       {tagsNote}
                     </p>
@@ -1762,7 +2088,7 @@ export default function CreatorPortal() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setShowForm(false); setPublishError(''); }}
+                    onClick={closePublishForm}
                     className="px-5 py-3 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
                   >
                     Cancel

@@ -636,9 +636,15 @@ describe('editableDraft — the same rules the publish form has', () => {
     expect(result.ok && result.draft.difficulty).toBeNull();
   });
 
-  it('forces a unit outside the editor’s vocabulary into a count', () => {
-    // The cart cannot act on "1 bunch", and the editor cannot display it.
-    const result = editableDraft({ ...base, ingredients: [{ ingredientName: 'cilantro', measure: '1', unit: 'bunch', qty: 1 }] });
-    expect(result.ok && result.draft.ingredients[0]).toMatchObject({ ingredientName: 'cilantro', unit: 'qty', qty: 1 });
+  it('keeps a cook’s unit, and still folds one nothing can display', () => {
+    // "1 bunch cilantro" now keeps its word: the cart searches by name and
+    // counts packages with productQty, so the unit is display text and dropping
+    // it lost something the source actually said.
+    const kept = editableDraft({ ...base, ingredients: [{ ingredientName: 'cilantro', measure: '1', unit: 'bunch', qty: 1 }] });
+    expect(kept.ok && kept.draft.ingredients[0]).toMatchObject({ ingredientName: 'cilantro', unit: 'bunches', measure: '1' });
+
+    // "a knob of butter" still folds — knob is not a unit anything can show.
+    const folded = editableDraft({ ...base, ingredients: [{ ingredientName: 'butter', measure: null, unit: 'knob', qty: 1 }] });
+    expect(folded.ok && folded.draft.ingredients[0]).toMatchObject({ ingredientName: 'butter', unit: 'qty', qty: 1 });
   });
 });

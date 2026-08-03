@@ -17,24 +17,42 @@ import type { FieldNotice } from '@/lib/import/draft-form';
  * to a creator who cannot separate amber from red.
  */
 
-/** Dotted underline for a flagged input. Hairline Strong, 1px — DESIGN.md has no 2px border and should not gain one. */
+/**
+ * Dotted underline for a flagged input. 1px — DESIGN.md has no 2px border and
+ * should not gain one.
+ *
+ * Ink Muted rather than Hairline Strong, which is the token this would
+ * otherwise reach for. Hairline Strong (`#D1CEC8`) is 1.57:1 against Card
+ * White, and WCAG 1.4.11 wants 3:1 for a boundary that carries meaning — at
+ * 1.57:1 a flagged input and a plain one are the same input. Ink Muted is
+ * 7.4:1, and it is the colour of the sentence directly beneath, which is the
+ * thing the underline is pointing at.
+ */
 export const FLAGGED_FIELD_STYLE: React.CSSProperties = {
   borderBottomStyle: 'dotted',
-  borderBottomColor: '#D1CEC8',
+  borderBottomColor: '#52525B',
 };
 
 export default function ImportFieldNotice({
   notice,
   fieldLabel,
+  id,
 }: {
   notice: FieldNotice | null;
   /** Names the field for screen readers, which do not get the visual adjacency. */
   fieldLabel: string;
+  /**
+   * Wired to the field's `aria-describedby`. Without it the notice is static
+   * text a forms-mode screen reader tabs straight past, and the callout is the
+   * entire value of the feature.
+   */
+  id?: string;
 }) {
   if (!notice) return null;
 
   return (
     <p
+      id={id}
       className="text-xs mt-1 leading-relaxed"
       style={{ color: '#52525B' }}
       data-testid="import-notice"
