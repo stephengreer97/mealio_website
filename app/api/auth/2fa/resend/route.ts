@@ -37,9 +37,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Please wait before requesting a new code.' }, { status: 429 });
     }
 
-    // Invalidate old unused codes
-    await supabase.from('otp_codes').update({ used: true }).eq('user_id', userId).eq('used', false);
-
     const { data: profile } = await supabase
       .from('user_profiles')
       .select('email')
@@ -53,13 +50,34 @@ export async function POST(request: NextRequest) {
     const code = generateOtp();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
+    /*
+     * Send BEFORE writing anything, and this order is the whole point.
+     *
+     * The person clicking *Resend* usually has a working code sitting in their
+     * inbox; they are impatient, not stuck. Invalidating it first meant that a
+     * send Resend refuses — a suppressed address after a bounce, a burst that
+     * trips `rate_limit_exceeded` — left them with the old code dead, the new
+     * code never delivered, and the 60-second cooldown (keyed on
+     * `otp_codes.created_at`, which the insert had just written) blocking the
+     * retry. One click, and the only way into the account is gone for a minute.
+     *
+     * `sendOtpEmail` throws on a refusal, so nothing below runs: the old code
+     * stays valid, no cooldown row exists, and the 500 the `catch` returns is
+     * about a code the person never needed to lose. The cost is that a run of
+     * failing sends is not rate-limited by the cooldown — the cooldown starts
+     * when a code is actually delivered — which is the right way round.
+     */
+    await sendOtpEmail(profile.email, code);
+
+    // Only now is there a delivered code worth making the only one. Invalidate
+    // first, then insert, so the new row is not caught by its own sweep.
+    await supabase.from('otp_codes').update({ used: true }).eq('user_id', userId).eq('used', false);
+
     await supabase.from('otp_codes').insert({
       user_id:   userId,
       code_hash: hashOtp(code),
       expires_at: expiresAt.toISOString(),
     });
-
-    await sendOtpEmail(profile.email, code);
 
     log({ event: 'AUTH:2FA_RESEND', status: 'success', userId, ip });
     return NextResponse.json({ ok: true });
