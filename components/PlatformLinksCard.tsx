@@ -20,9 +20,10 @@ import { normalizePlatformUrl, PLATFORM_SOURCES, SOURCE_LABELS, type PlatformSou
  *
  * Adding a link tells us a place exists and nothing more: which source Mealio
  * polls, and whether it polls at all, stay an operator decision (MEAL-81), so
- * nothing on this card can turn importing on. Changing the link that *is* being
- * polled can turn it off — the server pauses the import pending review and says
- * so, and this card stops claiming otherwise the moment it hears that back.
+ * nothing on this card can turn importing on. Touching the link that *is* being
+ * polled — changing it or clearing it, one rule for both — can turn it off: the
+ * server pauses the import pending review and says so, and this card stops
+ * claiming otherwise the moment it hears that back.
  */
 
 const PLACEHOLDERS: Record<PlatformSource, string> = {
@@ -169,10 +170,9 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
 
       {polled && (
         <p className="text-xs text-gray-500 mb-4">
-          Mealio is importing your recipes from your {SOURCE_LABELS[polled]}. Moved or renamed it? Change it here and
-          we&rsquo;ll pause the import until someone has checked the new link &mdash; it&rsquo;s the one we publish
-          from under your name, so it gets a look first. It can&rsquo;t be removed here; ask us to stop importing
-          instead.
+          Mealio is importing your recipes from your {SOURCE_LABELS[polled]}. Moved, renamed or finished with it?
+          Change or clear it here and we&rsquo;ll pause the import &mdash; it&rsquo;s the one we publish from under
+          your name, so it gets a look before anything starts again.
         </p>
       )}
 

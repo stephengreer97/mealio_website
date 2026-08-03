@@ -201,6 +201,63 @@ describe('/api/admin/creators', () => {
       });
     });
 
+    describe('the pause record', () => {
+      /** A creator paused by their own link edit — the state the operator finds. */
+      const PAUSED = {
+        ...READY,
+        import_paused_reason: 'The creator changed the Website link we poll, from https://old.test/ to https://chefsarah.test/.',
+        import_paused_at: '2026-07-01T00:00:00.000Z',
+      };
+
+      it('is cleared when the operator turns import back on', async () => {
+        asAdmin();
+        fakeDb.seed('creators', [PAUSED]);
+
+        const res = await PATCH(jsonRequest('/api/admin/creators', {
+          method: 'PATCH', token, body: { id: 'c1', importOptIn: true },
+        }));
+
+        expect(res.status).toBe(200);
+        // Turning the switch on is the operator answering the question the
+        // record was holding open. Left behind, the Sources tab would report a
+        // paused import beside a creator that is being polled, and the next
+        // operator would have to work out which of the two to believe.
+        const row = fakeDb.row('creators', 'c1');
+        expect(row?.import_opt_in).toBe(true);
+        expect(row?.import_paused_reason).toBeNull();
+        expect(row?.import_paused_at).toBeNull();
+      });
+
+      it('survives a request that did not touch the switch', async () => {
+        asAdmin();
+        fakeDb.seed('creators', [PAUSED]);
+
+        // Confirming a feed is not "I have looked at this and it is fine to
+        // poll". Erasing the reason here would lose why polling is off while it
+        // is still off.
+        const res = await PATCH(jsonRequest('/api/admin/creators', {
+          method: 'PATCH', token, body: { id: 'c1', feedUrl: 'https://chefsarah.test/feed2' },
+        }));
+
+        expect(res.status).toBe(200);
+        expect(fakeDb.row('creators', 'c1')?.import_paused_reason).toBe(PAUSED.import_paused_reason);
+        expect(fakeDb.row('creators', 'c1')?.import_paused_at).toBe(PAUSED.import_paused_at);
+      });
+
+      it('is listed, so the tab can render it without a second query', async () => {
+        asAdmin();
+        fakeDb.seed('creators', [PAUSED]);
+        fakeDb.seed('creator_platform_accounts', []);
+
+        const body = await (await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }))).json();
+
+        expect(body.creators[0]).toMatchObject({
+          import_paused_reason: PAUSED.import_paused_reason,
+          import_paused_at: PAUSED.import_paused_at,
+        });
+      });
+    });
+
     it('clearing the source turns polling off with it', async () => {
       asAdmin();
       fakeDb.queue('creators', { data: { ...READY, import_opt_in: true } });

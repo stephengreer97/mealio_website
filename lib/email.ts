@@ -165,6 +165,14 @@ export async function sendCreatorApplicationEmail(applicantName: string, applica
  * that finds nothing must never be the first sign. It could not reuse that
  * column — `broken_reason` describes an OAuth grant, exists for three platforms
  * only, and a creator polled off their website link has no grant row at all.
+ *
+ * The prompt, and only the prompt. `creators.import_paused_reason` is the
+ * durable half: this mail can be deleted, and the row still answers "why is this
+ * creator not being polled?".
+ *
+ * A blank `newUrl` is a removal rather than a move. Same pause, same alert, and
+ * the wording has to say which happened — an operator reading "Now: —" and
+ * guessing is the kind of ambiguity this email exists to remove.
  */
 export async function sendCreatorSourceMovedEmail(opts: {
   adminEmails: string[];
@@ -172,9 +180,11 @@ export async function sendCreatorSourceMovedEmail(opts: {
   handle: string | null;
   sourceLabel: string;
   previousUrl: string;
+  /** Empty when the creator removed the link instead of replacing it. */
   newUrl: string;
 }) {
   if (opts.adminEmails.length === 0) return;
+  const removed = !opts.newUrl;
   // Every value below is a string a creator typed, on its way into an inbox that
   // renders HTML. The application email above predates this helper; anything
   // reaching a URL bar or a link text here goes through it.
@@ -182,18 +192,21 @@ export async function sendCreatorSourceMovedEmail(opts: {
   const handle = opts.handle ? escapeHtml(opts.handle) : '—';
   const source = escapeHtml(opts.sourceLabel);
   const was = escapeHtml(opts.previousUrl);
-  const now = escapeHtml(opts.newUrl);
+  const now = removed ? '— removed' : escapeHtml(opts.newUrl);
   await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to: opts.adminEmails,
-    subject: `Import paused: ${opts.creatorName} moved their ${opts.sourceLabel} link`,
+    subject: `Import paused: ${opts.creatorName} ${removed ? 'removed' : 'moved'} their ${opts.sourceLabel} link`,
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
         <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
-        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Polled link changed — import paused</h2>
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Polled link ${removed ? 'removed' : 'changed'} — import paused</h2>
         <p style="color: #666; font-size: 14px; margin: 0 0 24px;">
-          This creator changed the link Mealio was importing from. Nothing is being polled for them now, and nothing
-          will be until you turn import back on. Check that the new link is still theirs before you do.
+          ${removed
+            ? 'This creator removed the link Mealio was importing from, so there is nothing left to poll. Nothing '
+              + 'will be polled for them until a link is back and you turn import on again.'
+            : 'This creator changed the link Mealio was importing from. Nothing is being polled for them now, and '
+              + 'nothing will be until you turn import back on. Check that the new link is still theirs before you do.'}
         </p>
         <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 24px;">
           <tr><td style="padding: 8px 0; color: #999; width: 120px;">Creator</td><td style="padding: 8px 0; color: #222; font-weight: 600;">${name}</td></tr>

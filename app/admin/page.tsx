@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  describeSourceHealth,
   KNOWN_UNSUPPORTED_SOURCES,
   PLATFORM_SOURCES,
   SOURCE_COLUMNS,
@@ -135,6 +136,13 @@ interface CreatorSource {
   primary_source: PrimarySource;
   import_opt_in: boolean;
   feed_url: string | null;
+  /**
+   * Why polling is off, and since when — written whenever a creator's own link
+   * edit paused it. The email that goes out at the same time is push-only; these
+   * two columns are what answers the question later.
+   */
+  import_paused_reason?: string | null;
+  import_paused_at?: string | null;
   /** OAuth grants, with `brokenReason` set when one has stopped working (MEAL-74). */
   connections?: Array<{ platform: string; externalName: string | null; brokenReason: string | null }>;
 }
@@ -716,6 +724,11 @@ export default function AdminPage() {
                 PLATFORM_SOURCES.filter(s => reports[s]).map(s => [s, reports[s]!.outcome]),
               ) as Partial<Record<PlatformSource, ViabilityOutcome>>;
               const verdict = summariseCreatorViability(links, outcomes);
+              // Why this creator is not being polled, and what would still
+              // refuse the switch if an operator tried to turn it back on. Both
+              // are otherwise invisible here: one lived in an email, the other
+              // only surfaced as a 400 at the moment of turning import on.
+              const health = describeSourceHealth(creator as unknown as Record<string, unknown>);
 
               return (
                 <div key={creator.id} style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '22px 24px' }}>
@@ -749,7 +762,40 @@ export default function AdminPage() {
                         {connection.externalName ? ` · ${connection.externalName}` : ''}
                       </span>
                     ))}
+                    {/* Beside the connection badges, because they answer the
+                        same question an operator is scanning this row for:
+                        is anything actually going to arrive from this creator? */}
+                    {health.map(notice => (
+                      <span
+                        key={notice.kind}
+                        style={{
+                          fontSize: '12px', fontWeight: 600, borderRadius: '99px', padding: '2px 10px',
+                          color: notice.kind === 'paused' ? '#b45309' : '#c40029',
+                          background: notice.kind === 'paused' ? '#fff8e1' : '#fdeaee',
+                        }}
+                      >
+                        {notice.label}
+                      </span>
+                    ))}
                   </div>
+
+                  {/* The sentence itself, not a tooltip. An operator asking why
+                      a creator stopped being polled should not have to know
+                      there is something to hover over. */}
+                  {health.map(notice => (
+                    <p
+                      key={notice.kind}
+                      data-testid={`source-health-${notice.kind}`}
+                      style={{
+                        margin: '8px 0 0', fontSize: '12px', lineHeight: 1.6, borderRadius: '8px', padding: '8px 10px',
+                        color: notice.kind === 'paused' ? '#92400e' : '#c40029',
+                        background: notice.kind === 'paused' ? '#fffbeb' : '#fff5f6',
+                      }}
+                    >
+                      {notice.detail}
+                      {notice.at && <span style={{ color: '#aaa' }}> · {new Date(notice.at).toLocaleString()}</span>}
+                    </p>
+                  ))}
 
                   {/* Creator-level answer: importable, not importable, or not yet known. */}
                   <p style={{

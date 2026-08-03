@@ -147,6 +147,24 @@ function fromFormIng(form: IngredientForm): Ingredient {
   };
 }
 
+/**
+ * A fresh idempotency key for one publish attempt (MEAL-93).
+ *
+ * Random rather than derived from the form: two recipes off one page can be
+ * near-identical (a "three ways with…" post), and a key computed from the fields
+ * would fold them into one meal — losing the case the duplicate prompt exists to
+ * allow. Randomness makes a false collision impossible and a missed one
+ * harmless, which is the right way round.
+ *
+ * `randomUUID` needs a secure context; the fallback is not a cryptographic
+ * question, only "is this the same submission", and time plus a random suffix
+ * answers that within one browser.
+ */
+function newPublishToken(): string {
+  return globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-Hard', 'Hard'];
 
 /** Starting point for the "which boxes are empty" mirror — a form nobody has touched. */
@@ -797,6 +815,22 @@ export default function CreatorPortal() {
    * existing meal and check rather than guess, which a modal dialog forbids.
    */
   const [duplicateMeal, setDuplicateMeal] = useState<{ id: string; name: string } | null>(null);
+  /**
+   * This publish attempt's idempotency key (MEAL-93).
+   *
+   * Minted here rather than on the server because the server cannot tell one
+   * submission from two: every request it receives is new to it, and a value it
+   * generated would be different for the double-click and identical for
+   * nothing. The browser is the only place that knows a second POST is the same
+   * publish — the same reason a payment API takes the key from its caller.
+   *
+   * A ref rather than state so a second click, which happens before any
+   * re-render, reads the value the first click wrote. It survives every retry of
+   * one submission — the 409 prompt's "Publish anyway", a failed request tried
+   * again — and is dropped by `resetPublishForm` once a meal exists, so the next
+   * publish is a new attempt carrying a new key.
+   */
+  const publishTokenRef = useRef<string | null>(null);
   /** Bumped when the links change, to remount the connect card that reads them. */
   const [linksVersion, setLinksVersion] = useState(0);
 
@@ -1161,6 +1195,10 @@ export default function CreatorPortal() {
     setMealIngredients([{ ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
     setFieldStates(null); setImportInfo(null); setImportedPhotoUrl(null); setTagsNote(null);
     setPublishError(''); setDuplicateMeal(null);
+    // Whatever is typed next is a different publish, so it may not carry the
+    // key that already produced a meal — the index would answer with that meal
+    // instead of publishing this one.
+    publishTokenRef.current = null;
     // The bar aborts the request; this drops the bookkeeping that went with it,
     // so anything typed into the fresh form is not counted as an in-flight edit
     // against an import that no longer exists.
@@ -1342,6 +1380,10 @@ export default function CreatorPortal() {
       return;
     }
 
+    // Set before the first await, so a double-click cannot mint a second key
+    // between the two clicks.
+    publishTokenRef.current ??= newPublishToken();
+
     setPublishing(true);
     try {
       const token = localStorage.getItem('accessToken');
@@ -1374,6 +1416,7 @@ export default function CreatorPortal() {
           photoUrl,
           tags:        mealTags,
           confirmDuplicate,
+          publishToken: publishTokenRef.current,
         }),
       });
 

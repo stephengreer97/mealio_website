@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   checkPollingInvariants,
+  describeSourceHealth,
   isOnSameSite,
   knownUnsupportedSource,
   normalizePlatformUrl,
@@ -300,5 +301,85 @@ describe('creator-sources — checkPollingInvariants', () => {
     // for can have any combination of links and sources there is.
     expect(checkPollingInvariants({ ...READY, import_opt_in: false, website_url: null, feed_url: null }))
       .toEqual({ ok: true, importOptIn: false });
+  });
+});
+
+/**
+ * What the Sources tab has to say without an operator digging for it.
+ *
+ * Both notices answer a question asked long after the event, and both are
+ * currently answerable only by accident: a pause lived in an email, and a broken
+ * feed/website pairing surfaced only as a 400 at the moment somebody tried to
+ * turn import back on.
+ */
+describe('creator-sources — what an operator sees on the Sources tab', () => {
+  const PAUSED = {
+    website_url: 'https://sarahcooks.test/',
+    feed_url: null,
+    primary_source: 'website',
+    import_opt_in: false,
+    import_paused_reason: 'The creator changed the Website link we poll, from https://chefsarah.test/ to https://sarahcooks.test/.',
+    import_paused_at: '2026-07-01T00:00:00.000Z',
+  };
+
+  it('reports why a creator is not being polled, and since when', () => {
+    expect(describeSourceHealth(PAUSED)).toEqual([
+      {
+        kind: 'paused',
+        label: 'Import paused',
+        detail: PAUSED.import_paused_reason,
+        at: '2026-07-01T00:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('stops reporting a pause once the operator has lifted it', () => {
+    // A stale reason beside a creator that is being polled says the opposite of
+    // what the row does, which is worse than saying nothing.
+    expect(describeSourceHealth({ ...PAUSED, import_opt_in: true })).toEqual([]);
+  });
+
+  it('says nothing about a creator nobody paused', () => {
+    expect(describeSourceHealth({ ...PAUSED, import_paused_reason: null, import_paused_at: null })).toEqual([]);
+  });
+
+  it('flags a feed left behind on a host the website has moved off', () => {
+    // The pairing an operator confirmed once and nothing re-checks. Since a
+    // creator can move `website_url` themselves, the poller can end up reading a
+    // feed on a host that is no longer theirs — every entry then fails the
+    // item-level host check and the sync returns nothing, with no message
+    // anywhere saying why.
+    const [notice] = describeSourceHealth({
+      website_url: 'https://sarahcooks.test/',
+      feed_url: 'https://chefsarah.test/feed',
+      primary_source: 'website',
+      import_opt_in: false,
+    });
+
+    expect(notice).toMatchObject({ kind: 'feed-host', label: 'Feed off-site' });
+    expect(notice.detail).toMatch(/not on the creator's own site/i);
+    // And what it costs, said here rather than discovered as a 400 on the
+    // switch: this is the thing that will refuse to turn import back on.
+    expect(notice.detail).toMatch(/before turning import back on/i);
+  });
+
+  it('flags a feed stored against no website at all', () => {
+    const [notice] = describeSourceHealth({ website_url: null, feed_url: 'https://chefsarah.test/feed' });
+    expect(notice).toMatchObject({ kind: 'feed-host' });
+  });
+
+  it('says nothing about a pairing that still holds', () => {
+    expect(describeSourceHealth({
+      website_url: 'https://chefsarah.test/',
+      feed_url: 'https://chefsarah.test/feed',
+      import_opt_in: true,
+    })).toEqual([]);
+  });
+
+  it('reports both when both are true', () => {
+    // They are independent: one is why polling stopped, the other is what would
+    // stop it starting again. An operator needs both to know what to do next.
+    expect(describeSourceHealth({ ...PAUSED, feed_url: 'https://chefsarah.test/feed' }).map(n => n.kind))
+      .toEqual(['paused', 'feed-host']);
   });
 });

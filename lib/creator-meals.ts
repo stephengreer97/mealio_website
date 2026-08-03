@@ -27,7 +27,16 @@ export interface PublishingCreator {
 }
 
 /** The nine fields a creator meal carries. `CreatorMealDraft` is exactly this shape. */
-export type CreatorMealInput = Partial<CreatorMealDraft> & Pick<CreatorMealDraft, 'name' | 'ingredients'>;
+export type CreatorMealInput = Partial<CreatorMealDraft> & Pick<CreatorMealDraft, 'name' | 'ingredients'> & {
+  /**
+   * One publish attempt's idempotency key, written to `preset_meals`.
+   *
+   * Null for every path that does not mint one — the admin sync publishes a
+   * reviewed batch where the operator's decision is the record, and the partial
+   * unique index leaves those rows alone.
+   */
+  publishToken?: string | null;
+};
 
 /** The inserted row. Returned whole: the publish route hands it straight back. */
 export interface PublishedMeal {
@@ -59,6 +68,78 @@ export function withScheme(url?: string | null): string {
 export function publishIdentity(source?: string | null): string | null {
   const url = withScheme(source);
   return url ? urlIdentity(url) : null;
+}
+
+// ── One publish attempt, one meal (MEAL-93) ──────────────────────────────────
+
+/**
+ * Longest publish token we will store.
+ *
+ * A UUID is 36 characters and that is what the portal sends; the room above it
+ * is for a client that keys its attempts some other way. The point of a bound is
+ * that this value is written to a column, read back into log lines and compared
+ * on an index forever after, and none of those places want a client-supplied
+ * string of arbitrary length.
+ */
+const MAX_PUBLISH_TOKEN_CHARS = 128;
+
+export type PublishTokenResult =
+  /** `token` is the trimmed key, or null when the request sent none. */
+  | { ok: true; token: string | null }
+  | { ok: false; error: string };
+
+/**
+ * Validates the idempotency key a publish carries.
+ *
+ * A malformed key is refused rather than dropped. Dropping it would publish the
+ * meal with the double-submit protection silently switched off, which is the
+ * failure shape this whole mechanism exists to remove — the same reasoning that
+ * made `normalizePlatformUrl` refuse a non-string instead of folding it to
+ * blank.
+ */
+export function normalizePublishToken(raw: unknown): PublishTokenResult {
+  if (raw === undefined || raw === null) return { ok: true, token: null };
+  if (typeof raw !== 'string') {
+    return { ok: false, error: 'publishToken must be a string.' };
+  }
+  const token = raw.trim();
+  if (!token) return { ok: true, token: null };
+  if (token.length > MAX_PUBLISH_TOKEN_CHARS) {
+    return { ok: false, error: `publishToken must be ${MAX_PUBLISH_TOKEN_CHARS} characters or fewer.` };
+  }
+  return { ok: true, token };
+}
+
+/**
+ * Raised when `(creator_id, publish_token)` is already taken.
+ *
+ * Not an error the caller reports: it means the meal this request asked for
+ * exists, written by the request that got here first. The caller reads it as
+ * success and returns that meal — see `findMealByPublishToken`.
+ */
+export class PublishTokenTaken extends Error {
+  constructor() {
+    super('This publish attempt has already produced a meal.');
+    this.name = 'PublishTokenTaken';
+  }
+}
+
+/** Postgres' unique-violation SQLSTATE, as PostgREST reports it. */
+const UNIQUE_VIOLATION = '23505';
+
+/** The meal a publish token already produced, for the request that lost the race. */
+export async function findMealByPublishToken(
+  supabase: SupabaseClient,
+  creatorId: string,
+  token: string,
+): Promise<PublishedMeal | null> {
+  const { data } = await supabase
+    .from('preset_meals')
+    .select()
+    .eq('creator_id', creatorId)
+    .eq('publish_token', token)
+    .maybeSingle();
+  return (data as PublishedMeal | null) ?? null;
 }
 
 /** A published meal of this creator's that came from the same link. */
@@ -334,11 +415,22 @@ export async function publishCreatorMeal(
       photo_url:  photoUrl || null,
       difficulty: input.difficulty || null,
       serves:     input.serves || null,
+      // Only when one was minted. The index is partial, so a null here is a row
+      // that simply does not take part — which is every meal published before
+      // this existed and every meal the admin sync publishes.
+      ...(input.publishToken ? { publish_token: input.publishToken } : {}),
       ...(Array.isArray(input.tags) && input.tags.length ? { tags: input.tags } : {}),
     })
     .select()
     .single();
 
+  // The index decided that this attempt's meal already exists. Told apart from
+  // every other insert failure here rather than by the caller matching on a
+  // message, because the two answers are opposites: one is a 500, the other is
+  // the meal the creator asked for.
+  if (error && (error as { code?: string }).code === UNIQUE_VIOLATION && input.publishToken) {
+    throw new PublishTokenTaken();
+  }
   if (error || !data) {
     throw new Error(error?.message ?? 'The meal could not be saved.');
   }

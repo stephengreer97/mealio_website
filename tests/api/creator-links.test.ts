@@ -30,16 +30,19 @@ import { clearRevocationCache, createAccessToken } from '@/lib/tokens';
  * 1. **Adding a link never starts polling.** `primary_source` and
  *    `import_opt_in` are an operator's decision (MEAL-81), so no request a
  *    creator can make may write either the other way.
- * 2. **Moving the link Mealio is polling stops the polling.** The edit is
+ * 2. **Touching the link Mealio is polling stops the polling.** The edit is
  *    allowed — a creator who renames a channel or moves a blog has no other way
  *    to tell us — but `import_opt_in` goes off in the same write, so the
  *    substitution it would otherwise permit reaches nothing until an operator
- *    has looked. Removing that link is still refused.
- * 3. **The pause is never silent.** The creator is told in the same response,
- *    and an operator is emailed which creator, which link, from where to where,
- *    and that polling is off. Without that half, a creator's edit reverses an
- *    operator's decision with nobody told, which is what made refusing look
- *    like the safer answer in the first place.
+ *    has looked. Removing that link takes the same path: it substitutes
+ *    nothing, so refusing the lower-risk edit while allowing the higher-risk
+ *    one was the rule pointing the wrong way.
+ * 3. **The pause is never silent, and never only in an inbox.** The creator is
+ *    told in the same response, an operator is emailed which creator, which
+ *    link, from where to where, and the row itself keeps why and when. Without
+ *    the first two, a creator's edit reverses an operator's decision with
+ *    nobody told; without the third, the only record is an email somebody can
+ *    delete.
  *
  * Asserted on the row afterwards rather than on the call, because what a write
  * *sent* is not the property worth defending — the state it left is.
@@ -184,21 +187,111 @@ describe('PATCH /api/creator/me — platform links', () => {
   });
 
   describe('the link that is being polled', () => {
-    it('refuses to remove it, with the reason, and leaves the row untouched', async () => {
+    it('lets it be removed, and stops polling in the same write', async () => {
       asUser();
       fakeDb.seed('creators', [
         creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
       ]);
 
+      // Refusing this while allowing a *move* had the rule pointing the wrong
+      // way: a clear substitutes nothing, so it carries strictly less risk than
+      // the replacement that was allowed, and it was the lower-risk edit that
+      // was refused. One rule, one path — the edit lands and polling stops.
       const res = await patch(token, { links: { website: '' } });
 
-      expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/importing your recipes from your Website/i);
-      // The state that must never exist: opted in, with nothing to poll.
+      expect(res.status).toBe(200);
       const row = fakeDb.row('creators', 'c1');
-      expect(row?.website_url).toBe('https://chefsarah.test/');
-      expect(row?.import_opt_in).toBe(true);
+      expect(row?.website_url).toBeNull();
+      // The state that must never exist: opted in, with nothing to poll.
+      expect(row?.import_opt_in).toBe(false);
+      // Still the operator's choice of which source. They are the one who lifts
+      // the pause, and the row has to say what they were polling.
       expect(row?.primary_source).toBe('website');
+    });
+
+    it('tells the creator, and the operator, that a removal stopped the import', async () => {
+      asUser();
+      fakeDb.seed('user_profiles', [{ id: 'admin-1', email: 'admin@mealio.co', is_admin: true }]);
+      fakeDb.seed('creators', [
+        creatorRow({
+          display_name: 'Chef Sarah',
+          primary_source: 'website',
+          import_opt_in: true,
+          feed_url: 'https://chefsarah.test/feed',
+        }),
+      ]);
+
+      const body = await (await patch(token, { links: { website: '' } })).json();
+
+      // The same three things a move gets. A removal that only worked would be
+      // a creator's edit reversing an operator's decision with nobody told,
+      // which is what made refusing look like the safer answer in the first
+      // place.
+      expect(body.importPaused).toBe(true);
+      expect(body.notices.join(' ')).toMatch(/removed/i);
+      expect(sendCreatorSourceMovedEmail).toHaveBeenCalledTimes(1);
+      // Blank, so the alert can say "removed" rather than leave an operator
+      // reading an empty cell and guessing.
+      expect(sendCreatorSourceMovedEmail.mock.calls[0][0]).toMatchObject({
+        sourceLabel: 'Website',
+        previousUrl: 'https://chefsarah.test/',
+        newUrl: '',
+      });
+    });
+
+    describe('the pause is recorded on the row, not only in an inbox', () => {
+      it('writes why and when a moved link paused the import', async () => {
+        asUser();
+        fakeDb.seed('creators', [
+          creatorRow({
+            youtube_url: 'https://youtube.com/@chefsarah',
+            primary_source: 'youtube',
+            import_opt_in: true,
+          }),
+        ]);
+
+        await patch(token, { links: { youtube: 'youtube.com/@sarahcooks' } });
+
+        // The email is push-only: delete it and the pause exists nowhere but a
+        // log line, and "why is this creator not being polled?" asked three
+        // months later has no answer. This is the answer.
+        const row = fakeDb.row('creators', 'c1');
+        expect(row?.import_paused_reason).toMatch(/changed the YouTube link we poll/i);
+        expect(row?.import_paused_reason).toContain('https://youtube.com/@chefsarah');
+        expect(row?.import_paused_reason).toContain('https://youtube.com/@sarahcooks');
+        expect(Date.parse(String(row?.import_paused_at))).toBeGreaterThan(0);
+      });
+
+      it('says a removed link was removed, rather than moved to nowhere', async () => {
+        asUser();
+        fakeDb.seed('creators', [
+          creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
+        ]);
+
+        await patch(token, { links: { website: '' } });
+
+        // An operator deciding what to do next needs to know which of the two
+        // happened: one is waiting for a link to be checked, the other for a
+        // link to exist at all.
+        expect(fakeDb.row('creators', 'c1')?.import_paused_reason).toMatch(/removed the Website link we poll/i);
+      });
+
+      it('writes nothing about a pause when no pause happened', async () => {
+        asUser();
+        fakeDb.seed('creators', [
+          creatorRow({ primary_source: 'website', import_opt_in: true, feed_url: 'https://chefsarah.test/feed' }),
+        ]);
+
+        await patch(token, { links: { tiktok: 'tiktok.com/@chefsarah' } });
+
+        // An ordinary edit must not stamp a reason onto a creator who is still
+        // being polled — the Sources tab would then report a paused import
+        // beside a running one.
+        const row = fakeDb.row('creators', 'c1');
+        expect(row?.import_paused_reason ?? null).toBeNull();
+        expect(row?.import_paused_at ?? null).toBeNull();
+        expect(row?.import_opt_in).toBe(true);
+      });
     });
 
     it('lets it be repointed, and stops polling in the same write', async () => {

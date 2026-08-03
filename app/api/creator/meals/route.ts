@@ -4,9 +4,12 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import {
   claimPublishFromLink,
+  findMealByPublishToken,
   findMealFromSameLink,
+  normalizePublishToken,
   publishCreatorMeal,
   publishIdentity,
+  PublishTokenTaken,
   withScheme,
   type PublishClaim,
 } from '@/lib/creator-meals';
@@ -43,6 +46,26 @@ export async function POST(request: NextRequest) {
   if (!name?.trim() || !Array.isArray(ingredients) || ingredients.length === 0) {
     return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
   }
+
+  // ── One publish attempt, one meal (MEAL-93) ───────────────────────────────
+  //
+  // The claim below cannot close this on its own: it is deliberately skipped
+  // once the creator has confirmed the duplicate prompt, because it cannot tell
+  // a second recipe from the same page apart from a second click on the same
+  // button. So a double-click, a browser retrying a slow POST, or two goes at
+  // "Publish anyway" each produced a meal.
+  //
+  // The token is the thing that *can* tell them apart, because only the client
+  // knows which of its submissions are the same submission. It is minted once
+  // per publish attempt in the portal — not per click — so a repeat carries the
+  // same value and loses on `preset_meals_publish_token_key`, while a genuine
+  // second recipe carries a new one. Nothing here mints one: a token this route
+  // generated would be new on every request and would guarantee nothing.
+  const tokenResult = normalizePublishToken(body.publishToken);
+  if (!tokenResult.ok) {
+    return NextResponse.json({ error: tokenResult.error }, { status: 400 });
+  }
+  const publishToken = tokenResult.token;
 
   const supabase = createServerSupabaseClient();
 
@@ -96,9 +119,24 @@ export async function POST(request: NextRequest) {
     meal = await publishCreatorMeal(
       supabase,
       { id: creator.id, display_name: creator.display_name, user_id: userId },
-      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves },
+      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves, publishToken },
     );
   } catch (err) {
+    // The index refused a second meal for this attempt, which means the first
+    // one landed. That is the outcome the creator asked for, so it is a success
+    // and it answers with the meal that exists — reporting an error here would
+    // send them looking for a publish that worked, and a retry of the retry
+    // would find the same thing again.
+    //
+    // The claim is deliberately *not* released: the meal behind it is real and
+    // still holds the link.
+    if (err instanceof PublishTokenTaken && publishToken) {
+      const first = await findMealByPublishToken(supabase, creator.id, publishToken);
+      if (first) {
+        log({ event: 'CREATOR:MEAL_CREATE', status: 'success', userId: creator.id, detail: `repeat of publish token, id=${first.id}` });
+        return NextResponse.json({ meal: first }, { status: 200 });
+      }
+    }
     // Give the link back. A claim with no meal behind it would tell this creator
     // for ever that they had already published something that does not exist.
     if (claim?.ok) await claim.release().catch(() => {});

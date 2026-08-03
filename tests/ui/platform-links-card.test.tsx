@@ -83,12 +83,14 @@ describe('PlatformLinksCard', () => {
   it('says which link is being polled, and what editing it costs', async () => {
     harness({ ...CREATOR, primary_source: 'website', import_opt_in: true });
 
-    // A pause is only fair if they knew before they typed. It has to name both
-    // halves of the rule the route enforces: changing this link is allowed and
-    // stops the import until someone looks, and removing it is refused.
+    // A pause is only fair if they knew before they typed, and there is one rule
+    // to state now rather than two: touching this link — changing it or clearing
+    // it — stops the import until someone looks.
     expect(screen.getByText(/importing your recipes from your Website/i)).toBeTruthy();
+    expect(screen.getByText(/Change or clear it here/i)).toBeTruthy();
     expect(screen.getByText(/pause the import/i)).toBeTruthy();
-    expect(screen.getByText(/can’t be removed here/i)).toBeTruthy();
+    // And no promise of a refusal that no longer happens.
+    expect(screen.queryByText(/can’t be removed/i)).toBeNull();
   });
 
   it('stops claiming an import is running once the server says it paused one', async () => {
@@ -116,13 +118,16 @@ describe('PlatformLinksCard', () => {
   it('shows the server’s refusal rather than claiming a save', async () => {
     harness(
       { ...CREATOR, primary_source: 'website', import_opt_in: true },
-      () => json({ error: 'Mealio is currently importing your recipes from your Website, so that link can\'t be removed.' }, 400),
+      () => json({ error: 'could not connect to the database' }, 500),
     );
 
-    fireEvent.change(field('Website'), { target: { value: '' } });
+    fireEvent.change(field('Website'), { target: { value: 'sarahcooks.test' } });
     save();
 
-    expect(await screen.findByText(/can't be removed/i)).toBeTruthy();
+    // Whatever the server refused with, the creator sees it and does not see
+    // "Saved" — a card that claimed a save it did not get would leave them
+    // believing the old link had gone.
+    expect(await screen.findByText(/could not connect to the database/i)).toBeTruthy();
     expect(screen.queryByText(/^Saved$/)).toBeNull();
   });
 
