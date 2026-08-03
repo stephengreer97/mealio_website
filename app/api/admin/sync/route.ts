@@ -55,6 +55,8 @@ function newItem(input: { itemId: string; url: string; title?: unknown; publishe
     draftId: null,
     mealName: null,
     needALook: null,
+    photoUrl: null,
+    ingredientCount: null,
     costUsd: 0,
   };
 }

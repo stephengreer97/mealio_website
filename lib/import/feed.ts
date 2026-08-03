@@ -214,6 +214,47 @@ export function parseFeed(body: string, baseUrl: string): ParsedFeed | null {
   return entries.length > 0 ? { kind, entries } : null;
 }
 
+/**
+ * How often the publisher says they want to be re-read, in seconds, or null.
+ *
+ * Two spellings, both common enough to be worth reading (MEAL-75):
+ *
+ *   `<ttl>`                RSS 2.0, in **minutes**.
+ *   `<sy:updatePeriod>`    the syndication module, a word plus an optional
+ *   `<sy:updateFrequency>` count of times per period. WordPress emits it on
+ *                          every feed it serves, so it is the one most of our
+ *                          creators will actually have.
+ *
+ * Honouring this is not merely polite. It is the interval the publisher asked
+ * for, in writing, on their own feed — which makes it the strongest available
+ * defence of our cadence if anyone ever asks why we are hitting their site.
+ *
+ * Read from the channel, not from an entry: `tag` takes the first match in
+ * document order and both elements are channel-level in every real feed.
+ */
+export function parseFeedTtlSeconds(body: string): number | null {
+  const minutes = Number(tag(body, 'ttl'));
+  if (Number.isFinite(minutes) && minutes > 0) return Math.round(minutes * 60);
+
+  const period = tag(body, 'updatePeriod')?.toLowerCase();
+  const seconds = period ? UPDATE_PERIOD_SECONDS[period] : undefined;
+  if (!seconds) return null;
+
+  // "twice hourly" is `hourly` with a frequency of 2 — a divisor, not a
+  // multiplier. Absent, zero or nonsense means once per period.
+  const frequency = Number(tag(body, 'updateFrequency'));
+  const divisor = Number.isFinite(frequency) && frequency > 0 ? frequency : 1;
+  return Math.max(1, Math.round(seconds / divisor));
+}
+
+const UPDATE_PERIOD_SECONDS: Record<string, number> = {
+  hourly: 3_600,
+  daily: 86_400,
+  weekly: 604_800,
+  monthly: 2_592_000,
+  yearly: 31_536_000,
+};
+
 export interface ParsedSitemap {
   entries: FeedEntry[];
   /** Child sitemaps from a `<sitemapindex>`, most recently modified first. */
