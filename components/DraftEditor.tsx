@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ALL_UNITS } from '@/lib/import/ingredients';
-import { MAX_MEAL_TAGS, MEAL_TAGS } from '@/lib/import/vocab';
+import { canonicalizeTags, MAX_MEAL_TAGS, MEAL_TAGS, tagCapError, toggleTag } from '@/lib/import/vocab';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
 
 /**
@@ -103,16 +103,14 @@ export default function DraftEditor({
       ingredients: [...prev.ingredients, { ingredientName: '', qty: 1, productQty: 1, unit: 'qty', measure: null, searchTerm: null }],
     }));
 
-  const toggleTag = (tag: string) =>
-    setForm(prev => {
-      const tags = prev.tags ?? [];
-      if (tags.includes(tag)) return { ...prev, tags: tags.filter(t => t !== tag) };
-      // The same constant `editableDraft` refuses on, rather than a literal
-      // three in each of them. The cap was client-only in both editors until
-      // MEAL-89's review: a PATCH that did not come from one of them stored as
-      // many tags as it was sent, and approving published all of them.
-      return tags.length >= MAX_MEAL_TAGS ? prev : { ...prev, tags: [...tags, tag] };
-    });
+  // The same rule `editableDraft` refuses on, and now the same *function*: the
+  // cap was client-only in both editors until MEAL-89's review — a PATCH that
+  // did not come from one of them stored as many tags as it was sent, and
+  // approving published all of them. `toggleTag` is that rule written once, in
+  // `vocab.ts`, because three pickers were each carrying their own copy and one
+  // of them counted to a literal `3`.
+  const onTagClick = (tag: string) =>
+    setForm(prev => ({ ...prev, tags: toggleTag(prev.tags ?? [], tag) }));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }} data-testid="draft-editor">
@@ -153,6 +151,20 @@ export default function DraftEditor({
         <label style={label}>
           Tags ({(form.tags ?? []).length} of {MAX_MEAL_TAGS})
         </label>
+        {/* Over the cap, the count above is not enough on its own: it says five
+            of three without saying what to do about it. Saving is refused by
+            the PATCH rather than trimmed, so naming how many to deselect is
+            what turns a Save that comes back 400 into something the reviewer
+            can see and fix before pressing it. Counted over the canonicalised
+            list because that is the list the PATCH counts: a draft carrying
+            three in-vocabulary tags and two the picker has no chip for would
+            otherwise read "deselect 2" while offering nothing to deselect,
+            about a Save that would have worked. */}
+        {tagCapError(canonicalizeTags(form.tags ?? [])) && (
+          <p style={{ fontSize: '11px', color: '#b91c1c', margin: '0 0 4px' }} data-testid="tag-cap-note">
+            {tagCapError(canonicalizeTags(form.tags ?? []))} Deselect {canonicalizeTags(form.tags ?? []).length - MAX_MEAL_TAGS} before saving.
+          </p>
+        )}
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '110px', overflowY: 'auto' }} data-testid="tag-picker">
           {MEAL_TAGS.map(tag => {
             const on = (form.tags ?? []).includes(tag);
@@ -160,7 +172,7 @@ export default function DraftEditor({
               <button
                 key={tag}
                 type="button"
-                onClick={() => toggleTag(tag)}
+                onClick={() => onTagClick(tag)}
                 style={{
                   fontSize: '11px', padding: '2px 8px', borderRadius: '99px', cursor: 'pointer',
                   background: on ? '#dd0031' : 'white', color: on ? 'white' : '#6b7280',

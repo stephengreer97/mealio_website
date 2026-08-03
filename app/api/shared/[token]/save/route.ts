@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
+import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -74,6 +75,16 @@ export async function POST(
     ...(ing.searchTerm != null ? { searchTerm: ing.searchTerm } : {}),
   }));
 
+  // Tags are **trimmed** here rather than refused, which is the opposite of what
+  // every other writer does — deliberately, because the input is not this user's
+  // to fix. They pressed Save on somebody else's meal; refusing it would be a
+  // 400 about a rule they cannot satisfy, on a list they cannot see or edit
+  // until the meal is theirs. Keeping the first three matches exactly what the
+  // card they are looking at already shows (`tags.slice(0, MAX_MEAL_TAGS)`), so
+  // nothing they saw is lost, and the copy lands inside the cap the edit modal
+  // and both meal routes enforce from then on.
+  const tags = (sharedMeal.tags ?? []).slice(0, MAX_MEAL_TAGS);
+
   // Insert as a new meal for this user
   const { data: meal, error: insertError } = await supabase
     .from('meals')
@@ -89,7 +100,7 @@ export async function POST(
       ...(sharedMeal.recipe      ? { recipe: sharedMeal.recipe }           : {}),
       ...(sharedMeal.photo_url   ? { photo_url: sharedMeal.photo_url }     : {}),
       ...(sharedMeal.serves      ? { serves: sharedMeal.serves }           : {}),
-      ...(sharedMeal.tags?.length ? { tags: sharedMeal.tags }              : {}),
+      ...(tags.length            ? { tags }                                : {}),
       ...(sharedMeal.story       ? { story: sharedMeal.story }             : {}),
     })
     .select()

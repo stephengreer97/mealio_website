@@ -13,6 +13,7 @@ import {
   withScheme,
   type PublishClaim,
 } from '@/lib/creator-meals';
+import { canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import { log } from '@/lib/logger';
 
 async function getCreator(request: NextRequest) {
@@ -46,6 +47,35 @@ export async function POST(request: NextRequest) {
   if (!name?.trim() || !Array.isArray(ingredients) || ingredients.length === 0) {
     return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
   }
+
+  // Canonicalised first, then counted — the order the draft PATCH already uses.
+  // Counting raw made the cap a count of *strings*: three arbitrary ones matched
+  // no Discover filter and looked like typos on the card, and three copies of
+  // 'Vegan' rendered three identical chips and still passed. Both forms pick
+  // from `MEAL_TAGS` and cannot produce either, so nothing a picker sends is
+  // changed by this; it is the hand-written request that is.
+  //
+  // Dropping an out-of-vocabulary tag is not the same concession as trimming an
+  // over-cap one: the tag was never selectable and would never have matched
+  // anything. Over-cap is still refused, not trimmed.
+  const canonicalTags = Array.isArray(tags) ? canonicalizeTags(tags.map(String)) : undefined;
+  const tooManyTags = canonicalTags ? tagCapError(canonicalTags) : null;
+  if (tooManyTags) {
+    return NextResponse.json({ error: tooManyTags }, { status: 400 });
+  }
+
+  // `serves` is a head count, and the column is free text. `SERVES_PATTERN` is
+  // the rule the extraction already applies and the draft editor already
+  // enforces; this route accepted "2 1/2 cups" and put it on the card.
+  const servesText = serves == null ? '' : String(serves).trim();
+  if (servesText && !SERVES_PATTERN.test(servesText)) {
+    return NextResponse.json({ error: SERVES_ERROR }, { status: 400 });
+  }
+
+  // Both refusals above run before the link claim below is taken. A claim taken
+  // for a request that is then refused would hold the link with no meal behind
+  // it until it aged out, and tell the creator they had already published
+  // something that does not exist.
 
   // ── One publish attempt, one meal (MEAL-93) ───────────────────────────────
   //
@@ -119,7 +149,12 @@ export async function POST(request: NextRequest) {
     meal = await publishCreatorMeal(
       supabase,
       { id: creator.id, display_name: creator.display_name, user_id: userId },
-      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves, publishToken },
+      {
+        name, ingredients, recipe, source, story, photoUrl, difficulty,
+        tags: canonicalTags,
+        serves: servesText || null,
+        publishToken,
+      },
     );
   } catch (err) {
     // The index refused a second meal for this attempt, which means the first

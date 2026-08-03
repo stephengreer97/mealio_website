@@ -17,6 +17,7 @@ import { resolvePhotoUrl } from '@/lib/photos';
 import { platformSourceForUrl, type PlatformSource } from '@/lib/creator-sources';
 import { urlIdentity } from '@/lib/import/ssrf';
 import { videoIdFromUrl } from '@/lib/youtube';
+import { canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft } from '@/lib/import/types';
 
 export interface PublishingCreator {
@@ -397,6 +398,27 @@ export async function publishCreatorMeal(
   creator: PublishingCreator,
   input: CreatorMealInput,
 ): Promise<PublishedMeal> {
+  // Checked here as well as at both callers, for the same reason the insert
+  // itself is here: this is the one place a row reaches `preset_meals`, so it is
+  // the only place that can promise what a published meal looks like. The route
+  // is a validating caller; **Approve is not** — it publishes a draft row that
+  // may have been written by an older build, or by an import that suggested up
+  // to eight tags, and a batch approve of those would otherwise put a six-tag
+  // meal on Discover with three of them invisible.
+  //
+  // Throwing is what a batch caller already handles: `approveDraft` puts the
+  // draft back in the queue with this sentence attached, so the operator can
+  // deselect down to the cap and approve again.
+  //
+  // Canonicalised before it is counted, for the same reason and in the same
+  // order as the draft PATCH: the count that matters is the count of tags that
+  // can actually match a Discover filter, and a duplicate renders twice on the
+  // card while passing a count of strings.
+  const tags = Array.isArray(input.tags) ? canonicalizeTags(input.tags.map(String)) : undefined;
+  const tooManyTags = tags ? tagCapError(tags) : null;
+  if (tooManyTags) throw new Error(tooManyTags);
+  if (input.serves && !SERVES_PATTERN.test(input.serves)) throw new Error(SERVES_ERROR);
+
   // A Pixabay stand-in photo is copied into our own bucket rather than
   // hotlinked. A failure here is not a reason to lose the meal — the meal is the
   // thing the creator wrote, the photo is decoration.
@@ -419,7 +441,9 @@ export async function publishCreatorMeal(
       // that simply does not take part — which is every meal published before
       // this existed and every meal the admin sync publishes.
       ...(input.publishToken ? { publish_token: input.publishToken } : {}),
-      ...(Array.isArray(input.tags) && input.tags.length ? { tags: input.tags } : {}),
+      // The canonicalised list from above, not `input.tags`: the row that lands
+      // in `preset_meals` has to be the same list the cap was counted against.
+      ...(tags && tags.length ? { tags } : {}),
     })
     .select()
     .single();

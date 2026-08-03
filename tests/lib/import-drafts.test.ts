@@ -26,6 +26,12 @@ vi.mock('@/lib/marketing-email', () => ({
   sendMarketingEmail: (...args: unknown[]) => sendMarketingEmail(...args),
 }));
 
+// Reached only by the tests that approve through the *real* publisher, where a
+// stand-in photo would otherwise be copied into storage.
+vi.mock('@/lib/photos', () => ({
+  resolvePhotoUrl: vi.fn(async (url: string | undefined) => url ?? null),
+}));
+
 import {
   approveDraft,
   cancelDraft,
@@ -392,6 +398,71 @@ describe('approveDraft — the only path to Discover', () => {
     expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
       status: 'approved',
       published_meal_id: 'meal-1',
+    });
+  });
+
+  /**
+   * Everything above injects a stub publisher, which is the right shape for
+   * asserting *who* gets called and in which order — and says nothing about
+   * what happens when the real one refuses. The tag cap lives inside
+   * `publishCreatorMeal`, so "approve no longer publishes an over-cap draft" is
+   * a claim about the seam between these two functions and nothing was standing
+   * on it: `deps.publisher` could have lost its default, or `approveDraft`
+   * could have started trimming before the call, with the suite still green.
+   *
+   * So these two run the real publisher against the real fake database.
+   */
+  describe('with the real publisher behind it', () => {
+    /** No `publisher` override: `approveDraft` falls back to `publishCreatorMeal`. */
+    function realDeps() {
+      return { supabase, now: () => 1_800_000_000_000 } as DraftDeps;
+    }
+
+    it('refuses an over-cap draft and leaves it in the queue to be fixed', async () => {
+      // The extraction prompt allows up to eight tags and older builds stored
+      // whatever it returned, so this row is a real thing sitting in the queue.
+      fakeDb.seed('creator_import_drafts', [draftRow({
+        draft: {
+          ...guacamole.draft,
+          tags: ['Mexican', 'No Cook', 'Appetizer', 'Vegan', 'Healthy', 'Snack', 'Soup', 'Salad'],
+        },
+      })]);
+      fakeDb.seed('preset_meals', []);
+
+      const result = await approveDraft(realDeps(), 'd1', 'admin-1');
+
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.error)
+        .toBe('Publishing failed: That is 8 tags. A meal takes at most 3.');
+      // Nothing reached Discover, and the draft is back where the operator can
+      // deselect down to three and approve again.
+      expect(fakeDb.rows('preset_meals')).toEqual([]);
+      expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+        status: 'pending_review',
+        decided_by: null,
+        decided_at: null,
+        published_meal_id: null,
+      });
+      expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
+    });
+
+    it('publishes a draft inside the cap, through that same path', async () => {
+      // The other half of the seam: the refusal above is the cap firing, not
+      // the real publisher failing for some unrelated reason.
+      fakeDb.seed('creator_import_drafts', [draftRow()]);
+      fakeDb.seed('preset_meals', []);
+
+      const result = await approveDraft(realDeps(), 'd1', 'admin-1');
+
+      expect(result.ok).toBe(true);
+      const rows = fakeDb.rows('preset_meals');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].tags).toEqual(['Mexican', 'No Cook', 'Appetizer']);
+      expect(rows[0]).toMatchObject({ name: 'Best Guacamole', author: 'Chef Sarah', creator_id: 'c1' });
+      expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+        status: 'approved',
+        decided_by: 'admin-1',
+      });
     });
   });
 
@@ -1084,6 +1155,22 @@ describe('editableDraft — the same rules the publish form has', () => {
     const result = editableDraft({ ...base, serves: '2 1/2 cups' });
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.error).toMatch(/number or a range/i);
+  });
+
+  it('refuses more tags than a meal takes rather than keeping the first three', () => {
+    // Trimming here would be worse than refusing: the card renders three, so the
+    // operator would see three of the six they picked and no sign of which.
+    const result = editableDraft({ ...base, tags: ['Mexican', 'Vegan', 'Snack', 'Healthy'] });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toMatch(/That is 4 tags\. A meal takes at most 3\./);
+  });
+
+  it('accepts exactly the cap, and counts duplicates once', () => {
+    expect(editableDraft({ ...base, tags: ['Mexican', 'Vegan', 'Snack'] }).ok).toBe(true);
+    // Four sent, three stored — the dedupe happens before the count, so a
+    // repeated tag is not a reason to refuse an edit.
+    const deduped = editableDraft({ ...base, tags: ['Mexican', 'mexican', 'Vegan', 'Snack'] });
+    expect(deduped.ok && deduped.draft.tags).toEqual(['Mexican', 'Vegan', 'Snack']);
   });
 
   it('strips a tag the picker does not have and a difficulty outside 1–5', () => {

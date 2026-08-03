@@ -43,7 +43,7 @@ import {
   type ImportSummary,
 } from '@/lib/import/draft-form';
 import { canonicalizeIngredient } from '@/lib/import/ingredients';
-import { canonicalizeDifficulty, canonicalizeTags, MAX_MEAL_TAGS, SERVES_PATTERN } from '@/lib/import/vocab';
+import { canonicalizeDifficulty, canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft, FieldConfidence, ImportConfidence } from '@/lib/import/types';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -932,23 +932,22 @@ const EDITED_REASON = 'An operator changed this, so our check of the model’s v
 /**
  * Validates the nine fields the edit form posts back.
  *
- * The same shape `publishCreatorMeal` takes, because Approve feeds this
- * straight into it — a draft that would be rejected at publish time is better
- * rejected while the reviewer is still looking at it than left in the queue to
- * fail later.
+ * The same shape and the same constraints `POST /api/creator/meals` publishes,
+ * because Approve feeds this straight into `publishCreatorMeal` — a draft that
+ * would be rejected at publish time is better rejected while the reviewer is
+ * still looking at it than left in the queue to fail later.
  *
  * The vocabularies are re-applied rather than trusted: tags outside the picker
  * and units outside the editor's list are what the pipeline already normalises,
  * and a hand-edited request is exactly where an unknown one would arrive.
  *
- * The constraints are this module's, NOT `POST /api/creator/meals`'s. That
- * route enforces neither the tag cap nor `SERVES_PATTERN`, and the mobile
- * portal's publish form offers an uncapped tag picker on top of it — so making
- * these rules retrospective there would silently drop tags creators are
- * choosing today. It is a real gap and it wants its own change, with the app's
- * picker moved in the same release. Here they are enforced because both editors
- * that reach this function already refuse a fourth tag, and a rule the client
- * shows and the server does not hold is a rule only for people using the UI.
+ * The cap and `SERVES_PATTERN` used to be this module's alone — the publish
+ * route enforced neither, so the rules held only for drafts. They now hold on
+ * every path that writes a meal. The one difference is *when*: an edit to an
+ * existing `preset_meals` row is checked only on the fields it changes, so rows
+ * written before the cap stay editable. A draft has no such history — it is
+ * validated here in full, every time, because nothing has ever been published
+ * from it.
  */
 export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, error: 'draft is required' };
@@ -974,9 +973,16 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
 
   const serves = typeof input.serves === 'string' ? input.serves.trim() : '';
   if (serves && !SERVES_PATTERN.test(serves)) {
-    return { ok: false, error: 'Serves must be a number or a range, like 4 or 2-4.' };
+    return { ok: false, error: SERVES_ERROR };
   }
 
+  // Counted after canonicalisation, because that is the list that would be
+  // stored: a tag outside the picker's vocabulary is dropped a line below and
+  // refusing the edit over one would be refusing it over nothing. An operator
+  // opening a draft the import filled with more tags than this sees them all
+  // selected and can only deselect, so the way out of this refusal is the
+  // obvious one.
+  //
   // Refused rather than trimmed, for the same reason `serves` is: a draft can
   // arrive from extraction carrying more than the cap, and quietly dropping the
   // ones past the third would take away tags the reviewer is looking at without
@@ -984,11 +990,9 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
   // the only ways here are a draft that came in with more, and a hand-written
   // request.
   const tags = canonicalizeTags(Array.isArray(input.tags) ? input.tags.map(String) : []);
-  if (tags.length > MAX_MEAL_TAGS) {
-    return {
-      ok: false,
-      error: `That is ${tags.length} tags. Keep at most ${MAX_MEAL_TAGS} — a meal is only shown under three.`,
-    };
+  const tooManyTags = tagCapError(tags);
+  if (tooManyTags) {
+    return { ok: false, error: tooManyTags };
   }
 
   const text = (value: unknown): string | null => {

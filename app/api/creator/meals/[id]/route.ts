@@ -4,6 +4,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { resolvePhotoUrl } from '@/lib/photos';
 import { publishIdentity, releaseLinkClaim } from '@/lib/creator-meals';
+import { servesChangeError, servesTextOf, tagChangeError } from '@/lib/import/vocab';
 import { log } from '@/lib/logger';
 
 async function getCreator(request: NextRequest) {
@@ -37,12 +38,17 @@ export async function PUT(
 
   const supabase = createServerSupabaseClient();
 
-  // Verify ownership. `source` comes back with it because this meal may be
-  // holding a claim over that link (MEAL-93), and an edit that moves the meal to
-  // a different link has to give the old one back.
+  // Verify ownership. Three columns come back with it:
+  //
+  //   `tags` and `serves` — what the row already holds is what says whether this
+  //   save is *changing* either of them, which is the grandfathering rule below.
+  //
+  //   `source` — this meal may be holding a claim over that link (MEAL-93), and
+  //   an edit that moves the meal to a different link has to give the old one
+  //   back.
   const { data: existing } = await supabase
     .from('preset_meals')
-    .select('id, source')
+    .select('id, tags, serves, source')
     .eq('id', id)
     .eq('creator_id', creator.id)
     .maybeSingle();
@@ -53,6 +59,30 @@ export async function PUT(
 
   const body = await request.json();
   const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves } = body;
+
+  // The same two rules `POST /api/creator/meals` publishes under. Both forms
+  // reach this route with the *same* fields from the *same* editor — the mobile
+  // portal's Save Meal is a create or an update depending only on whether it was
+  // opened on an existing meal — so a cap enforced on one and not the other is
+  // no cap at all.
+  //
+  // But both editors also post both fields on *every* save, touched or not, and
+  // meals published before the cap existed carry more than three tags. Checking
+  // what arrived rather than what changed made those meals uneditable: a typo
+  // fixed in the name came back 400 about tags. So each field is checked only
+  // when this save is actually changing it — which is what `tagChangeError` and
+  // `servesChangeError` are, and why the stored row is read above.
+  const incomingTags = Array.isArray(tags) ? tags : [];
+  const tooManyTags = tags !== undefined ? tagChangeError(incomingTags, existing.tags) : null;
+  if (tooManyTags) {
+    return NextResponse.json({ error: tooManyTags }, { status: 400 });
+  }
+
+  const servesText = servesTextOf(serves);
+  const badServes = serves !== undefined ? servesChangeError(servesText, existing.serves) : null;
+  if (badServes) {
+    return NextResponse.json({ error: badServes }, { status: 400 });
+  }
 
   const normalizeUrl = (url?: string) => {
     if (!url?.trim()) return '';
@@ -72,8 +102,12 @@ export async function PUT(
       : null;
   }
   if (difficulty !== undefined) updates.difficulty = difficulty || null;
-  if (serves !== undefined) updates.serves = serves || null;
-  if (tags !== undefined) updates.tags = Array.isArray(tags) ? tags : [];
+  // `servesText` is the column's own shape — the column is text, so a numeric
+  // `4` from an older client stores "4" rather than 4, and `0` stores "0",
+  // which `SERVES_PATTERN` accepts here and on POST alike. An unchanged value
+  // is written back as itself, which is what it already was.
+  if (serves !== undefined) updates.serves = servesText || null;
+  if (tags !== undefined) updates.tags = incomingTags;
 
   const { data: meal, error } = await supabase
     .from('preset_meals')

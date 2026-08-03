@@ -689,6 +689,45 @@ describe('AdminReviewQueue — editing', () => {
     expect(chosen()).toEqual(new Set(['Mexican', 'Appetizer', 'Italian']));
   });
 
+  it('says so when the draft itself arrives over the cap', async () => {
+    // The extraction prompt allows up to eight tags, so a stored draft can carry
+    // more than the publish form takes. The editor opens on all of them and the
+    // picker can only *stop* a fourth being added, so without this line the
+    // operator's first sign of trouble is a 400 on Save.
+    const overCap = draft({
+      draft: { ...guacamole.draft, tags: ['Mexican', 'No Cook', 'Appetizer', 'Vegan', 'Healthy'] },
+    });
+    harness([overCap]);
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const note = await screen.findByTestId('tag-cap-note');
+    expect(note.textContent).toMatch(/That is 5 tags\. A meal takes at most 3\./);
+    expect(note.textContent).toMatch(/Deselect 2 before saving\./);
+
+    // And it goes away once they are down to the cap.
+    const picker = within(await screen.findByTestId('draft-editor')).getByTestId('tag-picker');
+    fireEvent.click(within(picker).getByRole('button', { name: 'Vegan' }));
+    fireEvent.click(within(picker).getByRole('button', { name: 'Healthy' }));
+    await waitFor(() => expect(screen.queryByTestId('tag-cap-note')).toBeNull());
+  });
+
+  it('counts the tags the PATCH counts, not the strings on the row', async () => {
+    // The note counted `form.tags` raw while the validator counts the
+    // canonicalised list, so a draft carrying three in-vocabulary tags and two
+    // the picker has no chip for read "That is 5 tags … Deselect 2" — an
+    // instruction with nothing to click, about a Save that would have worked.
+    const outOfVocab = draft({
+      draft: { ...guacamole.draft, tags: ['Mexican', 'No Cook', 'Appetizer', 'Artisanal', 'Farm To Table'] },
+    });
+    harness([outOfVocab]);
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await screen.findByTestId('draft-editor');
+
+    expect(screen.queryByTestId('tag-cap-note')).toBeNull();
+  });
+
   it('shows the count against the cap, because a draft can arrive over it', async () => {
     // The model is asked for up to eight tags, so a picker that silently
     // refuses a fourth next to five already-lit chips reads as broken. The

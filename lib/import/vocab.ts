@@ -33,17 +33,19 @@ export const MEAL_TAGS = [
   'Quick Cleanup', 'Leftovers Good',
 ] as const;
 
-/** Index matches the `difficulty` column: 1–5, 0 unused. */
-export const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-Hard', 'Hard'];
-
 /**
- * How many tags a review queue's editor will save.
+ * How many tags one meal carries.
  *
- * Both editors already refused a fourth; nothing on the server did, so a PATCH
- * that did not come from one of them stored as many as it was sent, and
- * approving published all of them. `MealCard` renders `.slice(0, 3)`, so the
- * extras were invisible on the card and still filterable in Discover — a meal
- * showing up under a tag its creator cannot see it carries.
+ * Three is what every publish form has always offered — the creator portal, the
+ * admin draft editor, the mobile app — and what `MealCard` renders: the card
+ * does `tags.slice(0, 3)`. A fourth tag is therefore *invisible on screen and
+ * still filterable in Discover*, which is the worst of the two possible
+ * outcomes: a meal that turns up under a filter with no sign of why.
+ *
+ * It lives here, beside the vocabulary itself, because every writer of the
+ * `tags` column already imports this module. It was a literal `3` in five
+ * places, and the two that enforced nothing at all — `POST /api/creator/meals`
+ * and the draft PATCH — are how a six-tag meal reached Discover.
  *
  * Deliberately NOT applied by `canonicalizeTags`, which is also the extraction
  * path: the model is asked for up to eight and the confidence model assesses
@@ -51,6 +53,104 @@ export const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-H
  * decided which three to keep.
  */
 export const MAX_MEAL_TAGS = 3;
+
+/**
+ * The refusal for an over-cap tag list, or null when there is nothing to say.
+ *
+ * Over-cap input is **refused, never trimmed**. Silently keeping the first three
+ * throws away a choice somebody made and says nothing about it — the creator
+ * publishes six tags, sees three, and has no way to know which three we kept.
+ * (The one place that does trim is the *import* fill in `draft-form.ts`, which
+ * says so on screen: those tags were a model's suggestion, not a human's pick.)
+ */
+export function tagCapError(tags: readonly unknown[]): string | null {
+  if (tags.length <= MAX_MEAL_TAGS) return null;
+  return `That is ${tags.length} tags. A meal takes at most ${MAX_MEAL_TAGS}.`;
+}
+
+/**
+ * Whether two tag lists are the same list, order included.
+ *
+ * Order is part of the value, not an implementation detail: the card renders
+ * `tags.slice(0, MAX_MEAL_TAGS)`, so reordering an over-cap list changes which
+ * tags a saver sees. A reorder is therefore a change, and a change is checked.
+ */
+export function sameTags(a: readonly unknown[] | null | undefined, b: readonly unknown[] | null | undefined): boolean {
+  const left = Array.isArray(a) ? a : [];
+  const right = Array.isArray(b) ? b : [];
+  return left.length === right.length && left.every((tag, i) => tag === right[i]);
+}
+
+/**
+ * The refusal for a tag list an edit is *changing*, or null when there is
+ * nothing to say — the grandfathering rule.
+ *
+ * A cap enforced on every field that arrives, rather than on every field that
+ * changed, is a cap on *editing* rather than on tags: both editors post `tags`
+ * and `serves` on every save, so a creator fixing a typo in the name of a meal
+ * published before the cap existed got a 400 and lost the edit, on two fields
+ * they never opened. Sixteen `preset_meals` rows carry more than three tags, and
+ * every one of them was legal when it was written.
+ *
+ * So the rule is: an unchanged over-cap list saves, and any change to it must
+ * land at or under the cap. That makes those rows editable with no migration and
+ * no trimming — trimming would throw away a choice somebody made without saying
+ * so, which is the thing `tagCapError` exists to refuse.
+ */
+export function tagChangeError(
+  incoming: readonly unknown[],
+  stored: readonly unknown[] | null | undefined,
+): string | null {
+  if (sameTags(incoming, stored)) return null;
+  return tagCapError(incoming);
+}
+
+/**
+ * A `serves` as the column holds it: trimmed text, or '' for absent.
+ *
+ * The column is text and every writer stores text, so a numeric `4` becomes
+ * `"4"` here rather than at three separate call sites. `0` becomes `"0"`, which
+ * `SERVES_PATTERN` accepts — see the note on the pattern.
+ */
+export function servesTextOf(value: unknown): string {
+  return value == null ? '' : String(value).trim();
+}
+
+/**
+ * The refusal for a `serves` an edit is *changing*, or null. Grandfathered for
+ * the same reason as `tagChangeError`: the field arrives on every save whether
+ * or not the creator touched it.
+ */
+export function servesChangeError(incoming: string, stored: unknown): string | null {
+  // Compared as the column holds it, so a client posting the numeric `4` it was
+  // handed the string "4" for is not read as a change to a field it echoed back.
+  if (incoming === servesTextOf(stored)) return null;
+  if (incoming && !SERVES_PATTERN.test(incoming)) return SERVES_ERROR;
+  return null;
+}
+
+/**
+ * A tag picker's click, wherever the picker is drawn.
+ *
+ * Selected → deselected; unselected → selected if there is room; at the cap →
+ * nothing at all. Three hand-written copies of that rule existed (the creator
+ * portal, `my-meals`, and `components/DraftEditor` — which both review queues
+ * now share) and one of them counted to a literal `3`. It is the client half of
+ * a rule the server refuses on, so it is
+ * worth having exactly once and testing exactly once — the copies were the only
+ * guard in the tag-cap change with no failing test behind it.
+ *
+ * Returns the selection unchanged when there is no room, so a caller can tell
+ * "added" from "refused" by comparing lengths.
+ */
+export function toggleTag(selected: readonly string[], tag: string, max: number = MAX_MEAL_TAGS): string[] {
+  if (selected.includes(tag)) return selected.filter((t) => t !== tag);
+  if (selected.length >= max) return [...selected];
+  return [...selected, tag];
+}
+
+/** Index matches the `difficulty` column: 1–5, 0 unused. */
+export const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-Hard', 'Hard'];
 
 const TAG_LOOKUP = new Map(MEAL_TAGS.map((tag) => [tag.toLowerCase(), tag]));
 
@@ -80,6 +180,16 @@ export function canonicalizeTags(tags: readonly string[]): string[] {
  * source states a volume and no people count is nothing at all.
  */
 export const SERVES_PATTERN = /^\d+(-\d+)?$/;
+
+/**
+ * The refusal for a `serves` that is not a head count, worded once.
+ *
+ * Every route that accepts a `serves` says this same sentence, because they are
+ * all enforcing the same `SERVES_PATTERN` and a creator who hits it on the
+ * mobile form and again in the admin editor should not have to work out that
+ * the two rules are the same rule.
+ */
+export const SERVES_ERROR = 'Serves must be a number or a range, like 4 or 2-4.';
 
 /**
  * Words that mark a number as a count of people or portions.

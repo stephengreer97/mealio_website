@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { resolvePhotoUrl } from '@/lib/photos';
+import { tagChangeError } from '@/lib/import/vocab';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -33,6 +34,29 @@ export async function PUT(
   }
 
   const supabase = createServerSupabaseClient();
+
+  // What the row holds now, which is what says whether this save is *changing*
+  // the tags. Personal meals written before the cap can carry more than three,
+  // and the edit modal posts `tags` on every save whether or not the user opened
+  // the picker — checking what arrived rather than what changed would make a
+  // seven-tag meal uneditable, on a field the user never touched.
+  const { data: existing } = await supabase
+    .from('meals')
+    .select('id, tags')
+    .eq('id', id)
+    .eq('user_id', decoded.userId)
+    .maybeSingle();
+
+  if (!existing) {
+    return NextResponse.json({ error: 'Meal not found' }, { status: 404 });
+  }
+
+  const incomingTags = Array.isArray(tags) ? tags : [];
+  const tooManyTags = tags !== undefined ? tagChangeError(incomingTags, existing.tags) : null;
+  if (tooManyTags) {
+    return NextResponse.json({ error: tooManyTags }, { status: 400 });
+  }
+
   const { data: meal, error } = await supabase
     .from('meals')
     .update({
@@ -44,7 +68,7 @@ export async function PUT(
       ...(resolvedPhotoUrl   !== undefined && { photo_url:  resolvedPhotoUrl || null }),
       ...(author      !== undefined && { author:     author     || null }),
       ...(difficulty  !== undefined && { difficulty: difficulty || null }),
-      ...(tags        !== undefined && { tags: Array.isArray(tags) ? tags : [] }),
+      ...(tags        !== undefined && { tags: incomingTags }),
       ...(serves      !== undefined && { serves: serves || null }),
       ...(storeId     !== undefined && { store_id: storeId || null }),
       updated_at: new Date().toISOString(),

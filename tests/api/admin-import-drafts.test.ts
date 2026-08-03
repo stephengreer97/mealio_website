@@ -585,6 +585,56 @@ describe('PATCH /api/admin/import-drafts', () => {
     expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts')).toBe(false);
   });
 
+  it('refuses more tags than a meal takes, and stores none of them', async () => {
+    asAdmin();
+    // The row the operator opened: the three tags the import settled on.
+    storeDrafts(draftRow());
+    const before = fakeDb.row('creator_import_drafts', 'd1')!.draft;
+
+    const res = await PATCH(jsonRequest('/api/admin/import-drafts', {
+      method: 'PATCH',
+      token,
+      body: {
+        id: 'd1',
+        draft: {
+          ...guacamole.draft,
+          ingredients: guacamole.draft.ingredients.map((row) => ({ ...row })),
+          tags: ['Mexican', 'No Cook', 'Vegan', 'Healthy', 'Snack', 'Dip'],
+        },
+      },
+    }));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/at most 3/);
+    // The whole edit is refused rather than the tail of the list dropped: the
+    // stored draft is byte-for-byte what it was, and nothing was published.
+    expect(fakeDb.row('creator_import_drafts', 'd1')!.draft).toEqual(before);
+    expect(publishCreatorMeal).not.toHaveBeenCalled();
+  });
+
+  it('counts the tags it would store, not the ones it was sent', async () => {
+    asAdmin();
+    storeDrafts(draftRow());
+
+    // Six tags, but three of them are outside the picker's vocabulary and would
+    // be dropped anyway. Refusing this would be refusing over nothing.
+    const res = await PATCH(jsonRequest('/api/admin/import-drafts', {
+      method: 'PATCH',
+      token,
+      body: {
+        id: 'd1',
+        draft: {
+          ...guacamole.draft,
+          ingredients: guacamole.draft.ingredients.map((row) => ({ ...row })),
+          tags: ['Mexican', 'Artisanal', 'No Cook', 'Small Batch', 'Vegan', 'Farm To Table'],
+        },
+      },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(fakeDb.row('creator_import_drafts', 'd1')!.draft.tags).toEqual(['Mexican', 'No Cook', 'Vegan']);
+  });
+
   it('400 without an id', async () => {
     asAdmin();
     const res = await PATCH(jsonRequest('/api/admin/import-drafts', { method: 'PATCH', token, body: { draft: {} } }));
