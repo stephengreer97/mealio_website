@@ -17,7 +17,7 @@
  *      are somebody not to poll.
  *   2. **The first poll imports nothing.** Every item in a newly connected feed
  *      is unseen, so the naive version fires an extraction per archived post:
- *      a blog with 200 of them is ~$13 and 200 drafts nobody asked for. The
+ *      a blog with 200 of them is ~$3 and 200 drafts nobody asked for. The
  *      baseline marks them `seen` instead. Back-catalog import is a deliberate,
  *      separate action (MEAL-79), never a side effect of connecting.
  *   3. **Never a high-water mark.** "Everything after the last guid" is the
@@ -248,7 +248,7 @@ interface SourceState {
    *
    * That distinction is load-bearing twice over. It is how a first poll is
    * recognised (null means we have never enumerated this feed, so the baseline
-   * has not run and importing everything in it would be the $13 mistake), and it
+   * has not run and importing everything in it would be the whole-archive mistake), and it
    * is how a *new* 403 is told from a source that has never worked. Writing it
    * on a failed attempt would collapse both.
    */
@@ -499,7 +499,7 @@ export async function pollCreator(
       // only: `last_polled_at` set with nothing marked seen means the next pass
       // is no longer a first poll, all 200 archived posts are unseen, five are
       // extracted and the creator is emailed about them — every pass, for forty
-      // passes, at about $13 and forty emails. Left as a first poll, the
+      // passes, at about $3 and forty emails. Left as a first poll, the
       // baseline simply runs again next cycle and costs one feed read.
       const failures = (state?.consecutiveFailures ?? 0) + 1;
       await writeState(deps, creator, {
@@ -900,7 +900,7 @@ async function loadStates(
   // this is the transport ceiling. An `.in()` filter travels in the QUERY
   // STRING, and an over-long URI is rejected by the proxy in front of PostgREST
   // rather than by the database — so it comes back as no state at all, which
-  // reads as "never polled" for every creator at once, which is the $13
+  // reads as "never polled" for every creator at once, which is the whole-archive
   // back-catalogue import for every creator at once.
   for (let from = 0; from < ids.length; from += POLL_CREATOR_BATCH) {
     const { data } = await supabase
