@@ -3,6 +3,7 @@ import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { resolvePhotoUrl } from '@/lib/photos';
+import { SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import { log } from '@/lib/logger';
 
 async function getCreator(request: NextRequest) {
@@ -51,6 +52,20 @@ export async function PUT(
   const body = await request.json();
   const { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves } = body;
 
+  // The same two rules `POST /api/creator/meals` publishes under. Both forms
+  // reach this route with the *same* fields from the *same* editor — the mobile
+  // portal's Save Meal is a create or an update depending only on whether it was
+  // opened on an existing meal — so a cap enforced on one and not the other is
+  // no cap at all.
+  const tooManyTags = Array.isArray(tags) ? tagCapError(tags) : null;
+  if (tooManyTags) {
+    return NextResponse.json({ error: tooManyTags }, { status: 400 });
+  }
+  const servesText = serves == null ? '' : String(serves).trim();
+  if (servesText && !SERVES_PATTERN.test(servesText)) {
+    return NextResponse.json({ error: SERVES_ERROR }, { status: 400 });
+  }
+
   const normalizeUrl = (url?: string) => {
     if (!url?.trim()) return '';
     const u = url.trim();
@@ -69,7 +84,7 @@ export async function PUT(
       : null;
   }
   if (difficulty !== undefined) updates.difficulty = difficulty || null;
-  if (serves !== undefined) updates.serves = serves || null;
+  if (serves !== undefined) updates.serves = servesText || null;
   if (tags !== undefined) updates.tags = Array.isArray(tags) ? tags : [];
 
   const { data: meal, error } = await supabase

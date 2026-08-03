@@ -3,6 +3,7 @@ import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { publishCreatorMeal } from '@/lib/creator-meals';
+import { SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import { log } from '@/lib/logger';
 
 async function getCreator(request: NextRequest) {
@@ -37,6 +38,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
   }
 
+  // Both forms cap their pickers at three, so an over-cap list is a client that
+  // has drifted from the rule rather than a creator to be corrected — but it is
+  // still refused here, not trimmed. Uncanonicalised, unlike the draft PATCH:
+  // this route stores what it is given, so the count that matters is the count
+  // that would be written.
+  const tooManyTags = Array.isArray(tags) ? tagCapError(tags) : null;
+  if (tooManyTags) {
+    return NextResponse.json({ error: tooManyTags }, { status: 400 });
+  }
+
+  // `serves` is a head count, and the column is free text. `SERVES_PATTERN` is
+  // the rule the extraction already applies and the draft editor already
+  // enforces; this route accepted "2 1/2 cups" and put it on the card.
+  const servesText = serves == null ? '' : String(serves).trim();
+  if (servesText && !SERVES_PATTERN.test(servesText)) {
+    return NextResponse.json({ error: SERVES_ERROR }, { status: 400 });
+  }
+
   // The insert itself is shared with admin sync (MEAL-90) so attribution — the
   // author name savers see, and the creator_id the profit share counts — is
   // written in exactly one place.
@@ -46,7 +65,7 @@ export async function POST(request: NextRequest) {
     meal = await publishCreatorMeal(
       supabase,
       { id: creator.id, display_name: creator.display_name, user_id: userId },
-      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves },
+      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves: servesText || null },
     );
   } catch (err) {
     log({ event: 'CREATOR:MEAL_CREATE', status: 'error', userId: creator.id, detail: String(err) });

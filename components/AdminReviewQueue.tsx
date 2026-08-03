@@ -5,7 +5,7 @@ import ImportFieldNotice from '@/components/ImportFieldNotice';
 import { MealDetailBody, type MealNotices, type PresetMeal } from '@/components/MealCard';
 import { noticesFor, summaryLine, type ImportSummary } from '@/lib/import/draft-form';
 import { UNITS } from '@/lib/import/ingredients';
-import { MEAL_TAGS } from '@/lib/import/vocab';
+import { MAX_MEAL_TAGS, MEAL_TAGS, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
 // Type-only: `lib/import-drafts` reaches Supabase, Resend and the photo copier,
 // and must never be bundled into the client. Erased at compile time.
@@ -551,9 +551,10 @@ function DraftEditor({
     setForm(prev => {
       const tags = prev.tags ?? [];
       if (tags.includes(tag)) return { ...prev, tags: tags.filter(t => t !== tag) };
-      // Three is what the publish form accepts, and a fourth would be silently
-      // dropped on save rather than visibly refused here.
-      return tags.length >= 3 ? prev : { ...prev, tags: [...tags, tag] };
+      // The cap the publish form accepts, and a tag over it is refused by the
+      // PATCH rather than silently dropped, so stopping here is what keeps the
+      // Save button from failing on something the picker let them do.
+      return tags.length >= MAX_MEAL_TAGS ? prev : { ...prev, tags: [...tags, tag] };
     });
 
   return (
@@ -588,7 +589,15 @@ function DraftEditor({
       </div>
 
       <div>
-        <label style={label}>Tags (up to 3)</label>
+        <label style={label}>Tags (up to {MAX_MEAL_TAGS})</label>
+        {/* An import may suggest up to eight, and this editor opens on whatever
+            the draft carries. Saying so is what turns a Save that comes back
+            400 into a thing the operator can see and undo before pressing it. */}
+        {tagCapError(form.tags ?? []) && (
+          <p style={{ fontSize: '11px', color: '#b91c1c', margin: '0 0 4px' }} data-testid="tag-cap-note">
+            {tagCapError(form.tags ?? [])} Deselect {(form.tags ?? []).length - MAX_MEAL_TAGS} before saving.
+          </p>
+        )}
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '110px', overflowY: 'auto' }} data-testid="tag-picker">
           {MEAL_TAGS.map(tag => {
             const on = (form.tags ?? []).includes(tag);

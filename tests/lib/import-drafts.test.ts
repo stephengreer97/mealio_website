@@ -630,6 +630,22 @@ describe('editableDraft — the same rules the publish form has', () => {
     expect(result.ok === false && result.error).toMatch(/number or a range/i);
   });
 
+  it('refuses more tags than a meal takes rather than keeping the first three', () => {
+    // Trimming here would be worse than refusing: the card renders three, so the
+    // operator would see three of the six they picked and no sign of which.
+    const result = editableDraft({ ...base, tags: ['Mexican', 'Vegan', 'Snack', 'Healthy'] });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toMatch(/That is 4 tags\. A meal takes at most 3\./);
+  });
+
+  it('accepts exactly the cap, and counts duplicates once', () => {
+    expect(editableDraft({ ...base, tags: ['Mexican', 'Vegan', 'Snack'] }).ok).toBe(true);
+    // Four sent, three stored — the dedupe happens before the count, so a
+    // repeated tag is not a reason to refuse an edit.
+    const deduped = editableDraft({ ...base, tags: ['Mexican', 'mexican', 'Vegan', 'Snack'] });
+    expect(deduped.ok && deduped.draft.tags).toEqual(['Mexican', 'Vegan', 'Snack']);
+  });
+
   it('strips a tag the picker does not have and a difficulty outside 1–5', () => {
     const result = editableDraft({ ...base, tags: ['Mexican', 'Artisanal'], difficulty: 9 });
     expect(result.ok && result.draft.tags).toEqual(['Mexican']);

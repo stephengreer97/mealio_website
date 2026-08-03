@@ -14,6 +14,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolvePhotoUrl } from '@/lib/photos';
+import { SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft } from '@/lib/import/types';
 
 export interface PublishingCreator {
@@ -48,6 +49,21 @@ export async function publishCreatorMeal(
   creator: PublishingCreator,
   input: CreatorMealInput,
 ): Promise<PublishedMeal> {
+  // Checked here as well as at both callers, for the same reason the insert
+  // itself is here: this is the one place a row reaches `preset_meals`, so it is
+  // the only place that can promise what a published meal looks like. The route
+  // is a validating caller; **Approve is not** — it publishes a draft row that
+  // may have been written by an older build, or by an import that suggested up
+  // to eight tags, and a batch approve of those would otherwise put a six-tag
+  // meal on Discover with three of them invisible.
+  //
+  // Throwing is what a batch caller already handles: `approveDraft` puts the
+  // draft back in the queue with this sentence attached, so the operator can
+  // deselect down to the cap and approve again.
+  const tooManyTags = Array.isArray(input.tags) ? tagCapError(input.tags) : null;
+  if (tooManyTags) throw new Error(tooManyTags);
+  if (input.serves && !SERVES_PATTERN.test(input.serves)) throw new Error(SERVES_ERROR);
+
   // A Pixabay stand-in photo is copied into our own bucket rather than
   // hotlinked. A failure here is not a reason to lose the meal — the meal is the
   // thing the creator wrote, the photo is decoration.

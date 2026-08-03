@@ -373,4 +373,27 @@ describe('AdminReviewQueue — editing', () => {
     fireEvent.click(within(picker).getByRole('button', { name: 'Italian' }));
     expect(chosen()).toEqual(new Set(['Mexican', 'Appetizer', 'Italian']));
   });
+
+  it('says so when the draft itself arrives over the cap', async () => {
+    // The extraction prompt allows up to eight tags, so a stored draft can carry
+    // more than the publish form takes. The editor opens on all of them and the
+    // picker can only *stop* a fourth being added, so without this line the
+    // operator's first sign of trouble is a 400 on Save.
+    const overCap = draft({
+      draft: { ...guacamole.draft, tags: ['Mexican', 'No Cook', 'Appetizer', 'Vegan', 'Healthy'] },
+    });
+    harness([overCap]);
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const note = await screen.findByTestId('tag-cap-note');
+    expect(note.textContent).toMatch(/That is 5 tags\. A meal takes at most 3\./);
+    expect(note.textContent).toMatch(/Deselect 2 before saving\./);
+
+    // And it goes away once they are down to the cap.
+    const picker = within(await screen.findByTestId('draft-editor')).getByTestId('tag-picker');
+    fireEvent.click(within(picker).getByRole('button', { name: 'Vegan' }));
+    fireEvent.click(within(picker).getByRole('button', { name: 'Healthy' }));
+    await waitFor(() => expect(screen.queryByTestId('tag-cap-note')).toBeNull());
+  });
 });

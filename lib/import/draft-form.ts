@@ -34,6 +34,7 @@
  * flow. Recorded on MEAL-73 rather than fixed here.
  */
 
+import { MAX_MEAL_TAGS } from './vocab';
 import type {
   DraftIngredient,
   FieldConfidence,
@@ -151,7 +152,7 @@ export type FormFillSource = Pick<ImportSuccess, 'draft' | 'url'>;
 export function importedFormValues(result: FormFillSource): ImportedFormValues {
   const draft = result.draft;
   const allTags = draft.tags ?? [];
-  const tags = allTags.slice(0, 3);
+  const tags = allTags.slice(0, MAX_MEAL_TAGS);
   const ingredients = (draft.ingredients ?? []).map(draftIngredientToForm);
 
   return {

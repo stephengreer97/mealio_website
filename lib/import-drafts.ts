@@ -43,7 +43,7 @@ import {
   type ImportSummary,
 } from '@/lib/import/draft-form';
 import { canonicalizeIngredient } from '@/lib/import/ingredients';
-import { canonicalizeDifficulty, canonicalizeTags, SERVES_PATTERN } from '@/lib/import/vocab';
+import { canonicalizeDifficulty, canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft, FieldConfidence, ImportConfidence } from '@/lib/import/types';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -687,7 +687,19 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
 
   const serves = typeof input.serves === 'string' ? input.serves.trim() : '';
   if (serves && !SERVES_PATTERN.test(serves)) {
-    return { ok: false, error: 'Serves must be a number or a range, like 4 or 2-4.' };
+    return { ok: false, error: SERVES_ERROR };
+  }
+
+  // Counted after canonicalisation, because that is the list that would be
+  // stored: a tag outside the picker's vocabulary is dropped a line below and
+  // refusing the edit over one would be refusing it over nothing. An operator
+  // opening a draft the import filled with more tags than this sees them all
+  // selected and can only deselect, so the way out of this refusal is the
+  // obvious one.
+  const tags = canonicalizeTags(Array.isArray(input.tags) ? input.tags.map(String) : []);
+  const tooManyTags = tagCapError(tags);
+  if (tooManyTags) {
+    return { ok: false, error: tooManyTags };
   }
 
   const text = (value: unknown): string | null => {
@@ -705,7 +717,7 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
       story: text(input.story),
       photoUrl: text(input.photoUrl),
       difficulty: canonicalizeDifficulty(typeof input.difficulty === 'number' ? input.difficulty : null),
-      tags: canonicalizeTags(Array.isArray(input.tags) ? input.tags.map(String) : []),
+      tags,
       serves: serves || null,
     },
   };

@@ -27,6 +27,7 @@ import {
   type ScalarField,
 } from '@/lib/import/draft-form';
 import PublishedLinkModal from '@/components/PublishedLinkModal';
+import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
 
 interface Creator {
   id: string;
@@ -178,7 +179,7 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
   const toggle = (tag: string) => {
     if (selected.includes(tag)) {
       onChange(selected.filter(t => t !== tag));
-    } else if (selected.length < 3) {
+    } else if (selected.length < MAX_MEAL_TAGS) {
       onChange([...selected, tag]);
     }
   };
@@ -203,7 +204,7 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', maxHeight: '90px', overflowY: 'auto', paddingRight: '2px' }}>
         {filtered.map(tag => {
           const isSelected = selected.includes(tag);
-          const isDisabled = !isSelected && selected.length >= 3;
+          const isDisabled = !isSelected && selected.length >= MAX_MEAL_TAGS;
           return (
             <button
               key={tag}
@@ -604,7 +605,7 @@ function EditPresetMealModal({
 
           {/* Tags */}
           <div>
-            <label style={modalLabelStyle}>Tags <span style={{ fontWeight: 400, color: '#aaa' }}>(up to 3)</span></label>
+            <label style={modalLabelStyle}>Tags <span style={{ fontWeight: 400, color: '#aaa' }}>(up to {MAX_MEAL_TAGS})</span></label>
             <TagPicker selected={selectedTags} onChange={setSelectedTags} />
           </div>
 
@@ -2057,7 +2058,7 @@ export default function CreatorPortal() {
 
                 {/* Tags */}
                 <div>
-                  <span id="publish-tags-label" className={pLabelCls}>Tags <span className="text-gray-400 font-normal">(up to 3)</span></span>
+                  <span id="publish-tags-label" className={pLabelCls}>Tags <span className="text-gray-400 font-normal">(up to {MAX_MEAL_TAGS})</span></span>
                   <div
                     role="group"
                     aria-labelledby="publish-tags-label"
