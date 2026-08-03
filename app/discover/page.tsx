@@ -286,8 +286,9 @@ function normIng(raw: any): Ingredient {
 }
 
 function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
-  return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
+  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
+  const amount = ing.measure ?? '';
+  return amount ? `${ing.ingredientName}, ${amount} ${ing.unit}` : `${ing.ingredientName}, ${ing.unit}`;
 }
 
 interface PresetMeal {

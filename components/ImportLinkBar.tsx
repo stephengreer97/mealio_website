@@ -136,6 +136,25 @@ export default function ImportLinkBar({
     }
   };
 
+  /**
+   * Throw away what is on screen and stop reading.
+   *
+   * Clearing during a request used to leave the request running, so the
+   * response landed on the empty form a moment later and repopulated it
+   * underneath the creator — with anything they had typed in between counted as
+   * an in-flight edit. "Start over" has to mean the whole thing, so the request
+   * is aborted and its id retired before the form is reset.
+   */
+  const clearAll = () => {
+    requestRef.current++;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+    setRejection(null);
+    setUrl('');
+    onClearDraft();
+  };
+
   const host = hostLabel(withScheme(url) || url);
   const copy = rejection ? rejectionCopy(rejection) : null;
 
@@ -149,10 +168,12 @@ export default function ImportLinkBar({
         <p className="text-sm font-semibold" style={{ color: '#18181B' }}>
           Start from a link
         </p>
-        {hasDraft && (
+        {/* Also offered mid-request, where it is the only way out of a read the
+            copy warns can take a minute. */}
+        {(hasDraft || busy) && (
           <button
             type="button"
-            onClick={() => { onClearDraft(); setRejection(null); setUrl(''); }}
+            onClick={clearAll}
             className="text-xs font-medium underline underline-offset-2"
             style={{ color: '#52525B' }}
           >
@@ -175,7 +196,10 @@ export default function ImportLinkBar({
           autoCorrect="off"
           spellCheck={false}
           value={url}
-          disabled={busy}
+          // Deliberately still editable while a request runs. Disabling the box
+          // a creator has just pressed Enter in throws their focus to <body>,
+          // so the next Tab restarts at the top of the document — and it leaves
+          // them no way to correct a typo they have already spotted.
           onChange={e => { setUrl(e.target.value); if (rejection) setRejection(null); }}
           onKeyDown={e => {
             // The bar sits above the publish <form>, so Enter here can never
@@ -184,7 +208,7 @@ export default function ImportLinkBar({
           }}
           placeholder="https://yourblog.com/your-recipe"
           aria-label="Recipe link to import"
-          className="flex-1 min-w-0 rounded-[10px] px-3 py-2.5 outline-none focus:ring-2 disabled:opacity-60"
+          className="flex-1 min-w-0 rounded-[10px] px-3 py-2.5 outline-none focus:ring-2"
           // 16px, per DESIGN.md — anything smaller makes iOS zoom the page on focus,
           // and this is the field a creator touches first on a phone.
           style={{
@@ -197,8 +221,14 @@ export default function ImportLinkBar({
         <button
           type="button"
           onClick={() => void runImport()}
-          disabled={busy || !url.trim()}
-          className="rounded-xl px-5 py-2.5 text-sm font-semibold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          // `aria-disabled` rather than `disabled`, for the same reason as the
+          // box above: a disabled element cannot hold focus, so disabling the
+          // button the creator just clicked drops them back to <body>.
+          // `runImport` already refuses an empty box and a second request.
+          aria-disabled={busy || !url.trim()}
+          className={`rounded-xl px-5 py-2.5 text-sm font-semibold whitespace-nowrap transition-colors ${
+            busy || !url.trim() ? 'opacity-40 cursor-not-allowed' : ''
+          }`}
           style={{ background: '#FFFFFF', border: '1px solid #D1CEC8', color: '#18181B' }}
         >
           {busy ? 'Reading…' : 'Import'}

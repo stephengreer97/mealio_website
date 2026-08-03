@@ -26,21 +26,37 @@
  *     `@type == "Recipe"` specifically.
  */
 
-import { decodeEntities, htmlToText, metaContent } from './html-text';
+import {
+  attrValue,
+  capHtml,
+  decodeEntities,
+  elements,
+  htmlToText,
+  metaContent,
+  startTags,
+} from './html-text';
 import { extractRecipeMicrodata } from './microdata';
 import type { Platform, RecipeJsonLd, SourceDocument, StructuredSource } from './types';
 
 export { decodeEntities, htmlToText, metaContent };
 
-export function extractTitle(html: string): string {
-  const title = /<title[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
-  if (title) return decodeEntities(title[1]).replace(/\s+/g, ' ').trim();
+/** First element of a kind, or null. Every reader here wants the first only. */
+function firstElement(html: string, name: string) {
+  for (const element of elements(html, name)) return element;
+  return null;
+}
 
-  const ogTitle = metaContent(html, 'og:title');
+export function extractTitle(html: string): string {
+  const input = capHtml(html);
+
+  const title = firstElement(input, 'title');
+  if (title) return decodeEntities(title.inner).replace(/\s+/g, ' ').trim();
+
+  const ogTitle = metaContent(input, 'og:title');
   if (ogTitle) return ogTitle;
 
-  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1\s*>/i.exec(html);
-  return h1 ? htmlToText(h1[1]).replace(/\s+/g, ' ').trim() : '';
+  const h1 = firstElement(input, 'h1');
+  return h1 ? htmlToText(h1.inner).replace(/\s+/g, ' ').trim() : '';
 }
 
 // ── JSON-LD ──────────────────────────────────────────────────────────────────
@@ -130,20 +146,22 @@ function normaliseRecipeNode(node: Record<string, unknown>): RecipeJsonLd | null
 }
 
 /**
- * Matches `<script type=application/ld+json>` with the attribute value
- * double-quoted, single-quoted **or unquoted**, and with the attributes in
- * either order. Yoast plus an HTML minifier emits the unquoted form.
+ * The `type` a JSON-LD block declares. Reading it off the tag's attribute run
+ * covers the double-quoted, single-quoted **and unquoted** forms in one go —
+ * Yoast plus an HTML minifier emits the unquoted one — without a pattern that
+ * has to span the whole document to find it.
  */
-const LD_JSON_SCRIPT =
-  /<script\b[^>]*\btype\s*=\s*(?:"application\/ld\+json"|'application\/ld\+json'|application\/ld\+json(?=[\s>]))[^>]*>([\s\S]*?)<\/script\s*>/gi;
+const LD_JSON_TYPE = /^application\/ld\+json$/i;
 
 /** Extracts and normalises a schema.org/Recipe from a page's JSON-LD blocks. */
 export function extractRecipeJsonLd(html: string): RecipeJsonLd | null {
-  for (const block of html.matchAll(LD_JSON_SCRIPT)) {
+  for (const block of elements(capHtml(html), 'script')) {
+    if (!LD_JSON_TYPE.test(attrValue(block.attrs, 'type') ?? '')) continue;
+
     let parsed: unknown;
     try {
       // JSON-LD is raw JSON, but some CMSes still entity-escape it.
-      const body = block[1].trim().replace(/^<!\[CDATA\[|\]\]>$/g, '');
+      const body = block.inner.trim().replace(/^<!\[CDATA\[|\]\]>$/g, '');
       parsed = JSON.parse(body.includes('&quot;') ? decodeEntities(body) : body);
     } catch {
       continue; // A malformed block is not a reason to fail the whole import.
@@ -179,7 +197,25 @@ const LINK_IN_BIO_HOSTS =
  * against our own creators' URLs in a few weeks rather than re-argued. Best
  * effort by design — an unrecognised platform is `unknown`, never an error.
  */
+/**
+ * True when the page carries a `<meta>` whose `content` starts with `prefix`,
+ * optionally restricted to one `name`.
+ *
+ * Replaces `<meta[^>]+content=["']?Medium/`, which is the quadratic shape: the
+ * `[^>]+` runs to end of input on a page with no `>` in it, from every `<meta`
+ * position. Same reading, one linear pass over the start tags.
+ */
+function metaContentStartsWith(html: string, prefix: string, name?: string): boolean {
+  const wanted = prefix.toLowerCase();
+  for (const tag of startTags(html, 'meta')) {
+    if (name && attrValue(tag.attrs, 'name')?.toLowerCase() !== name) continue;
+    if (attrValue(tag.attrs, 'content')?.toLowerCase().startsWith(wanted)) return true;
+  }
+  return false;
+}
+
 export function detectPlatform(html: string, url: string): Platform {
+  const input = capHtml(html);
   let host = '';
   try {
     host = new URL(url).hostname;
@@ -188,18 +224,18 @@ export function detectPlatform(html: string, url: string): Platform {
   }
 
   if (LINK_IN_BIO_HOSTS.test(host)) return 'link-in-bio';
-  if (/(^|\.)medium\.com$/i.test(host) || /<meta[^>]+content=["']?Medium["']?/i.test(html)) return 'medium';
-  if (/(^|\.)substack\.com$/i.test(host) || /substackcdn\.com/i.test(html)) return 'substack';
+  if (/(^|\.)medium\.com$/i.test(host) || metaContentStartsWith(input, 'Medium')) return 'medium';
+  if (/(^|\.)substack\.com$/i.test(host) || /substackcdn\.com/i.test(input)) return 'substack';
 
-  if (/\bwprm-recipe(-container)?\b/i.test(html)) return 'wordpress-wprm';
-  if (/\btasty-recipes\b/i.test(html)) return 'wordpress-tasty';
-  if (/\bjetpack-recipe\b/i.test(html)) return 'jetpack-recipes';
-  if (/yoast\s+seo|<!--\s*This site is optimized with the Yoast/i.test(html)) return 'wordpress-yoast';
-  if (/\/wp-content\/|\/wp-includes\//i.test(html)) return 'wordpress';
+  if (/\bwprm-recipe(-container)?\b/i.test(input)) return 'wordpress-wprm';
+  if (/\btasty-recipes\b/i.test(input)) return 'wordpress-tasty';
+  if (/\bjetpack-recipe\b/i.test(input)) return 'jetpack-recipes';
+  if (/yoast\s+seo|<!--\s*This site is optimized with the Yoast/i.test(input)) return 'wordpress-yoast';
+  if (/\/wp-content\/|\/wp-includes\//i.test(input)) return 'wordpress';
 
-  if (/static1\.squarespace\.com|squarespace\.com\/universal|\bsqs-block\b/i.test(html)) return 'squarespace';
-  if (/static\.parastorage\.com|\bwix-?(code|site)\b/i.test(html)) return 'wix';
-  if (/<meta[^>]+name=["']?generator["']?[^>]*content=["']?Ghost/i.test(html)) return 'ghost';
+  if (/static1\.squarespace\.com|squarespace\.com\/universal|\bsqs-block\b/i.test(input)) return 'squarespace';
+  if (/static\.parastorage\.com|\bwix-?(code|site)\b/i.test(input)) return 'wix';
+  if (metaContentStartsWith(input, 'Ghost', 'generator')) return 'ghost';
 
   return 'unknown';
 }
@@ -238,21 +274,25 @@ function truncate(value: string, limit: number): string {
  * consumes. Structured data is read JSON-LD first, then microdata/hRecipe.
  */
 export function toSourceDocument(url: string, html: string): SourceDocument {
+  // Capped once here as well as inside each reader: seven whole-document scans
+  // follow, and there is no point handing each of them a megabyte to discard.
+  const input = capHtml(html);
+
   let structuredSource: StructuredSource | null = null;
-  let jsonLd = extractRecipeJsonLd(html);
+  let jsonLd = extractRecipeJsonLd(input);
   if (jsonLd) {
     structuredSource = 'json-ld';
   } else {
-    jsonLd = extractRecipeMicrodata(html);
+    jsonLd = extractRecipeMicrodata(input);
     if (jsonLd) structuredSource = 'microdata';
   }
 
-  const text = htmlToText(html);
-  const recipeText = htmlToText(html, { dropBoilerplate: true });
-  const imageUrl = jsonLd?.image ?? metaContent(html, 'og:image');
+  const text = htmlToText(input);
+  const recipeText = htmlToText(input, { dropBoilerplate: true });
+  const imageUrl = jsonLd?.image ?? metaContent(input, 'og:image');
   return {
     url,
-    title: truncate(extractTitle(html), MAX_TITLE_CHARS),
+    title: truncate(extractTitle(input), MAX_TITLE_CHARS),
     // Recipe blogs bury the recipe under a long preamble but never past 24k chars;
     // the cap bounds token spend on pages with huge comment sections.
     text: truncate(text, MAX_TEXT_CHARS),
@@ -262,6 +302,6 @@ export function toSourceDocument(url: string, html: string): SourceDocument {
     jsonLdRaw: jsonLd ? truncate(serializeJsonLd(jsonLd), MAX_JSONLD_CHARS) : null,
     // A URL is a prompt input too, and a data: URI can carry a megabyte.
     imageUrl: imageUrl && imageUrl.length <= 2048 ? imageUrl : null,
-    platform: detectPlatform(html, url),
+    platform: detectPlatform(input, url),
   };
 }
