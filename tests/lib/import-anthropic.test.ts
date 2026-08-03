@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import {
+  supportsAdaptiveThinking,
   AnthropicUnavailableError,
   createStructuredCaller,
   estimateCostUsd,
@@ -116,6 +117,46 @@ describe('import/anthropic — cost model (MEAL-68)', () => {
       expect(MODEL_PRICING[model]).toBeTruthy();
     }
   });
+
+  it('prices the dated snapshot id the API answers with', () => {
+    // We send `claude-haiku-4-5`; the response says `claude-haiku-4-5-20251001`
+    // and usage is costed against that. Keyed on the alias alone this missed and
+    // booked the whole gate at $0.00.
+    expect(estimateCostUsd('claude-haiku-4-5-20251001', 900, 40)).toBeCloseTo(0.0011, 4);
+    expect(estimateCostUsd('claude-opus-5-20260315', 3000, 1500)).toBeCloseTo(0.0525, 4);
+  });
+
+  it('falls back to the requested model when the returned id prices to nothing', () => {
+    expect(estimateCostUsd('some-served-variant', 3000, 1500, 'claude-opus-5')).toBeCloseTo(
+      0.0525,
+      4,
+    );
+  });
+
+  it('still returns zero when neither id can be priced', () => {
+    expect(estimateCostUsd('some-future-model', 1000, 1000, 'another-unknown')).toBe(0);
+  });
+
+  it('costs a real call against the dated id the client hands back', async () => {
+    const client: AnthropicMessagesClient = {
+      messages: {
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: { ok: true },
+          stop_reason: 'end_turn',
+          model: 'claude-haiku-4-5-20251001',
+          usage: { input_tokens: 900, output_tokens: 40 },
+        }),
+      },
+    };
+    const { usage } = await createStructuredCaller(client)({
+      model: 'claude-haiku-4-5',
+      system: 's',
+      prompt: 'p',
+      schema: z.object({ ok: z.boolean() }),
+      maxTokens: 64,
+    });
+    expect(usage.costUsd).toBeCloseTo(0.0011, 4);
+  });
 });
 
 describe('import/anthropic — the client the pipeline actually constructs', () => {
@@ -153,5 +194,19 @@ describe('import/anthropic — the client the pipeline actually constructs', () 
     vi.unstubAllEnvs();
     vi.doUnmock('@anthropic-ai/sdk');
     vi.resetModules();
+  });
+});
+
+describe('import/anthropic — adaptive thinking is model-dependent', () => {
+  it('is sent to the models that accept it, and never to the ones that do not', () => {
+    // 4.6 is where adaptive thinking arrived. Below it the parameter is a 400,
+    // and a caller that always asks turns a whole eval run into "0% accuracy"
+    // for a reason that has nothing to do with accuracy.
+    for (const model of ['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-8']) {
+      expect(supportsAdaptiveThinking(model)).toBe(true);
+    }
+    for (const model of ['claude-haiku-4-5', 'claude-opus-4-5', 'claude-sonnet-4-5', 'claude-3-5-sonnet']) {
+      expect(supportsAdaptiveThinking(model)).toBe(false);
+    }
   });
 });

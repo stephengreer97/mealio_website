@@ -33,8 +33,32 @@ export interface StructuredRequest<T> {
   prompt: string;
   schema: z.ZodType<T>;
   maxTokens: number;
-  /** Adaptive thinking. Only set on models that accept it (4.6+). */
+  /**
+   * Ask for adaptive thinking. Honoured only on models that accept it — see
+   * `supportsAdaptiveThinking`, which is what actually decides.
+   */
   thinking?: boolean;
+}
+
+/**
+ * Whether a model accepts `thinking: { type: 'adaptive' }`.
+ *
+ * The comment on `thinking` used to say "only set on models that accept it" and
+ * nothing enforced it, so every caller passed `true` and the parameter went out
+ * on whatever model was named. That is fine while the model is Opus; pointing
+ * `EVAL_MODEL` at Haiku 4.5 turns every single request into
+ * `400 adaptive thinking is not supported on this model` — a whole eval run
+ * reporting 0% accuracy for a reason that has nothing to do with accuracy.
+ *
+ * Adaptive thinking arrived with the 4.6 generation, so 4.5 and earlier are out.
+ * Matched on the family and version in the id rather than an allowlist of exact
+ * ids: an allowlist silently drops thinking from the next model we add, which
+ * fails in the expensive direction — quietly worse output, no error.
+ */
+export function supportsAdaptiveThinking(model: string): boolean {
+  if (/^claude-(opus|sonnet|fable|mythos)-[5-9]/.test(model)) return true;
+  const legacy = /^claude-(opus|sonnet)-4-(\d+)/.exec(model);
+  return legacy ? Number(legacy[2]) >= 6 : false;
 }
 
 export interface StructuredUsage {
@@ -59,8 +83,37 @@ export class AnthropicUnavailableError extends Error {
   }
 }
 
-export function estimateCostUsd(model: string, inputTokens: number, outputTokens: number): number {
-  const price = MODEL_PRICING[model];
+/** The dated form the API echoes back, e.g. `claude-haiku-4-5-20251001`. */
+const DATED_MODEL_SUFFIX = /-\d{8}$/;
+
+/**
+ * Pricing for a model id, tolerating the dated id.
+ *
+ * We send an alias (`claude-haiku-4-5`) but the API answers with the concrete
+ * snapshot it served (`claude-haiku-4-5-20251001`), and usage is costed against
+ * *that* — the honest choice, since it is what actually ran. Keyed on the alias
+ * alone, the lookup missed and `estimateCostUsd` returned 0, so every call to
+ * the Haiku gate has been booked at no cost. It fails silently and in the
+ * direction that hides spend, which is the worst of both.
+ *
+ * Opus is unaffected only by luck: `claude-opus-5` is echoed back unchanged.
+ */
+export function pricingFor(model: string): { inputPerMTok: number; outputPerMTok: number } | undefined {
+  return MODEL_PRICING[model] ?? MODEL_PRICING[model.replace(DATED_MODEL_SUFFIX, '')];
+}
+
+/**
+ * `fallbackModel` is the id we asked for, used when the id we got back prices
+ * to nothing. A model we cannot price still returns 0 — there is no honest
+ * number to invent — but it should no longer be reachable by a snapshot suffix.
+ */
+export function estimateCostUsd(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  fallbackModel?: string,
+): number {
+  const price = pricingFor(model) ?? (fallbackModel ? pricingFor(fallbackModel) : undefined);
   if (!price) return 0;
   const usd =
     (inputTokens / 1_000_000) * price.inputPerMTok +
@@ -149,7 +202,9 @@ export function createStructuredCaller(clientOverride?: AnthropicMessagesClient)
       model: request.model,
       max_tokens: request.maxTokens,
       system: request.system,
-      ...(request.thinking ? { thinking: { type: 'adaptive' } } : {}),
+      ...(request.thinking && supportsAdaptiveThinking(request.model)
+        ? { thinking: { type: 'adaptive' } }
+        : {}),
       output_config: { format: zodOutputFormat(request.schema as never) },
       messages: [{ role: 'user', content: request.prompt }],
     });
@@ -180,7 +235,7 @@ export function createStructuredCaller(clientOverride?: AnthropicMessagesClient)
         model,
         inputTokens,
         outputTokens,
-        costUsd: estimateCostUsd(model, inputTokens, outputTokens),
+        costUsd: estimateCostUsd(model, inputTokens, outputTokens, request.model),
       },
     };
   };
