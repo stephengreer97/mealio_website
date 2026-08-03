@@ -66,3 +66,6 @@ supabase/.temp/
 # caught it on the way out. Anything derived from an env file is a secret.
 .env*.bak*
 .env.local.*
+
+# Credentials for the PostgREST contract suite. Never committed.
+.env.contract

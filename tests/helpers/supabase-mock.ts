@@ -66,15 +66,28 @@ function compareOrdered(a: any, b: any, ascending: boolean, nullsFirst: boolean)
   return (ascending ? 1 : -1) * compare(a, b);
 }
 
+const isNull = (cell: any) => cell === null || cell === undefined;
+
 /** Postgres three-valued logic: a comparison against NULL never matches. */
 function matchesFilter(row: any, f: Filter): boolean {
   const cell = row[f.column];
   switch (f.op) {
     case 'eq': return cell === f.value;
-    case 'neq': return cell !== f.value;
+    // `col <> 'x'` is NULL — not TRUE — when col is NULL, so Postgres drops the
+    // row. Plain `!==` keeps it, and the difference is invisible until a
+    // nullable column shows up: `.neq('primary_source', 'none')` is meant to
+    // exclude one value and would silently start including every unset row.
+    case 'neq': return !isNull(cell) && cell !== f.value;
     case 'in': return Array.isArray(f.value) && f.value.includes(cell);
-    case 'is': return f.value === null ? cell === null || cell === undefined : cell === f.value;
-    case 'not': return !matchesFilter(row, { op: f.value[0], column: f.column, value: f.value[1] });
+    case 'is': return f.value === null ? isNull(cell) : cell === f.value;
+    case 'not': {
+      const inner: Filter = { op: f.value[0], column: f.column, value: f.value[1] };
+      // `IS NULL` is the one predicate that is never itself NULL, so negating it
+      // is ordinary boolean logic. Every other `NOT (…)` over a NULL cell is
+      // NULL, and the row is dropped rather than kept.
+      if (inner.op === 'is') return !matchesFilter(row, inner);
+      return !isNull(cell) && !matchesFilter(row, inner);
+    }
     case 'lt': return cell !== null && cell !== undefined && compare(cell, f.value) < 0;
     case 'lte': return cell !== null && cell !== undefined && compare(cell, f.value) <= 0;
     case 'gt': return cell !== null && cell !== undefined && compare(cell, f.value) > 0;
@@ -131,14 +144,37 @@ function splitColumns(columns: string): string[] {
   return out.map((c) => c.trim()).filter(Boolean);
 }
 
+/**
+ * Matches one embed in a select list: `table ( … )`, `table!fk ( … )`,
+ * `table!inner ( … )` and `table!fk!inner ( … )`.
+ *
+ * The hint is repeated, not optional-once. PostgREST stacks hints, and the app
+ * writes `preset_meals!preset_meal_id!inner ( … )` in two places - a pattern
+ * allowing a single `!hint` does not recognise that as an embed at all, so it
+ * became a column key named after the whole expression and the relation went
+ * missing. That is the original embed bug wearing a different hat.
+ */
+const EMBED_RE = /^([A-Za-z_][\w]*)((?:!\w+)*)\s*\(/;
+
+/** Relation names the select list joins with `!inner`. */
+function innerEmbeds(columns?: string): string[] {
+  if (!columns || columns.trim() === '*') return [];
+  const names: string[] = [];
+  for (const column of splitColumns(columns)) {
+    const embed = EMBED_RE.exec(column);
+    if (embed && embed[2].split('!').includes('inner')) names.push(embed[1]);
+  }
+  return names;
+}
+
 function project(row: any, columns?: string): any {
   if (!columns || columns.trim() === '*') return { ...row };
   const out: any = {};
   for (const column of splitColumns(columns)) {
-    // `table!fk ( ... )` or `table ( ... )` - take the whole nested value under
-    // the relation's name. The embed's own column list is not enforced here; a
-    // test seeds the shape it wants and the point is that the relation survives.
-    const embed = /^([A-Za-z_][\w]*)\s*(?:!\w+)?\s*\(/.exec(column);
+    // Take the whole nested value under the relation's name. The embed's own
+    // column list is not enforced here; a test seeds the shape it wants and the
+    // point is that the relation survives.
+    const embed = EMBED_RE.exec(column);
     if (embed) {
       out[embed[1]] = row[embed[1]] ?? null;
       continue;
@@ -285,6 +321,12 @@ export class FakeSupabase {
     let rowRange: { from: number; to: number } | null = null;
     let counting = false;
     let headOnly = false;
+    // Separate from `counting`, because PostgREST asks for the two in different
+    // places: `{ count }` on a WRITE is an option of `insert`/`update`/`delete`
+    // itself. The same option on the `.select()` that FOLLOWS a write is not a
+    // count request at all - the real client answers `count: null` there - so
+    // the two must not be confused.
+    let writeCounting = false;
 
     const builder: any = {};
     const record = (method: string, args: any[]) => { this.calls.push({ table, method, args }); };
@@ -298,13 +340,26 @@ export class FakeSupabase {
       if (args[1]?.head) headOnly = true;
       return builder;
     };
-    builder.insert = (...args: any[]) => { record('insert', args); op = 'insert'; payload = args[0]; return builder; };
-    builder.update = (...args: any[]) => { record('update', args); op = 'update'; payload = args[0]; return builder; };
-    builder.delete = (...args: any[]) => { record('delete', args); op = 'delete'; return builder; };
+    builder.insert = (...args: any[]) => {
+      record('insert', args); op = 'insert'; payload = args[0];
+      if (args[1]?.count) writeCounting = true;
+      return builder;
+    };
+    builder.update = (...args: any[]) => {
+      record('update', args); op = 'update'; payload = args[0];
+      if (args[1]?.count) writeCounting = true;
+      return builder;
+    };
+    builder.delete = (...args: any[]) => {
+      record('delete', args); op = 'delete';
+      if (args[0]?.count) writeCounting = true;
+      return builder;
+    };
     builder.upsert = (...args: any[]) => {
       record('upsert', args);
       op = 'upsert';
       payload = args[0];
+      if (args[1]?.count) writeCounting = true;
       conflict = String(args[1]?.onConflict ?? '').split(',').map((c) => c.trim()).filter(Boolean);
       return builder;
     };
@@ -399,18 +454,37 @@ export class FakeSupabase {
             if (existing) { Object.assign(existing, value); written.push(existing); }
             else { const row = { ...value }; rows.push(row); written.push(row); }
           }
-          return { data: returning ? written.map((r) => project(r, columns)) : null, error: null, count: written.length };
+          return {
+            data: returning ? written.map((r) => project(r, columns)) : null,
+            error: null,
+            count: writeCounting ? written.length : null,
+          };
         }
         case 'update': {
           for (const row of matched) Object.assign(row, payload);
-          return { data: returning ? matched.map((r) => project(r, columns)) : null, error: null, count: matched.length };
+          return {
+            data: returning ? matched.map((r) => project(r, columns)) : null,
+            error: null,
+            count: writeCounting ? matched.length : null,
+          };
         }
         case 'delete': {
           for (const row of matched) rows.splice(rows.indexOf(row), 1);
-          return { data: returning ? matched.map((r) => project(r, columns)) : null, error: null, count: matched.length };
+          return {
+            data: returning ? matched.map((r) => project(r, columns)) : null,
+            error: null,
+            count: writeCounting ? matched.length : null,
+          };
         }
         default: {
-          let out = [...matched];
+          // `!inner` is an INNER JOIN: a row with no related row is not in the
+          // result at all, and is not in the count either, because the count is
+          // an aggregate over the same FROM and WHERE as the rows.
+          const inner = innerEmbeds(columns);
+          const visible = inner.length === 0
+            ? matched
+            : matched.filter((row) => inner.every((name) => row[name] !== null && row[name] !== undefined));
+          let out = [...visible];
           if (orderBy) {
             const { column, ascending, nullsFirst } = orderBy;
             out.sort((a, b) => compareOrdered(a[column], b[column], ascending, nullsFirst));
@@ -431,7 +505,7 @@ export class FakeSupabase {
             // of a long queue report the queue as exactly one page long, which
             // is the number a caller reaches for precisely BECAUSE it wants to
             // know the queue is longer than a page.
-            count: counting ? matched.length : null,
+            count: counting ? visible.length : null,
           };
         }
       }
