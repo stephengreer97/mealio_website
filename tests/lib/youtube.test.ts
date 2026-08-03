@@ -12,15 +12,22 @@ import {
   channelIdFromUrl,
   exchangeYouTubeCode,
   fetchOwnChannel,
-  parseUploadsFeed,
-  readUploadsFeed,
+  fetchVideoSnippet,
+  fetchVideos,
+  isUploadsPageToken,
+  listUploads,
   resolveChannelId,
   srtToText,
-  uploadsFeedUrl,
+  updateVideoDescription,
+  withMealioLink,
   MAX_CAPTION_BYTES,
+  MEALIO_LINK_INTRO,
+  YOUTUBE_DESCRIPTION_MAX,
+  YOUTUBE_QUOTA,
   youtubeAuthUrl,
   youtubeSourceDocument,
   YOUTUBE_WRITE_SCOPE,
+  type VideoSnippet,
   type YouTubeVideo,
 } from '@/lib/youtube';
 
@@ -38,18 +45,11 @@ const supabase = fakeDb as unknown as SupabaseClient;
 
 const DESCRIPTION = 'Ingredients:\n2 ripe avocados\n1 lime, juiced\n\nMash them together.';
 
-function feedXml(overrides: { id?: string; description?: string; title?: string } = {}): string {
-  const id = overrides.id ?? 'vid0000000A';
-  return (
-    `<feed xmlns:yt="y" xmlns:media="m">` +
-    `<entry><id>yt:video:${id}</id><yt:videoId>${id}</yt:videoId>` +
-    `<title>${overrides.title ?? 'Best Guacamole'}</title>` +
-    `<link rel="alternate" href="https://www.youtube.com/watch?v=${id}"/>` +
-    `<published>2026-07-29T09:00:00+00:00</published>` +
-    `<media:group><media:thumbnail url="https://i.ytimg.com/vi/${id}/hqdefault.jpg" width="480"/>` +
-    `<media:description>${overrides.description ?? DESCRIPTION}</media:description></media:group>` +
-    `</entry></feed>`
-  );
+const API = 'https://www.googleapis.com/youtube/v3';
+
+/** A JSON route for `stubFetch`, which defaults to serving HTML. */
+function jsonRoute(body: unknown) {
+  return { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } };
 }
 
 function video(overrides: Partial<YouTubeVideo> = {}): YouTubeVideo {
@@ -60,6 +60,7 @@ function video(overrides: Partial<YouTubeVideo> = {}): YouTubeVideo {
     description: DESCRIPTION,
     publishedAt: '2026-07-29T09:00:00.000Z',
     thumbnailUrl: null,
+    channelId: CHANNEL_ID,
     ...overrides,
   };
 }
@@ -187,73 +188,345 @@ describe('youtube — resolving a channel id from a creator link', () => {
   });
 });
 
-// ── The uploads feed ─────────────────────────────────────────────────────────
+// ── The uploads playlist ─────────────────────────────────────────────────────
 
-describe('youtube — the uploads feed is the free list', () => {
-  it('keeps the description’s line breaks, which is where the ingredients are', () => {
-    const [parsed] = parseUploadsFeed(feedXml());
+describe('youtube — listing a back catalogue costs quota, so it is bounded', () => {
+  const PLAYLIST_ID = 'UUabcdefghijklmnopqrstuv';
 
-    // `feed.ts` collapses all whitespace, which would turn an ingredient list
-    // into "2 ripe avocados 1 lime, juiced" — one line, no list.
-    expect(parsed.description).toBe(DESCRIPTION);
-    expect(parsed.description.split('\n')).toContain('2 ripe avocados');
-  });
+  const channelsUrl = (id = CHANNEL_ID) =>
+    `${API}/channels?${new URLSearchParams({ part: 'contentDetails', id })}`;
 
-  it('takes the bare video id, not the yt:video: form', () => {
-    const [parsed] = parseUploadsFeed(feedXml());
-    expect(parsed.videoId).toBe('vid0000000A');
-    expect(parsed.url).toBe('https://www.youtube.com/watch?v=vid0000000A');
-    expect(parsed.title).toBe('Best Guacamole');
-    expect(parsed.publishedAt).toBe('2026-07-29T09:00:00.000Z');
-    expect(parsed.thumbnailUrl).toBe('https://i.ytimg.com/vi/vid0000000A/hqdefault.jpg');
-  });
+  const playlistUrl = (params: Record<string, string>) =>
+    `${API}/playlistItems?${new URLSearchParams({
+      part: 'snippet,contentDetails,status',
+      playlistId: PLAYLIST_ID,
+      maxResults: '50',
+      ...params,
+    })}`;
 
-  it('decodes entities in the description, so &amp; is not read as markup', () => {
-    const [parsed] = parseUploadsFeed(feedXml({ description: '2 avocados &amp; 1 lime' }));
-    expect(parsed.description).toBe('2 avocados & 1 lime');
-  });
+  const channelsRoute = () => jsonRoute({ items: [{ contentDetails: { relatedPlaylists: { uploads: PLAYLIST_ID } } }] });
 
-  it('survives a truncated document instead of parsing garbage', () => {
-    expect(parseUploadsFeed('<feed><entry><yt:videoId>vid0000000A')).toEqual([]);
-    expect(parseUploadsFeed('')).toEqual([]);
-  });
+  function playlistItem(id: string, overrides: Record<string, any> = {}) {
+    return {
+      contentDetails: { videoId: id, videoPublishedAt: '2026-07-29T09:00:00Z' },
+      status: { privacyStatus: 'public' },
+      snippet: {
+        title: `Best Guacamole ${id}`,
+        description: DESCRIPTION,
+        publishedAt: '2026-08-01T00:00:00Z',
+        channelId: CHANNEL_ID,
+        videoOwnerChannelId: CHANNEL_ID,
+        thumbnails: { high: { url: `https://i.ytimg.com/vi/${id}/hqdefault.jpg` } },
+      },
+      ...overrides,
+    };
+  }
 
-  it('fetches one URL and accepts the text/xml the feed is served as', async () => {
+  it('resolves the uploads playlist from the API rather than rewriting UC to UU', async () => {
     const { impl, calls } = stubFetch({
-      [uploadsFeedUrl(CHANNEL_ID)]: { body: feedXml(), headers: { 'content-type': 'text/xml; charset=UTF-8' } },
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({})]: jsonRoute({ items: [playlistItem('vid0000000A')] }),
     });
 
-    const result = await readUploadsFeed(CHANNEL_ID, { fetchImpl: impl, lookup: publicLookup });
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
 
     expect(result.ok).toBe(true);
-    expect(calls).toEqual([uploadsFeedUrl(CHANNEL_ID)]);
+    if (!result.ok) return;
+    // `UC…` → `UU…` is true of every channel anyone has looked at and is still
+    // an assumption about somebody else's id scheme standing in for a field
+    // they publish. One unit is the price of not making it.
+    expect(calls[0]).toBe(channelsUrl());
+    expect(calls[1]).toContain(`playlistId=${PLAYLIST_ID}`);
+  });
+
+  it('keeps the description’s line breaks, which is where the ingredients are', async () => {
+    const { impl } = stubFetch({
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({})]: jsonRoute({ items: [playlistItem('vid0000000A')] }),
+    });
+
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [video] = result.videos;
+    expect(video.description).toBe(DESCRIPTION);
+    expect(video.description.split('\n')).toContain('2 ripe avocados');
+    // The bare video id, because MEAL-79 keys "this meal came from that video"
+    // on it and every YouTube API call takes the same form.
+    expect(video.videoId).toBe('vid0000000A');
+    expect(video.url).toBe('https://www.youtube.com/watch?v=vid0000000A');
+    // `videoPublishedAt`, not the date it was added to the playlist.
+    expect(video.publishedAt).toBe('2026-07-29T09:00:00.000Z');
+    expect(video.thumbnailUrl).toBe('https://i.ytimg.com/vi/vid0000000A/hqdefault.jpg');
+    expect(video.channelId).toBe(CHANNEL_ID);
+  });
+
+  it('pages, which the uploads feed could not — the whole reason for the move', async () => {
+    const { impl } = stubFetch({
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({ maxResults: '1' })]: jsonRoute({ items: [playlistItem('vid0000000A')], nextPageToken: 'CDIQAA' }),
+      [playlistUrl({ maxResults: '1', pageToken: 'CDIQAA' })]: jsonRoute({ items: [playlistItem('vid0000000B')] }),
+    });
+
+    const first = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl, limit: 1 });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    // A channel with 300 recipe videos showed 15 through the feed and had no
+    // next page at all. This is the cursor that fixes that.
+    expect(first.nextPageToken).toBe('CDIQAA');
+
+    const second = await listUploads('ya29-token', CHANNEL_ID, {
+      fetchImpl: impl,
+      limit: 1,
+      pageToken: first.nextPageToken,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.videos.map(v => v.videoId)).toEqual(['vid0000000B']);
+    expect(second.nextPageToken).toBeNull();
+  });
+
+  it('stops at one window rather than walking the whole channel', async () => {
+    const many = Array.from({ length: 50 }, (_, i) => playlistItem(`vid000000${String(i).padStart(3, '0')}`));
+    const { impl, calls } = stubFetch({
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({})]: jsonRoute({ items: many, nextPageToken: 'CDIQAA' }),
+      // Deliberately stubbed. Reaching it at all would mean the lister looped,
+      // which is the whole thing MEAL-79 says not to do on a screen open.
+      [playlistUrl({ pageToken: 'CDIQAA' })]: jsonRoute({ items: many, nextPageToken: 'CGQQAA' }),
+    });
+
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // 300 videos is 6 pages. A screen being opened must not spend six units of
+    // a budget shared with every other creator — the operator asks for the next
+    // window, and the cursor is how they can.
+    expect(result.videos).toHaveLength(50);
+    expect(calls).toHaveLength(2);
+    expect(result.quotaUnits).toBe(YOUTUBE_QUOTA.channelsList + YOUTUBE_QUOTA.playlistItemsList);
+    expect(result.nextPageToken).toBe('CDIQAA');
+  });
+
+  it('drops private and unreadable placeholders rather than listing them', async () => {
+    const { impl } = stubFetch({
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({})]: jsonRoute({
+        items: [
+          playlistItem('vid0000000A'),
+          playlistItem('vid0000000B', { status: { privacyStatus: 'private' } }),
+          // A deleted entry keeps its row and loses its video id.
+          { contentDetails: {}, status: { privacyStatus: 'public' }, snippet: { title: 'Deleted video' } },
+        ],
+      }),
+    });
+
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // An operator ticking one of these would spend a run on a video nothing can
+    // read, and the failure would look like ours rather than YouTube's.
+    expect(result.videos.map(v => v.videoId)).toEqual(['vid0000000A']);
   });
 
   it('refuses a channel id that is not one, before any request', async () => {
     const { impl, calls } = stubFetch({});
-    const result = await readUploadsFeed('../../etc/passwd', { fetchImpl: impl, lookup: publicLookup });
+    const result = await listUploads('ya29-token', '../../etc/passwd', { fetchImpl: impl });
     expect(result.ok).toBe(false);
     expect(calls).toEqual([]);
   });
 
-  it('keeps its own content-type allowlist whatever a caller passes', async () => {
+  it('refuses a page cursor that is not one YouTube issued, before any request', async () => {
+    const { impl, calls } = stubFetch({});
+    // The cursor comes back from the client on "load more". It cannot point at
+    // another channel — the playlist is resolved server-side — but an unbounded
+    // string from a request body still does not get interpolated into a URL.
+    expect(isUploadsPageToken('CDIQAA')).toBe(true);
+    expect(isUploadsPageToken('a b')).toBe(false);
+    expect(isUploadsPageToken('x'.repeat(300))).toBe(false);
+
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl, pageToken: 'not a token' });
+    expect(result.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('reports an empty window as a success with nothing in it', async () => {
     const { impl } = stubFetch({
-      [uploadsFeedUrl(CHANNEL_ID)]: { body: '<html>not a feed</html>', headers: { 'content-type': 'text/html' } },
+      [channelsUrl()]: channelsRoute(),
+      [playlistUrl({})]: jsonRoute({ items: [] }),
     });
 
-    const result = await readUploadsFeed(CHANNEL_ID, {
-      fetchImpl: impl,
-      lookup: publicLookup,
-      accept: /text\/html/i,
-      expected: 'whatever the caller felt like',
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
+
+    // "We could not read it" and "there is nothing there" are opposite facts.
+    // Telling them apart is the caller's job, and `videos.length` is how.
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.videos).toEqual([]);
+  });
+
+  it('carries Google’s own sentence out of a refusal', async () => {
+    const { impl } = stubFetch({
+      [channelsUrl()]: {
+        status: 403,
+        body: JSON.stringify({ error: { message: 'The request cannot be completed because you have exceeded your quota.' } }),
+        headers: { 'content-type': 'application/json' },
+      },
     });
 
-    // `...fetchOptions` used to be spread *after* `accept`, so a caller-supplied
-    // option silently switched off the XML check this call is written around —
-    // and a page of HTML was handed to the feed parser as if it were a feed.
+    const result = await listUploads('ya29-token', CHANNEL_ID, { fetchImpl: impl });
+
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.detail).toMatch(/Expected a YouTube uploads feed/i);
+    // An exhausted quota, a revoked grant and a disabled API all arrive as an
+    // HTTP error, and an operator does something different about each.
+    expect(result.detail).toMatch(/exceeded your quota/);
+  });
+});
+
+// ── Reading specific videos ──────────────────────────────────────────────────
+
+describe('youtube — a selection is read by id, and the channel is checked', () => {
+  const videosUrl = (ids: string) => `${API}/videos?${new URLSearchParams({ part: 'snippet', id: ids })}`;
+
+  it('reads fifty videos in one call, whichever page they came from', async () => {
+    const ids = Array.from({ length: 50 }, (_, i) => `vid000000${String(i).padStart(3, '0')}`);
+    const { impl, calls } = stubFetch({
+      [videosUrl(ids.join(','))]: jsonRoute({
+        items: ids.map(id => ({ id, snippet: { title: `Video ${id}`, description: DESCRIPTION, channelId: CHANNEL_ID } })),
+      }),
+    });
+
+    const result = await fetchVideos('ya29-token', ids, { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // A selection made from page 4 of a 300-video channel used to be unreadable,
+    // because the run re-listed the channel and looked for those ids in the
+    // most recent 15 uploads. One unit for the lot.
+    expect(result.videos).toHaveLength(50);
+    expect(result.quotaUnits).toBe(YOUTUBE_QUOTA.videosList);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reports whose channel each video is on', async () => {
+    const { impl } = stubFetch({
+      [videosUrl('vid0000000A')]: jsonRoute({
+        items: [{ id: 'vid0000000A', snippet: { title: 'x', description: '', channelId: 'UCzzzzzzzzzzzzzzzzzzzzzz' } }],
+      }),
+    });
+
+    const result = await fetchVideos('ya29-token', ['vid0000000A'], { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The id arrives in a request body. Without this a hand-edited selection
+    // naming somebody else's video would be extracted and published under this
+    // creator's name.
+    expect(result.videos[0].channelId).toBe('UCzzzzzzzzzzzzzzzzzzzzzz');
+  });
+
+  it('spends nothing on an id that is not one', async () => {
+    const { impl, calls } = stubFetch({});
+    const result = await fetchVideos('ya29-token', ['../../etc/passwd'], { fetchImpl: impl });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.videos).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+});
+
+// ── Writing a description ────────────────────────────────────────────────────
+
+describe('youtube — appending the Mealio link, once', () => {
+  const MEAL_URL = 'https://mealio.co/meal/p/meal-1';
+
+  it('adds the link to the end of the description', () => {
+    const edit = withMealioLink('Ingredients:\n2 avocados', MEAL_URL);
+    expect(edit.status).toBe('append');
+    if (edit.status !== 'append') return;
+    expect(edit.description).toBe(`Ingredients:\n2 avocados\n\n${MEALIO_LINK_INTRO}\n${MEAL_URL}`);
+  });
+
+  it('does nothing the second time, so appending twice adds one link', () => {
+    const first = withMealioLink('Ingredients:\n2 avocados', MEAL_URL);
+    expect(first.status).toBe('append');
+    if (first.status !== 'append') return;
+
+    // The description IS the record. No column says we appended before, and
+    // none needs to: the write is a read-modify-write against YouTube anyway,
+    // so the state that decides is the state the last write produced.
+    expect(withMealioLink(first.description, MEAL_URL).status).toBe('already-present');
+  });
+
+  it('recognises the link wherever the creator moved it, matching the URL not our wording', () => {
+    const rewritten = `Watch to the end!\n\nGet the shopping list: ${MEAL_URL}\n\nMy knives: example.test`;
+    expect(withMealioLink(rewritten, MEAL_URL).status).toBe('already-present');
+  });
+
+  it('refuses rather than trimming a description to make room', () => {
+    const edit = withMealioLink('x'.repeat(YOUTUBE_DESCRIPTION_MAX - 10), MEAL_URL);
+    // Trimming somebody's description to fit our link is a second edit nobody
+    // asked for, and it destroys content. The failing-safe direction is not to
+    // write at all.
+    expect(edit.status).toBe('too-long');
+  });
+
+  it('sends the whole snippet back, because videos.update replaces the part', async () => {
+    const bodies: string[] = [];
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(`${API}/videos?part=snippet`);
+      expect(init?.method).toBe('PUT');
+      bodies.push(String(init?.body));
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    const snippet: VideoSnippet = {
+      videoId: 'vid0000000A',
+      channelId: CHANNEL_ID,
+      title: 'Best Guacamole',
+      description: 'Ingredients:\n2 avocados',
+      categoryId: '26',
+      tags: ['guacamole', 'avocado'],
+      defaultLanguage: 'en',
+      defaultAudioLanguage: 'en-US',
+    };
+
+    const result = await updateVideoDescription('ya29-token', snippet, 'new description', { fetchImpl: impl });
+
+    expect(result).toEqual({ ok: true, quotaUnits: YOUTUBE_QUOTA.videosUpdate });
+    const sent = JSON.parse(bodies[0]);
+    // `videos.update` replaces `snippet` rather than merging into it, so a write
+    // that sends only the description blanks the creator's title and fails on
+    // the missing category. Everything not being changed goes back untouched.
+    expect(sent.snippet.title).toBe('Best Guacamole');
+    expect(sent.snippet.categoryId).toBe('26');
+    expect(sent.snippet.tags).toEqual(['guacamole', 'avocado']);
+    expect(sent.snippet.description).toBe('new description');
+  });
+
+  it('reads the snippet a write has to echo back', async () => {
+    const { impl } = stubFetch({
+      [`${API}/videos?${new URLSearchParams({ part: 'snippet', id: 'vid0000000A' })}`]: jsonRoute({
+        items: [
+          {
+            id: 'vid0000000A',
+            snippet: { title: 'Best Guacamole', description: DESCRIPTION, categoryId: '26', channelId: CHANNEL_ID },
+          },
+        ],
+      }),
+    });
+
+    const result = await fetchVideoSnippet('ya29-token', 'vid0000000A', { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snippet.categoryId).toBe('26');
+    expect(result.snippet.channelId).toBe(CHANNEL_ID);
+    expect(result.snippet.description).toBe(DESCRIPTION);
   });
 });
 

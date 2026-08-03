@@ -12,16 +12,25 @@ import type { CatalogEntry, CatalogResult, SyncItem, SyncRun, SyncRunTotals } fr
  *
  * The screen is built around two refusals. There is no "sync everything" button:
  * a run is a selection an operator made item by item, or one link they pasted.
- * And the checklist is drawn from feed metadata alone — opening it costs one
- * feed request, so an operator can look at a 200-post archive without spending
- * anything to find out what is in it.
+ * And the checklist is drawn from listing metadata alone — opening it fetches no
+ * page and calls no model, so an operator can look at a 200-post archive without
+ * spending anything to find out what is in it.
  *
  * The cost line under the selection is the real guard rail. A confirmation
- * dialog gets clicked through; "137 selected · about $9.16" gets read.
+ * dialog gets clicked through; "137 selected · about $9.16" gets read. YouTube
+ * now has a second budget beside the dollar one — the Data API's 10,000 units a
+ * day, shared across every creator — so a YouTube listing says what it spent and
+ * the next 50 videos are behind a button rather than a page load (MEAL-79).
  *
  * A run **queues drafts for review** (MEAL-91). It used to publish, and the
  * language on this screen said so; a finished run now hands over to the Review
  * tab, and every "Published" here would be a lie about where the recipe is.
+ *
+ * The last card is the write half of MEAL-79: published meals that came from one
+ * of this creator's videos, offered for the Mealio link to be appended to that
+ * video's description. It is loaded on demand and it shows a refusal sentence
+ * rather than a list when consent is off — the offer must not appear at all when
+ * the answer would be no.
  */
 
 export interface SyncPanelCreator {
@@ -56,6 +65,17 @@ function listableSource(creator: SyncPanelCreator | null | undefined, source: Pl
   if (!creator) return false;
   if (creator[SOURCE_COLUMNS[source] as keyof SyncPanelCreator]) return true;
   return (creator.connections ?? []).some(connection => connection.platform === source);
+}
+
+/** One published meal that came from a video, as `GET /api/admin/sync/append` lists it. */
+interface AppendableMeal {
+  draftId: string;
+  mealId: string;
+  mealName: string;
+  videoId: string;
+  videoUrl: string;
+  mealUrl: string;
+  approvedAt: string | null;
 }
 
 const ITEM_STYLES: Record<SyncItem['status'], { fg: string; bg: string; label: string }> = {
@@ -121,6 +141,15 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
+  /** Units the current listing has spent, summed across "load more" presses. */
+  const [quotaUnits, setQuotaUnits] = useState(0);
+
+  // ── The append half (MEAL-79) ──────────────────────────────────────────────
+  const [appendable, setAppendable] = useState<AppendableMeal[] | null>(null);
+  /** The refusal sentence, shown *instead of* the list. Never beside it. */
+  const [appendRefusal, setAppendRefusal] = useState('');
+  const [appendBusy, setAppendBusy] = useState('');
+  const [appendResults, setAppendResults] = useState<Record<string, string>>({});
 
   const [run, setRun] = useState<SyncRun | null>(null);
   const [totals, setTotals] = useState<SyncRunTotals | null>(null);
@@ -151,9 +180,16 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setCreatorId(id);
     setCatalog(null);
     setSelected([]);
+    setQuotaUnits(0);
     setRun(null);
     setTotals(null);
     setError('');
+    // Nothing about the previous creator survives into the append card. A stale
+    // list of somebody else's videos beside an Append button is the worst
+    // possible thing for this screen to leave on it.
+    setAppendable(null);
+    setAppendRefusal('');
+    setAppendResults({});
     const chosen = creators.find(c => c.id === id);
     // Default to whatever source they are already set up on; the operator can
     // still pick another of their links.
@@ -167,6 +203,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setError('');
     setCatalog(null);
     setSelected([]);
+    setQuotaUnits(0);
     const { res, data } = await authedPost('/api/admin/sync/catalog', { creatorId, source });
     if (!mountedRef.current) return;
     setLoadingCatalog(false);
@@ -174,7 +211,82 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
       setError(data.error || 'Could not read the catalog.');
       return;
     }
-    setCatalog(data.catalog as CatalogResult);
+    const next = data.catalog as CatalogResult;
+    setCatalog(next);
+    if (next.ok) setQuotaUnits(next.quotaUnits ?? 0);
+  };
+
+  /**
+   * The next window of a paged catalogue (YouTube, MEAL-79).
+   *
+   * A press, not a page load. Walking a 300-video channel is 7 quota units out
+   * of a budget shared by every creator, and nobody agreed to spend it by
+   * opening a tab — so each press buys 50 more and says what it cost.
+   *
+   * Entries are appended rather than replaced, and the selection is left alone:
+   * an operator who ticked six videos on page one and then asked for page two
+   * has not changed their mind about the six.
+   */
+  const loadMore = async () => {
+    if (!creatorId || !catalog?.ok || !catalog.nextPageToken || loadingCatalog) return;
+    setLoadingCatalog(true);
+    setError('');
+    const { res, data } = await authedPost('/api/admin/sync/catalog', {
+      creatorId,
+      source,
+      pageToken: catalog.nextPageToken,
+    });
+    if (!mountedRef.current) return;
+    setLoadingCatalog(false);
+    const next = data.catalog as CatalogResult | undefined;
+    if (!res.ok || !next?.ok) {
+      setError((next && !next.ok ? next.detail : data.error) || 'Could not read the next page.');
+      return;
+    }
+    setQuotaUnits(spent => spent + (next.quotaUnits ?? 0));
+    setCatalog(current =>
+      current?.ok ? { ...next, entries: [...current.entries, ...next.entries] } : next,
+    );
+  };
+
+  /**
+   * Loads the meals whose link could be written back to a video.
+   *
+   * On demand, because the gate is server-side and the honest answer for most
+   * creators is a refusal — asking for it on every creator selection would spend
+   * a request to be told no. A refusal replaces the list rather than sitting
+   * beside it: a screen showing videos next to an Append button has already
+   * implied we may write to them.
+   */
+  const loadAppendable = async () => {
+    if (!creatorId) return;
+    setAppendBusy('list');
+    setAppendRefusal('');
+    setAppendable(null);
+    setAppendResults({});
+    const res = await fetch(`/api/admin/sync/append?creatorId=${encodeURIComponent(creatorId)}`, {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!mountedRef.current) return;
+    setAppendBusy('');
+    if (!res.ok) {
+      setAppendRefusal(data.error || 'Could not read this creator’s appendable meals.');
+      return;
+    }
+    setAppendable((data.meals ?? []) as AppendableMeal[]);
+  };
+
+  const appendOne = async (meal: AppendableMeal) => {
+    if (appendBusy) return;
+    setAppendBusy(meal.draftId);
+    const { res, data } = await authedPost('/api/admin/sync/append', { creatorId, draftId: meal.draftId });
+    if (!mountedRef.current) return;
+    setAppendBusy('');
+    setAppendResults(prev => ({
+      ...prev,
+      [meal.draftId]: res.ok ? data.detail : data.error || 'That write failed.',
+    }));
   };
 
   const entries: CatalogEntry[] = catalog?.ok ? catalog.entries : [];
@@ -349,7 +461,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
               <select
                 value={source}
-                onChange={e => { setSource(e.target.value as PlatformSource); setCatalog(null); setSelected([]); }}
+                onChange={e => { setSource(e.target.value as PlatformSource); setCatalog(null); setSelected([]); setQuotaUnits(0); }}
                 aria-label="Source"
                 style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '13px', background: 'white', cursor: 'pointer' }}
               >
@@ -391,9 +503,16 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
                 {catalog.feed.url}
               </a>
             )}
-            {catalog.truncated && (
+            {catalog.truncated && !catalog.nextPageToken && (
               <span style={{ fontSize: '11px', color: '#b45309' }}>
                 Showing the most recent {catalog.entries.length}; sync those, then reload for more.
+              </span>
+            )}
+            {/* The other budget. A dollar cost buys extractions; this buys
+                listings and description writes, and it is shared and daily. */}
+            {quotaUnits > 0 && (
+              <span style={{ fontSize: '11px', color: '#aaa' }} data-testid="quota-spent">
+                {quotaUnits} YouTube quota {quotaUnits === 1 ? 'unit' : 'units'} spent of 10,000/day
               </span>
             )}
           </div>
@@ -440,6 +559,19 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
               </label>
             ))}
           </div>
+
+          {/* One press, one page, one unit. A back catalogue is walked because
+              somebody asked for it, never because a screen was opened. */}
+          {catalog.nextPageToken && (
+            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <button onClick={loadMore} disabled={loadingCatalog} style={{ ...secondaryButton, cursor: loadingCatalog ? 'wait' : 'pointer' }}>
+                {loadingCatalog ? 'Reading…' : 'Load 50 more'}
+              </button>
+              <span style={{ fontSize: '11px', color: '#aaa' }}>
+                There is more back catalogue than this. Each page costs 2 quota units and your selection is kept.
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -528,6 +660,75 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* ── Link their videos back to Mealio (MEAL-79) ────────────────────── */}
+      {creatorId && (
+        <div style={card} data-testid="append-panel">
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#222' }}>
+              Add the Mealio link to their videos
+            </h3>
+            <button onClick={loadAppendable} disabled={appendBusy === 'list'} style={secondaryButton}>
+              {appendBusy === 'list' ? 'Checking…' : appendable ? 'Reload' : 'Check what can be linked'}
+            </button>
+          </div>
+
+          <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
+            Only meals we imported <em>from one of their videos</em> are offered, and only when the creator has
+            turned on description editing. Adding a link twice does nothing. Turning consent off stops future
+            writes — it does not remove links already added, because we cannot un-tell a viewer.
+          </p>
+
+          {/* The refusal, in place of the list. Which of the three gates was
+              shut is the whole content, so the sentence is shown verbatim. */}
+          {appendRefusal && (
+            <p
+              style={{ margin: '12px 0 0', fontSize: '12px', color: '#92400e', background: '#fff8e1', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 12px', lineHeight: 1.6 }}
+              data-testid="append-refusal"
+            >
+              {appendRefusal}
+            </p>
+          )}
+
+          {appendable && appendable.length === 0 && (
+            <p style={{ margin: '12px 0 0', fontSize: '12px', color: '#888' }}>
+              Nothing yet. A meal becomes linkable once it has been imported from one of their videos and
+              approved in <strong>Review</strong>.
+            </p>
+          )}
+
+          {appendable && appendable.length > 0 && (
+            <div style={{ marginTop: '12px', maxHeight: '360px', overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: '8px' }}>
+              {appendable.map((meal, i) => (
+                <div
+                  key={meal.draftId}
+                  style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '10px 12px', borderTop: i === 0 ? 'none' : '1px solid #f7f7f7' }}
+                >
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: '13px', color: '#222', fontWeight: 500 }}>{meal.mealName}</span>
+                    <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {meal.videoUrl} → {meal.mealUrl}
+                    </span>
+                    {appendResults[meal.draftId] && (
+                      <span style={{ display: 'block', fontSize: '11px', color: '#555', lineHeight: 1.5, marginTop: '2px' }}>
+                        {appendResults[meal.draftId]}
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    onClick={() => appendOne(meal)}
+                    disabled={Boolean(appendBusy)}
+                    aria-label={`Append the Mealio link for ${meal.mealName}`}
+                    style={{ ...secondaryButton, flexShrink: 0, cursor: appendBusy ? 'wait' : 'pointer' }}
+                  >
+                    {appendBusy === meal.draftId ? 'Writing…' : 'Append link'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

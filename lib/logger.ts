@@ -88,6 +88,11 @@ export type EventType =
   | 'ADMIN:DRAFT_EDIT'
   | 'ADMIN:DRAFT_CANCEL'       // declined; the row is marked, never removed
   | 'ADMIN:DRAFT_NOTIFY'       // the "these are live now" email to the creator
+  // Writing the Mealio link into a creator's own video description (MEAL-79).
+  // The only event in this file that records us editing somebody else's
+  // property, so it carries the actor, the creator, the video and whether
+  // anything was actually written.
+  | 'ADMIN:YOUTUBE_APPEND'
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'

@@ -92,7 +92,42 @@ describe('/api/admin/sync/catalog', () => {
     }));
 
     expect(res.status).toBe(200);
-    expect(buildCatalog).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 'c1' }), 'website');
+    expect(buildCatalog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'c1' }),
+      'website',
+      { pageToken: null },
+    );
+  });
+
+  it('carries a page cursor through, so the second window of a back catalogue is reachable', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+    buildCatalog.mockResolvedValue({ ok: true, source: 'youtube', feed: null, entries: [], truncated: false });
+
+    const res = await CATALOG(jsonRequest('/api/admin/sync/catalog', {
+      token,
+      body: { creatorId: 'c1', source: 'youtube', pageToken: 'CDIQAA' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(buildCatalog).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'youtube', { pageToken: 'CDIQAA' });
+  });
+
+  it('refuses a page cursor that is not one YouTube issued, before anything is listed', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+
+    const res = await CATALOG(jsonRequest('/api/admin/sync/catalog', {
+      token,
+      body: { creatorId: 'c1', source: 'youtube', pageToken: 'https://evil.test/ ?x' },
+    }));
+
+    // The cursor cannot point the listing at another channel — the playlist is
+    // resolved from the grant — but an unbounded string from a request body
+    // still does not get interpolated into an outbound URL.
+    expect(res.status).toBe(400);
+    expect(buildCatalog).not.toHaveBeenCalled();
   });
 
   it('422 when the source cannot be listed, carrying the explanation', async () => {

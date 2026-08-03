@@ -60,7 +60,21 @@ const supabase = fakeDb as unknown as SupabaseClient;
 // ── YouTube fixtures (MEAL-74) ───────────────────────────────────────────────
 
 const CHANNEL_ID = 'UCabcdefghijklmnopqrstuv';
-const UPLOADS_FEED = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
+
+function jsonRoute(body: unknown) {
+  return { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } };
+}
+const PLAYLIST_ID = 'UUabcdefghijklmnopqrstuv';
+const YT_API = 'https://www.googleapis.com/youtube/v3';
+
+/**
+ * Long enough that the gate would judge it rather than call it thin, so nothing
+ * here reaches for captions. That ordering is the quota control MEAL-74 built —
+ * a video is rejected on its description before a caption is ever downloaded —
+ * and a fixture that trips it would hide the listing calls under caption ones.
+ */
+const VIDEO_DESCRIPTION =
+  `Ingredients:\n2 avocados\n1 lime\n\n${'Mash them together and season well, then serve. '.repeat(6)}`;
 
 /** The grant row `creator_platform_accounts` hands back for a connected channel. */
 function connectionRow(overrides: Record<string, unknown> = {}) {
@@ -81,21 +95,53 @@ function connectionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** An uploads feed carrying one entry per id, each with a real ingredient list. */
-function uploadsFeed(ids: string[], description = 'Ingredients:\n2 avocados\n1 lime\n\nMash them together.'): string {
-  const entries = ids
-    .map(
-      (id) =>
-        `<entry><id>yt:video:${id}</id><yt:videoId>${id}</yt:videoId>` +
-        `<title>Best Guacamole ${id}</title>` +
-        `<link rel="alternate" href="https://www.youtube.com/watch?v=${id}"/>` +
-        `<published>2026-07-29T09:00:00+00:00</published>` +
-        `<media:group><media:title>Best Guacamole ${id}</media:title>` +
-        `<media:thumbnail url="https://i.ytimg.com/vi/${id}/hqdefault.jpg"/>` +
-        `<media:description>${description}</media:description></media:group></entry>`,
-    )
-    .join('');
-  return `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/">${entries}</feed>`;
+/**
+ * The exact URLs the Data API calls hit. `stubFetch` matches the whole string,
+ * so these double as an assertion that each request is built the way YouTube
+ * documents it — the only check available with no credentials to try it against.
+ */
+const CHANNELS_URL = `${YT_API}/channels?${new URLSearchParams({ part: 'contentDetails', id: CHANNEL_ID })}`;
+
+const uploadsUrl = (params: Record<string, string> = {}) =>
+  `${YT_API}/playlistItems?${new URLSearchParams({
+    part: 'snippet,contentDetails,status',
+    playlistId: PLAYLIST_ID,
+    maxResults: '50',
+    ...params,
+  })}`;
+
+const videosUrl = (ids: string[]) => `${YT_API}/videos?${new URLSearchParams({ part: 'snippet', id: ids.join(',') })}`;
+
+/** `channels.list`, answering with this channel's uploads playlist. */
+function channelsRoute() {
+  return jsonRoute({ items: [{ contentDetails: { relatedPlaylists: { uploads: PLAYLIST_ID } } }] });
+}
+
+/** One `playlistItems.list` page, with an entry per id. */
+function uploadsPage(ids: string[], extra: Record<string, unknown> = {}) {
+  return jsonRoute({
+    items: ids.map((id) => ({
+      contentDetails: { videoId: id, videoPublishedAt: '2026-07-29T09:00:00Z' },
+      status: { privacyStatus: 'public' },
+      snippet: {
+        title: `Best Guacamole ${id}`,
+        description: VIDEO_DESCRIPTION,
+        videoOwnerChannelId: CHANNEL_ID,
+        thumbnails: { high: { url: `https://i.ytimg.com/vi/${id}/hqdefault.jpg` } },
+      },
+    })),
+    ...extra,
+  });
+}
+
+/** `videos.list` for a selection, on `channelId` — which defaults to the creator's own. */
+function videosPage(ids: string[], channelId = CHANNEL_ID) {
+  return jsonRoute({
+    items: ids.map((id) => ({
+      id,
+      snippet: { title: `Best Guacamole ${id}`, description: VIDEO_DESCRIPTION, channelId },
+    })),
+  });
 }
 
 // ── Instagram and TikTok fixtures (MEAL-82 / MEAL-83) ────────────────────────
@@ -113,10 +159,6 @@ const TT_LIST_URL =
   'cover_image_url%2Cembed_link%2Cshare_url%2Ccreate_time';
 
 const SOCIAL_CAPTION = 'Guacamole\nIngredients:\n2 avocados\n1 lime\n\nMash them together.';
-
-function jsonRoute(body: unknown) {
-  return { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } };
-}
 
 /** One `/me/media` page, with no `next` so the loop stops after it. */
 function instagramMedia(ids: string[], caption = SOCIAL_CAPTION) {
@@ -327,9 +369,10 @@ describe('buildCatalog — drawing the list is free', () => {
     expect(result.detail).toMatch(/has not connected their Instagram account/i);
   });
 
-  it('lists a connected channel from the uploads feed, fetching no video (MEAL-74)', async () => {
+  it('lists one page of a connected channel, fetching no video (MEAL-74 / MEAL-79)', async () => {
     const { impl, calls } = stubFetch({
-      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A', 'vid0000000B']), headers: { 'content-type': 'text/xml' } },
+      [CHANNELS_URL]: channelsRoute(),
+      [uploadsUrl()]: uploadsPage(['vid0000000A', 'vid0000000B']),
     });
     fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
 
@@ -345,13 +388,52 @@ describe('buildCatalog — drawing the list is free', () => {
     // on it and every YouTube API call takes the same form.
     expect(result.entries.map((entry) => entry.itemId)).toEqual(['vid0000000A', 'vid0000000B']);
     expect(result.entries[0].url).toBe('https://www.youtube.com/watch?v=vid0000000A');
-    // One request for the whole channel. No video opened, no model called.
-    expect(calls).toEqual([UPLOADS_FEED]);
+    // Two requests for a window of the channel. No video opened, no model
+    // called — and the spend is reported, because the budget is shared.
+    expect(calls).toEqual([CHANNELS_URL, uploadsUrl()]);
+    expect(result.quotaUnits).toBe(2);
+    // No feed URL to offer a button that writes `creators.feed_url`.
+    expect(result.feed).toBeNull();
+  });
+
+  it('offers a cursor for the next window rather than walking the whole channel', async () => {
+    const { impl, calls } = stubFetch({
+      [CHANNELS_URL]: channelsRoute(),
+      [uploadsUrl()]: uploadsPage(['vid0000000A'], { nextPageToken: 'CDIQAA' }),
+      [uploadsUrl({ maxResults: '50', pageToken: 'CDIQAA' })]: uploadsPage(['vid0000000B']),
+    });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+
+    const first = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'youtube',
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    // 300 videos is 6 pages of somebody else's quota. Opening a screen buys one
+    // page; the operator asks for the next.
+    expect(first.nextPageToken).toBe('CDIQAA');
+    expect(first.truncated).toBe(true);
+    expect(calls).toHaveLength(2);
+
+    const second = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'youtube',
+      { pageToken: 'CDIQAA' },
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.entries.map((entry) => entry.itemId)).toEqual(['vid0000000B']);
+    expect(second.nextPageToken).toBeNull();
   });
 
   it('takes the channel id from the grant rather than the creator-supplied link', async () => {
     const { impl, calls } = stubFetch({
-      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A']), headers: { 'content-type': 'text/xml' } },
+      [CHANNELS_URL]: channelsRoute(),
+      [uploadsUrl()]: uploadsPage(['vid0000000A']),
     });
     fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
 
@@ -363,14 +445,44 @@ describe('buildCatalog — drawing the list is free', () => {
       'youtube',
     );
 
-    expect(calls).toEqual([UPLOADS_FEED]);
+    expect(calls).toEqual([CHANNELS_URL, uploadsUrl()]);
   });
 
-  it('refuses a YouTube catalog for a creator with neither a grant nor a link', async () => {
-    const result = await buildCatalog({ supabase }, CREATOR, 'youtube');
+  it('says YouTube is not connected rather than listing it from a link (MEAL-79)', async () => {
+    const { impl, calls } = stubFetch({});
+
+    // A creator with a perfectly good YouTube link and no grant. The uploads
+    // feed used to list them for free; `youtube.com/robots.txt` disallows it,
+    // and `playlistItems.list` is authenticated — so this is now the same
+    // answer Instagram gives, and it must not be an empty catalog.
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      { ...CREATOR, youtube_url: 'https://youtube.com/@sarah' },
+      'youtube',
+    );
+
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.detail).toMatch(/connect YouTube/i);
+    expect(result.reason).toBe('not-connected');
+    expect(result.detail).toMatch(/has not connected their YouTube account/i);
+    // Nothing was fetched, including the channel page: there is no point
+    // resolving an id we have no token to use.
+    expect(calls).toEqual([]);
+  });
+
+  it('reports a connected channel with nothing on it as an answer, not a failure', async () => {
+    const { impl } = stubFetch({ [CHANNELS_URL]: channelsRoute(), [uploadsUrl()]: uploadsPage([]) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'youtube',
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('empty');
   });
 
   it('lists a connected Instagram account from /me/media, downloading no video (MEAL-82)', async () => {
@@ -497,10 +609,8 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
   });
 
-  it('imports a video from the channel description, never from its watch page (MEAL-74)', async () => {
-    const { impl, calls } = stubFetch({
-      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A']), headers: { 'content-type': 'text/xml' } },
-    });
+  it('imports a video from its description, never from its watch page (MEAL-74)', async () => {
+    const { impl, calls } = stubFetch({ [videosUrl(['vid0000000A'])]: videosPage(['vid0000000A']) });
     fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
     const importer = vi.fn(async (_url: string, _options: RunImportOptions) => success);
 
@@ -517,12 +627,36 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     const options = importer.mock.calls[0][1];
     expect(options.document?.platform).toBe('youtube');
     expect(options.document?.text).toContain('2 avocados');
-    expect(calls).toEqual([UPLOADS_FEED]);
+    // Read by id. No re-listing of the channel, so a video selected from page 4
+    // of a back catalogue is as readable as one from page 1.
+    expect(calls).toEqual([videosUrl(['vid0000000A'])]);
   });
 
-  it('fails a video that has dropped out of the uploads feed rather than falling back to the page', async () => {
+  it('reads a whole selection in one call, whichever page of the catalogue it came from', async () => {
+    const ids = ['vid0000000A', 'vid0000000B', 'vid0000000C'];
+    const { impl, calls } = stubFetch({ [videosUrl(ids)]: videosPage(ids) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    const importer = vi.fn(async () => success);
+
+    const resolve = createSourceDocumentResolver(
+      deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      ids,
+    );
+    for (const id of ids) {
+      const document = await resolve(CREATOR, 'youtube', item({ itemId: id, url: `https://www.youtube.com/watch?v=${id}` }));
+      expect(document?.text).toContain('2 avocados');
+    }
+
+    // Three videos, one unit. The listing is memoised per run for the same
+    // reason it always was — a 40-item selection must not be 40 API reads.
+    expect(calls).toEqual([videosUrl(ids)]);
+  });
+
+  it('refuses a video that is not on the connected channel, whatever the request said', async () => {
     const { impl } = stubFetch({
-      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A']), headers: { 'content-type': 'text/xml' } },
+      // YouTube happily returns any public video by id. This one belongs to
+      // somebody else entirely.
+      [videosUrl(['vid0000000Z'])]: videosPage(['vid0000000Z'], 'UCzzzzzzzzzzzzzzzzzzzzzz'),
     });
     fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
     const importer = vi.fn(async () => success);
@@ -534,8 +668,27 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
       item({ itemId: 'vid0000000Z', url: 'https://www.youtube.com/watch?v=vid0000000Z' }),
     );
 
+    // Reading a selection by id is what makes a paged back catalogue work, and
+    // it is also what would let a hand-edited request publish a stranger's
+    // recipe under this creator's name. The channel check is the difference.
     expect(result.status).toBe('failed');
-    expect(result.detail).toMatch(/no longer in the channel/i);
+    expect(importer).not.toHaveBeenCalled();
+  });
+
+  it('fails a video the connected channel cannot return rather than falling back to the page', async () => {
+    const { impl } = stubFetch({ [videosUrl(['vid0000000Z'])]: jsonRoute({ items: [] }) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    const importer = vi.fn(async () => success);
+
+    const result = await processSyncItem(
+      deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      run([], { source: 'youtube' }),
+      { ...CREATOR, youtube_url: 'https://youtube.com/@sarah' },
+      item({ itemId: 'vid0000000Z', url: 'https://www.youtube.com/watch?v=vid0000000Z' }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.detail).toMatch(/could not be read from the connected channel/i);
     expect(importer).not.toHaveBeenCalled();
   });
 
