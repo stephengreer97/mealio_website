@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { resolvePhotoUrl } from '@/lib/photos';
+import { tagCapError } from '@/lib/import/vocab';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -45,6 +46,30 @@ export async function POST(request: NextRequest) {
 
   if (!name || !storeId || !Array.isArray(ingredients)) {
     return NextResponse.json({ error: 'name, storeId, and ingredients are required' }, { status: 400 });
+  }
+
+  // The same cap `preset_meals` publishes under, because `my-meals` renders and
+  // filters a personal meal exactly the way Discover renders a published one: the
+  // card shows `tags.slice(0, MAX_MEAL_TAGS)` and the filter matches the whole
+  // array, so a fourth tag is invisible on screen and still pulls the meal up
+  // under a filter with nothing on it saying why. A create is always a change,
+  // so there is nothing to grandfather here.
+  //
+  // Uncanonicalised, unlike the creator publish route: this picker deliberately
+  // takes a custom tag ("Grandma's", "Tuesday") that no vocabulary knows, and
+  // these tags are private to the one account that wrote them.
+  //
+  // `serves` is deliberately NOT checked here, and the asymmetry with
+  // `/api/creator/meals` is the point. The `serves` rule exists because an
+  // import reads a *yield* off a stranger's recipe page and prints it on a card
+  // in Discover as a head count. A personal meal is typed by the one person who
+  // reads it and goes nowhere else, and the mobile forms that write it are plain
+  // text inputs with no client-side check — enforcing it here would surface a
+  // raw server sentence in an Alert on a field nobody else ever sees. The web
+  // form checks it as a courtesy; that is the right altitude for this field.
+  const tooManyTags = Array.isArray(tags) ? tagCapError(tags) : null;
+  if (tooManyTags) {
+    return NextResponse.json({ error: tooManyTags }, { status: 400 });
   }
 
   const supabase = createServerSupabaseClient();

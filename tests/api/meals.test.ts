@@ -12,6 +12,7 @@ vi.mock('@/lib/photos', () => ({
 }));
 
 import { GET, POST } from '@/app/api/meals/route';
+import { PUT } from '@/app/api/meals/[id]/route';
 import { createAccessToken } from '@/lib/tokens';
 
 const MEAL_BODY = {
@@ -94,5 +95,137 @@ describe('/api/meals', () => {
 
     const res = await POST(jsonRequest('/api/meals', { token, body: MEAL_BODY }));
     expect(res.status).toBe(500);
+  });
+});
+
+/**
+ * The tag cap on personal meals.
+ *
+ * `meals` is a different table from `preset_meals` and the same bug: `my-meals`
+ * renders `tags.slice(0, MAX_MEAL_TAGS)` on the card and filters against the
+ * *whole* array, so a fourth tag is invisible on screen and still pulls the meal
+ * up under a filter with nothing on it saying why — which is verbatim the harm
+ * `lib/import/vocab.ts` cites as the reason the cap exists. Both mobile pickers
+ * had no cap at all, so nine tags was a normal thing to arrive here.
+ *
+ * `serves` is deliberately not enforced on this table; the route says why.
+ */
+describe('/api/meals — the tag cap', () => {
+  let token: string;
+
+  /** A paid account, so the tier gate is not what any of these assert. */
+  function asUser() {
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'full' } });
+    fakeDb.seed('meals', []);
+  }
+
+  beforeEach(async () => {
+    fakeDb.reset();
+    token = await createAccessToken('user-1', 'a@b.test');
+  });
+
+  it('POST creates a meal at the cap', async () => {
+    asUser();
+
+    const res = await POST(jsonRequest('/api/meals', {
+      token,
+      body: { ...MEAL_BODY, tags: ['Mexican', 'No Cook', 'Vegan'] },
+    }));
+
+    expect(res.status).toBe(201);
+    expect(fakeDb.rows('meals')[0].tags).toEqual(['Mexican', 'No Cook', 'Vegan']);
+  });
+
+  it('POST refuses a fourth tag, and writes nothing at all', async () => {
+    asUser();
+
+    const res = await POST(jsonRequest('/api/meals', {
+      token,
+      body: { ...MEAL_BODY, tags: ['Mexican', 'No Cook', 'Vegan', 'Healthy'] },
+    }));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('That is 4 tags. A meal takes at most 3.');
+    expect(fakeDb.rows('meals')).toEqual([]);
+  });
+
+  it('POST keeps a custom tag — the cap is a count, not a vocabulary', async () => {
+    // This picker offers "+ Add" for a tag no vocabulary knows, and these tags
+    // are private to the one account that wrote them. Canonicalising here would
+    // silently delete a tag the user typed on purpose.
+    asUser();
+
+    const res = await POST(jsonRequest('/api/meals', {
+      token,
+      body: { ...MEAL_BODY, tags: ["Grandma's", 'Tuesday'] },
+    }));
+
+    expect(res.status).toBe(201);
+    expect(fakeDb.rows('meals')[0].tags).toEqual(["Grandma's", 'Tuesday']);
+  });
+
+  describe('PUT /api/meals/:id', () => {
+    const params = Promise.resolve({ id: 'm1' });
+    const LEGACY = ['Mexican', 'No Cook', 'Vegan', 'Healthy', 'Snack', 'Soup', 'Salad'];
+
+    function seedLegacy() {
+      fakeDb.seed('meals', [
+        { id: 'm1', user_id: 'user-1', name: 'Tacos', tags: LEGACY, serves: '4' },
+      ]);
+    }
+
+    function put(body: Record<string, unknown>) {
+      return PUT(jsonRequest('/api/meals/m1', { method: 'PUT', token, body }), { params });
+    }
+
+    it('saves a name-only edit to a meal that predates the cap', async () => {
+      // The edit modal posts every field on every save, so a check on "what
+      // arrived" would make a seven-tag meal permanently uneditable.
+      seedLegacy();
+
+      const res = await put({ name: 'Tacos al pastor', tags: LEGACY });
+
+      expect(res.status).toBe(200);
+      const row = fakeDb.row('meals', 'm1')!;
+      expect(row.name).toBe('Tacos al pastor');
+      expect(row.tags).toEqual(LEGACY);
+    });
+
+    it('refuses a change that is still over the cap, and keeps the stored list', async () => {
+      seedLegacy();
+
+      const res = await put({ tags: ['Mexican', 'No Cook', 'Vegan', 'Healthy'] });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('That is 4 tags. A meal takes at most 3.');
+      expect(fakeDb.row('meals', 'm1')!.tags).toEqual(LEGACY);
+    });
+
+    it('lets the owner bring a legacy meal down to the cap', async () => {
+      seedLegacy();
+
+      const res = await put({ tags: ['Mexican', 'No Cook', 'Vegan'] });
+
+      expect(res.status).toBe(200);
+      expect(fakeDb.row('meals', 'm1')!.tags).toEqual(['Mexican', 'No Cook', 'Vegan']);
+    });
+
+    it('refuses a fourth tag on a meal that was inside the cap', async () => {
+      fakeDb.seed('meals', [{ id: 'm1', user_id: 'user-1', name: 'Tacos', tags: ['Mexican'] }]);
+
+      const res = await put({ tags: ['Mexican', 'No Cook', 'Vegan', 'Healthy'] });
+
+      expect(res.status).toBe(400);
+      expect(fakeDb.row('meals', 'm1')!.tags).toEqual(['Mexican']);
+    });
+
+    it('404s on somebody else\'s meal without saying whether it exists', async () => {
+      fakeDb.seed('meals', [{ id: 'm1', user_id: 'someone-else', name: 'Tacos', tags: [] }]);
+
+      const res = await put({ name: 'Mine now', tags: ['Mexican'] });
+
+      expect(res.status).toBe(404);
+      expect(fakeDb.row('meals', 'm1')!.name).toBe('Tacos');
+    });
   });
 });
