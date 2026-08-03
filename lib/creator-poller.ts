@@ -150,24 +150,18 @@ export const POLL_ITEM_CAP = 5;
  * QUERY STRING, and Supabase's proxies reject URIs in the 8–16 KB range, so 100
  * uuids (~4 KB) leaves room for the rest of the URL. The same ceiling `push.ts`
  * chunks against, for the same reason.
+ *
+ * **There is no longer a larger pool above it.** There used to be: a `LIMIT`
+ * with no `ORDER BY` is a truncation rather than a selection, so the batch had
+ * to be chosen in JavaScript from a wider read, and past that wider read the
+ * same starvation returned one order of magnitude up — creator 1001 was never
+ * polled and nothing said so. `creators.last_polled_at` (see
+ * `add-poll-order-and-publish-idempotency.sql`) lets the ordering happen in SQL,
+ * so the query now returns the hundred longest-waiting creators and nothing
+ * else. A pool on top of that would only be a second, arbitrary cut across an
+ * order that is already correct.
  */
 export const POLL_CREATOR_BATCH = 100;
-
-/**
- * Creators **considered** in one pass, before the ordering picks the batch.
- *
- * The two are separate because a `LIMIT` with no `ORDER BY` is a truncation, not
- * a selection: sorting by `lastPolledAt` after the cut sorts the same hundred
- * rows Postgres happened to return, so creator 101 is never polled and nothing
- * says so. The state read is chunked at `POLL_CREATOR_BATCH` to keep its `.in()`
- * inside the URI ceiling.
- *
- * Past this pool the same starvation returns, one order of magnitude up. Fixing
- * *that* needs the ordering in SQL, which needs a poll timestamp on `creators`
- * (or a cursor) — a column, and therefore a migration, deliberately not smuggled
- * in here.
- */
-export const POLL_CREATOR_POOL = 1000;
 
 /**
  * Wall-clock budget for one pass, under the route's `maxDuration = 300`.
@@ -175,8 +169,16 @@ export const POLL_CREATOR_POOL = 1000;
  * Bounded by a clock and not only by a row count, for the reason the token sweep
  * gives: a batch size bounds how many creators are touched and says nothing
  * about how long touching them takes, and time is what runs out inside a cron
- * invocation. Creators not reached are untouched, so they sort first next pass —
- * `lastPolledAt` ordering makes that automatic rather than a thing to remember.
+ * invocation.
+ *
+ * Creators the budget did not reach are untouched — `creators.last_polled_at` is
+ * claimed per creator as their turn comes up, never for the batch in one write —
+ * so they keep the older timestamp that put them in this batch and sort ahead of
+ * everyone this pass reached. That is the property that makes a short pass a
+ * delay rather than a starvation, and it only holds because the claim is
+ * per-creator: one write for the whole batch at the end would advance creators
+ * the pass never looked at, and a budget that runs out at the same point every
+ * pass would then starve the tail permanently and silently.
  */
 export const POLL_PASS_BUDGET_MS = 240_000;
 
@@ -763,6 +765,12 @@ async function writeState(deps: PollDeps, creator: PollableCreator, next: StateW
 // ── The pass ─────────────────────────────────────────────────────────────────
 
 export interface PollPassResult {
+  /**
+   * Everyone eligible, which past `POLL_CREATOR_BATCH` is more than this pass
+   * took. The tail is not lost — it is at the front of the next pass — but a
+   * number far above the batch, pass after pass, is the queue outgrowing the
+   * cadence, and that is only visible if it is reported.
+   */
   eligible: number;
   polled: number;
   notModified: number;
@@ -784,7 +792,14 @@ export interface PollPassResult {
    */
   sourcesFailed: number;
   emailsSent: number;
-  /** Creators the budget or a `poll_after` meant we did not reach this pass. */
+  /**
+   * Creators in this pass's batch that were not polled: the budget ran out, a
+   * `poll_after` had not expired, or their origin had already refused us.
+   *
+   * Not the creators past the batch — those were never read, and counting rows
+   * the query deliberately left in the queue as "skipped" would make a healthy
+   * pass over a long queue look like a pass that dropped work.
+   */
   skipped: number;
   /** Operator-facing sentences. Non-empty means someone should look. */
   signals: string[];
@@ -794,39 +809,80 @@ const CREATOR_COLUMNS =
   'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url, ' +
   'primary_source, import_opt_in';
 
+/** One pass's worth of the poll queue, and how long the queue actually is. */
+export interface PollQueue {
+  /** The creators this pass may poll, longest-waiting first. */
+  creators: PollableCreator[];
+  /**
+   * Everyone matching the predicate, not only the batch.
+   *
+   * Counted rather than inferred from `creators.length`, because with the
+   * ordering in SQL those two numbers are the same right up until the queue
+   * outgrows a pass, which is the one moment the difference is worth knowing.
+   * `eligible` far above `POLL_CREATOR_BATCH` for several passes running says
+   * the cadence can no longer drain the queue — a thing an operator can only act
+   * on if it is a number somewhere, and PostgREST returns it in the same round
+   * trip as the rows.
+   */
+  eligible: number;
+}
+
 /**
- * Everyone the poller may touch.
+ * The front of the poll queue: longest-waiting creators first.
  *
  * **Both switches, in the query.** `import_opt_in` is the creator's consent
  * (MEAL-77) and `primary_source` is the operator's decision about which of a
  * creator's four links is the one we read (MEAL-81); either one absent means no
  * polling, and the partial index in `add-creator-sources.sql` is shaped for
  * exactly this predicate.
+ *
+ * **And the order, in the query too.** `ORDER BY last_polled_at NULLS FIRST
+ * LIMIT 100` is a selection; the `LIMIT 1000` this used to do, sorted afterwards
+ * in JavaScript, was a truncation wearing a selection's clothes — past a
+ * thousand opted-in creators Postgres returned whichever page it liked and the
+ * rest were never polled, with no error and no signal.
+ *
+ * `nullsFirst` is not a detail. Postgres sorts NULLs *last* on ASC, so the
+ * default would put every creator we have never polled at the back of the queue
+ * behind everyone we have — precisely inverting the intent, and doing it to the
+ * creators who have waited longest. `idx_creators_poll_order` is shaped for this
+ * ordering and this predicate; keep the two `eq`/`neq` clauses verbatim or the
+ * planner stops being able to prove the partial index applies and this becomes a
+ * sort of the whole table.
  */
-export async function eligibleCreators(supabase: SupabaseClient): Promise<PollableCreator[]> {
-  const { data } = await supabase
+export async function eligibleCreators(supabase: SupabaseClient): Promise<PollQueue> {
+  const { data, count } = await supabase
     .from('creators')
-    .select(CREATOR_COLUMNS)
+    .select(CREATOR_COLUMNS, { count: 'exact' })
     .eq('import_opt_in', true)
     .neq('primary_source', 'none')
-    // The POOL, not the batch. Which hundred get polled is decided by the
-    // `lastPolledAt` ordering in `runPollPass`, and that ordering has to see
-    // everyone it is choosing between — see `POLL_CREATOR_POOL`.
-    .limit(POLL_CREATOR_POOL);
+    .order('last_polled_at', { ascending: true, nullsFirst: true })
+    .limit(POLL_CREATOR_BATCH);
 
-  return ((data ?? []) as Array<Record<string, any>>)
-    .filter((row) => isPlatformSource(row.primary_source))
-    .map((row) => ({
-      id: row.id,
-      user_id: row.user_id,
-      display_name: row.display_name ?? '',
-      website_url: row.website_url ?? null,
-      youtube_url: row.youtube_url ?? null,
-      instagram_url: row.instagram_url ?? null,
-      tiktok_url: row.tiktok_url ?? null,
-      feed_url: row.feed_url ?? null,
-      source: row.primary_source as PlatformSource,
-    }));
+  const rows = (data ?? []) as Array<Record<string, any>>;
+  return {
+    // The CHECK constraint on `primary_source` allows only the four platforms
+    // and `none`, so this guard drops nothing today; it is the same defence in
+    // depth `pollCreator` re-asserts. A row it *did* drop would hold its place
+    // at the front of the queue — an ordered batch is a fixed number of slots,
+    // and anything that occupies one without ever being polled is head-of-line
+    // blocking — but only for as long as the constraint that makes it
+    // impossible was missing.
+    creators: rows
+      .filter((row) => isPlatformSource(row.primary_source))
+      .map((row) => ({
+        id: row.id,
+        user_id: row.user_id,
+        display_name: row.display_name ?? '',
+        website_url: row.website_url ?? null,
+        youtube_url: row.youtube_url ?? null,
+        instagram_url: row.instagram_url ?? null,
+        tiktok_url: row.tiktok_url ?? null,
+        feed_url: row.feed_url ?? null,
+        source: row.primary_source as PlatformSource,
+      })),
+    eligible: count ?? rows.length,
+  };
 }
 
 /** State rows for the creators in hand, keyed the way the table is. */
@@ -838,11 +894,14 @@ async function loadStates(
   if (creators.length === 0) return byKey;
 
   const ids = creators.map((creator) => creator.id);
-  // Chunked at `POLL_CREATOR_BATCH`, because an `.in()` filter travels in the
-  // QUERY STRING: the pool is ten times what fits, and an over-long URI is
-  // rejected by the proxy in front of PostgREST rather than by the database, so
-  // it would come back as no state at all — which reads as "never polled" for
-  // every creator at once.
+  // Chunked at `POLL_CREATOR_BATCH`, which is also what the batch is limited to,
+  // so this is one request today. It stays a loop because the two are separate
+  // facts: `POLL_CREATOR_BATCH` is a policy about how much work a pass does, and
+  // this is the transport ceiling. An `.in()` filter travels in the QUERY
+  // STRING, and an over-long URI is rejected by the proxy in front of PostgREST
+  // rather than by the database — so it comes back as no state at all, which
+  // reads as "never polled" for every creator at once, which is the $13
+  // back-catalogue import for every creator at once.
   for (let from = 0; from < ids.length; from += POLL_CREATOR_BATCH) {
     const { data } = await supabase
       .from('creator_source_state')
@@ -873,13 +932,59 @@ function originOf(creator: PollableCreator): string | null {
 }
 
 /**
- * One poll pass over every eligible creator.
+ * Takes this creator's turn in the queue: `creators.last_polled_at = now`.
+ *
+ * **Written before the poll, and whatever the poll then does.** Both halves of
+ * that are the same rule — the column's only job is to rotate the queue, so
+ * anything that leaves it unchanged leaves that creator at the front of the next
+ * pass, and the pass after that, holding one of a hundred slots forever. A
+ * creator whose feed 500s every time, a creator inside a seven-day backoff, a
+ * creator whose poll throws something unforeseen, a creator on an origin that
+ * already refused us this pass: every one of them must move to the back, or
+ * everyone behind them starves. That is the bug this file was just fixed for,
+ * wearing a different hat.
+ *
+ * Before rather than after so that a hard kill — `maxDuration`, an OOM, a
+ * rolled deployment — cannot single out one creator as the one that always ends
+ * the pass and therefore never advances. The cost of claiming first is that a
+ * pass killed mid-creator delays that creator by one cycle; the cost of claiming
+ * last is that a creator who reliably kills the pass blocks the queue for good.
+ *
+ * **Not the same fact as `creator_source_state.last_polled_at`, and the two must
+ * not be made to agree.** That one means "when we last successfully *listed*
+ * this source", which is why the failure paths in `pollCreator` deliberately
+ * leave it alone: it is what tells a first poll from a later one and a new 403
+ * from a source that never worked, and advancing it on a failed attempt would
+ * import a creator's whole back catalogue. This one means "when this creator
+ * last had their turn", and it has to advance on exactly the failures the other
+ * one must not. `poll_after` is untouched by either: backoff decides *whether* a
+ * creator is polled when their turn comes, this decides *when* their turn comes.
+ */
+async function claimTurn(deps: PollDeps, creator: PollableCreator, at: string): Promise<void> {
+  const { error } = await deps.supabase
+    .from('creators')
+    .update({ last_polled_at: at })
+    .eq('id', creator.id);
+
+  if (error) {
+    // Logged, not thrown, like every other bookkeeping write here. A lost claim
+    // costs this creator a repeated poll next pass — a conditional request and,
+    // at worst, one duplicate listing that finds nothing new. Failing the pass
+    // over it costs every creator behind them.
+    log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'poll claim failed', error });
+  }
+}
+
+/**
+ * One poll pass over the front of the queue.
  *
  * Ordered **longest-since-polled first**, with never-polled creators ahead of
- * everyone. That is fairness for free: a creator the budget did not reach is
- * untouched, so they sort to the front of the next pass without anything having
- * to remember them. The alternative — a stable order — starves the tail
- * permanently the first time the pass runs long, and does it silently.
+ * everyone — in SQL, by `eligibleCreators`, so the ordering decides which
+ * creators the pass reads rather than merely rearranging the ones it happened to
+ * get. Each creator's turn is claimed as it comes up, so a creator the budget
+ * did not reach is untouched and sorts to the front of the next pass without
+ * anything having to remember them. The alternative — a stable order — starves
+ * the tail permanently the first time the pass runs long, and does it silently.
  */
 export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
   const now = deps.now ?? Date.now;
@@ -889,24 +994,19 @@ export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
     emailsSent: 0, skipped: 0, signals: [],
   };
 
-  const creators = await eligibleCreators(deps.supabase);
-  result.eligible = creators.length;
-  if (creators.length === 0) return result;
+  const queue = await eligibleCreators(deps.supabase);
+  const batch = queue.creators;
+  result.eligible = queue.eligible;
+  if (batch.length === 0) return result;
 
-  const states = await loadStates(deps.supabase, creators);
+  const states = await loadStates(deps.supabase, batch);
   const stateFor = (creator: PollableCreator) => states.get(`${creator.id}:${creator.source}`) ?? null;
 
-  // Ordered first, cut second. The other way round — which is what a `.limit()`
-  // in the query does — sorts whichever rows Postgres happened to return and
-  // polls the same hundred creators forever.
-  const ordered = [...creators].sort((a, b) => {
-    const left = stateFor(a)?.lastPolledAt ?? '';
-    const right = stateFor(b)?.lastPolledAt ?? '';
-    return left.localeCompare(right);
-  });
-  const batch = ordered.slice(0, POLL_CREATOR_BATCH);
-  // Everyone past the batch is untouched, so they sort to the front next pass.
-  result.skipped += ordered.length - batch.length;
+  // No sort here. The batch arrives ordered by `creators.last_polled_at`, and
+  // re-sorting it by the per-source `creator_source_state.last_polled_at` would
+  // reorder it by a different fact — one that deliberately does not advance when
+  // a poll fails, so a permanently-failing creator would sort to the front of
+  // every pass forever.
 
   // Measured against the real clock even when `now` is injected: a test pinning
   // `now` to a constant is describing poll windows, not asking for an unbounded
@@ -928,9 +1028,14 @@ export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
 
   for (const creator of batch) {
     if (Date.now() >= deadline) {
+      // Untouched, deliberately: no claim, so this creator keeps the timestamp
+      // that put them in this batch and is at the front of the next one.
       result.skipped += 1;
       continue;
     }
+
+    // Past this line the pass has spent this creator's turn, however it goes.
+    await claimTurn(deps, creator, nowIso);
 
     const state = stateFor(creator);
     if (state?.pollAfter && state.pollAfter > nowIso) {

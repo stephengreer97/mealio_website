@@ -99,6 +99,28 @@ function postId(i: number): string {
   return `chefsarah.test/post-${i}`;
 }
 
+/** `n` opted-in creators, `c0`…`c(n-1)`, each publishing on their own origin. */
+function manyCreators(n: number) {
+  return Array.from({ length: n }, (_, i) =>
+    creatorRow({
+      id: `c${i}`,
+      user_id: `u${i}`,
+      website_url: `https://c${i}.test/`,
+      feed_url: `https://c${i}.test/feed`,
+    }),
+  );
+}
+
+/** A readable one-post feed for each of them. */
+function feedRoutesFor(rows: Array<{ id: string }>) {
+  return Object.fromEntries(
+    rows.flatMap((row) => [
+      [`https://${row.id}.test/robots.txt`, { body: '' }],
+      [`https://${row.id}.test/feed`, { body: feedWith(1), headers: { 'content-type': 'application/rss+xml' } }],
+    ]),
+  );
+}
+
 function feedRoutes(body: string, headers: Record<string, string> = {}) {
   return stubFetch({
     'https://chefsarah.test/robots.txt': { body: 'User-agent: *\nAllow: /' },
@@ -192,9 +214,12 @@ describe('nothing is polled without both switches', () => {
       creatorRow({ id: 'no-source', primary_source: 'none' }),
     ]);
 
-    const eligible = await eligibleCreators(supabase);
+    const queue = await eligibleCreators(supabase);
 
-    expect(eligible.map((row) => row.id)).toEqual(['yes']);
+    expect(queue.creators.map((row) => row.id)).toEqual(['yes']);
+    // The count is of the same predicate, not of the page: it is how a queue
+    // longer than one pass becomes visible at all.
+    expect(queue.eligible).toBe(1);
   });
 
   it('refuses to poll a creator whose source is unset even when handed one directly', async () => {
@@ -947,10 +972,14 @@ describe('one email per batch (MEAL-76)', () => {
 
 describe('the pass', () => {
   it('polls the longest-waiting creator first, so a short budget cannot starve the tail', async () => {
+    // Ordered on `creators.last_polled_at`, in SQL. `never` has none at all,
+    // which is the case the ordering is easiest to get backwards: Postgres sorts
+    // NULLs LAST on ASC, so a query that does not ask for `nullsFirst` puts
+    // every creator we have never polled at the very back of the queue.
     fakeDb.seed('creators', [
-      creatorRow({ id: 'recent', website_url: 'https://recent.test/', feed_url: 'https://recent.test/feed' }),
-      creatorRow({ id: 'stale', website_url: 'https://stale.test/', feed_url: 'https://stale.test/feed' }),
-      creatorRow({ id: 'never', website_url: 'https://never.test/', feed_url: 'https://never.test/feed' }),
+      creatorRow({ id: 'recent', website_url: 'https://recent.test/', feed_url: 'https://recent.test/feed', last_polled_at: '2027-01-15T07:00:00.000Z' }),
+      creatorRow({ id: 'stale', website_url: 'https://stale.test/', feed_url: 'https://stale.test/feed', last_polled_at: '2027-01-01T07:00:00.000Z' }),
+      creatorRow({ id: 'never', website_url: 'https://never.test/', feed_url: 'https://never.test/feed', last_polled_at: null }),
     ]);
     fakeDb.seed('creator_source_state', [
       { creator_id: 'recent', source: 'website', last_polled_at: '2027-01-15T07:00:00.000Z', poll_after: null, consecutive_failures: 0 },
@@ -975,6 +1004,9 @@ describe('the pass', () => {
       'https://stale.test/feed',
       'https://recent.test/feed',
     ]);
+    // And every one of them has taken their turn, so the next pass starts from
+    // an order this pass has already moved on.
+    expect(fakeDb.rows('creators').map((row) => row.last_polled_at)).toEqual([NOW_ISO, NOW_ISO, NOW_ISO]);
   });
 
   it('does not hit an origin twice in one pass after it has refused us', async () => {
@@ -1054,49 +1086,188 @@ describe('the pass', () => {
   });
 
   it('reaches the longest-waiting creator even when more are eligible than a pass can hold', async () => {
-    // 101 opted-in creators. Truncating to 100 in the query and sorting the
-    // survivors sorts the wrong hundred: Postgres returns the same rows every
-    // time, so the one at the back is never polled and nothing says so.
-    const rows = Array.from({ length: 101 }, (_, i) =>
-      creatorRow({
-        id: `c${i}`,
-        user_id: `u${i}`,
-        website_url: `https://c${i}.test/`,
-        feed_url: `https://c${i}.test/feed`,
-      }),
-    );
+    // 101 opted-in creators. A `LIMIT` with no `ORDER BY` is a truncation rather
+    // than a selection, so sorting the survivors sorts the wrong hundred:
+    // Postgres returns the same rows every time, and the one at the back is
+    // never polled and nothing says so.
+    const rows = manyCreators(101).map((row, i) => ({
+      ...row,
+      // The last row is the one waiting longest — and the one a bare LIMIT drops.
+      last_polled_at: i === 100 ? '2020-01-01T00:00:00.000Z' : '2027-01-15T07:00:00.000Z',
+    }));
     fakeDb.seed('creators', rows);
-    fakeDb.seed(
-      'creator_source_state',
-      rows.map((row, i) => ({
-        creator_id: row.id,
-        source: 'website',
-        // The last row is the one waiting longest — and the one a bare LIMIT
-        // drops.
-        last_polled_at: i === 100 ? '2020-01-01T00:00:00.000Z' : '2027-01-15T07:00:00.000Z',
-        poll_after: null,
-        consecutive_failures: 0,
-      })),
-    );
-    const { impl, calls } = stubFetch(
-      Object.fromEntries(
-        rows.flatMap((row) => [
-          [`https://c${row.id.slice(1)}.test/robots.txt`, { body: '' }],
-          [`https://c${row.id.slice(1)}.test/feed`, { body: feedWith(1), headers: { 'content-type': 'application/rss+xml' } }],
-        ]),
-      ),
-    );
+    const { impl, calls } = stubFetch(feedRoutesFor(rows));
 
     const pass = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
 
     expect(calls).toContain('https://c100.test/feed');
-    expect(pass.polled).toBe(POLL_CREATOR_BATCH);
-    expect(pass.skipped).toBe(1);
-    // And the state read that decided the order is chunked, because an `.in()`
-    // travels in the query string and the pool is ten times what fits in one.
+    expect(pass.polled + pass.baselined).toBe(POLL_CREATOR_BATCH);
+    // The hundred-and-first is not "skipped" — nothing dropped them. They are
+    // still in the queue, and `eligible` is where a queue longer than a pass
+    // shows up.
+    expect(pass.skipped).toBe(0);
+    expect(pass.eligible).toBe(101);
+    // And the state read is inside the URI ceiling, because an `.in()` filter
+    // travels in the query string.
     const stateReads = fakeDb.calls.filter((call) => call.table === 'creator_source_state' && call.method === 'in');
-    expect(stateReads).toHaveLength(2);
     expect(Math.max(...stateReads.map((call) => call.args[1].length))).toBeLessThanOrEqual(POLL_CREATOR_BATCH);
+  });
+
+  it('reaches every creator within three passes when two and a half times a batch are eligible', async () => {
+    // The test the single-pass ones cannot be. 250 creators and a batch of 100:
+    // whatever one pass does looks correct, and the defect is only ever visible
+    // across passes — the same hundred rows come back, get sorted, get polled,
+    // and creators 101 to 250 are never polled again as long as the system runs.
+    // No error, no signal, no count that moves.
+    const rows = manyCreators(250);
+    fakeDb.seed('creators', rows);
+    const { impl, calls } = stubFetch(feedRoutesFor(rows));
+
+    const polled: string[] = [];
+    // A day and a half per pass, so the `poll_after` a successful poll writes
+    // has expired by the next one. Backoff decides whether a creator is polled
+    // when their turn comes; it must not be what decides whose turn it is.
+    for (let pass = 0; pass < 3; pass++) {
+      calls.length = 0;
+      await runPollPass(deps({ now: () => NOW + pass * 36 * 3_600_000, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+      for (const url of calls) if (url.endsWith('/feed')) polled.push(new URL(url).hostname);
+    }
+
+    // Everybody, inside the three passes 250 creators at 100 a pass needs.
+    expect(new Set(polled).size).toBe(250);
+    // And nobody twice while somebody was still waiting for their first. This
+    // is the assertion the bug fails: with the ordering broken, passes two and
+    // three re-poll the same hundred and the first repeat arrives while 150
+    // creators have never been polled at all.
+    const seen = new Set<string>();
+    let firstRepeat = polled.length;
+    for (let i = 0; i < polled.length; i++) {
+      if (seen.has(polled[i])) { firstRepeat = i; break; }
+      seen.add(polled[i]);
+    }
+    expect(new Set(polled.slice(0, firstRepeat)).size).toBe(250);
+  });
+
+  it('sorts a creator who has never been polled ahead of one polled long ago', async () => {
+    // Postgres puts NULLs LAST on ASC. A creator with no `last_polled_at` has
+    // waited the longest by definition, so the query has to say `nullsFirst` —
+    // and a fake that models NULL as an empty string agrees with the code
+    // instead of with the database and hides exactly this.
+    const rows = manyCreators(101).map((row, i) => ({
+      ...row,
+      // Everyone has been polled recently except the last, who has never been
+      // polled at all. Without `nullsFirst` they are last in line, forever.
+      last_polled_at: i === 100 ? null : '2027-01-15T07:00:00.000Z',
+    }));
+    fakeDb.seed('creators', rows);
+    const { impl, calls } = stubFetch(feedRoutesFor(rows));
+
+    await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+
+    expect(calls.filter((url) => url.endsWith('/feed'))[0]).toBe('https://c100.test/feed');
+  });
+
+  it('moves a creator whose source keeps failing to the back of the queue anyway', async () => {
+    // A permanently-failing creator that never advances is the starvation bug
+    // wearing a different hat: they sort first, they fail, they sort first
+    // again, and every creator behind them waits on a feed that is never going
+    // to answer.
+    fakeDb.seed('creators', [creatorRow({ last_polled_at: '2020-01-01T00:00:00.000Z' })]);
+    const { impl } = stubFetch({
+      'https://chefsarah.test/robots.txt': { body: '' },
+      'https://chefsarah.test/feed': { status: 500, body: 'boom' },
+    });
+
+    const pass = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+
+    expect(pass.sourcesFailed).toBe(1);
+    // The turn was taken. The two `last_polled_at` columns say different things
+    // on purpose and this is where they part: the one on `creators` is a queue
+    // position and has to advance on a failure, and the one on
+    // `creator_source_state` means "when we last successfully LISTED this
+    // source" — advancing that on a failed attempt would tell the next pass the
+    // baseline had run and import the creator's whole back catalogue.
+    expect(fakeDb.row('creators', 'c1')?.last_polled_at).toBe(NOW_ISO);
+    expect(state()?.last_polled_at).toBeNull();
+    // And the backoff is untouched by any of it.
+    expect(state()?.consecutive_failures).toBe(1);
+    expect(state()?.poll_after).toBe(new Date(NOW + 2 * POLL_INTERVAL_MINUTES * 60_000).toISOString());
+  });
+
+  it('does not let a hundred backing-off creators hold the queue against the one behind them', async () => {
+    // `poll_after` decides WHETHER a creator is polled when their turn comes up.
+    // It must not be what decides WHOSE turn it is: a hundred creators inside a
+    // seven-day backoff, all sorting ahead of everyone, fill every slot in the
+    // batch with work the pass then declines to do — and creator 101 is never
+    // reached, for a week, with `skipped: 100` the only trace.
+    const rows = manyCreators(101).map((row, i) => ({
+      ...row,
+      last_polled_at: i === 100 ? '2027-01-14T00:00:00.000Z' : '2027-01-01T00:00:00.000Z',
+    }));
+    fakeDb.seed('creators', rows);
+    fakeDb.seed(
+      'creator_source_state',
+      rows.slice(0, 100).map((row) => ({
+        creator_id: row.id,
+        source: 'website',
+        last_polled_at: '2027-01-01T00:00:00.000Z',
+        poll_after: new Date(NOW + 7 * 24 * 3_600_000).toISOString(),
+        consecutive_failures: 5,
+      })),
+    );
+    const { impl, calls } = stubFetch(feedRoutesFor(rows));
+
+    const first = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+
+    expect(first.skipped).toBe(100);
+    expect(calls).toHaveLength(0);
+
+    calls.length = 0;
+    const second = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
+
+    // The hundred took their turn without being polled, so the one behind them
+    // is at the front now. Their own backoff is unchanged — nothing about
+    // taking a turn shortens or lengthens it.
+    expect(calls.filter((url) => url.endsWith('/feed'))).toEqual(['https://c100.test/feed']);
+    expect(second.baselined).toBe(1);
+    expect(fakeDb.rows('creator_source_state').find((row) => row.creator_id === 'c0')?.poll_after)
+      .toBe(new Date(NOW + 7 * 24 * 3_600_000).toISOString());
+  });
+
+  it('leaves the creators a short pass never reached at the front of the next one', async () => {
+    // The budget is a wall clock, not a row count, so where a pass stops is not
+    // knowable in advance. What has to be true is that stopping is a delay
+    // rather than a loss: an unreached creator is untouched, keeps the older
+    // timestamp that put them in this batch, and leads the next pass.
+    fakeDb.seed('creators', [
+      creatorRow({ id: 'a', user_id: 'ua', website_url: 'https://a.test/', feed_url: 'https://a.test/feed', last_polled_at: null }),
+      creatorRow({ id: 'b', user_id: 'ub', website_url: 'https://b.test/', feed_url: 'https://b.test/feed', last_polled_at: null }),
+      creatorRow({ id: 'c', user_id: 'uc', website_url: 'https://c.test/', feed_url: 'https://c.test/feed', last_polled_at: null }),
+    ]);
+    const routes = feedRoutesFor([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
+    const { impl: fast, calls } = stubFetch(routes);
+    // Every fetch costs 60ms of real time, so the first creator alone — robots
+    // and feed — overruns a 100ms budget.
+    const slow = (async (...args: Parameters<typeof fetch>) => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return fast(...args);
+    }) as unknown as typeof fetch;
+
+    const short = await runPollPass(
+      deps({ deadline: Date.now() + 100, fetchOptions: { fetchImpl: slow, lookup: publicLookup } }),
+    );
+
+    expect(short.skipped).toBe(2);
+    expect(fakeDb.rows('creators').map((row) => row.last_polled_at)).toEqual([NOW_ISO, null, null]);
+
+    calls.length = 0;
+    await runPollPass(deps({ now: () => NOW + 36 * 3_600_000, fetchOptions: { fetchImpl: fast, lookup: publicLookup } }));
+
+    expect(calls.filter((url) => url.endsWith('/feed'))).toEqual([
+      'https://b.test/feed',
+      'https://c.test/feed',
+      'https://a.test/feed',
+    ]);
   });
 
   it('emails each creator as their drafts land, not after every creator has been polled', async () => {

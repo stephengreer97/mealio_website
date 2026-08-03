@@ -214,6 +214,8 @@ export class FakeSupabase {
     let orderBy: { column: string; ascending: boolean; nullsFirst: boolean } | null = null;
     let rowLimit: number | null = null;
     let rowRange: { from: number; to: number } | null = null;
+    let counting = false;
+    let headOnly = false;
 
     const builder: any = {};
     const record = (method: string, args: any[]) => { this.calls.push({ table, method, args }); };
@@ -223,6 +225,8 @@ export class FakeSupabase {
       // `.select()` after a write is PostgREST's "return the rows you changed";
       // before one it IS the query.
       if (op === null) { op = 'select'; columns = args[0]; } else { returning = true; columns = args[0]; }
+      if (args[1]?.count) counting = true;
+      if (args[1]?.head) headOnly = true;
       return builder;
     };
     builder.insert = (...args: any[]) => { record('insert', args); op = 'insert'; payload = args[0]; return builder; };
@@ -337,7 +341,19 @@ export class FakeSupabase {
           // Whatever the caller asked for, the server never returns more than
           // this and never says it truncated. See MAX_ROWS.
           out = out.slice(0, MAX_ROWS);
-          return { data: out.map((r) => project(r, columns)), error: null, count: out.length };
+          return {
+            // `{ head: true }` asks for the count and no rows at all.
+            data: headOnly ? null : out.map((r) => project(r, columns)),
+            error: null,
+            // PostgREST counts the rows the FILTERS matched and reports it in
+            // `Content-Range`, so a `{ count: 'exact' }` alongside a `.limit()`
+            // returns "0-99/4213" — the limit does not narrow it. Returning
+            // `out.length` here instead would make a query that reads the front
+            // of a long queue report the queue as exactly one page long, which
+            // is the number a caller reaches for precisely BECAUSE it wants to
+            // know the queue is longer than a page.
+            count: counting ? matched.length : null,
+          };
         }
       }
     };
