@@ -109,6 +109,12 @@ export type EventType =
   | 'CRON:DAILY'
   | 'CRON:TOKEN_REFRESH'    // the shared platform-grant refresh sweep (MEAL-74)
   | 'CRON:PUSH_RECEIPTS'    // second, offset receipt sweep
+  | 'CRON:POLL'             // one pass of the creator feed poller (MEAL-75)
+  // One creator's source, per pass. At `error` for the two things that are
+  // signals rather than failures: a source that used to work and has started
+  // refusing us, and more new items in one poll than a creator could publish.
+  | 'POLL:SOURCE'
+  | 'POLL:NOTIFY'           // the "these drafts are waiting" email (MEAL-76)
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'

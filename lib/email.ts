@@ -238,6 +238,113 @@ export async function sendCreatorSyncPublishedEmail(
   });
 }
 
+/** One queued draft, as the poller's email describes it. */
+export interface DraftedRecipe {
+  draftId: string;
+  name: string;
+  /** The post it came from, so a creator can check it against what they wrote. */
+  sourceUrl: string;
+  photoUrl: string | null;
+  ingredientCount: number;
+  /** Fields MEAL-72 flagged. The honest signal about how much reading this needs. */
+  needALook: number;
+}
+
+/**
+ * "We read these off your feed — have a look" (MEAL-76).
+ *
+ * The last mile of the poller. **A decision surface, not a notification**: name,
+ * photo, ingredient count and an honest quality signal, so a creator can judge
+ * from the inbox whether this is a thirty-second confirm or something to sit
+ * down with. "3 fields need your attention" beats "your meal is ready" when
+ * three fields are red, and a creator who learns that the hard way stops opening
+ * these.
+ *
+ * **One email per batch.** Three recipes on a Tuesday is one message listing
+ * three, never three messages — the single biggest determinant of whether this
+ * feels helpful or spammy. Nothing drafted means nothing sent.
+ *
+ * **Nothing here publishes anything.** Every draft sits until the creator acts,
+ * which is the entire basis of their trust in an importer that reads their site
+ * unattended, and is not negotiable for a "just this once" convenience.
+ *
+ * Transactional, and therefore NOT routed through sendMarketingEmail():
+ * `marketing_opt_out` must not suppress it. A creator who unsubscribed from
+ * campaigns has still asked us to import their recipes, and drafts they are
+ * never told about are worse than no drafts at all.
+ */
+export async function sendCreatorDraftsReadyEmail(
+  to: string,
+  displayName: string,
+  drafts: DraftedRecipe[],
+) {
+  // Belt and braces with the caller. An empty "here is what we found" is the one
+  // version of this email that has no reason to exist.
+  if (drafts.length === 0) return;
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co';
+  const count = drafts.length;
+  const flagged = drafts.reduce((total, draft) => total + draft.needALook, 0);
+
+  // The subject says which of the two emails this is before it is opened: a
+  // clean batch is a confirm, a flagged one is a job.
+  const subject = flagged > 0
+    ? `${count === 1 ? 'A recipe' : `${count} recipes`} from your feed — ${flagged} ${flagged === 1 ? 'field needs' : 'fields need'} a look`
+    : `${count === 1 ? 'A recipe' : `${count} recipes`} from your feed, ready to publish`;
+
+  const rows = drafts
+    .map((draft) => {
+      const attention = draft.needALook > 0
+        ? `<span style="color: #dd0031; font-weight: 600;">${draft.needALook} ${draft.needALook === 1 ? 'field needs' : 'fields need'} your attention</span>`
+        : '<span style="color: #6a9b5a;">Everything checked out</span>';
+      const photo = draft.photoUrl
+        ? `<td width="72" style="padding: 0 12px 0 0; vertical-align: top;">
+             <img src="${escapeHtml(draft.photoUrl)}" alt="" width="72" height="72" style="display: block; border: 0; border-radius: 8px; object-fit: cover;" />
+           </td>`
+        : '';
+      return `
+        <table role="presentation" style="width: 100%; border-collapse: collapse; margin: 0 0 16px;">
+          <tr>
+            ${photo}
+            <td style="vertical-align: top;">
+              <div style="color: #222; font-size: 15px; font-weight: 600; margin-bottom: 4px;">${escapeHtml(draft.name)}</div>
+              <div style="color: #999; font-size: 13px; line-height: 1.5;">
+                ${draft.ingredientCount} ${draft.ingredientCount === 1 ? 'ingredient' : 'ingredients'} &middot; ${attention}
+              </div>
+              <a href="${escapeHtml(draft.sourceUrl)}" style="color: #999; font-size: 12px; text-decoration: underline;">the post we read</a>
+            </td>
+          </tr>
+        </table>`;
+    })
+    .join('');
+
+  await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to,
+    subject,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${escapeHtml(displayName)},</h2>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
+          We spotted ${count === 1 ? 'a new recipe' : `${count} new recipes`} on your feed and read ${count === 1 ? 'it' : 'them'} into ${count === 1 ? 'a draft' : 'drafts'} for you.
+          <strong>Nothing is published</strong> — ${count === 1 ? 'it is' : 'they are'} waiting for you to look.
+        </p>
+        ${rows}
+        <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin: 8px 0 24px;">Review and publish</a>
+        <p style="color: #666; font-size: 13px; line-height: 1.6; margin: 0 0 16px;">
+          We read ${count === 1 ? 'this' : 'these'} off your page automatically, so a measure or a step may not be quite how you'd write it.
+          Edit anything on the review screen before you publish, or discard ${count === 1 ? 'it' : 'them'} — we won't ask about the same post twice.
+        </p>
+        <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 0;">
+          You're getting this because automatic imports are turned on for your account. To turn them off, open your
+          <a href="${appUrl}/creator" style="color: #999; text-decoration: underline;">Creator Portal</a> or just reply to this email and we'll do it.
+        </p>
+      </div>
+    `,
+  });
+}
+
 export async function sendOtpEmail(to: string, code: string) {
   await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',

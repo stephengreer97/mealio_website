@@ -487,3 +487,80 @@ describe('import/ssrf — image fetches require a declared type', () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe('import/ssrf — conditional requests (MEAL-75)', () => {
+  it('sends both validators and reports a 304 as not-modified', async () => {
+    const seen: Array<Record<string, string>> = [];
+    const impl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(init?.headers as Record<string, string>);
+      return new Response(null, { status: 304 });
+    }) as unknown as typeof fetch;
+
+    const result = await safeFetch('https://chefsarah.test/feed', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+      conditional: { etag: '"v1"', lastModified: 'Tue, 14 Jan 2027 08:00:00 GMT' },
+    });
+
+    expect(seen[0]['if-none-match']).toBe('"v1"');
+    expect(seen[0]['if-modified-since']).toBe('Tue, 14 Jan 2027 08:00:00 GMT');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('not-modified');
+  });
+
+  it('does not read a 304 as not-modified when nothing was asked conditionally', async () => {
+    // A 304 to an unconditional request is a broken server, and calling it
+    // "nothing changed" would have every existing caller silently treat a bug as
+    // an unchanged page.
+    const impl = (async () => new Response(null, { status: 304 })) as unknown as typeof fetch;
+
+    const result = await safeFetch('https://chefsarah.test/feed', { fetchImpl: impl, lookup: publicLookup });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('http-error');
+  });
+
+  it('hands back the validators a 200 declared, so the next request can be conditional', async () => {
+    const { impl } = stubFetch({
+      'https://chefsarah.test/feed': {
+        body: '<rss/>',
+        headers: { etag: '"v2"', 'last-modified': 'Wed, 15 Jan 2027 08:00:00 GMT', 'cache-control': 'public, max-age=900' },
+      },
+    });
+
+    const result = await safeFetch('https://chefsarah.test/feed', { fetchImpl: impl, lookup: publicLookup });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result).toMatchObject({
+      etag: '"v2"',
+      lastModified: 'Wed, 15 Jan 2027 08:00:00 GMT',
+      cacheControl: 'public, max-age=900',
+    });
+  });
+
+  it('drops the validators when a redirect leaves the origin they describe', async () => {
+    // Same rule as `headers`, and for a related reason: a validator is a claim
+    // about one server's copy of one resource, and replaying it at a host the
+    // redirect chose is at best meaningless.
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, headers: init?.headers as Record<string, string> });
+      return url.includes('chefsarah')
+        ? new Response(null, { status: 302, headers: { location: 'https://cdn.example.com/feed' } })
+        : new Response('<rss/>', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await safeFetch('https://chefsarah.test/feed', {
+      fetchImpl: impl,
+      lookup: publicLookup,
+      conditional: { etag: '"v1"' },
+    });
+
+    expect(seen[0].headers['if-none-match']).toBe('"v1"');
+    expect(seen[1].headers['if-none-match']).toBeUndefined();
+  });
+});

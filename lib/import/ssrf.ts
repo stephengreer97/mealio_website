@@ -38,6 +38,33 @@ import type { FetchResult, FetchFailure, FetchSuccess } from './types';
  */
 export interface SafeFetchSuccess extends FetchSuccess {
   bytes: Buffer;
+  /**
+   * The caching metadata a conditional re-request needs (MEAL-75).
+   *
+   * Here rather than on `FetchSuccess` for the same reason `bytes` is: these are
+   * facts about the HTTP exchange, and `types.ts` is the contract the UI is
+   * built against. Null when the server declared none — plenty of feeds do, and
+   * the poller falls back to its own interval rather than to a full body every
+   * time.
+   */
+  etag: string | null;
+  lastModified: string | null;
+  /** Verbatim `Cache-Control`. The poller reads `max-age` out of it as a TTL. */
+  cacheControl: string | null;
+}
+
+/**
+ * What a previous fetch of the same URL returned, to be replayed as
+ * `If-None-Match` / `If-Modified-Since`.
+ *
+ * Passing this is also what opts a caller in to seeing a `not-modified`
+ * failure: a 304 to a request that carried no validator is a server bug, and
+ * turning it into "nothing changed" for callers who never asked would have them
+ * silently treat a broken response as an unchanged one.
+ */
+export interface ConditionalValidators {
+  etag?: string | null;
+  lastModified?: string | null;
 }
 
 export type SafeFetchResult = SafeFetchSuccess | FetchFailure;
@@ -87,6 +114,16 @@ export interface SafeFetchOptions {
    * needs no credential, so nothing legitimate wants them carried over.
    */
   headers?: Record<string, string>;
+  /**
+   * Makes this a conditional request (MEAL-75).
+   *
+   * Sent under the same origin rule as `headers`, and for the same reason in
+   * reverse: a validator is a statement about one server's copy of one
+   * resource, so carrying it across a redirect to somewhere else is at best
+   * meaningless. A matching server answers `304` with no body, which is
+   * returned as the `not-modified` failure reason.
+   */
+  conditional?: ConditionalValidators;
   maxBytes?: number;
   timeoutMs?: number;
   maxRedirects?: number;
@@ -497,6 +534,14 @@ export async function safeFetch(
   const fetchImpl = options.fetchImpl ?? guardedFetch(lookup);
 
   const deadline = now() + timeoutMs;
+  // Built once. Empty when the caller passed no validators, which is also what
+  // decides whether a `304` is read as "nothing changed" or as a broken server.
+  const conditionalHeaders: Record<string, string> = {};
+  if (options.conditional?.etag) conditionalHeaders['if-none-match'] = options.conditional.etag;
+  if (options.conditional?.lastModified) {
+    conditionalHeaders['if-modified-since'] = options.conditional.lastModified;
+  }
+  const isConditional = Object.keys(conditionalHeaders).length > 0;
   const redirects: string[] = [];
   let current = rawUrl;
   /** The origin `options.headers` were meant for. Unparseable means nowhere. */
@@ -556,6 +601,7 @@ export async function safeFetch(
             'user-agent': USER_AGENT,
             accept: 'text/html,application/xhtml+xml',
             ...(sameOrigin ? options.headers : undefined),
+            ...(sameOrigin ? conditionalHeaders : undefined),
           },
         });
       } catch (err) {
@@ -563,6 +609,15 @@ export async function safeFetch(
         return aborted
           ? fail('timeout', `Timed out after ${timeoutMs}ms`)
           : fail('network-error', `Request to ${current} failed: ${String(err)}`);
+      }
+
+      // Checked before the redirect band, which 304 shares a hundreds digit
+      // with and nothing else. Only for a request that actually carried a
+      // validator: without one this stays what it was, an `http-error` about a
+      // server answering a question nobody asked.
+      if (response.status === 304 && isConditional) {
+        await discard(response);
+        return fail('not-modified', `${new URL(current).hostname} reports nothing has changed since we last read it.`);
       }
 
       if (response.status >= 300 && response.status < 400) {
@@ -618,6 +673,9 @@ export async function safeFetch(
         contentType,
         html: body.toString('utf8'),
         bytes: body,
+        etag: response.headers.get('etag'),
+        lastModified: response.headers.get('last-modified'),
+        cacheControl: response.headers.get('cache-control'),
         redirects,
       };
     } finally {

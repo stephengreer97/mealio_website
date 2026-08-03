@@ -161,6 +161,8 @@ function item(overrides: Partial<SyncItem> = {}): SyncItem {
     draftId: null,
     mealName: null,
     needALook: null,
+    photoUrl: null,
+    ingredientCount: null,
     costUsd: 0,
     ...overrides,
   };

@@ -68,7 +68,8 @@ import {
 } from '@/lib/tiktok';
 import { formatTelemetry } from '@/lib/import/telemetry';
 import type { FeedKind } from '@/lib/import/feed';
-import type { ImportResult, SourceDocument } from '@/lib/import/types';
+import type { ConditionalValidators } from '@/lib/import/ssrf';
+import type { GateMode, ImportResult, SourceDocument } from '@/lib/import/types';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -101,6 +102,16 @@ export interface SyncItem {
   mealName: string | null;
   /** How many fields the review card will flag. The reason to look at this one first. */
   needALook: number | null;
+  /**
+   * The two facts that make an email about this draft a decision rather than a
+   * notification (MEAL-76): the picture, and how much recipe there is. Carried
+   * on the item so the notifier does not have to re-read and re-derive a draft
+   * the pipeline has just finished holding.
+   *
+   * Null on items recorded before MEAL-75, and on every non-drafted outcome.
+   */
+  photoUrl: string | null;
+  ingredientCount: number | null;
   costUsd: number;
 }
 
@@ -174,6 +185,16 @@ export interface SyncCreator {
 export interface SyncDeps {
   supabase: SupabaseClient;
   fetchOptions?: SafeFetchOptions;
+  /**
+   * How an `unsure` gate verdict resolves. Defaults to `manual`, which is the
+   * truth for an operator-driven run: they picked the item and are watching.
+   *
+   * The poller sets `poller`, and the difference is the whole reason the mode
+   * exists — nobody asked for that import, so a maybe has to be a no. A false
+   * positive there is not a wasted click, it is a draft and an email about a
+   * post the creator never offered us (MEAL-75).
+   */
+  gateMode?: GateMode;
   /** The import pipeline seam. Tests substitute a stub; production runs the real thing. */
   importer?: (url: string, options: RunImportOptions) => Promise<ImportResult>;
   /** Where an extraction lands. There is no publisher seam here any more — a run cannot publish. */
@@ -304,8 +325,37 @@ export type CatalogResult =
       entries: CatalogEntry[];
       /** True when the source published more than we will list. */
       truncated: boolean;
+      /**
+       * Polling bookkeeping, filled in only on the website path (MEAL-75).
+       *
+       * The other three sources are authenticated JSON APIs read with a bearer
+       * token: they carry no validator we could replay and advertise no
+       * interval, so there is nothing honest to put here for them.
+       */
+      validators?: ConditionalValidators;
+      ttlSeconds?: number | null;
     }
-  | { ok: false; reason: string; detail: string };
+  | {
+      ok: false;
+      /**
+       * `not-modified` is the one value here that is not a problem — the
+       * conditional read worked and the feed is unchanged. Everything a caller
+       * does with it is different from what it does with a failure, so it does
+       * not get folded into one (MEAL-75).
+       */
+      reason: string;
+      detail: string;
+    };
+
+export interface CatalogOptions {
+  /**
+   * Replayed as `If-None-Match` / `If-Modified-Since` on the website feed, so a
+   * poll of an unchanged feed costs a 304 instead of a body. Unset for the
+   * operator-facing catalog: an operator opening the screen wants to see the
+   * list, not be told it has not changed since a cron read it.
+   */
+  conditional?: ConditionalValidators;
+}
 
 /**
  * Lists everything a creator's source publishes, from feed metadata alone.
@@ -318,6 +368,7 @@ export async function buildCatalog(
   deps: SyncDeps,
   creator: SyncCreator,
   source: PlatformSource,
+  catalogOptions: CatalogOptions = {},
 ): Promise<CatalogResult> {
   if (source === 'youtube') return buildYouTubeCatalog(deps, creator);
   if (source === 'instagram') return buildInstagramCatalog(deps, creator);
@@ -338,7 +389,16 @@ export async function buildCatalog(
   // different hosts, and applying one host's robots.txt to another's URLs is how
   // a Disallow we were told about goes unread.
   const robots = robotsPerOrigin(deps.fetchOptions);
-  const options = { robots, fetchOptions: deps.fetchOptions, maxEntries: CATALOG_MAX_ENTRIES };
+  const options = {
+    robots,
+    fetchOptions: deps.fetchOptions,
+    maxEntries: CATALOG_MAX_ENTRIES,
+    conditional: catalogOptions.conditional,
+  };
+  // Only a confirmed feed can be read conditionally. The discovery ladder walks
+  // addresses it has never fetched, so it has no validators to replay — which is
+  // also why a creator with no `feed_url` costs the full ladder on every poll,
+  // and why confirming one at onboarding is worth the operator's minute.
   const discovery: FeedDiscoveryResult = creator.feed_url
     ? await readFeed(creator.feed_url, options)
     : await discoverFeed(link, options);
@@ -365,6 +425,8 @@ export async function buildCatalog(
     feed: { url: discovery.feed.url, kind: discovery.feed.kind, via: discovery.feed.via },
     entries,
     truncated: entries.length >= CATALOG_MAX_ENTRIES,
+    validators: discovery.feed.validators,
+    ttlSeconds: discovery.feed.ttlSeconds,
   };
 }
 
@@ -622,6 +684,20 @@ const MISSING_ITEM_DETAIL: Record<ConnectedPlatform, string> = {
 };
 
 /**
+ * What `processSyncItem` actually needs to know about the batch it is part of.
+ *
+ * A `SyncRun` satisfies it, and so does the poller, which has no run row at all
+ * — it is a cron pass, not something an operator started and can watch. Narrowed
+ * to these two fields rather than given a fake run: `sync_run_id` is how the
+ * admin screen finds the items it queued, and pointing it at an id that names no
+ * row would be worse than the null that says plainly there was no run.
+ */
+export interface ItemContext {
+  id: string | null;
+  source: PlatformSource;
+}
+
+/**
  * Runs one item: gate, extract, queue for review, record.
  *
  * Never throws. An item that blows up is a failed item, because the alternative
@@ -629,7 +705,7 @@ const MISSING_ITEM_DETAIL: Record<ConnectedPlatform, string> = {
  */
 export async function processSyncItem(
   deps: SyncDeps,
-  run: SyncRun,
+  run: ItemContext,
   creator: SyncCreator,
   item: SyncItem,
 ): Promise<SyncItem> {
@@ -680,11 +756,12 @@ export async function processSyncItem(
   try {
     result = await importer(item.url, {
       document,
-      // The operator picked this URL and is watching it, which is exactly the
+      // An operator picked this URL and is watching it, which is exactly the
       // condition `manual` describes: an `unsure` verdict is attempted rather
       // than silently skipped. A `no` still stops it — that is the gate doing
-      // its job, not a bypass to switch off.
-      mode: 'manual',
+      // its job, not a bypass to switch off. The poller overrides this to
+      // `poller`, where nobody is watching and a maybe has to be a no.
+      mode: deps.gateMode ?? 'manual',
       // Scopes the storage bucket path when a page's image is copied in, so a
       // synced photo lands under the creator it belongs to.
       userId: creator.user_id,
@@ -753,6 +830,8 @@ export async function processSyncItem(
       draftId,
       mealName: result.draft.name,
       needALook: summary.needALook,
+      photoUrl: result.draft.photoUrl ?? null,
+      ingredientCount: result.draft.ingredients?.length ?? 0,
       costUsd,
     });
   } catch (err) {
@@ -793,7 +872,7 @@ const EMPTY_DRAFT_FIELDS = {
 async function recordItem(
   deps: SyncDeps,
   creator: SyncCreator,
-  run: SyncRun,
+  run: ItemContext,
   // Narrowed to the three outcomes worth recording, so a new item status can
   // never quietly become an invalid record write.
   item: SyncItem & { status: 'drafted' | 'rejected' | 'failed' },
@@ -888,7 +967,7 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
     }
 
     const processed = await Promise.all(
-      wave.map((index) => processSyncItem(chunkDeps, { ...run, items }, creator, items[index])),
+      wave.map((index) => processSyncItem(chunkDeps, { id: run.id, source: run.source }, creator, items[index])),
     );
     wave.forEach((index, position) => {
       items[index] = processed[position];
