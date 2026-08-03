@@ -25,9 +25,17 @@
  */
 
 import { isOnSameSite } from '@/lib/creator-sources';
-import { findFeedLinks, mostRecent, parseFeed, parseSitemap, type FeedEntry, type FeedKind } from './feed';
+import {
+  findFeedLinks,
+  mostRecent,
+  parseFeed,
+  parseFeedTtlSeconds,
+  parseSitemap,
+  type FeedEntry,
+  type FeedKind,
+} from './feed';
 import type { RobotsSource } from './robots';
-import { safeFetch, type SafeFetchOptions } from './ssrf';
+import { safeFetch, type ConditionalValidators, type SafeFetchOptions } from './ssrf';
 
 /** Which rung of the ladder found it. Shown to the operator — a `/feed` guess deserves more scrutiny than an advertised link. */
 export type FeedDiscoveryVia = 'link-alternate' | 'well-known' | 'sitemap';
@@ -38,11 +46,32 @@ export interface DiscoveredFeed {
   via: FeedDiscoveryVia;
   /** Most recent first. What the operator is shown to confirm the guess. */
   entries: FeedEntry[];
+  /**
+   * What to replay on the next conditional read, so an unchanged feed costs a
+   * 304 rather than a body (MEAL-75). Null members where the server declared
+   * none.
+   */
+  validators: ConditionalValidators;
+  /**
+   * The re-read interval the publisher advertises, in seconds, or null. From
+   * `<ttl>` / `<sy:updatePeriod>` in the body, or `Cache-Control: max-age`.
+   */
+  ttlSeconds: number | null;
 }
 
 export type FeedDiscoveryResult =
   | { ok: true; feed: DiscoveredFeed }
-  | { ok: false; reason: 'blocked-by-robots' | 'blocked-by-site' | 'unreachable' | 'no-feed'; detail: string };
+  | {
+      ok: false;
+      reason:
+        | 'blocked-by-robots'
+        | 'blocked-by-site'
+        | 'unreachable'
+        | 'no-feed'
+        /** Only reachable from `readFeed` with `conditional` set. Nothing has changed. */
+        | 'not-modified';
+      detail: string;
+    };
 
 /**
  * Conventional feed paths, tried only when the homepage advertised nothing.
@@ -96,6 +125,14 @@ export interface DiscoverFeedOptions {
   fetchOptions?: SafeFetchOptions;
   /** How many entries to carry back for confirmation and probing. */
   maxEntries?: number;
+  /**
+   * Validators from the last read of this exact feed (MEAL-75).
+   *
+   * Honoured by `readFeed` only. The discovery *ladder* has nothing to be
+   * conditional about — it is walking addresses it has never fetched — and a
+   * `304` mid-ladder would be indistinguishable from "this rung is not a feed".
+   */
+  conditional?: ConditionalValidators;
 }
 
 /** The ladder's own bookkeeping, threaded through every fetch it makes. */
@@ -109,11 +146,21 @@ function ladder(options: DiscoverFeedOptions): Ladder {
   return { ...options, now, deadline: now() + DISCOVERY_BUDGET_MS };
 }
 
+/** One fetched document, plus the HTTP caching metadata a re-read needs. */
+interface FetchedDocument {
+  ok: true;
+  url: string;
+  body: string;
+  validators: ConditionalValidators;
+  cacheControl: string | null;
+}
+
 /** A fetch that reports robots refusals separately from network failures. */
 async function getDocument(
   url: string,
   options: Ladder,
-): Promise<{ ok: true; url: string; body: string } | { ok: false; reason: string; detail: string }> {
+  conditional?: ConditionalValidators,
+): Promise<FetchedDocument | { ok: false; reason: string; detail: string }> {
   const remaining = options.deadline - options.now();
   if (remaining <= 0) {
     return { ok: false, reason: 'unreachable', detail: `Gave up looking for a feed after ${DISCOVERY_BUDGET_MS}ms.` };
@@ -126,18 +173,70 @@ async function getDocument(
     ...options.fetchOptions,
     accept: FEED_CONTENT_TYPES,
     expected: 'a feed, sitemap or HTML page',
+    conditional,
     // After the spread: the ladder's budget is not a caller's to widen, and a
     // rung that outlives the budget has already lost the ones behind it.
     timeoutMs: Math.min(DISCOVERY_TIMEOUT_MS, remaining),
   });
   if (!result.ok) return { ok: false, reason: result.reason, detail: result.detail };
-  return { ok: true, url: result.url, body: result.html };
+  return {
+    ok: true,
+    url: result.url,
+    body: result.html,
+    validators: { etag: result.etag, lastModified: result.lastModified },
+    cacheControl: result.cacheControl,
+  };
 }
 
-function toFeed(body: string, url: string, via: FeedDiscoveryVia, maxEntries: number): DiscoveredFeed | null {
-  const parsed = parseFeed(body, url);
+/**
+ * `Cache-Control: max-age`, in seconds, or null.
+ *
+ * `no-cache`/`no-store` deliberately yield null rather than zero: the publisher
+ * is saying "do not serve this from a cache", not "come back immediately", and
+ * reading it as a zero-second TTL would turn a caching instruction into an
+ * invitation to poll as fast as we like.
+ */
+function maxAgeSeconds(cacheControl: string | null): number | null {
+  if (!cacheControl) return null;
+  const seconds = Number(/(?:^|[\s,])max-age\s*=\s*(\d+)/i.exec(cacheControl)?.[1]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+/**
+ * The publisher's advertised interval: whatever the feed body says, else what
+ * the HTTP layer says. The body wins because `<ttl>` is the author's stated
+ * publishing rhythm while `max-age` is frequently a CDN default nobody chose.
+ */
+function advertisedTtl(document: FetchedDocument): number | null {
+  return parseFeedTtlSeconds(document.body) ?? maxAgeSeconds(document.cacheControl);
+}
+
+function toFeed(document: FetchedDocument, via: FeedDiscoveryVia, maxEntries: number): DiscoveredFeed | null {
+  const parsed = parseFeed(document.body, document.url);
   if (!parsed) return null;
-  return { url, kind: parsed.kind, via, entries: mostRecent(parsed.entries, maxEntries) };
+  return {
+    url: document.url,
+    kind: parsed.kind,
+    via,
+    entries: mostRecent(parsed.entries, maxEntries),
+    validators: document.validators,
+    ttlSeconds: advertisedTtl(document),
+  };
+}
+
+/**
+ * A sitemap presented as a feed. No `<ttl>` exists in the sitemap schema, so the
+ * only interval a sitemap can advertise is the HTTP one.
+ */
+function toSitemapFeed(document: FetchedDocument, entries: FeedEntry[], maxEntries: number): DiscoveredFeed {
+  return {
+    url: document.url,
+    kind: 'sitemap',
+    via: 'sitemap',
+    entries: mostRecent(entries, maxEntries),
+    validators: document.validators,
+    ttlSeconds: maxAgeSeconds(document.cacheControl),
+  };
 }
 
 /**
@@ -189,7 +288,7 @@ export async function discoverFeed(
   for (const href of advertised) {
     const document = await getDocument(href, options);
     if (!document.ok) continue;
-    const feed = toFeed(document.body, document.url, 'link-alternate', maxEntries);
+    const feed = toFeed(document, 'link-alternate', maxEntries);
     if (feed) return { ok: true, feed };
   }
 
@@ -200,7 +299,7 @@ export async function discoverFeed(
     // A 200 that is not a feed is the normal WordPress answer for a site with
     // feeds disabled — it serves the 404 template with a 200. Parsing, rather
     // than trusting the status, is what tells those apart.
-    const feed = toFeed(document.body, document.url, 'well-known', maxEntries);
+    const feed = toFeed(document, 'well-known', maxEntries);
     if (feed) return { ok: true, feed };
   }
 
@@ -213,15 +312,7 @@ export async function discoverFeed(
     if (!sitemap) continue;
 
     if (sitemap.entries.length > 0) {
-      return {
-        ok: true,
-        feed: {
-          url: document.url,
-          kind: 'sitemap',
-          via: 'sitemap',
-          entries: mostRecent(sitemap.entries, maxEntries),
-        },
-      };
+      return { ok: true, feed: toSitemapFeed(document, sitemap.entries, maxEntries) };
     }
 
     // A sitemap index. Follow one level only — prefer a child that names posts
@@ -234,15 +325,7 @@ export async function discoverFeed(
     if (!childDocument.ok) continue;
     const childSitemap = parseSitemap(childDocument.body, childDocument.url);
     if (childSitemap && childSitemap.entries.length > 0) {
-      return {
-        ok: true,
-        feed: {
-          url: childDocument.url,
-          kind: 'sitemap',
-          via: 'sitemap',
-          entries: mostRecent(childSitemap.entries, maxEntries),
-        },
-      };
+      return { ok: true, feed: toSitemapFeed(childDocument, childSitemap.entries, maxEntries) };
     }
   }
 
@@ -269,29 +352,23 @@ export async function readFeed(
 ): Promise<FeedDiscoveryResult> {
   const options = ladder(readOptions);
   const maxEntries = options.maxEntries ?? 10;
-  const document = await getDocument(feedUrl, options);
+  const document = await getDocument(feedUrl, options, options.conditional);
   if (!document.ok) {
     const reason =
-      document.reason === 'blocked-by-robots' || document.reason === 'blocked-by-site'
+      document.reason === 'blocked-by-robots' ||
+      document.reason === 'blocked-by-site' ||
+      document.reason === 'not-modified'
         ? document.reason
         : 'unreachable';
     return { ok: false, reason, detail: document.detail };
   }
 
-  const feed = toFeed(document.body, document.url, 'link-alternate', maxEntries);
+  const feed = toFeed(document, 'link-alternate', maxEntries);
   if (feed) return { ok: true, feed };
 
   const sitemap = parseSitemap(document.body, document.url);
   if (sitemap && sitemap.entries.length > 0) {
-    return {
-      ok: true,
-      feed: {
-        url: document.url,
-        kind: 'sitemap',
-        via: 'sitemap',
-        entries: mostRecent(sitemap.entries, maxEntries),
-      },
-    };
+    return { ok: true, feed: toSitemapFeed(document, sitemap.entries, maxEntries) };
   }
 
   return {

@@ -56,10 +56,21 @@ export type EventType =
   // Connecting a publishing account by OAuth (MEAL-74, and MEAL-82/83 after it).
   | 'CREATOR:SOURCE_CONNECT'
   | 'CREATOR:SOURCE_DISCONNECT'
+  // A creator moved the link we were polling, so `import_opt_in` was cleared and
+  // an operator was emailed about it (MEAL-94). Logged only when that email
+  // fails — the email is the signal, this is the record that it did not arrive.
+  | 'CREATOR:SOURCE_MOVED_ALERT'
   // Consent to let Mealio edit the creator's own YouTube descriptions. Separate
   // from `import_opt_in` on purpose: reading and writing are different
   // permissions over different property (MEAL-77).
   | 'CREATOR:APPEND_OPT_IN'
+  // A creator approving, editing or declining a draft in their own review queue
+  // (MEAL-89). Distinct from the ADMIN:DRAFT_* events even though both reach the
+  // same functions in `lib/import-drafts.ts`: MEAL-77's consent story turns on
+  // who decided, and an operator publishing under a creator's name and that
+  // creator publishing their own recipe must not read identically in the log.
+  | 'CREATOR:DRAFT_DECIDE'
+  | 'CREATOR:DRAFT_EDIT'
   // ── Payments ──────────────────────────────────────────────────────────────
   | 'PAYMENT:CHECKOUT'
   | 'PAYMENT:WEBHOOK'
@@ -90,6 +101,11 @@ export type EventType =
   | 'ADMIN:DRAFT_EDIT'
   | 'ADMIN:DRAFT_CANCEL'        // declined; the row is marked, never removed
   | 'ADMIN:DRAFT_NOTIFY'        // the "these are live now" email to the creator
+  // Writing the Mealio link into a creator's own video description (MEAL-79).
+  // The only event in this file that records us editing somebody else's
+  // property, so it carries the actor, the creator, the video and whether
+  // anything was actually written.
+  | 'ADMIN:YOUTUBE_APPEND'
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'
@@ -111,6 +127,12 @@ export type EventType =
   | 'CRON:DAILY'
   | 'CRON:TOKEN_REFRESH'      // the shared platform-grant refresh sweep (MEAL-74)
   | 'CRON:PUSH_RECEIPTS'      // second, offset receipt sweep
+  | 'CRON:POLL'               // one pass of the creator feed poller (MEAL-75)
+  // One creator's source, per pass. At `error` for the two things that are
+  // signals rather than failures: a source that used to work and has started
+  // refusing us, and more new items in one poll than a creator could publish.
+  | 'POLL:SOURCE'
+  | 'POLL:NOTIFY'             // the "these drafts are waiting" email (MEAL-76)
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'

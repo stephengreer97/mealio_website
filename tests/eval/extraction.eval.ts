@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { extractDraft } from '@/lib/import/extract';
 import { toSourceDocument, serializeJsonLd } from '@/lib/import/html';
@@ -127,7 +127,13 @@ const model = process.env.EVAL_MODEL ?? EXTRACTION_MODEL;
 
 describe.skipIf(!hasKey)(`extraction eval — ${model}`, () => {
   const items = loadItems();
-  const perItem: { id: string; rate: number; costUsd: number; ingredients: number }[] = [];
+  const perItem: {
+    id: string;
+    rate: number;
+    costUsd: number;
+    ingredients: number;
+    elapsedMs: number;
+  }[] = [];
 
   beforeAll(() => {
     if (!MODEL_PRICING[model]) {
@@ -140,10 +146,12 @@ describe.skipIf(!hasKey)(`extraction eval — ${model}`, () => {
       `${item.id} — ${item.note}`,
       async () => {
         const document = sourceFor(item);
+        const startedAt = Date.now();
         const result = await extractDraft(document, {
           call: createStructuredCaller(),
           model,
         });
+        const elapsedMs = Date.now() - startedAt;
 
         // The API guarantees schema-valid output, so this is about content.
         expect(result.draft.name.length).toBeGreaterThan(0);
@@ -193,6 +201,7 @@ describe.skipIf(!hasKey)(`extraction eval — ${model}`, () => {
           rate,
           costUsd: result.usage.costUsd,
           ingredients: result.draft.ingredients.length,
+          elapsedMs,
         });
 
         for (const row of rows) {
@@ -212,6 +221,11 @@ describe.skipIf(!hasKey)(`extraction eval — ${model}`, () => {
   it('reports the aggregate match rate and cost per import', () => {
     const totalRate = perItem.reduce((sum, i) => sum + i.rate, 0) / (perItem.length || 1);
     const totalCost = perItem.reduce((sum, i) => sum + i.costUsd, 0);
+    const totalMs = perItem.reduce((sum, i) => sum + i.elapsedMs, 0);
+    // Median as well as mean: one slow page drags the mean and the median is
+    // closer to what a creator actually waits through.
+    const sortedMs = perItem.map((i) => i.elapsedMs).sort((a, b) => a - b);
+    const medianMs = sortedMs.length ? sortedMs[Math.floor(sortedMs.length / 2)] : 0;
 
     // eslint-disable-next-line no-console
     console.log(
@@ -222,13 +236,39 @@ describe.skipIf(!hasKey)(`extraction eval — ${model}`, () => {
         `ingredient match:     ${(totalRate * 100).toFixed(1)}%`,
         `cost per import:      $${(totalCost / (perItem.length || 1)).toFixed(4)}`,
         `cost for the set:     $${totalCost.toFixed(4)}`,
+        `latency per import:   ${(totalMs / (perItem.length || 1) / 1000).toFixed(1)}s mean, ${(medianMs / 1000).toFixed(1)}s median`,
         '',
         ...perItem.map(
-          (i) => `  ${i.id.padEnd(36)} ${(i.rate * 100).toFixed(0).padStart(3)}%  $${i.costUsd.toFixed(4)}  ${i.ingredients} ingredients`,
+          (i) =>
+            `  ${i.id.padEnd(36)} ${(i.rate * 100).toFixed(0).padStart(3)}%  $${i.costUsd.toFixed(4)}  ${(i.elapsedMs / 1000).toFixed(1).padStart(5)}s  ${i.ingredients} ingredients`,
         ),
         '',
       ].join('\n'),
     );
+
+    // Also to a file. The default reporter swallows console output when every
+    // test passes, so a green run — the one whose numbers you actually want to
+    // compare models with — printed nothing at all. `EVAL_REPORT=path` opts in.
+    const reportPath = process.env.EVAL_REPORT;
+    if (reportPath) {
+      writeFileSync(
+        reportPath,
+        JSON.stringify(
+          {
+            model,
+            items: perItem.length,
+            ingredientMatch: totalRate,
+            costPerImportUsd: totalCost / (perItem.length || 1),
+            costForSetUsd: totalCost,
+            meanLatencyMs: totalMs / (perItem.length || 1),
+            medianLatencyMs: medianMs,
+            perItem,
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+    }
 
     expect(totalRate).toBeGreaterThanOrEqual(PASS_THRESHOLD);
   });

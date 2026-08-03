@@ -13,6 +13,8 @@ vi.mock('@/lib/email', () => ({ sendCreatorSyncPublishedEmail: vi.fn() }));
 vi.mock('@/lib/creator-meals', () => ({ publishCreatorMeal: vi.fn() }));
 
 import AdminReviewQueue from '@/components/AdminReviewQueue';
+import { ALL_UNITS } from '@/lib/import/ingredients';
+import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
 import { reviewDraft, type ImportDraft } from '@/lib/import-drafts';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 
@@ -229,22 +231,25 @@ describe('AdminReviewQueue — deciding', () => {
     expect(bodies.find((b) => b.method === 'POST')!.body.notifyCreator).toBe(false);
   });
 
-  it('cannot hand a draft to a queue that does not exist, and says why', async () => {
-    // The button used to work and the screen used to say "It is in their queue
-    // now, not yours." Nothing reads `review_by = 'creator'`: the draft left the
-    // admin queue for nothing, and `creator_source_items` said `imported` so no
-    // later sync brought the post back.
-    const { bodies } = harness([draft()]);
+  it('hands a draft to the creator, and says where it lands', async () => {
+    // The button was disabled while nothing read `review_by = 'creator'`:
+    // pressing it moved the draft out of the only queue anybody read, and
+    // `creator_source_items` said `imported` so no later sync brought the post
+    // back. MEAL-89 built the far side, so it works — and the note has to say
+    // where the draft goes, because an operator handing over a decision needs to
+    // know whether they can change their mind.
+    const { bodies } = harness([draft()], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
 
     await openFirstRow();
     const send = screen.getByTestId('send-to-creator') as HTMLButtonElement;
-
-    expect(send.disabled).toBe(true);
+    expect(send.disabled).toBe(false);
+    // Read before the click: acting closes the row, and the note is what tells
+    // an operator the handoff is reversible *before* they make it.
+    expect(screen.getByTestId('draft-actions-note').textContent).toMatch(/take back/i);
     fireEvent.click(send);
-    expect(bodies.some((b) => b.method === 'POST')).toBe(false);
-    // And the explanation names the missing piece rather than going quiet.
-    expect(screen.getByTestId('draft-actions-note').textContent).toMatch(/MEAL-89/);
-    expect(screen.queryByText(/in their queue now/)).toBeNull();
+
+    await waitFor(() => expect(bodies.some((b) => b.method === 'POST')).toBe(true));
+    expect(bodies.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'send-to-creator', ids: ['d1'] });
   });
 
   it('approves a selection in one request, so one creator gets one email', async () => {
@@ -286,7 +291,9 @@ describe('AdminReviewQueue — deciding', () => {
     render(<AdminReviewQueue />);
 
     const section = await screen.findByTestId('handed-over');
-    expect(section.textContent).toMatch(/MEAL-89/);
+    // No longer "waiting on nobody": the creator's queue reads these rows now,
+    // so the section says who it is waiting on and offers the way back.
+    expect(section.textContent).toMatch(/waiting on their creator/i);
     fireEvent.click(within(section).getByRole('button', { name: 'Take it back' }));
 
     await waitFor(() => expect(posted.some((b) => b.method === 'POST')).toBe(true));
@@ -427,7 +434,7 @@ describe('AdminReviewQueue — showing every pending draft', () => {
 
     const section = await screen.findByTestId('unqueued');
     await waitFor(() => expect(urls.some((u) => u.includes('scope=all'))).toBe(true));
-    expect(section.textContent).toMatch(/In no queue at all \(1\)/);
+    expect(section.textContent).toMatch(/In their queue, never handed over \(1\)/);
     expect(section.textContent).toMatch(/Best Guacamole/);
 
     // The mode is named on screen, and so is the reason the extra row is there —
@@ -478,7 +485,7 @@ describe('AdminReviewQueue — showing every pending draft', () => {
 
     const section = await screen.findByTestId('unqueued');
     expect(section.textContent).not.toMatch(/no longer resolves|creator record has since gone/);
-    expect(section.textContent).toMatch(/Deleting the creator deletes these too/);
+    expect(section.textContent).toMatch(/Their creator can\s+see them; you cannot/);
     expect(screen.getByTestId('scope-banner').textContent).not.toMatch(/creator record/);
   });
 
@@ -622,6 +629,23 @@ describe('AdminReviewQueue — editing', () => {
     expect((within(editor).getByLabelText('Ingredient 2 unit') as HTMLSelectElement).value).toBe('tbsp');
   });
 
+  it('offers every unit the pipeline canonicalises to, not only the measured ones', async () => {
+    // `DraftEditor` is shared with the creator's queue, so this list is checked
+    // on both screens. It offered UNITS (11 measured units) while the pipeline
+    // canonicalises to ALL_UNITS = UNITS + COOK_UNITS, which meant a `cloves`
+    // row matched no option and the select fell back to "Qty" — a wrong measure
+    // displayed on the screen whose job is catching wrong measures.
+    harness();
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const editor = await screen.findByTestId('draft-editor');
+    const options = [...(within(editor).getByLabelText('Ingredient 1 unit') as HTMLSelectElement).options]
+      .map((option) => option.value);
+
+    expect(options).toEqual(['qty', ...ALL_UNITS]);
+  });
+
   it('saves the edit without publishing it', async () => {
     const { bodies } = harness();
     await openFirstRow();
@@ -663,5 +687,20 @@ describe('AdminReviewQueue — editing', () => {
     fireEvent.click(within(picker).getByRole('button', { name: 'No Cook' }));
     fireEvent.click(within(picker).getByRole('button', { name: 'Italian' }));
     expect(chosen()).toEqual(new Set(['Mexican', 'Appetizer', 'Italian']));
+  });
+
+  it('shows the count against the cap, because a draft can arrive over it', async () => {
+    // The model is asked for up to eight tags, so a picker that silently
+    // refuses a fourth next to five already-lit chips reads as broken. The
+    // number says which of the two is happening.
+    harness();
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const editor = await screen.findByTestId('draft-editor');
+
+    expect(within(editor).getByText(`Tags (3 of ${MAX_MEAL_TAGS})`)).toBeTruthy();
+
+    fireEvent.click(within(within(editor).getByTestId('tag-picker')).getByRole('button', { name: 'No Cook' }));
+    expect(within(editor).getByText(`Tags (2 of ${MAX_MEAL_TAGS})`)).toBeTruthy();
   });
 });

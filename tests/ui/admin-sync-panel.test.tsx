@@ -50,15 +50,36 @@ const CATALOG = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-/** Routes the three endpoints the panel talks to. `run` is what the worker returns. */
-function harness(overrides: { run?: unknown; totals?: unknown } = {}) {
+interface Harness {
+  run?: unknown;
+  totals?: unknown;
+  /** Catalog responses served in order, so paging can be exercised. */
+  catalogs?: unknown[];
+  /** `GET /append`: either the list or the refusal, with its status. */
+  appendList?: { status?: number; body: unknown };
+  appendWrite?: { status?: number; body: unknown };
+  /** Defaults to the website creator the older tests are written against. */
+  creators?: SyncPanelCreator[];
+}
+
+/** Routes the endpoints the panel talks to. `run` is what the worker returns. */
+function harness(overrides: Harness = {}) {
   const calls: string[] = [];
   const bodies: Record<string, any>[] = [];
+  const catalogs = [...(overrides.catalogs ?? [])];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     calls.push(url);
     if (init?.body) bodies.push({ endpoint: url, body: JSON.parse(String(init.body)) });
-    if (url.includes('/api/admin/sync/catalog')) return json({ catalog: CATALOG });
+    // Checked before the generic `/api/admin/sync` branch below, which would
+    // otherwise swallow it.
+    if (url.includes('/api/admin/sync/append')) {
+      const route = init?.method === 'POST'
+        ? overrides.appendWrite ?? { body: { written: true, detail: 'The Mealio link was added.' } }
+        : overrides.appendList ?? { body: { meals: [] } };
+      return json(route.body, route.status ?? 200);
+    }
+    if (url.includes('/api/admin/sync/catalog')) return json({ catalog: catalogs.length ? catalogs.shift() : CATALOG });
     if (url.includes('/api/admin/sync/worker')) {
       return json({ run: overrides.run ?? { id: 'r1', status: 'done', items: [] }, totals: overrides.totals ?? { selected: 0, pending: 0, drafted: 0, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 } });
     }
@@ -70,7 +91,7 @@ function harness(overrides: { run?: unknown; totals?: unknown } = {}) {
   }) as unknown as typeof fetch;
 
   vi.stubGlobal('fetch', impl);
-  const view = render(<AdminSyncPanel creators={CREATORS} />);
+  const view = render(<AdminSyncPanel creators={overrides.creators ?? CREATORS} />);
   return { view, calls, bodies };
 }
 
@@ -119,10 +140,10 @@ describe('AdminSyncPanel — the checklist', () => {
     await loadCatalog();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Guacamole' }));
-    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.07');
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.02');
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Black bean soup' }));
-    expect(screen.getByTestId('cost-estimate').textContent).toBe('2 selected · about $0.13');
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('2 selected · about $0.03');
   });
 
   it('reads the feed without opening a single post', async () => {
@@ -196,3 +217,211 @@ describe('AdminSyncPanel — a finished run', () => {
   });
 });
 
+
+// ── The back catalogue, paged (MEAL-79) ──────────────────────────────────────
+
+const YT_CREATORS: SyncPanelCreator[] = [
+  { ...CREATORS[0], primary_source: 'youtube', youtube_url: 'https://youtube.com/@sarah' },
+];
+
+/** One page of a YouTube catalogue. `nextPageToken` is what makes it pageable. */
+function ytCatalog(ids: string[], nextPageToken: string | null) {
+  return {
+    ok: true,
+    source: 'youtube',
+    feed: null,
+    truncated: Boolean(nextPageToken),
+    nextPageToken,
+    quotaUnits: 2,
+    entries: ids.map(id => ({
+      itemId: id,
+      url: `https://www.youtube.com/watch?v=${id}`,
+      title: `Video ${id}`,
+      publishedAt: '2026-07-29T09:00:00.000Z',
+      record: null,
+    })),
+  };
+}
+
+async function loadYouTubeCatalog(count: number) {
+  fireEvent.change(screen.getByLabelText('Creator'), { target: { value: 'c1' } });
+  fireEvent.click(screen.getByRole('radio', { name: 'Pick from their catalog' }));
+  fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'youtube' } });
+  fireEvent.click(screen.getByRole('button', { name: 'List what they publish' }));
+  await screen.findByText(`${count} item${count === 1 ? '' : 's'} published`);
+}
+
+describe('AdminSyncPanel — a paged back catalogue costs quota, so it is asked for', () => {
+  it('lists one page and puts the rest behind a button', async () => {
+    const { calls } = harness({ creators: YT_CREATORS, catalogs: [ytCatalog(['vid0000000A', 'vid0000000B'], 'CDIQAA')] });
+    await loadYouTubeCatalog(2);
+
+    // Opening the screen buys one page. A 300-video channel is 6 pages of a
+    // budget shared with every other creator, and nobody agreed to spend it by
+    // opening a tab.
+    expect(calls.filter(url => url.includes('/catalog'))).toHaveLength(1);
+    expect(screen.getByTestId('quota-spent').textContent).toMatch(
+      /2 YouTube quota units spent on this screen, of 10,000\/day/,
+    );
+    expect(screen.getByRole('button', { name: 'Load 50 more' })).toBeTruthy();
+  });
+
+  it('appends the next page and keeps what was already ticked', async () => {
+    const { bodies } = harness({
+      creators: YT_CREATORS,
+      catalogs: [ytCatalog(['vid0000000A'], 'CDIQAA'), ytCatalog(['vid0000000B'], null)],
+    });
+    await loadYouTubeCatalog(1);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Video vid0000000A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load 50 more' }));
+    await screen.findByText('2 items published');
+
+    // The cursor from the previous window goes back, so the second press reads
+    // the next 50 rather than the same 50 again.
+    expect(bodies.at(-1)!.body.pageToken).toBe('CDIQAA');
+    // An operator who ticked six videos on page one and then asked for page two
+    // has not changed their mind about the six.
+    expect((screen.getByRole('checkbox', { name: 'Video vid0000000A' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.02');
+    // Two pages, and the running total says so.
+    expect(screen.getByTestId('quota-spent').textContent).toMatch(/^4 YouTube quota units/);
+    expect(screen.queryByRole('button', { name: 'Load 50 more' })).toBeNull();
+  });
+});
+
+// ── The append offer (MEAL-79) ───────────────────────────────────────────────
+
+const APPENDABLE = [
+  {
+    draftId: 'd1',
+    mealId: 'meal-1',
+    mealName: 'Best Guacamole',
+    videoId: 'vid0000000A',
+    videoUrl: 'https://www.youtube.com/watch?v=vid0000000A',
+    mealUrl: 'https://mealio.co/meal/p/meal-1',
+    approvedAt: '2026-08-01T10:00:00.000Z',
+  },
+];
+
+describe('AdminSyncPanel — offering to write the Mealio link back', () => {
+  it('costs nothing until an operator asks', async () => {
+    const { calls } = harness({ creators: YT_CREATORS });
+    chooseCreator();
+
+    // Most creators have not turned description editing on, so asking on every
+    // creator selection is a request spent to be told no.
+    expect(calls.some(url => url.includes('/append'))).toBe(false);
+    expect(screen.getByTestId('append-panel')).toBeTruthy();
+  });
+
+  it('offers an Append button per meal that came from one of their videos', async () => {
+    harness({ creators: YT_CREATORS, appendList: { body: { meals: APPENDABLE } } });
+    chooseCreator();
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+
+    const button = await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' });
+    expect(button).toBeTruthy();
+    // What will be written is on screen before the button can be pressed.
+    expect(screen.getByText(/https:\/\/mealio\.co\/meal\/p\/meal-1/)).toBeTruthy();
+  });
+
+  it('shows the refusal instead of the list when consent is off', async () => {
+    harness({
+      creators: YT_CREATORS,
+      appendList: {
+        status: 403,
+        body: { error: 'This creator has not agreed to let Mealio edit their YouTube descriptions.' },
+      },
+    });
+    chooseCreator();
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+
+    expect((await screen.findByTestId('append-refusal')).textContent).toMatch(/has not agreed/i);
+    // The offer must not appear at all when the answer would be no. A screen
+    // showing their videos beside an Append button has already implied we may
+    // write to them.
+    expect(screen.queryByRole('button', { name: /Append the Mealio link/ })).toBeNull();
+  });
+
+  it('reports "already there" as an outcome rather than an error', async () => {
+    harness({
+      creators: YT_CREATORS,
+      appendList: { body: { meals: APPENDABLE } },
+      appendWrite: { body: { written: false, detail: 'The link was already in this description, so nothing was written.' } },
+    });
+    chooseCreator();
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' }));
+
+    // Pressing twice is harmless, and the screen says so rather than showing a
+    // failure an operator would try to fix.
+    expect(await screen.findByText(/already in this description/)).toBeTruthy();
+  });
+
+  it('counts what an append spent, which is the expensive half of the budget', async () => {
+    harness({
+      creators: YT_CREATORS,
+      catalogs: [ytCatalog(['vid0000000A'], null)],
+      appendList: { body: { meals: APPENDABLE } },
+      appendWrite: { body: { written: true, detail: 'The Mealio link was added.', quotaUnits: 51 } },
+    });
+    await loadYouTubeCatalog(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' }));
+    await screen.findByText(/The Mealio link was added/);
+
+    // 2 for the listing, 51 for the write. The counter used to read `data.detail`
+    // and discard `data.quotaUnits`, so ten appends could spend 510 units — 25×
+    // a listing page each — without the number on screen moving at all. The
+    // argument for this screen is that the visible number is the guard rail.
+    expect(screen.getByTestId('quota-spent').textContent).toMatch(/^53 YouTube quota units/);
+  });
+
+  it('counts what a refused append spent before it refused', async () => {
+    harness({
+      creators: YT_CREATORS,
+      catalogs: [ytCatalog(['vid0000000A'], null)],
+      appendList: { body: { meals: APPENDABLE } },
+      appendWrite: {
+        status: 409,
+        body: { error: 'Video vid0000000A is not on this creator’s connected channel.', quotaUnits: 1 },
+      },
+    });
+    await loadYouTubeCatalog(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' }));
+    await screen.findByText(/not on this creator’s connected channel/);
+
+    // The `videos.list` in front of the refusal was charged. A total that only
+    // counts successes drifts below Google's, in the one direction that matters.
+    expect(screen.getByTestId('quota-spent').textContent).toMatch(/^3 YouTube quota units/);
+  });
+
+  it('says when there are more linkable meals than the list can reach', async () => {
+    harness({ creators: YT_CREATORS, appendList: { body: { meals: APPENDABLE, truncated: true } } });
+    chooseCreator();
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+
+    // There is no cursor past the 200-row ceiling, so saying so is the whole
+    // remedy — past it, meals silently became unlinkable with the screen showing
+    // nothing at all about it.
+    expect((await screen.findByTestId('append-truncated')).textContent).toMatch(/has more/i);
+  });
+
+  it('forgets the previous creator’s meals when another is chosen', async () => {
+    harness({
+      creators: [...YT_CREATORS, { ...YT_CREATORS[0], id: 'c2', display_name: 'Chef Ben' }],
+      appendList: { body: { meals: APPENDABLE } },
+    });
+    chooseCreator();
+    fireEvent.click(screen.getByRole('button', { name: 'Check what can be linked' }));
+    await screen.findByRole('button', { name: 'Append the Mealio link for Best Guacamole' });
+
+    fireEvent.change(screen.getByLabelText('Creator'), { target: { value: 'c2' } });
+
+    // A stale list of somebody else's videos beside an Append button is the
+    // worst possible thing for this screen to leave on it.
+    expect(screen.queryByRole('button', { name: /Append the Mealio link/ })).toBeNull();
+  });
+});

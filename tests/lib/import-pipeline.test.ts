@@ -85,7 +85,7 @@ describe('import/pipeline — the JSON-LD fast path', () => {
     if (result.status !== 'ok') throw new Error('unreachable');
     expect(result.gate.source).toBe('json-ld');
     // Exactly one model call: the extraction. The gate cost nothing.
-    expect(call.requests.map((r) => r.model)).toEqual([EXTRACTION_MODEL]);
+    expect(call.requests.map((r) => r.purpose)).toEqual(['extract']);
     expect(result.meta.gateUsage).toBeNull();
   });
 
@@ -144,7 +144,7 @@ describe('import/pipeline — the JSON-LD fast path', () => {
 describe('import/pipeline — the raw-HTML path (the common case)', () => {
   it('runs the gate classifier and extracts from page text', async () => {
     const call = stubCaller((request) =>
-      request.model === GATE_MODEL
+      request.purpose === 'gate'
         ? { verdict: 'yes', reason: 'Lists ingredients and numbered steps for a chicken dish.' }
         : extractionFixture({
             name: {
@@ -171,7 +171,7 @@ describe('import/pipeline — the raw-HTML path (the common case)', () => {
 
     expect(result.meta.path).toBe('raw-html');
     expect(result.meta.usedJsonLd).toBe(false);
-    expect(call.requests.map((r) => r.model)).toEqual([GATE_MODEL, EXTRACTION_MODEL]);
+    expect(call.requests.map((r) => r.purpose)).toEqual(['gate', 'extract']);
     expect(result.gate.source).toBe('classifier');
 
     expect(result.confidence.name.level).toBe('green');
@@ -185,7 +185,7 @@ describe('import/pipeline — the raw-HTML path (the common case)', () => {
 describe('import/pipeline — rejections', () => {
   it('rejects a non-recipe page at the gate, before any extraction is billed', async () => {
     const call = stubCaller((request) => {
-      if (request.model !== GATE_MODEL) throw new Error('extraction must not run');
+      if (request.purpose !== 'gate') throw new Error('extraction must not run');
       return { verdict: 'no', reason: 'About page: describes the author, contains no recipe.' };
     });
 
@@ -196,12 +196,12 @@ describe('import/pipeline — rejections', () => {
     expect(result.stage).toBe('gate');
     expect(result.detail).toMatch(/About page/);
     expect(result.gate?.reason).toBeTruthy();
-    expect(call.requests.map((r) => r.model)).toEqual([GATE_MODEL]);
+    expect(call.requests.map((r) => r.purpose)).toEqual(['gate']);
   });
 
   it('resolves the same unsure verdict differently for manual and poller callers', async () => {
     const unsure = () => ({ verdict: 'unsure', reason: 'Body is truncated; cannot confirm a recipe.' });
-    const call = stubCaller((request) => (request.model === GATE_MODEL ? unsure() : extractionFixture()));
+    const call = stubCaller((request) => (request.purpose === 'gate' ? unsure() : extractionFixture()));
 
     const manual = await runImport(CHICKEN_URL, { ...options({ call }), mode: 'manual', skipCache: true });
     const poller = await runImport(CHICKEN_URL, { ...options({ call }), mode: 'poller', skipCache: true });
@@ -322,12 +322,12 @@ describe('import/pipeline — idempotency', () => {
     expect(first.meta.cached).toBe(false);
     expect(second.meta.cached).toBe(true);
     // One extraction call across both, despite the differing tracking params.
-    expect(call.requests.filter((r) => r.model === EXTRACTION_MODEL)).toHaveLength(1);
+    expect(call.requests.filter((r) => r.purpose === 'extract')).toHaveLength(1);
   });
 
   it('caches a gate verdict so a re-classified URL costs nothing', async () => {
     const call = stubCaller((request) =>
-      request.model === GATE_MODEL
+      request.purpose === 'gate'
         ? { verdict: 'yes', reason: 'Recipe with ingredients and steps.' }
         : extractionFixture(),
     );
@@ -335,7 +335,7 @@ describe('import/pipeline — idempotency', () => {
     await runImport(CHICKEN_URL, options({ call }));
     await runImport(CHICKEN_URL, { ...options({ call }), skipCache: false });
 
-    expect(call.requests.filter((r) => r.model === GATE_MODEL)).toHaveLength(1);
+    expect(call.requests.filter((r) => r.purpose === 'gate')).toHaveLength(1);
   });
 });
 
@@ -593,7 +593,7 @@ describe('import/pipeline — serves is a people count', () => {
 
   it('keeps a genuine people count in the form’s shape', async () => {
     const call = stubCaller((request) =>
-      request.model === GATE_MODEL
+      request.purpose === 'gate'
         ? { verdict: 'yes', reason: 'recipe' }
         : extractionFixture({
             serves: { value: '4', evidence: 'Serves 4.', derivation: 'page-text' },
@@ -609,7 +609,7 @@ describe('import/pipeline — serves is a people count', () => {
 
   it('accepts a range and normalises prose around it', async () => {
     const call = stubCaller((request) =>
-      request.model === GATE_MODEL
+      request.purpose === 'gate'
         ? { verdict: 'yes', reason: 'recipe' }
         : extractionFixture({
             serves: { value: '4-6 servings', evidence: 'Serves 4-6', derivation: 'page-text' },
@@ -746,7 +746,7 @@ describe('import/pipeline — a caller-supplied document', () => {
 
   const recipeCaller = () =>
     stubCaller((request) =>
-      request.model === GATE_MODEL
+      request.purpose === 'gate'
         ? { verdict: 'yes', reason: 'Ingredients and a method.' }
         : extractionFixture(),
     );

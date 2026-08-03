@@ -20,6 +20,8 @@ import {
   sendCreatorApprovedEmail,
   sendCreatorRejectedEmail,
   sendCreatorSyncPublishedEmail,
+  sendCreatorDraftsReadyEmail,
+  sendCreatorSourceMovedEmail,
   sendOtpEmail,
 } from '@/lib/email';
 
@@ -50,6 +52,34 @@ const senders: Array<{ name: string; call: () => Promise<unknown> }> = [
   {
     name: 'sendCreatorSyncPublishedEmail',
     call: () => sendCreatorSyncPublishedEmail('a@b.test', 'Chef Sarah', [{ id: 'm1', name: 'Guacamole' }]),
+  },
+  {
+    name: 'sendCreatorDraftsReadyEmail',
+    call: () =>
+      sendCreatorDraftsReadyEmail('a@b.test', 'Chef Sarah', [
+        {
+          draftId: 'd1',
+          name: 'Guacamole',
+          sourceUrl: 'https://chefsarah.test/guac',
+          photoUrl: null,
+          ingredientCount: 7,
+          needALook: 1,
+        },
+      ]),
+  },
+  {
+    // Both branches of this one send: `newUrl` empty means the link was removed
+    // rather than moved. Either way a refusal has to surface.
+    name: 'sendCreatorSourceMovedEmail',
+    call: () =>
+      sendCreatorSourceMovedEmail({
+        adminEmails: ['admin@mealio.co'],
+        creatorName: 'Chef Sarah',
+        handle: '@sarah',
+        sourceLabel: 'website',
+        previousUrl: 'https://chefsarah.test/feed',
+        newUrl: 'https://sarahcooks.test/feed',
+      }),
   },
 ];
 

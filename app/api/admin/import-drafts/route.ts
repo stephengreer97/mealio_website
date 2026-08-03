@@ -6,10 +6,8 @@ import { log } from '@/lib/logger';
 import {
   approveDraft,
   cancelDraft,
-  CREATOR_REVIEW_QUEUE_EXISTS,
   editDraft,
   editableDraft,
-  HANDOFF_UNAVAILABLE,
   listAllPendingDrafts,
   listDraftQueue,
   listHandedOverDrafts,
@@ -62,14 +60,14 @@ export async function GET(request: NextRequest) {
   // by subtracting one result from another.
   const [drafts, handedOver, everything] = await Promise.all([
     listDraftQueue(supabase, 'admin'),
-    // Anything an operator handed to a creator before that button was switched
-    // off. There is no creator queue to have received it, so these rows are in
-    // no queue at all — listing them is what keeps that recoverable instead of
-    // silent.
+    // What this operator has handed to creators and they have not decided yet.
+    // Since MEAL-89 those rows are in a queue somebody actually reads, so this
+    // is the record of a decision to stop deciding — visible here so it can be
+    // taken back.
     listHandedOverDrafts(supabase),
-    // The escape hatch, and only when asked for: a poller draft with no
-    // `sent_to_creator_at` is in neither list above and nothing shows it to
-    // anybody.
+    // The escape hatch, and only when asked for. A poller draft is in neither
+    // list above — `review_by` is `creator` but nobody handed it over — so an
+    // operator cannot see it here even though its creator can.
     scope === 'all' ? listAllPendingDrafts(supabase) : null,
   ]);
 
@@ -139,13 +137,6 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
-  // Refused here as well as inside `sendDraftToCreator`, so the whole request
-  // fails with the reason rather than returning 200 and a list of per-draft
-  // errors for something that cannot work for any draft.
-  if (action === 'send-to-creator' && !CREATOR_REVIEW_QUEUE_EXISTS) {
-    return NextResponse.json({ error: HANDOFF_UNAVAILABLE }, { status: 400 });
-  }
-
   const targets = [...new Set([...ids(body.ids), ...ids(body.id)])];
   if (targets.length === 0) {
     return NextResponse.json({ error: 'Select at least one draft.' }, { status: 400 });

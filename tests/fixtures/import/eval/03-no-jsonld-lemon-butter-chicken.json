@@ -34,9 +34,9 @@
       },
       {
         "ingredientName": "garlic",
-        "qty": 3,
-        "unit": "qty",
-        "measure": null
+        "qty": 1,
+        "unit": "cloves",
+        "measure": "3"
       },
       {
         "ingredientName": "lemon",
@@ -52,7 +52,9 @@
       },
       {
         "ingredientName": "flat-leaf parsley",
-        "unit": "qty"
+        "unit": "handfuls",
+        "qty": 1,
+        "measure": null
       },
       {
         "ingredientName": "salt",

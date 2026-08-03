@@ -36,6 +36,22 @@ export const MEAL_TAGS = [
 /** Index matches the `difficulty` column: 1–5, 0 unused. */
 export const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-Hard', 'Hard'];
 
+/**
+ * How many tags a review queue's editor will save.
+ *
+ * Both editors already refused a fourth; nothing on the server did, so a PATCH
+ * that did not come from one of them stored as many as it was sent, and
+ * approving published all of them. `MealCard` renders `.slice(0, 3)`, so the
+ * extras were invisible on the card and still filterable in Discover — a meal
+ * showing up under a tag its creator cannot see it carries.
+ *
+ * Deliberately NOT applied by `canonicalizeTags`, which is also the extraction
+ * path: the model is asked for up to eight and the confidence model assesses
+ * every one it returns. Trimming there would drop tags before anybody had
+ * decided which three to keep.
+ */
+export const MAX_MEAL_TAGS = 3;
+
 const TAG_LOOKUP = new Map(MEAL_TAGS.map((tag) => [tag.toLowerCase(), tag]));
 
 /** Keeps only tags in the vocabulary, case-insensitively, preserving order and dropping duplicates. */

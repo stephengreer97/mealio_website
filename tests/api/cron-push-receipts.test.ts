@@ -49,8 +49,13 @@ describe('GET /api/cron/push-receipts', () => {
   it('is scheduled apart from the daily job, so a receipt is read twice inside its ~24 h life', () => {
     // Expo expires a receipt after about a day. One sweep a day leaves a send
     // made just after it with minutes of margin, and overflows past
-    // RECEIPT_SWEEP_LIMIT with none at all. Two crons is also the Vercel Hobby
-    // ceiling, so if this ever needs a third pass it needs a plan change first.
+    // RECEIPT_SWEEP_LIMIT with none at all.
+    //
+    // This used to also assert `crons` had exactly two entries, on the grounds
+    // that two was "the Vercel Hobby ceiling". That was wrong: Hobby allows 100
+    // cron jobs per project and caps the *frequency* at once per day. The job
+    // count was never the limit, so adding the poller (MEAL-75) is free and this
+    // assertion only ever guarded a misunderstanding.
     const crons = JSON.parse(readFileSync('vercel.json', 'utf8')).crons as Array<{ path: string; schedule: string }>;
     const hours = crons
       .filter((c) => c.path === '/api/cron/daily' || c.path === '/api/cron/push-receipts')
@@ -58,6 +63,5 @@ describe('GET /api/cron/push-receipts', () => {
 
     expect(hours).toHaveLength(2);
     expect(Math.abs(hours[0] - hours[1])).toBeGreaterThanOrEqual(8);
-    expect(crons).toHaveLength(2);
   });
 });

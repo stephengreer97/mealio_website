@@ -140,6 +140,28 @@ export async function sendCreatorRejectedEmail(to: string, displayName: string) 
   throwIfRefused(sent, 'creator declined');
 }
 
+/**
+ * Who an operator-facing email goes to.
+ *
+ * The `is_admin` rows first, with `ADMIN_EMAIL` as the fallback for an
+ * environment that has none yet — otherwise the very first thing needing an
+ * operator on a fresh deploy notifies nobody, which is the one case where it
+ * matters most. Shared by every route that raises something for an operator,
+ * because a second copy of this is how one of them ends up without the
+ * fallback and silently addresses an empty list.
+ *
+ * Typed structurally rather than against the Supabase client so this module
+ * stays free of a runtime dependency on it; it is the only query in here.
+ */
+export async function adminNotifyEmails(
+  supabase: { from: (table: string) => any },
+): Promise<string[]> {
+  const { data } = await supabase.from('user_profiles').select('email').eq('is_admin', true);
+  const fromDb = ((data ?? []) as Array<{ email: string }>).map((row) => row.email).filter(Boolean);
+  if (fromDb.length > 0) return fromDb;
+  return process.env.ADMIN_EMAIL ? [process.env.ADMIN_EMAIL] : [];
+}
+
 export async function sendCreatorApplicationEmail(applicantName: string, applicantEmail: string, adminEmails: string[]) {
   if (adminEmails.length === 0) return;
   const sent = await resend.emails.send({
@@ -160,6 +182,87 @@ export async function sendCreatorApplicationEmail(applicantName: string, applica
     `,
   });
   throwIfRefused(sent, 'new creator application');
+}
+
+/**
+ * A creator has moved the link Mealio was polling, and the import is now off
+ * (MEAL-94).
+ *
+ * The edit itself is allowed. A creator who renames their channel or moves their
+ * blog has no other way to tell us, and refusing it made a human the only route
+ * for an entirely ordinary change. What the permission opens up is substitution:
+ * with `primary_source = 'youtube'` and no OAuth grant the channel is resolved
+ * straight off `youtube_url`, so the same edit can point an actively-polled
+ * source at a stranger's uploads — and every host guard downstream passes,
+ * because the videos really are from the channel the row now names.
+ *
+ * Clearing `import_opt_in` in the same write is what stops that: nothing is
+ * polled until an operator turns it back on. This email is what stops *that*
+ * being silent. Somebody else's request has just reversed an operator's
+ * decision, so the operator is told which creator, which link, where it moved
+ * from and to, and that polling is off — rather than finding out weeks later
+ * because a creator's imports stopped arriving.
+ *
+ * Same shape as `broken_reason` on a grant, and for the same reason: a poller
+ * that finds nothing must never be the first sign. It could not reuse that
+ * column — `broken_reason` describes an OAuth grant, exists for three platforms
+ * only, and a creator polled off their website link has no grant row at all.
+ *
+ * The prompt, and only the prompt. `creators.import_paused_reason` is the
+ * durable half: this mail can be deleted, and the row still answers "why is this
+ * creator not being polled?".
+ *
+ * A blank `newUrl` is a removal rather than a move. Same pause, same alert, and
+ * the wording has to say which happened — an operator reading "Now: —" and
+ * guessing is the kind of ambiguity this email exists to remove.
+ */
+export async function sendCreatorSourceMovedEmail(opts: {
+  adminEmails: string[];
+  creatorName: string;
+  handle: string | null;
+  sourceLabel: string;
+  previousUrl: string;
+  /** Empty when the creator removed the link instead of replacing it. */
+  newUrl: string;
+}) {
+  if (opts.adminEmails.length === 0) return;
+  const removed = !opts.newUrl;
+  // Every value below is a string a creator typed, on its way into an inbox that
+  // renders HTML. The application email above predates this helper; anything
+  // reaching a URL bar or a link text here goes through it.
+  const name = escapeHtml(opts.creatorName);
+  const handle = opts.handle ? escapeHtml(opts.handle) : '—';
+  const source = escapeHtml(opts.sourceLabel);
+  const was = escapeHtml(opts.previousUrl);
+  const now = removed ? '— removed' : escapeHtml(opts.newUrl);
+  const sent = await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to: opts.adminEmails,
+    subject: `Import paused: ${opts.creatorName} ${removed ? 'removed' : 'moved'} their ${opts.sourceLabel} link`,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Polled link ${removed ? 'removed' : 'changed'} — import paused</h2>
+        <p style="color: #666; font-size: 14px; margin: 0 0 24px;">
+          ${removed
+            ? 'This creator removed the link Mealio was importing from, so there is nothing left to poll. Nothing '
+              + 'will be polled for them until a link is back and you turn import on again.'
+            : 'This creator changed the link Mealio was importing from. Nothing is being polled for them now, and '
+              + 'nothing will be until you turn import back on. Check that the new link is still theirs before you do.'}
+        </p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 24px;">
+          <tr><td style="padding: 8px 0; color: #999; width: 120px;">Creator</td><td style="padding: 8px 0; color: #222; font-weight: 600;">${name}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Handle</td><td style="padding: 8px 0; color: #222;">${handle}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Source</td><td style="padding: 8px 0; color: #222;">${source}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Was</td><td style="padding: 8px 0; color: #222; word-break: break-all;">${was}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Now</td><td style="padding: 8px 0; color: #222; word-break: break-all;">${now}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Import</td><td style="padding: 8px 0; color: #c40029; font-weight: 600;">Paused</td></tr>
+        </table>
+        <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Review in Admin</a>
+      </div>
+    `,
+  });
+  throwIfRefused(sent, 'import paused alert');
 }
 
 function escapeHtml(s: string): string {
@@ -289,6 +392,122 @@ export async function sendCreatorSyncPublishedEmail(
   // `emailsSent` and the creator is never told that recipes went live under
   // their name — which is the whole bargain MEAL-90 rests on.
   throwIfRefused(sent, 'published-under-your-name');
+}
+
+/** One queued draft, as the poller's email describes it. */
+export interface DraftedRecipe {
+  draftId: string;
+  name: string;
+  /** The post it came from, so a creator can check it against what they wrote. */
+  sourceUrl: string;
+  photoUrl: string | null;
+  ingredientCount: number;
+  /** Fields MEAL-72 flagged. The honest signal about how much reading this needs. */
+  needALook: number;
+}
+
+/**
+ * "We read these off your feed — have a look" (MEAL-76).
+ *
+ * The last mile of the poller. **A decision surface, not a notification**: name,
+ * photo, ingredient count and an honest quality signal, so a creator can judge
+ * from the inbox whether this is a thirty-second confirm or something to sit
+ * down with. "3 fields need your attention" beats "your meal is ready" when
+ * three fields are red, and a creator who learns that the hard way stops opening
+ * these.
+ *
+ * **One email per batch.** Three recipes on a Tuesday is one message listing
+ * three, never three messages — the single biggest determinant of whether this
+ * feels helpful or spammy. Nothing drafted means nothing sent.
+ *
+ * **Nothing here publishes anything.** Every draft sits until the creator acts,
+ * which is the entire basis of their trust in an importer that reads their site
+ * unattended, and is not negotiable for a "just this once" convenience.
+ *
+ * Transactional, and therefore NOT routed through sendMarketingEmail():
+ * `marketing_opt_out` must not suppress it. A creator who unsubscribed from
+ * campaigns has still asked us to import their recipes, and drafts they are
+ * never told about are worse than no drafts at all.
+ */
+export async function sendCreatorDraftsReadyEmail(
+  to: string,
+  displayName: string,
+  drafts: DraftedRecipe[],
+) {
+  // Belt and braces with the caller. An empty "here is what we found" is the one
+  // version of this email that has no reason to exist.
+  if (drafts.length === 0) return;
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co';
+  const count = drafts.length;
+  const flagged = drafts.reduce((total, draft) => total + draft.needALook, 0);
+
+  // The subject says which of the two emails this is before it is opened: a
+  // clean batch is a confirm, a flagged one is a job.
+  const subject = flagged > 0
+    ? `${count === 1 ? 'A recipe' : `${count} recipes`} from your feed — ${flagged} ${flagged === 1 ? 'field needs' : 'fields need'} a look`
+    : `${count === 1 ? 'A recipe' : `${count} recipes`} from your feed, ready to publish`;
+
+  const rows = drafts
+    .map((draft) => {
+      const attention = draft.needALook > 0
+        ? `<span style="color: #dd0031; font-weight: 600;">${draft.needALook} ${draft.needALook === 1 ? 'field needs' : 'fields need'} your attention</span>`
+        : '<span style="color: #6a9b5a;">Everything checked out</span>';
+      const photo = draft.photoUrl
+        ? `<td width="72" style="padding: 0 12px 0 0; vertical-align: top;">
+             <img src="${escapeHtml(draft.photoUrl)}" alt="" width="72" height="72" style="display: block; border: 0; border-radius: 8px; object-fit: cover;" />
+           </td>`
+        : '';
+      return `
+        <table role="presentation" style="width: 100%; border-collapse: collapse; margin: 0 0 16px;">
+          <tr>
+            ${photo}
+            <td style="vertical-align: top;">
+              <div style="color: #222; font-size: 15px; font-weight: 600; margin-bottom: 4px;">${escapeHtml(draft.name)}</div>
+              <div style="color: #999; font-size: 13px; line-height: 1.5;">
+                ${draft.ingredientCount} ${draft.ingredientCount === 1 ? 'ingredient' : 'ingredients'} &middot; ${attention}
+              </div>
+              <a href="${escapeHtml(draft.sourceUrl)}" style="color: #999; font-size: 12px; text-decoration: underline;">the post we read</a>
+            </td>
+          </tr>
+        </table>`;
+    })
+    .join('');
+
+  const { error } = await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to,
+    subject,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${escapeHtml(displayName)},</h2>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
+          We spotted ${count === 1 ? 'a new recipe' : `${count} new recipes`} on your feed and read ${count === 1 ? 'it' : 'them'} into ${count === 1 ? 'a draft' : 'drafts'} for you.
+          <strong>Nothing is published</strong> — ${count === 1 ? 'it is' : 'they are'} waiting for you to look.
+        </p>
+        ${rows}
+        <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin: 8px 0 24px;">Review and publish</a>
+        <p style="color: #666; font-size: 13px; line-height: 1.6; margin: 0 0 16px;">
+          We read ${count === 1 ? 'this' : 'these'} off your page automatically, so a measure or a step may not be quite how you'd write it.
+          Edit anything on the review screen before you publish, or discard ${count === 1 ? 'it' : 'them'} — we won't ask about the same post twice.
+        </p>
+        <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 0;">
+          You're getting this because automatic imports are turned on for your account. To turn them off, open your
+          <a href="${appUrl}/creator" style="color: #999; text-decoration: underline;">Creator Portal</a> or just reply to this email and we'll do it.
+        </p>
+      </div>
+    `,
+  });
+
+  // resend-node reports an API refusal in `{ error }` rather than by throwing,
+  // so a send that never happened returns exactly like one that did. The caller
+  // counts what it believes it sent and the drafts are already recorded
+  // `imported` — so a swallowed error here is a creator who is never told about
+  // recipes that will never be new again (MEAL-76).
+  if (error) {
+    throw new Error(`Resend refused the drafts-ready email: ${error.message ?? JSON.stringify(error)}`);
+  }
 }
 
 export async function sendOtpEmail(to: string, code: string) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findFeedLinks, mostRecent, parseFeed, parseSitemap } from '@/lib/import/feed';
+import { findFeedLinks, mostRecent, parseFeed, parseFeedTtlSeconds, parseSitemap } from '@/lib/import/feed';
 
 const RSS = `<?xml version="1.0"?>
 <rss version="2.0"><channel>
@@ -180,5 +180,31 @@ describe('import/feed — helpers', () => {
       { id: '3', url: 'c', title: null, publishedAt: '2026-06-01T00:00:00.000Z' },
     ];
     expect(mostRecent(entries, 2).map((e) => e.id)).toEqual(['3', '2']);
+  });
+});
+
+describe('import/feed — the interval a publisher advertises (MEAL-75)', () => {
+  const channel = (inner: string) => `<rss><channel>${inner}<item><link>https://x.test/a</link></item></channel></rss>`;
+
+  it('reads <ttl> as minutes', () => {
+    expect(parseFeedTtlSeconds(channel('<ttl>60</ttl>'))).toBe(3600);
+  });
+
+  it('reads the syndication module WordPress emits on every feed it serves', () => {
+    expect(parseFeedTtlSeconds(channel('<sy:updatePeriod>hourly</sy:updatePeriod>'))).toBe(3600);
+    expect(parseFeedTtlSeconds(channel('<sy:updatePeriod>daily</sy:updatePeriod>'))).toBe(86_400);
+  });
+
+  it('treats updateFrequency as a divisor — "twice hourly" is every 30 minutes', () => {
+    const body = channel('<sy:updatePeriod>hourly</sy:updatePeriod><sy:updateFrequency>2</sy:updateFrequency>');
+    expect(parseFeedTtlSeconds(body)).toBe(1800);
+  });
+
+  it('prefers <ttl> when a feed carries both, and says nothing when it carries neither', () => {
+    expect(parseFeedTtlSeconds(channel('<ttl>5</ttl><sy:updatePeriod>weekly</sy:updatePeriod>'))).toBe(300);
+    expect(parseFeedTtlSeconds(channel(''))).toBeNull();
+    // Not zero: a nonsense value is a value we cannot honour, and reading it as
+    // "no delay" would turn a malformed feed into permission to poll flat out.
+    expect(parseFeedTtlSeconds(channel('<ttl>soon</ttl>'))).toBeNull();
   });
 });
