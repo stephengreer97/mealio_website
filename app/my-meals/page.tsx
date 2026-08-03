@@ -35,7 +35,11 @@ interface IngredientForm {
   productQty?: number;
 }
 
-const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp'];
+const UNITS = ['Qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
+  // Units a cook writes that convert to nothing. Display only — the cart searches
+  // by name and counts packages with productQty — so carrying the word costs
+  // nothing and stops '3 cloves garlic' reading as 'garlic, 3'.
+  'cloves', 'cans', 'bunches', 'sprigs', 'pinches', 'handfuls', 'grinds', 'slices'];
 
 function normIng(raw: any): Ingredient {
   return {
@@ -49,7 +53,7 @@ function normIng(raw: any): Ingredient {
 }
 
 function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return `${ing.ingredientName}, ${ing.qty ?? 1}`;
+  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
   return `${ing.ingredientName}, ${ing.measure ?? ing.qty ?? ''} ${ing.unit}`;
 }
 

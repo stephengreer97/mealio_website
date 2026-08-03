@@ -59,3 +59,10 @@ Thumbs.db
 
 # supabase CLI temp state
 supabase/.temp/
+.env*.local
+
+# Env backups. `.env*.local` does not match `.env.local.bak-1785633128`, so a
+# timestamped copy sat untracked in the repo root until GitHub's secret scanner
+# caught it on the way out. Anything derived from an env file is a secret.
+.env*.bak*
+.env.local.*
