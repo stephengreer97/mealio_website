@@ -8,6 +8,7 @@ import ImportLinkBar from '@/components/ImportLinkBar';
 import ImportFieldNotice, { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
 import YouTubeConnectCard from '@/components/YouTubeConnectCard';
 import PlatformLinksCard from '@/components/PlatformLinksCard';
+import PlatformConnectCard from '@/components/PlatformConnectCard';
 import { SOURCE_COLUMNS, type PlatformSource } from '@/lib/creator-sources';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import {
@@ -1702,12 +1703,16 @@ export default function CreatorPortal() {
             )}
           </div>
 
-          {/* ── Where they publish (MEAL-94), and connecting it (MEAL-74) ──
-              The connect card is remounted when the links change: adding a
-              YouTube link is what makes it appear at all (MEAL-78), and a card
-              that only reads its status on first mount would not know. */}
+          {/* ── Where they publish (MEAL-94), and connecting it (MEAL-74 /
+              MEAL-82 / MEAL-83) ──
+              Every connect card is remounted when the links change: adding the
+              link for a platform is what makes its card appear at all (MEAL-78),
+              and a card that only read its status on first mount would not know.
+              The same argument covers all three, so they share `linksVersion`. */}
           {creator && <PlatformLinksCard creator={creator} onSaved={handleLinksSaved} />}
           <YouTubeConnectCard key={linksVersion} />
+          <PlatformConnectCard platform="instagram" key={`ig-${linksVersion}`} />
+          <PlatformConnectCard platform="tiktok" key={`tt-${linksVersion}`} />
 
           {/* ── Stats ── */}
           {stats && (

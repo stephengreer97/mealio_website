@@ -35,6 +35,7 @@ import { log } from '@/lib/logger';
 import {
   fieldStatesFor,
   importedFormValues,
+  SCALAR_FIELDS,
   summarise,
   type FormFieldStates,
   type ImportedFormValues,
@@ -159,15 +160,16 @@ export interface DraftReview {
 export function reviewDraft(draft: ImportDraft): DraftReview {
   const values = importedFormValues({ draft: draft.draft, url: draft.sourceUrl });
   const written = values.provided as Partial<Record<ImportField, boolean>>;
+  // `empty` and `previous` exist for the live creator flow, where a box may
+  // already hold the creator's typing or an earlier import's value. The queue
+  // renders a stored draft into fresh boxes every time, so nothing is mid-edit
+  // and there are no earlier states on screen to preserve — both are their
+  // identity values.
   const states = fieldStatesFor({
     confidence: confidenceOf(draft),
     values,
     written,
-    // `empty` and `previous` exist for the live creator flow, where a box may
-    // already hold the creator's typing or an earlier import's value. A stored
-    // draft is rendered from nothing every time: there is no previous state to
-    // carry and every box starts empty, so both are their identity values.
-    empty: { name: true, recipe: true, story: true, photoUrl: true, difficulty: true, tags: true, serves: true },
+    empty: Object.fromEntries(SCALAR_FIELDS.map((f) => [f, true])) as Record<(typeof SCALAR_FIELDS)[number], boolean>,
     previous: null,
   });
   return { values, states, summary: summarise(states) };

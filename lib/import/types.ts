@@ -44,6 +44,9 @@ export type Platform =
   | 'link-in-bio'
   /** Not sniffed from markup: set by the YouTube reader, which knows (MEAL-74). */
   | 'youtube'
+  /** Likewise, set by the readers behind an OAuth grant (MEAL-82 / MEAL-83). */
+  | 'instagram'
+  | 'tiktok'
   | 'unknown';
 
 /** Cleaned, source-agnostic view of a page. Blogs and videos both reduce to this. */

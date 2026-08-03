@@ -9,17 +9,22 @@ import { checkPushReceipts } from '@/lib/push';
 export const dynamic = 'force-dynamic';
 
 /**
- * Long enough for two email passes, the push-receipt sweep, and one bounded
- * sweep of stalled sync runs.
+ * Five passes in one invocation, the last of which talks to three third parties.
  *
- * Without it this function ran at the platform default — 10s on Hobby — while
- * the sync sweep alone could start 200s of sequential work. What actually
- * happened was worse than slow: the function was killed mid-chunk *holding a
- * lease it had just claimed*, so the run it was recovering became unavailable
- * to everyone else until that lease expired. `SWEEP_BUDGET_MS` keeps the sweep
- * inside this number; the two together are what make the backstop honest.
+ * This route declared no `maxDuration` at all while its siblings declare 30-300,
+ * so it inherited the platform default — 10s on Hobby. Two separate things went
+ * wrong there. The sync sweep could start 200s of sequential work and be killed
+ * mid-chunk *holding a lease it had just claimed*, leaving the run it was
+ * recovering unavailable to everyone else until that lease expired. And the
+ * token sweep can spend real time waiting on Google, Meta and TikTok.
+ *
+ * 300 is the ceiling because a run killed part-way leaves the platforms at the
+ * end of the loop unswept, and Instagram is the one platform where a missed pass
+ * costs something that cannot be recovered. Both sweeps hold their own tighter
+ * deadlines (`SWEEP_BUDGET_MS` in each) so they stop on their own terms rather
+ * than being killed — the two together are what make the backstop honest.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 // Daily cron for the lifecycle passes that must run exactly once a day —
 // everything email. Kept to one job so we stay within Vercel Hobby's cron
@@ -89,7 +94,7 @@ export async function GET(request: NextRequest) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'syncRuns', reason: err.message });
   }
 
-  // Creator platform grants (MEAL-74, shared with MEAL-82/83). Every one of the
+  // Creator platform grants (MEAL-74 / MEAL-82 / MEAL-83). Every one of the
   // three platforms fails the same silent way — an expired or revoked token
   // produces a poller that finds nothing rather than an error — so this pass
   // exists to turn that into a `broken_reason` an operator can list.
@@ -97,9 +102,10 @@ export async function GET(request: NextRequest) {
     const sweep = await refreshExpiringTokens({ supabase: createServerSupabaseClient() });
     results.tokensRefreshed = sweep.refreshed;
     results.tokensBroken = sweep.broken;
-    // Reported separately from `broken` on purpose: a run that deferred a lot
-    // is an outage at the provider, and reading it as breakage would have an
-    // operator emailing creators about a problem none of them have.
+    // Reported separately from `broken` on purpose: a provider that was
+    // unreachable leaves its grants untouched for tomorrow, so a run where this
+    // number is suddenly large is an outage at Google, Instagram or TikTok — not
+    // a set of creators to email about reconnecting.
     results.tokensDeferred = sweep.deferred ?? 0;
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'tokenRefresh', reason: err.message });

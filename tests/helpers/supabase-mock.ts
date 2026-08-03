@@ -7,9 +7,9 @@ export type QueryResult = { data?: any; error?: any; count?: number | null };
  *
  * Filters go in the QUERY STRING, not the body, so `.in('id', ids)` grows the
  * URL linearly with the id count. Supabase fronts PostgREST with Cloudflare and
- * Kong/nginx, which reject long URIs in the 8–16 KB range. Measured against
+ * Kong/nginx, which reject long URIs in the 8-16 KB range. Measured against
  * supabase-js: 2000 uuids in one `.in()` is a 78 KB DELETE URL and 2000 Expo
- * tokens is a 96 KB PATCH URL — both far past any proxy's limit.
+ * tokens is a 96 KB PATCH URL - both far past any proxy's limit.
  *
  * 8 KB is the conservative end of that range, so code that stays under it here
  * stays under it everywhere. This is the constraint that makes "chunk your
@@ -39,6 +39,29 @@ function compare(a: any, b: any): number {
   return a < b ? -1 : 1;
 }
 
+/**
+ * Orders two cells the way Postgres does, NULLs included.
+ *
+ * Postgres treats NULL as LARGER than every value, so a bare `ORDER BY col ASC`
+ * is `NULLS LAST` and `DESC` is `NULLS FIRST`, and `.order(col, { nullsFirst })`
+ * is how supabase-js overrides that. Sorting NULL as `''` instead - which this
+ * fake used to do - puts it first on ASC, the exact opposite of the default, and
+ * that disagreement hid a real defect: the null-`expires_at` rows the refresh
+ * sweep was widened to include sort to the TAIL in Postgres and are the first
+ * ones `.limit()` drops. A mock that disagrees with the database is worse than
+ * no mock, because it launders the bug into a green test.
+ */
+function compareOrdered(a: any, b: any, ascending: boolean, nullsFirst: boolean): number {
+  const aNull = a === null || a === undefined;
+  const bNull = b === null || b === undefined;
+  if (aNull && bNull) return 0;
+  // NULLs are placed outright rather than compared: their position is set by
+  // `nullsFirst` and is not flipped again by the direction.
+  if (aNull) return nullsFirst ? -1 : 1;
+  if (bNull) return nullsFirst ? 1 : -1;
+  return (ascending ? 1 : -1) * compare(a, b);
+}
+
 /** Postgres three-valued logic: a comparison against NULL never matches. */
 function matchesFilter(row: any, f: Filter): boolean {
   const cell = row[f.column];
@@ -47,22 +70,21 @@ function matchesFilter(row: any, f: Filter): boolean {
     case 'neq': return cell !== f.value;
     case 'in': return Array.isArray(f.value) && f.value.includes(cell);
     case 'is': return f.value === null ? cell === null || cell === undefined : cell === f.value;
-    case 'or': {
-      // `col.op.value,col.op.value` — OR of the same simple terms. Values
-      // containing commas are not supported and nothing here has any.
-      return String(f.value)
-        .split(',')
-        .some((term) => {
-          const [col, op, ...rest] = term.split('.');
-          const raw = rest.join('.');
-          return matchesFilter(row, { op, column: col, value: op === 'is' && raw === 'null' ? null : raw });
-        });
-    }
     case 'not': return !matchesFilter(row, { op: f.value[0], column: f.column, value: f.value[1] });
     case 'lt': return cell !== null && cell !== undefined && compare(cell, f.value) < 0;
     case 'lte': return cell !== null && cell !== undefined && compare(cell, f.value) <= 0;
     case 'gt': return cell !== null && cell !== undefined && compare(cell, f.value) > 0;
     case 'gte': return cell !== null && cell !== undefined && compare(cell, f.value) >= 0;
+    case 'or':
+      // `col.op.value,col.op.value` - an OR of the same simple terms. Values
+      // containing commas are not supported and nothing here has any.
+      return String(f.value)
+        .split(',')
+        .some((term) => {
+          const [column, op, ...rest] = term.split('.');
+          const raw = rest.join('.');
+          return matchesFilter(row, { op, column, value: op === 'is' && raw === 'null' ? null : raw });
+        });
     default: return true;
   }
 }
@@ -84,8 +106,8 @@ function queryStringBytes(filters: Filter[]): number {
  * PostgREST embeds a related table as `creators!creator_id ( id, display_name )`,
  * and those inner commas are not column separators. Splitting on every comma
  * turned one embed into several nonsense keys and silently dropped the nested
- * object — which reads exactly like a row whose relation is missing, so the code
- * under test defaulted its fields and the test failed somewhere else entirely.
+ * object - which reads exactly like a row whose relation is missing, so the code
+ * under test defaulted its fields and the failure surfaced somewhere else.
  */
 function splitColumns(columns: string): string[] {
   const out: string[] = [];
@@ -109,9 +131,9 @@ function project(row: any, columns?: string): any {
   if (!columns || columns.trim() === '*') return { ...row };
   const out: any = {};
   for (const column of splitColumns(columns)) {
-    // `table!fk ( … )` or `table ( … )` — take the whole nested value under the
-    // relation's name. The embed's own column list is not enforced here; a test
-    // seeds the shape it wants and the point is that the relation survives.
+    // `table!fk ( ... )` or `table ( ... )` - take the whole nested value under
+    // the relation's name. The embed's own column list is not enforced here; a
+    // test seeds the shape it wants and the point is that the relation survives.
     const embed = /^([A-Za-z_][\w]*)\s*(?:!\w+)?\s*\(/.exec(column);
     if (embed) {
       out[embed[1]] = row[embed[1]] ?? null;
@@ -141,7 +163,10 @@ function project(row: any, columns?: string): any {
  * from then on queries against it are EVALUATED: filters select, updates mutate
  * and report how many rows they actually touched, deletes remove, and `upsert`
  * resolves `onConflict` against the rows already there. `db.rows(table)` is the
- * resulting state, so a test can assert an effect rather than a call.
+ * resulting state, so a test can assert an effect rather than a call. That last
+ * part is the point - a canned `{ data: [] }` proves a BRANCH was taken; it
+ * cannot tell a correct conditional write from one whose predicate is
+ * misspelled, dropped, or missing its `.select()`.
  *
  *   db.seed('push_tokens', [{ token: 'a', user_id: 'u1', revoked_at: null }]);
  *   await POST(...);
@@ -195,24 +220,24 @@ export class FakeSupabase {
     return this;
   }
 
-  /** Current contents of a seeded table — the state a test asserts on. */
+  /** Current contents of a seeded table - the state a test asserts on. */
   rows(table: string): any[] {
     return this.tables.get(table) ?? [];
   }
 
-  /** One row by id, or null. */
+  /** One stored row by primary key, as it is now. */
   row(table: string, id: string): any | null {
     return this.rows(table).find((r) => r.id === id) ?? null;
   }
 
   /**
-   * Mutate a seeded row in place, so a test can stage a concurrent write —
-   * a creator reconnecting between the sweep's read and its write-back.
+   * Writes to a stored row behind the code's back - a second worker, another
+   * tab, the cron. How an interleaving is staged in a test.
    */
-  patch(table: string, id: string, values: any): this {
-    const target = (this.tables.get(table) ?? []).find((r) => r.id === id);
+  patch(table: string, id: string, values: Record<string, any>): this {
+    const target = this.rows(table).find((r) => r.id === id);
     if (!target) throw new Error(`FakeSupabase: no ${table} row with id ${id}`);
-    Object.assign(target, JSON.parse(JSON.stringify(values)));
+    Object.assign(target, values);
     return this;
   }
 
@@ -251,7 +276,7 @@ export class FakeSupabase {
     let conflict: string[] = [];
     let returning = false;
     const filters: Filter[] = [];
-    let orderBy: { column: string; ascending: boolean } | null = null;
+    let orderBy: { column: string; ascending: boolean; nullsFirst: boolean } | null = null;
     let rowLimit: number | null = null;
 
     const builder: any = {};
@@ -282,9 +307,8 @@ export class FakeSupabase {
         return builder;
       };
     }
-    // `.or('a.is.null,a.lt.x')` is a real predicate, not a no-op. Left in the
-    // ignored list it matched every row, which is exactly the query the sync
-    // lease depends on refusing.
+    // `.or()` takes the whole predicate as its first argument, so it has no
+    // column of its own; matchesFilter parses the string.
     builder.or = (...args: any[]) => {
       record('or', args);
       filters.push({ op: 'or', column: '', value: args[0] });
@@ -295,7 +319,10 @@ export class FakeSupabase {
     }
     builder.order = (...args: any[]) => {
       record('order', args);
-      orderBy = { column: args[0], ascending: args[1]?.ascending !== false };
+      const ascending = args[1]?.ascending !== false;
+      // Postgres' default when the caller does not say: NULLS LAST ascending,
+      // NULLS FIRST descending.
+      orderBy = { column: args[0], ascending, nullsFirst: args[1]?.nullsFirst ?? !ascending };
       return builder;
     };
     builder.limit = (...args: any[]) => { record('limit', args); rowLimit = args[0]; return builder; };
@@ -370,8 +397,8 @@ export class FakeSupabase {
         default: {
           let out = [...matched];
           if (orderBy) {
-            const { column, ascending } = orderBy;
-            out.sort((a, b) => (ascending ? 1 : -1) * compare(a[column], b[column]));
+            const { column, ascending, nullsFirst } = orderBy;
+            out.sort((a, b) => compareOrdered(a[column], b[column], ascending, nullsFirst));
           }
           out = out.slice(0, rowLimit ?? DEFAULT_PAGE_ROWS);
           return { data: out.map((r) => project(r, columns)), error: null, count: out.length };

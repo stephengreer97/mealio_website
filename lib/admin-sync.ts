@@ -33,7 +33,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createImportDraft, reviewDraft, type ImportDraft } from '@/lib/import-drafts';
 import { log } from '@/lib/logger';
-import { SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
+import {
+  isConnectedPlatform,
+  SOURCE_COLUMNS,
+  SOURCE_LABELS,
+  type ConnectedPlatform,
+  type PlatformSource,
+} from '@/lib/creator-sources';
+import { loadConnection, usableAccessToken } from '@/lib/platform-tokens';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
 import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
 import { robotsPerOrigin } from '@/lib/import/robots';
@@ -47,6 +54,18 @@ import {
   UPLOADS_FEED_MAX,
   type YouTubeVideo,
 } from '@/lib/youtube';
+import {
+  fetchInstagramMedia,
+  instagramMediaTitle,
+  instagramSourceDocument,
+  INSTAGRAM_MEDIA_MAX,
+} from '@/lib/instagram';
+import {
+  fetchTikTokVideos,
+  tiktokSourceDocument,
+  tiktokVideoTitle,
+  TIKTOK_VIDEO_MAX,
+} from '@/lib/tiktok';
 import { formatTelemetry } from '@/lib/import/telemetry';
 import type { FeedKind } from '@/lib/import/feed';
 import type { ImportResult, SourceDocument } from '@/lib/import/types';
@@ -177,39 +196,82 @@ export type SourceDocumentResolver = (
 ) => Promise<SourceDocument | null>;
 
 /**
- * Source documents for a YouTube run (MEAL-74).
+ * Source documents for a run against a connected platform
+ * (MEAL-74 / MEAL-82 / MEAL-83).
  *
- * A video is not a page: `watch?v=…` serves a JavaScript shell, so the document
- * is assembled from the uploads feed's title and description, with captions
- * behind the creator's grant when the description is too thin to judge. The feed
- * read and the token refresh happen once per run, whatever the selection size.
+ * None of the three is a page. `watch?v=…` serves a JavaScript shell, an
+ * Instagram permalink and a TikTok share URL serve a login-walled app — fetching
+ * any of them would have the gate truthfully report there is no recipe there,
+ * and an operator would read that as a verdict on the post rather than on our
+ * reach. So the document is assembled from the same listing the catalog was
+ * drawn from.
+ *
+ * Each platform's listing and token refresh happen **once per run**, whatever
+ * the selection size: a 40-item selection is one API read, not forty.
  */
 export function createSourceDocumentResolver(deps: SyncDeps): SourceDocumentResolver {
   let channel: Promise<{ videos: Map<string, YouTubeVideo>; accessToken: string | null }> | null = null;
+  /** Instagram and TikTok reduce to a document per item id at listing time. */
+  let instagram: Promise<Map<string, SourceDocument>> | null = null;
+  let tiktok: Promise<Map<string, SourceDocument>> | null = null;
 
   return async (creator, source, item) => {
-    if (source !== 'youtube') return null;
+    if (source === 'youtube') {
+      channel ??= (async () => {
+        const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
+        if (!resolved.ok) return { videos: new Map<string, YouTubeVideo>(), accessToken: null };
+        const [feed, accessToken] = await Promise.all([
+          readUploadsFeed(resolved.channelId, deps.fetchOptions),
+          // Null when they have not connected: description-only import still
+          // works, it just cannot fall back to captions.
+          youtubeAccessToken({ supabase: deps.supabase }, resolved.connection),
+        ]);
+        return {
+          videos: new Map(feed.ok ? feed.videos.map((video) => [video.videoId, video] as const) : []),
+          accessToken,
+        };
+      })();
 
-    channel ??= (async () => {
-      const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
-      if (!resolved.ok) return { videos: new Map<string, YouTubeVideo>(), accessToken: null };
-      const [feed, accessToken] = await Promise.all([
-        readUploadsFeed(resolved.channelId, deps.fetchOptions),
-        // Null when they have not connected: description-only import still
-        // works, it just cannot fall back to captions.
-        youtubeAccessToken({ supabase: deps.supabase }, resolved.connection),
-      ]);
-      return {
-        videos: new Map(feed.ok ? feed.videos.map((video) => [video.videoId, video] as const) : []),
-        accessToken,
-      };
-    })();
+      const { videos, accessToken } = await channel;
+      const video = videos.get(item.itemId);
+      if (!video) return null;
+      return youtubeSourceDocument(video, { accessToken });
+    }
 
-    const { videos, accessToken } = await channel;
-    const video = videos.get(item.itemId);
-    if (!video) return null;
-    return youtubeSourceDocument(video, { accessToken });
+    if (source === 'instagram') {
+      instagram ??= (async () => {
+        const { token } = await connectedGrant(deps, creator.id, 'instagram');
+        if (!token) return new Map<string, SourceDocument>();
+        const listed = await fetchInstagramMedia(token, { limit: INSTAGRAM_MEDIA_MAX, fetchImpl: platformFetch(deps) });
+        return new Map(listed.ok ? listed.media.map((media) => [media.id, instagramSourceDocument(media)] as const) : []);
+      })();
+      return (await instagram).get(item.itemId) ?? null;
+    }
+
+    if (source === 'tiktok') {
+      tiktok ??= (async () => {
+        const { token } = await connectedGrant(deps, creator.id, 'tiktok');
+        if (!token) return new Map<string, SourceDocument>();
+        const listed = await fetchTikTokVideos(token, { limit: TIKTOK_VIDEO_MAX, fetchImpl: platformFetch(deps) });
+        return new Map(listed.ok ? listed.videos.map((video) => [video.id, tiktokSourceDocument(video)] as const) : []);
+      })();
+      return (await tiktok).get(item.itemId) ?? null;
+    }
+
+    return null;
   };
+}
+
+/**
+ * The fetch these API calls use.
+ *
+ * `graph.instagram.com` and `open.tiktokapis.com` are fixed hosts of ours, so
+ * they do not go through the guarded fetcher — that exists for destinations an
+ * outsider chose, and it cannot carry the credentials these calls need. The
+ * injection seam is reused so a test still never reaches a provider.
+ */
+function platformFetch(deps: SyncDeps): typeof fetch | undefined {
+  return deps.fetchOptions?.fetchImpl as typeof fetch | undefined;
 }
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
@@ -257,22 +319,9 @@ export async function buildCatalog(
   creator: SyncCreator,
   source: PlatformSource,
 ): Promise<CatalogResult> {
-  if (source === 'youtube') {
-    return buildYouTubeCatalog(deps, creator);
-  }
-  if (source !== 'website') {
-    // Same rule as the viability probe: a source we cannot enumerate reports
-    // that plainly and names the ticket. An empty list would read as "this
-    // creator publishes nothing", which is the one thing it must not mean.
-    const ticket = { instagram: 'MEAL-82', tiktok: 'MEAL-83' }[source];
-    return {
-      ok: false,
-      reason: 'not-connected',
-      detail:
-        `${SOURCE_LABELS[source]} cannot be listed yet: it needs the account connection from ${ticket}, ` +
-        'which is not built. Use the one-link mode for individual posts in the meantime.',
-    };
-  }
+  if (source === 'youtube') return buildYouTubeCatalog(deps, creator);
+  if (source === 'instagram') return buildInstagramCatalog(deps, creator);
+  if (source === 'tiktok') return buildTikTokCatalog(deps, creator);
 
   const link = creator[SOURCE_COLUMNS[source] as keyof SyncCreator] as string | null | undefined;
   if (!link) {
@@ -397,6 +446,136 @@ async function buildYouTubeCatalog(deps: SyncDeps, creator: SyncCreator): Promis
   };
 }
 
+/**
+ * The sentence for a source that can only be reached through a grant we do not
+ * have (MEAL-82 / MEAL-83).
+ *
+ * Instagram and TikTok publish nothing readable without one, so there is no
+ * public-feed fallback of the sort the YouTube catalog leans on. Reported as a
+ * failure with a next move, never as an empty list — "this creator publishes
+ * nothing" is the one thing an empty catalog must not be allowed to mean.
+ */
+/**
+ * The sentence for an account we reached and which has posted nothing.
+ *
+ * Its own `reason`, not `unreachable`, because those are opposite facts and an
+ * operator does opposite things with them: one is a creator with no back
+ * catalogue yet, the other is a grant or a network to go and look at. Reported
+ * as a failure rather than an empty success for the reason `notConnectedCatalog`
+ * gives — "this creator publishes nothing" is not something an empty list may be
+ * allowed to mean silently — but it says which of the two it is.
+ */
+function emptyAccountCatalog(source: ConnectedPlatform): CatalogResult {
+  return {
+    ok: false,
+    reason: 'empty',
+    detail:
+      `We reached this creator's ${SOURCE_LABELS[source]} account and it has nothing posted that we can read. ` +
+      'That is an answer rather than a failure — there is nothing to import yet.',
+  };
+}
+
+function notConnectedCatalog(source: ConnectedPlatform, brokenReason: string | null): CatalogResult {
+  return {
+    ok: false,
+    reason: 'not-connected',
+    detail: brokenReason
+      ? `This creator's ${SOURCE_LABELS[source]} connection has stopped working: ${brokenReason} ` +
+        'Ask them to reconnect it from the creator portal.'
+      : `This creator has not connected their ${SOURCE_LABELS[source]} account, and ${SOURCE_LABELS[source]} ` +
+        'shows us nothing without one. Ask them to connect it from the creator portal. Use the one-link ' +
+        'mode for individual posts in the meantime.',
+  };
+}
+
+/** The grant, plus the reason it is unusable when it is. */
+async function connectedGrant(deps: SyncDeps, creatorId: string, platform: ConnectedPlatform) {
+  const connection = await loadConnection(deps.supabase, creatorId, platform);
+  if (!connection) return { token: null, brokenReason: null };
+  return {
+    token: await usableAccessToken({ supabase: deps.supabase }, connection),
+    brokenReason: connection.brokenReason,
+  };
+}
+
+/**
+ * Lists a creator's Instagram account from `/me/media` (MEAL-82).
+ *
+ * Metadata only: ids, captions, permalinks and timestamps, in one or two
+ * requests. Nothing here downloads a video or calls a model to draw a list — the
+ * same property the website and YouTube catalogs have, and the reason opening a
+ * back catalog costs nothing.
+ *
+ * `item_id` is Instagram's media id, not the permalink's shortcode. They are
+ * different values, and the id is the one every API call and every later
+ * `creator_source_items` lookup is keyed on.
+ */
+async function buildInstagramCatalog(deps: SyncDeps, creator: SyncCreator): Promise<CatalogResult> {
+  const { token, brokenReason } = await connectedGrant(deps, creator.id, 'instagram');
+  if (!token) return notConnectedCatalog('instagram', brokenReason);
+
+  const listed = await fetchInstagramMedia(token, { limit: INSTAGRAM_MEDIA_MAX, fetchImpl: platformFetch(deps) });
+  if (!listed.ok) {
+    return { ok: false, reason: 'unreachable', detail: listed.detail };
+  }
+  if (listed.media.length === 0) return emptyAccountCatalog('instagram');
+
+  const entries = await withImportRecords(
+    deps,
+    creator,
+    'instagram',
+    listed.media.map((media) => ({
+      itemId: media.id,
+      url: media.permalink,
+      title: instagramMediaTitle(media),
+      publishedAt: media.publishedAt,
+    })),
+  );
+
+  return {
+    ok: true,
+    source: 'instagram',
+    // No feed: there is no URL here an operator could confirm and store, and
+    // offering one to a button that writes `creators.feed_url` invites an error.
+    feed: null,
+    entries,
+    truncated: listed.truncated,
+  };
+}
+
+/**
+ * Lists a creator's TikTok account from `/v2/video/list/` (MEAL-83).
+ *
+ * Same discipline as the others — metadata only, a handful of requests, no video
+ * opened and no model called. `item_id` is TikTok's video id and `url` is the
+ * `share_url`, because that is the page a human can open; `embed_link` is a
+ * player and is no use in a record somebody reads later.
+ */
+async function buildTikTokCatalog(deps: SyncDeps, creator: SyncCreator): Promise<CatalogResult> {
+  const { token, brokenReason } = await connectedGrant(deps, creator.id, 'tiktok');
+  if (!token) return notConnectedCatalog('tiktok', brokenReason);
+
+  const listed = await fetchTikTokVideos(token, { limit: TIKTOK_VIDEO_MAX, fetchImpl: platformFetch(deps) });
+  if (!listed.ok) {
+    return { ok: false, reason: 'unreachable', detail: listed.detail };
+  }
+  if (listed.videos.length === 0) return emptyAccountCatalog('tiktok');
+
+  const entries = await withImportRecords(
+    deps,
+    creator,
+    'tiktok',
+    listed.videos.map((video) => ({
+      itemId: video.id,
+      url: video.shareUrl,
+      title: tiktokVideoTitle(video),
+      publishedAt: video.publishedAt,
+    })),
+  );
+
+  return { ok: true, source: 'tiktok', feed: null, entries, truncated: listed.truncated };
+}
+
 // ── Running a selection ──────────────────────────────────────────────────────
 
 /**
@@ -429,6 +608,26 @@ export const CHUNK_CONCURRENCY = 2;
 function isTerminal(item: SyncItem): boolean {
   return item.status !== 'pending';
 }
+
+/**
+ * Why an item on a connected platform could not be read.
+ *
+ * Per platform, because the three reasons an item drops out of a listing are
+ * different and so is the operator's next move. The failure is retryable — it
+ * says what to do rather than recording a verdict on the post, which a gate
+ * rejection would have been.
+ */
+const MISSING_ITEM_DETAIL: Record<ConnectedPlatform, string> = {
+  youtube:
+    "This video is no longer in the channel's recent uploads, so its description could not be read. " +
+    'Re-open the catalog and select it again if it is still listed.',
+  instagram:
+    "This post is no longer in the account's recent media, or the Instagram connection has stopped " +
+    'working, so its caption could not be read. Re-open the catalog to see which.',
+  tiktok:
+    "This video is no longer in the account's recent videos, or the TikTok connection has stopped " +
+    'working, so its description could not be read. Re-open the catalog to see which.',
+};
 
 /**
  * Runs one item: gate, extract, queue for review, record.
@@ -465,22 +664,21 @@ export async function processSyncItem(
     };
   }
 
-  // A video's document comes from the channel, not from its watch page. A
-  // selected video that is no longer in the uploads feed fails rather than
-  // falling back to a page fetch: fetching `watch?v=…` returns a JavaScript
-  // shell, the gate would correctly call it not-a-recipe, and the operator would
-  // read that as a verdict on the video instead of on our reach.
+  // A post on a connected platform is read from that platform's listing, not
+  // from its public URL. A selected item no longer in the listing fails rather
+  // than falling back to a page fetch: `watch?v=…` returns a JavaScript shell
+  // and an Instagram or TikTok URL returns a login-walled app, the gate would
+  // correctly call any of them not-a-recipe, and the operator would read that as
+  // a verdict on the post instead of on our reach.
   let document: SourceDocument | undefined;
-  if (run.source === 'youtube') {
+  if (isConnectedPlatform(run.source)) {
     const resolve = deps.sourceDocument ?? createSourceDocumentResolver(deps);
     const built = await resolve(creator, run.source, item);
     if (!built) {
       return await recordItem(deps, creator, run, {
         ...item,
         status: 'failed',
-        detail:
-          'This video is no longer in the channel\'s recent uploads, so its description could not be read. ' +
-          'Re-open the catalog and select it again if it is still listed.',
+        detail: MISSING_ITEM_DETAIL[run.source],
       });
     }
     document = built;
