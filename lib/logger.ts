@@ -83,8 +83,15 @@ export type EventType =
   | 'EMAIL:SUPPRESSED'
   | 'EMAIL:UNSUBSCRIBE'
   | 'EMAIL:WEBHOOK'
+  // ── Push (MEAL-88) ────────────────────────────────────────────────────────
+  | 'PUSH:REGISTER'
+  | 'PUSH:UNREGISTER'
+  | 'PUSH:SEND'
+  | 'PUSH:RECEIPTS'         // deferred delivery-receipt sweep
+  | 'PUSH:REVOKE'           // token pruned (DeviceNotRegistered)
   // ── Cron ──────────────────────────────────────────────────────────────────
   | 'CRON:DAILY'
+  | 'CRON:PUSH_RECEIPTS'    // second, offset receipt sweep
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'
