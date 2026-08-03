@@ -24,6 +24,7 @@ import {
   type ImportField,
   type ScalarField,
 } from '@/lib/import/draft-form';
+import PublishedLinkModal from '@/components/PublishedLinkModal';
 
 interface Creator {
   id: string;
@@ -767,6 +768,7 @@ export default function CreatorPortal() {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const [publishSuccess, setPublishSuccess] = useState('');
+  const [publishedMeal, setPublishedMeal] = useState<{ id: string; name: string; source: string | null } | null>(null);
 
   const [mealName, setMealName]       = useState('');
   const [mealRecipe, setMealRecipe]   = useState('');
@@ -1330,13 +1332,26 @@ export default function CreatorPortal() {
         }),
       });
 
+      const data = await res.json();
       if (!res.ok) {
-        const data = await res.json();
         setPublishError(data.error || 'Failed to publish meal.');
         return;
       }
 
       setPublishSuccess(`"${mealName}" is now live in Discover!`);
+      // Publishing is the moment the creator can still edit the caption of the
+      // video this came from — on TikTok it is the only window there is — so
+      // hand them the link right here rather than hoping they hunt for it later.
+      // Read before the reset, which clears the name it quotes.
+      if (data.meal?.id) {
+        // Use the stored source: the server normalises it, so a creator who typed
+        // "tiktok.com/…" without a scheme still gets the TikTok guidance.
+        setPublishedMeal({ id: data.meal.id, name: mealName.trim(), source: data.meal.source ?? null });
+      }
+      // `resetPublishForm` supersedes the field-by-field reset this replaced: it
+      // clears the same inputs and also the import bookkeeping — flagged fields,
+      // the imported photo, the tags note, the in-flight guard — which a manual
+      // list has no way to know about.
       resetPublishForm();
       setShowForm(false);
       loadPortal();
@@ -1663,6 +1678,16 @@ export default function CreatorPortal() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Publish New Meal
           </button>
+
+          {/* ── Share-your-link prompt, shown once right after publishing ── */}
+          {publishedMeal && (
+            <PublishedLinkModal
+              mealId={publishedMeal.id}
+              mealName={publishedMeal.name}
+              source={publishedMeal.source}
+              onClose={() => setPublishedMeal(null)}
+            />
+          )}
 
           {/* ── Publish modal ── */}
           {showForm && (

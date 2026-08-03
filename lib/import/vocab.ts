@@ -65,30 +65,43 @@ export function canonicalizeTags(tags: readonly string[]): string[] {
  */
 export const SERVES_PATTERN = /^\d+(-\d+)?$/;
 
-/** Units that make a number a measure of volume or weight, never of people. */
-const MEASURE_UNITS =
-  /\b(cups?|c|tbsp|tablespoons?|tsp|teaspoons?|fl\.?\s?oz|fluid\s+ounces?|ounces?|oz|pounds?|lbs?|lb|grams?|g|kg|kilograms?|ml|millilitres?|milliliters?|l|litres?|liters?|pints?|quarts?|gallons?)\b/i;
-
 /**
- * Countable things a recipe yields that are not people. A number attached to
- * one of these is a batch size, not a serving count.
+ * Words that mark a number as a count of people or portions.
+ *
+ * This is an allowlist, and it used to be a denylist of yield nouns — units of
+ * volume and weight, plus a list of things a batch comes in. A denylist is the
+ * wrong shape for the question, because the set of things a recipe can yield is
+ * open and the set of ways to say "people" is not. Every noun nobody thought of
+ * passed: `Makes 12 empanadas` came back as `serves: 12`, and the span really is
+ * on the page, so it read green. So did `4 (Large bowls)` and every arepa,
+ * dumpling, tamale and blini after them.
+ *
+ * The imperative `Serve` is deliberately not in it. "Serve with tortilla chips
+ * at your next party" is a serving *suggestion*, and matching it is how a number
+ * lifted from a sentence about a party becomes a head count.
  */
-const YIELD_ITEMS =
-  /\b(cookies?|pancakes?|muffins?|cupcakes?|loaves|loaf|slices?|rolls?|bars?|waffles?|biscuits?|scones?|brownies?|doughnuts?|donuts?|tortillas?|patties|burgers?|jars?|bottles?|cans?)\b/i;
-
-/** Words that mark a number as a count of people or portions. */
-const PEOPLE_SIGNAL = /\b(serves?|serving|servings|people|persons?|portions?|guests?|feeds|diners?)\b/i;
+const PEOPLE_SIGNAL = /\b(serves|serving|servings|people|persons?|portions?|guests?|feeds|diners?)\b/i;
 
 /**
  * Coerces a model-supplied `serves` into the form's shape, or drops it.
  *
  * `evidence` is the span the value was taken from, and it is load-bearing: it
  * is the only way to tell "2" meaning two people from "2" lifted out of
- * "2 1/2 cups". When the span reads as a volume, a weight, or a batch of items
- * with nothing marking it as a portion count, the value is discarded and the
- * field reads red — "we looked and didn't find it" is the correct answer, and
- * inventing a serving count from a volume is exactly the hallucination class
- * MEAL-72 exists to catch.
+ * "2 1/2 cups". The span has to *say* people. A number that does not is
+ * discarded and the field reads red — "we looked and didn't find it" is the
+ * correct answer, and inventing a serving count from a yield is exactly the
+ * hallucination class MEAL-72 exists to catch.
+ *
+ * That is stricter than it was, and it drops real numbers: a page publishing
+ * `recipeYield: "4 (Large bowls)"` no longer produces `serves: 4`. It is the
+ * trade the prompt already asks the model to make — "If the page gives only a
+ * yield and never says how many people it feeds, that is a normal and correct
+ * outcome" — and the code was the lax half of a pair that was supposed to agree.
+ * A creator filling in one number costs far less than a wrong number they never
+ * look at.
+ *
+ * No span means no evidence, which means no serves. A value we cannot place
+ * against anything is the case this function exists to refuse.
  */
 export function canonicalizeServes(
   value: string | null | undefined,
@@ -117,13 +130,7 @@ export function canonicalizeServes(
   // A fractional amount is never a head count: "2 1/2" is a volume talking.
   if (/\d+\s*\/\s*\d+|\d+\.\d+/.test(text)) return null;
 
-  if (evidence) {
-    const span = String(evidence);
-    const saysPeople = PEOPLE_SIGNAL.test(span);
-    if (!saysPeople && (MEASURE_UNITS.test(span) || YIELD_ITEMS.test(span))) return null;
-    // "2 1/2 cups guacamole" — a fraction in the span with no people word.
-    if (!saysPeople && /\d+\s*\/\s*\d+/.test(span)) return null;
-  }
+  if (!PEOPLE_SIGNAL.test(String(evidence ?? ''))) return null;
 
   return normalized;
 }

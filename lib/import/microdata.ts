@@ -19,72 +19,88 @@
  * first will read as one recipe; that is the right answer for a recipe post.
  */
 
-import { decodeEntities, htmlToText } from './html-text';
+import { attrValue as attr, capHtml, htmlToText, nextStartTag, startTags } from './html-text';
 import type { RecipeJsonLd } from './types';
 
-/** Attribute value readers that tolerate unquoted, single- and double-quoted forms. */
-function attr(tag: string, name: string): string | null {
-  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i');
-  const match = pattern.exec(tag);
-  if (!match) return null;
-  return decodeEntities(match[1] ?? match[2] ?? match[3] ?? '').trim();
-}
+/** Nesting depth one element may reach before we stop counting. */
+const MAX_SUBTREE_TAGS = 2_000;
 
-/** All `<tag ...>` openings in source order, with their offsets. */
-function* openTags(html: string): Generator<{ tag: string; name: string; index: number; end: number }> {
-  const pattern = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(html)) !== null) {
-    yield { tag: match[0], name: match[1].toLowerCase(), index: match.index, end: pattern.lastIndex };
-  }
-}
+/**
+ * How far past an element's opening we will look for its close tag.
+ *
+ * The whole recipe region gets the document; a single property element gets
+ * `MAX_PROPERTY_CHARS`, because `collect` asks for one per matching `itemprop`
+ * and each ask is a scan. An ingredient line is a few dozen characters.
+ */
+const MAX_REGION_CHARS = 1024 * 1024;
+const MAX_PROPERTY_CHARS = 64 * 1024;
 
-/** Extracts the subtree that starts at `start`, by counting matching open/close tags. */
-function subtree(html: string, tagName: string, start: number): string {
-  const open = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+/**
+ * Ceiling on properties read from one region.
+ *
+ * Bounds the number of subtree scans, which is the other half of what made this
+ * module quadratic: the window above bounds each scan, this bounds how many
+ * there are. Far past any real recipe — the largest of the recorded pages
+ * publishes 17 ingredients.
+ */
+const MAX_PROPERTY_ELEMENTS = 500;
+
+/**
+ * The subtree that starts at `start`, by counting matching open and close tags.
+ *
+ * Bounded on both axes, because neither bound was there and both mattered. The
+ * open-tag scan was `<${tagName}\b[^>]*>`, quadratic on a document that never
+ * supplies a `>` — see `nextStartTag`, which is what it uses now. And a missing
+ * close tag returned `html.slice(start)`, the entire rest of the document, once
+ * per matching property: 262 KB of unclosed `<li itemprop>`s produced 9,039
+ * strings totalling 82 MB in 14.8 s, which at the fetcher's 2 MB cap is ~5 GB —
+ * an OOM well before any timer fires. An element we cannot delimit yields
+ * nothing, which is also the more honest answer: the rest of the page is not
+ * this element's text.
+ */
+function subtree(html: string, tagName: string, start: number, maxChars: number): string {
+  const window = html.slice(start, start + maxChars);
   const close = new RegExp(`</${tagName}\\s*>`, 'gi');
-  open.lastIndex = start + 1;
-  close.lastIndex = start + 1;
 
   let depth = 1;
-  let cursor = start + 1;
-  for (let guard = 0; guard < 2000 && depth > 0; guard++) {
-    open.lastIndex = cursor;
+  let cursor = 1;
+  for (let guard = 0; guard < MAX_SUBTREE_TAGS && depth > 0; guard++) {
     close.lastIndex = cursor;
-    const nextOpen = open.exec(html);
-    const nextClose = close.exec(html);
-    if (!nextClose) return html.slice(start);
+    const nextClose = close.exec(window);
+    if (!nextClose) return '';
+
+    const nextOpen = nextStartTag(window, cursor, tagName);
     if (nextOpen && nextOpen.index < nextClose.index) {
       depth++;
       cursor = nextOpen.index + 1;
-    } else {
-      depth--;
-      cursor = nextClose.index + 1;
-      if (depth === 0) return html.slice(start, nextClose.index + nextClose[0].length);
+      continue;
     }
+    depth--;
+    cursor = nextClose.index + nextClose[0].length;
+    if (depth === 0) return window.slice(0, cursor);
   }
-  return html.slice(start);
+  return '';
 }
 
 /** Text content of the element opening at `index`. */
 function elementText(html: string, tagName: string, index: number): string {
   const void_ = /^(img|meta|link|br|hr|input|source)$/i.test(tagName);
   if (void_) return '';
-  return htmlToText(subtree(html, tagName, index)).replace(/\s+/g, ' ').trim();
+  return htmlToText(subtree(html, tagName, index, MAX_PROPERTY_CHARS)).replace(/\s+/g, ' ').trim();
 }
 
 /** Value of a property element: `content`/`src`/`href` when present, else its text. */
-function propertyValue(html: string, tag: string, tagName: string, index: number): string {
-  if (/^meta$/i.test(tagName)) return attr(tag, 'content') ?? '';
-  if (/^(img|source)$/i.test(tagName)) return attr(tag, 'content') ?? attr(tag, 'src') ?? '';
+function propertyValue(html: string, attrs: string, tagName: string, index: number): string {
+  if (/^meta$/i.test(tagName)) return attr(attrs, 'content') ?? '';
+  if (/^(img|source)$/i.test(tagName)) return attr(attrs, 'content') ?? attr(attrs, 'src') ?? '';
   if (/^(a|link)$/i.test(tagName)) {
-    const content = attr(tag, 'content');
+    const content = attr(attrs, 'content');
     if (content) return content;
     const text = elementText(html, tagName, index);
-    return text || (attr(tag, 'href') ?? '');
+    return text || (attr(attrs, 'href') ?? '');
   }
-  if (/^time$/i.test(tagName)) return attr(tag, 'datetime') ?? elementText(html, tagName, index);
-  return attr(tag, 'content') ?? elementText(html, tagName, index);
+  if (/^time$/i.test(tagName)) return attr(attrs, 'datetime') ?? elementText(html, tagName, index);
+  return attr(attrs, 'content') ?? elementText(html, tagName, index);
 }
 
 const MICRODATA_PROPS: Record<string, keyof RecipeJsonLd> = {
@@ -109,8 +125,8 @@ const MICRODATA_PROPS: Record<string, keyof RecipeJsonLd> = {
 /** Reads a schema.org Recipe published as microdata. */
 function readMicrodata(html: string): RecipeJsonLd | null {
   let scope: { name: string; index: number } | null = null;
-  for (const tag of openTags(html)) {
-    const itemtype = attr(tag.tag, 'itemtype');
+  for (const tag of startTags(html)) {
+    const itemtype = attr(tag.attrs, 'itemtype');
     if (itemtype && /schema\.org\/recipe\b/i.test(itemtype)) {
       scope = { name: tag.name, index: tag.index };
       break;
@@ -118,8 +134,8 @@ function readMicrodata(html: string): RecipeJsonLd | null {
   }
   if (!scope) return null;
 
-  const region = subtree(html, scope.name, scope.index);
-  return collect(region, (tag) => attr(tag, 'itemprop'), MICRODATA_PROPS);
+  const region = subtree(html, scope.name, scope.index, MAX_REGION_CHARS);
+  return collect(region, (attrs) => attr(attrs, 'itemprop'), MICRODATA_PROPS);
 }
 
 const HRECIPE_CLASSES: Record<string, keyof RecipeJsonLd> = {
@@ -144,8 +160,8 @@ const HRECIPE_CLASSES: Record<string, keyof RecipeJsonLd> = {
 /** Reads the older hRecipe microformat, including Jetpack's variant. */
 function readHRecipe(html: string): RecipeJsonLd | null {
   let scope: { name: string; index: number } | null = null;
-  for (const tag of openTags(html)) {
-    const className = attr(tag.tag, 'class');
+  for (const tag of startTags(html)) {
+    const className = attr(tag.attrs, 'class');
     if (className && /\b(hrecipe|jetpack-recipe)\b/i.test(className)) {
       scope = { name: tag.name, index: tag.index };
       break;
@@ -153,11 +169,11 @@ function readHRecipe(html: string): RecipeJsonLd | null {
   }
   if (!scope) return null;
 
-  const region = subtree(html, scope.name, scope.index);
+  const region = subtree(html, scope.name, scope.index, MAX_REGION_CHARS);
   return collect(
     region,
-    (tag) => {
-      const className = attr(tag, 'class');
+    (attrs) => {
+      const className = attr(attrs, 'class');
       if (!className) return null;
       const classes = className.toLowerCase().split(/\s+/);
       return classes.find((c) => HRECIPE_CLASSES[c]) ?? null;
@@ -168,20 +184,22 @@ function readHRecipe(html: string): RecipeJsonLd | null {
 
 function collect(
   region: string,
-  readKey: (tag: string) => string | null,
+  readKey: (attrs: string) => string | null,
   mapping: Record<string, keyof RecipeJsonLd>,
 ): RecipeJsonLd | null {
   const ingredients: string[] = [];
   const instructions: string[] = [];
   const single: Partial<Record<keyof RecipeJsonLd, string>> = {};
+  let read = 0;
 
-  for (const tag of openTags(region)) {
-    const raw = readKey(tag.tag);
+  for (const tag of startTags(region)) {
+    const raw = readKey(tag.attrs);
     if (!raw) continue;
     const field = mapping[raw.toLowerCase()];
     if (!field) continue;
+    if (++read > MAX_PROPERTY_ELEMENTS) break;
 
-    const value = propertyValue(region, tag.tag, tag.name, tag.index).trim();
+    const value = propertyValue(region, tag.attrs, tag.name, tag.index).trim();
     if (!value) continue;
 
     if (field === 'recipeIngredient') {
@@ -216,5 +234,6 @@ function collect(
 
 /** Extracts a Recipe from microdata or hRecipe markup, in that order. */
 export function extractRecipeMicrodata(html: string): RecipeJsonLd | null {
-  return readMicrodata(html) ?? readHRecipe(html);
+  const input = capHtml(html);
+  return readMicrodata(input) ?? readHRecipe(input);
 }

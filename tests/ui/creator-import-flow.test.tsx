@@ -766,8 +766,13 @@ describe('creator portal — a recipe longer than three lines', () => {
     expect(unverifiedRows).toHaveLength(1);
     expect(unverifiedRows[0].textContent).toContain('Ingredient 8, star anise');
 
-    // This page publishes a real head count, so Serves is filled and silent.
-    expect(servesBox().value).toBe('4');
+    // This page's only yield is "4 (Large bowls)", which counts vessels rather
+    // than eaters — the same move as reading "12" out of "Makes 12 empanadas".
+    // Serves therefore comes back empty rather than 4, and the notice hands the
+    // creator the span we rejected so they can type the number themselves.
+    expect(servesBox().value).toBe('');
+    const servesNotice = notices().find(n => n.id === 'import-notice-serves');
+    expect(servesNotice?.textContent).toContain('4 (Large bowls)');
     expect(summary.textContent).toMatch(/of 15 fields verified/);
   });
 

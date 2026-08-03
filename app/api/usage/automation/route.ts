@@ -4,10 +4,16 @@ import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 
 // POST /api/usage/automation — logs an add-to-cart automation run.
-//   { phase: 'start', storeId, source, mealCount?, itemsRequested? } -> { runId }
+//   { phase: 'start', storeId, source, mealCount?, itemsRequested?,
+//     configVersion?, appVersion?, platform? } -> { runId }
 //   { phase: 'complete', runId, itemsAdded?, itemsRequested?, outcome }
 // One row per run: created at start, updated at completion (rows left 'started'
 // are abandoned/never-finished runs).
+//
+// configVersion/appVersion/platform attribute the run to the remote config and
+// client build that produced it, so a confirm-rate regression in the step funnel
+// (see ./steps) can be traced to the config push or release that caused it.
+// Per-step detail lives in automation_steps, keyed by the runId returned here.
 export async function POST(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -31,6 +37,9 @@ export async function POST(request: NextRequest) {
         status: 'started',
         meal_count: num(body?.mealCount),
         items_requested: num(body?.itemsRequested),
+        config_version: num(body?.configVersion),
+        app_version: typeof body?.appVersion === 'string' ? body.appVersion.slice(0, 40) : null,
+        platform: body?.platform === 'ios' || body?.platform === 'android' ? body.platform : null,
       })
       .select('id')
       .single();

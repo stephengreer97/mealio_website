@@ -313,6 +313,49 @@ describe('import/ssrf — review regressions', () => {
 
     expect(cancelled.sort()).toEqual(['blocked', 'pdf', 'redirect']);
   });
+
+  it('gives up on a nameserver that never answers, inside the deadline', async () => {
+    // The pre-flight resolution sat outside the budget entirely: the
+    // AbortSignal that bounds the request is created *after* it, and
+    // `dns.lookup` takes no signal, so a hostname whose authoritative
+    // nameserver never replies held the fetch for the platform resolver's own
+    // timeout — and once per hop. The URL is one a creator pasted.
+    const silentNameserver: LookupFn = () => new Promise<string[]>(() => {});
+    const startedAt = Date.now();
+
+    const result = await safeFetch('https://blackhole.example.com/p', {
+      fetchImpl: hangingFetch,
+      lookup: silentNameserver,
+      timeoutMs: 80,
+    });
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('timeout');
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it('cuts a resolution short rather than letting it overrun the deadline', async () => {
+    // The bounded version of the same defect, and the everyday one: the loop
+    // did re-check the clock between hops, so it could not run forever — but
+    // nothing stopped a resolution already in flight, so each hop could overrun
+    // by a whole resolver timeout. A 400ms lookup spent 400ms of an 80ms budget.
+    const slowNameserver: LookupFn = () =>
+      new Promise<string[]>((resolve) => setTimeout(() => resolve(['93.184.216.34']), 400));
+    const startedAt = Date.now();
+
+    const result = await safeFetch('https://slow-dns.example.com/p', {
+      fetchImpl: hangingFetch,
+      lookup: slowNameserver,
+      timeoutMs: 80,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toBe('timeout');
+    expect(Date.now() - startedAt).toBeLessThan(300);
+  });
 });
 
 /**

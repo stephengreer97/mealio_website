@@ -68,6 +68,8 @@ export type EventType =
   | 'ADMIN:APPLICATION_REVIEW'
   | 'ADMIN:MEAL_DELETE'
   | 'ADMIN:BROADCAST'
+  | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
+  | 'ADMIN:AUTOMATION_FUNNEL'   // per-store add-to-cart reliability dashboard
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'
@@ -85,7 +87,9 @@ export type EventType =
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'
   | 'USAGE:OPEN'
-  | 'USAGE:AUTOMATION';
+  | 'USAGE:AUTOMATION'
+  | 'USAGE:AUTOMATION_STEPS'    // per-step funnel telemetry ingest
+  | 'AUTOMATION:CONFIG';        // client fetching the remote store config
 
 export type Status = 'success' | 'failed' | 'pending' | 'error';
 
