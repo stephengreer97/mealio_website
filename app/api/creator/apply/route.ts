@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
-import { sendCreatorApplicationEmail, sendCreatorAppliedEmail } from '@/lib/email';
+import { adminNotifyEmails, sendCreatorApplicationEmail, sendCreatorAppliedEmail } from '@/lib/email';
 import { isValidHandle, normalizeHandle } from '@/lib/handles';
 import { normalizePlatformUrls, toSourceColumns } from '@/lib/creator-sources';
 
@@ -114,16 +114,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Notify admins
-  const [{ data: profile }, { data: admins }] = await Promise.all([
+  // Notify admins. The recipient list is `adminNotifyEmails` rather than a copy
+  // of it here, so this route and the link editor's paused-import alert cannot
+  // drift into addressing different people.
+  const [{ data: profile }, adminEmails] = await Promise.all([
     supabase.from('user_profiles').select('email').eq('id', decoded.userId).maybeSingle(),
-    supabase.from('user_profiles').select('email').eq('is_admin', true),
+    adminNotifyEmails(supabase),
   ]);
-  const dbAdminEmails = (admins ?? []).map((a: { email: string }) => a.email).filter(Boolean);
-  const envAdminEmail = process.env.ADMIN_EMAIL;
-  const adminEmails = dbAdminEmails.length > 0
-    ? dbAdminEmails
-    : envAdminEmail ? [envAdminEmail] : [];
   await Promise.allSettled([
     sendCreatorApplicationEmail(displayName.trim(), profile?.email ?? '', adminEmails)
       .catch(err => log({ event: 'CREATOR:EMAIL_ADMIN', status: 'error', error: err?.message })),

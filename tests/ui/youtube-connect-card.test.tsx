@@ -12,8 +12,12 @@ import YouTubeConnectCard from '@/components/YouTubeConnectCard';
  * thing MEAL-77 forbids, so the button says both and the tick is what decides.
  */
 
-const NOT_CONNECTED = { connected: false, channel: null, brokenReason: null, canWriteDescriptions: false, appendOptIn: false };
+/** A creator who has told us they have a channel, but has not connected it yet. */
+const NOT_CONNECTED = { hasChannel: true, connected: false, channel: null, brokenReason: null, canWriteDescriptions: false, appendOptIn: false };
+/** No channel at all: no link, no grant. Nothing about YouTube is offered. */
+const NO_CHANNEL = { ...NOT_CONNECTED, hasChannel: false };
 const CONNECTED = {
+  hasChannel: true,
   connected: true,
   channel: { id: 'UCabcdefghijklmnopqrstuv', title: 'Chef Sarah' },
   brokenReason: null,
@@ -91,6 +95,35 @@ describe('YouTubeConnectCard — connecting', () => {
 
     expect(await screen.findByText(/That connection did not complete\./)).toBeTruthy();
     expect(screen.queryByText(/1-800-555-0100/)).toBeNull();
+  });
+});
+
+/**
+ * The gate MEAL-78 asks for: hidden, not disabled.
+ *
+ * The append consent is a permission over property that is not ours. Offering it
+ * about a channel that does not exist is a prompt a creator learns to click
+ * past, which is what makes the next one worthless — so a creator with no
+ * YouTube at all is shown nothing to click past.
+ */
+describe('YouTubeConnectCard — no channel', () => {
+  it('renders nothing at all for a creator with no YouTube', async () => {
+    const { calls } = harness(NO_CHANNEL);
+
+    await waitFor(() => expect(calls.some((call) => call.url.includes('/api/creator/youtube'))).toBe(true));
+    // Not merely a disabled tick: no consent control, and no connect button
+    // either, since there is nothing to connect.
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('button', { name: /YouTube/i })).toBeNull();
+    expect(screen.queryByText(/description/i)).toBeNull();
+  });
+
+  it('appears as soon as the creator adds a link, before anything is connected', async () => {
+    // `hasChannel` is true on a link alone — the creator has told us the channel
+    // exists, which is what MEAL-94's editor is for. The offer is then honest.
+    harness(NOT_CONNECTED);
+    expect(await screen.findByRole('checkbox')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Connect YouTube/i })).toBeTruthy();
   });
 });
 

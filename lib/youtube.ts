@@ -235,6 +235,43 @@ export function isYouTubeHost(link: string): boolean {
 // ── Quota ────────────────────────────────────────────────────────────────────
 
 /**
+ * The shape `<yt:videoId>` has, the only thing `item_id` may hold for YouTube,
+ * and the shape everything downstream trusts.
+ */
+const VIDEO_ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
+
+/**
+ * The video id inside a watch, share, Shorts, embed or live URL.
+ *
+ * `creator_source_items.item_id` for YouTube is the **bare id** everywhere it is
+ * written by a sync — that is what `parseUploadsFeed` reads and what MEAL-79's
+ * "this meal came from *that* video" relationship keys on. A caller holding only
+ * a URL therefore has to come through here rather than store the URL: a record
+ * under a URL and a record under an id are two records for one video, so the
+ * uniqueness the whole `(creator_id, source, item_id)` key exists to provide
+ * quietly stops applying.
+ *
+ * Null for a channel or playlist link, which names no single video.
+ */
+export function videoIdFromUrl(link: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    return null;
+  }
+  if (!YOUTUBE_HOSTS.test(url.hostname)) return null;
+
+  const path = url.pathname.split('/').filter(Boolean);
+  // `youtu.be/XYZ` is the whole path; the rest name the id after a keyword.
+  const candidate = /youtu\.be$/i.test(url.hostname)
+    ? path[0]
+    : url.searchParams.get('v') ?? (['shorts', 'embed', 'live', 'v'].includes(path[0]) ? path[1] : undefined);
+
+  return candidate && VIDEO_ID_RE.test(candidate) ? candidate : null;
+}
+
+/**
  * What each Data API call costs, in units, against a project default of
  * **10,000 units per day** shared by every creator we read or write for.
  *
@@ -294,9 +331,6 @@ const MAX_TITLE_CHARS = 300;
 
 /** YouTube's own ceiling on a description. Longer bodies are rejected outright. */
 export const YOUTUBE_DESCRIPTION_MAX = 5_000;
-
-/** The shape of a video id everything downstream trusts. */
-const VIDEO_ID_RE = /^[A-Za-z0-9_-]{6,20}$/;
 
 /**
  * A page cursor as YouTube issues them, and the only shape we will send back.

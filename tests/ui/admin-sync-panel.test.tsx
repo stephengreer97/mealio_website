@@ -140,10 +140,10 @@ describe('AdminSyncPanel — the checklist', () => {
     await loadCatalog();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Guacamole' }));
-    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.07');
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.02');
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Black bean soup' }));
-    expect(screen.getByTestId('cost-estimate').textContent).toBe('2 selected · about $0.13');
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('2 selected · about $0.03');
   });
 
   it('reads the feed without opening a single post', async () => {
@@ -283,7 +283,7 @@ describe('AdminSyncPanel — a paged back catalogue costs quota, so it is asked 
     // An operator who ticked six videos on page one and then asked for page two
     // has not changed their mind about the six.
     expect((screen.getByRole('checkbox', { name: 'Video vid0000000A' }) as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.07');
+    expect(screen.getByTestId('cost-estimate').textContent).toBe('1 selected · about $0.02');
     // Two pages, and the running total says so.
     expect(screen.getByTestId('quota-spent').textContent).toMatch(/^4 YouTube quota units/);
     expect(screen.queryByRole('button', { name: 'Load 50 more' })).toBeNull();

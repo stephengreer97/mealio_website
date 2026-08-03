@@ -18,18 +18,25 @@ export type QueryResult = { data?: any; error?: any; count?: number | null };
 export const URL_LIMIT_BYTES = 8 * 1024;
 
 /**
- * Rows a select returns when nothing asked for more, as Supabase configures
- * PostgREST.
+ * PostgREST's default page size, as the fake enforces it.
  *
- * It is a CEILING, not an error: the response is truncated and says nothing
- * about it, so code that reads a whole table in one call gets a partial answer
- * that looks complete. A mock without this cannot tell a paged read from an
- * unpaged one, which is how a partial `creator_source_items` map — where a
- * missing record reads as "this post is new" — survives a green suite.
+ * A select with no `.limit()` does not return every row: it returns the first
+ * `db-max-rows` of them — 1000 on Supabase — with no error, no exception and
+ * nothing in the response saying the answer was cut short. Code that folds the
+ * result in memory therefore keeps working perfectly on every test-sized table
+ * and quietly stops being correct for exactly the rows that grew, which is the
+ * kind of bug that only ever shows up on the biggest account.
+ *
+ * Concretely, the case that motivated this: a partial `creator_source_items`
+ * map, where a record missing because it was past the page boundary reads as
+ * "this post is new" and the post is imported a second time.
  */
-export const MAX_ROWS = 1000;
+export const DEFAULT_PAGE_ROWS = 1000;
 
 type Filter = { op: string; column: string; value: any };
+
+/** A partial unique index, as `FakeSupabase.unique()` records one. */
+type UniqueIndex = { columns: string[]; name: string };
 
 function compare(a: any, b: any): number {
   if (a === b) return 0;
@@ -97,11 +104,47 @@ function queryStringBytes(filters: Filter[]): number {
   return Buffer.byteLength(parts.join('&'));
 }
 
+/**
+ * Splits a select list on commas that are not inside an embed's parentheses.
+ *
+ * PostgREST embeds a related table as `creators!creator_id ( id, display_name )`,
+ * and those inner commas are not column separators. Splitting on every comma
+ * turned one embed into several nonsense keys and silently dropped the nested
+ * object - which reads exactly like a row whose relation is missing, so the code
+ * under test defaulted its fields and the failure surfaced somewhere else.
+ */
+function splitColumns(columns: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of columns) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out.map((c) => c.trim()).filter(Boolean);
+}
+
 function project(row: any, columns?: string): any {
   if (!columns || columns.trim() === '*') return { ...row };
-  const wanted = columns.split(',').map((c) => c.trim()).filter(Boolean);
   const out: any = {};
-  for (const c of wanted) out[c] = row[c] ?? null;
+  for (const column of splitColumns(columns)) {
+    // `table!fk ( ... )` or `table ( ... )` - take the whole nested value under
+    // the relation's name. The embed's own column list is not enforced here; a
+    // test seeds the shape it wants and the point is that the relation survives.
+    const embed = /^([A-Za-z_][\w]*)\s*(?:!\w+)?\s*\(/.exec(column);
+    if (embed) {
+      out[embed[1]] = row[embed[1]] ?? null;
+      continue;
+    }
+    out[column] = row[column] ?? null;
+  }
   return out;
 }
 
@@ -142,7 +185,7 @@ function project(row: any, columns?: string): any {
 export class FakeSupabase {
   private queues = new Map<string, QueryResult[]>();
   private tables = new Map<string, any[]>();
-  private uniques = new Map<string, string[]>();
+  private uniques = new Map<string, UniqueIndex[]>();
   calls: Array<{ table: string; method: string; args: any[] }> = [];
 
   queue(table: string, result: QueryResult): this {
@@ -152,15 +195,26 @@ export class FakeSupabase {
   }
 
   /**
-   * Declare a UNIQUE constraint, so `insert` can lose a race the way it does in
-   * Postgres — a 23505 rather than a second row.
+   * Declare a unique index on a seeded table, so an insert that collides fails
+   * the way Postgres fails it.
    *
-   * Opt-in per table because it is the constraint that makes a claim-first write
-   * meaningful: without it two overlapping passes both insert, both proceed, and
-   * the duplicate work is invisible.
+   * Opt-in, because a fake that enforced every real constraint would need to
+   * know the schema, and every existing test seeds only the columns it cares
+   * about. But a test for idempotency written against a fake that cannot express
+   * a unique violation is vacuous: the second insert simply succeeds, two rows
+   * appear, and the assertion that "one publish means one meal" passes against
+   * code that does nothing. Declaring the index is how a test says which
+   * constraint it is relying on.
+   *
+   * Partial, matching how this repository writes them
+   * (`… WHERE publish_token IS NOT NULL`): a row with a null in any of the key
+   * columns is outside the index and never conflicts, which is what lets a
+   * column stay null for every row written before the index existed.
    */
-  unique(table: string, columns: string[]): this {
-    this.uniques.set(table, columns);
+  unique(table: string, columns: string[], name?: string): this {
+    const list = this.uniques.get(table) ?? [];
+    list.push({ columns, name: name ?? `${table}_${columns.join('_')}_key` });
+    this.uniques.set(table, list);
     return this;
   }
 
@@ -198,6 +252,21 @@ export class FakeSupabase {
     this.calls = [];
   }
 
+  /**
+   * The first declared index `candidate` would collide with, or null.
+   *
+   * A null (or absent) value in any key column puts the row outside a partial
+   * index, so it never collides — the same reason two meals published before
+   * `publish_token` existed do not conflict with each other.
+   */
+  private violatedUnique(table: string, rows: any[], candidate: any): UniqueIndex | null {
+    for (const index of this.uniques.get(table) ?? []) {
+      if (index.columns.some((c) => candidate[c] === null || candidate[c] === undefined)) continue;
+      if (rows.some((row) => index.columns.every((c) => row[c] === candidate[c]))) return index;
+    }
+    return null;
+  }
+
   from(table: string) {
     const queued = (): QueryResult | null => {
       const q = this.queues.get(table);
@@ -214,6 +283,8 @@ export class FakeSupabase {
     let orderBy: { column: string; ascending: boolean; nullsFirst: boolean } | null = null;
     let rowLimit: number | null = null;
     let rowRange: { from: number; to: number } | null = null;
+    let counting = false;
+    let headOnly = false;
 
     const builder: any = {};
     const record = (method: string, args: any[]) => { this.calls.push({ table, method, args }); };
@@ -223,6 +294,8 @@ export class FakeSupabase {
       // `.select()` after a write is PostgREST's "return the rows you changed";
       // before one it IS the query.
       if (op === null) { op = 'select'; columns = args[0]; } else { returning = true; columns = args[0]; }
+      if (args[1]?.count) counting = true;
+      if (args[1]?.head) headOnly = true;
       return builder;
     };
     builder.insert = (...args: any[]) => { record('insert', args); op = 'insert'; payload = args[0]; return builder; };
@@ -293,26 +366,36 @@ export class FakeSupabase {
         case 'insert':
         case 'upsert': {
           const incoming = Array.isArray(payload) ? payload : [payload];
-          const key = this.uniques.get(table);
-          if (op === 'insert' && key) {
-            const clash = incoming.find((value) => rows.some((row) => key.every((c) => row[c] === value[c])));
-            if (clash) {
-              // Postgres fails the whole statement, so nothing is written.
+          // Which of the incoming values land on a row that is already there,
+          // decided before anything is written: a declared unique index has to
+          // be judged against the rows an insert would *add*, and Postgres
+          // aborts the whole statement on a violation rather than keeping the
+          // rows ahead of it.
+          const plan = incoming.map((value) => ({
+            value,
+            existing: op === 'upsert' && conflict.length > 0
+              ? rows.find((row) => conflict.every((c) => row[c] === value[c]))
+              : undefined,
+          }));
+          const pending: any[] = [];
+          for (const { value, existing } of plan) {
+            if (existing) continue;
+            const violated = this.violatedUnique(table, [...rows, ...pending], value);
+            if (violated) {
               return {
                 data: null,
                 count: null,
                 error: {
                   code: '23505',
-                  message: `duplicate key value violates unique constraint on ${table} (${key.join(', ')})`,
+                  message: `duplicate key value violates unique constraint "${violated.name}"`,
                 },
               };
             }
+            pending.push(value);
           }
+
           const written: any[] = [];
-          for (const value of incoming) {
-            const existing = op === 'upsert' && conflict.length > 0
-              ? rows.find((row) => conflict.every((c) => row[c] === value[c]))
-              : undefined;
+          for (const { value, existing } of plan) {
             if (existing) { Object.assign(existing, value); written.push(existing); }
             else { const row = { ...value }; rows.push(row); written.push(row); }
           }
@@ -335,9 +418,21 @@ export class FakeSupabase {
           if (rowRange) out = out.slice(rowRange.from, rowRange.to + 1);
           else if (rowLimit !== null) out = out.slice(0, rowLimit);
           // Whatever the caller asked for, the server never returns more than
-          // this and never says it truncated. See MAX_ROWS.
-          out = out.slice(0, MAX_ROWS);
-          return { data: out.map((r) => project(r, columns)), error: null, count: out.length };
+          // this and never says it truncated. See DEFAULT_PAGE_ROWS.
+          out = out.slice(0, DEFAULT_PAGE_ROWS);
+          return {
+            // `{ head: true }` asks for the count and no rows at all.
+            data: headOnly ? null : out.map((r) => project(r, columns)),
+            error: null,
+            // PostgREST counts the rows the FILTERS matched and reports it in
+            // `Content-Range`, so `{ count: 'exact' }` alongside a `.limit()`
+            // returns "0-99/4213" — the limit does not narrow it. Returning
+            // `out.length` here instead would make a query that reads the front
+            // of a long queue report the queue as exactly one page long, which
+            // is the number a caller reaches for precisely BECAUSE it wants to
+            // know the queue is longer than a page.
+            count: counting ? matched.length : null,
+          };
         }
       }
     };

@@ -24,8 +24,8 @@
       {
         "ingredientName": "whole peeled tomatoes",
         "qty": 1,
-        "unit": "qty",
-        "measure": null
+        "unit": "cans",
+        "measure": "1"
       },
       {
         "ingredientName": "heavy cream",

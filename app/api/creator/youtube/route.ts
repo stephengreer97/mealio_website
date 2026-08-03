@@ -41,6 +41,22 @@ export async function GET(request: NextRequest) {
   const summary = connection ? describeConnection(connection) : null;
 
   return NextResponse.json({
+    /**
+     * Does this creator have a YouTube channel at all? (MEAL-78)
+     *
+     * A grant, or a link they gave us saying one exists. False means the whole
+     * card — the connect button and the append consent with it — is hidden
+     * rather than disabled: offering to add a link to the description of a
+     * channel that does not exist is noise at best, and at worst it teaches
+     * people to click through a permission prompt, which is the one thing a
+     * permission prompt cannot afford.
+     *
+     * Not the enforcement, and never was. `assertAppendAllowed` is the single
+     * server-side gate every append goes through; this only decides what a
+     * creator is shown. A creator who starts a channel later adds the link in
+     * the editor above (MEAL-94) and the card appears.
+     */
+    hasChannel: Boolean(connection) || Boolean(creator.youtube_url),
     connected: Boolean(connection),
     channel: summary ? { id: summary.externalId, title: summary.externalName } : null,
     /** Non-null means the creator has to reconnect before anything reads or writes. */
