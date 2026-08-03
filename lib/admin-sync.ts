@@ -10,10 +10,12 @@
  * Three things this file is careful about, all of them the same worry — that a
  * batch acting on a creator's behalf gets quietly wrong:
  *
- *   1. **Rendering the catalog is free.** Titles, dates and links come from feed
- *      metadata; nothing here fetches a post or calls a model to draw a list.
- *      Opening a 200-post blog costs the feed request and the already-imported
- *      lookup, and nothing else.
+ *   1. **Rendering the catalog spends nothing on extraction.** Titles, dates and
+ *      links come from listing metadata; nothing here fetches a post or calls a
+ *      model to draw a list. Opening a 200-post blog costs the feed request and
+ *      the already-imported lookup, and nothing else. YouTube is the one source
+ *      with a bill attached — `playlistItems.list` spends Data API units, so it
+ *      lists **one page per press** rather than the whole channel (MEAL-79).
  *   2. **The gate still runs.** An operator selecting an item is not a bypass. A
  *      selected post that is not a recipe is dropped with its reason recorded,
  *      so "I selected 12 and got 9" is explainable on screen.
@@ -31,7 +33,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { createImportDraft, reviewDraft, type ImportDraft } from '@/lib/import-drafts';
+import { createImportDraft, reviewDraft, type DraftReviewBy, type ImportDraft } from '@/lib/import-drafts';
 import { log } from '@/lib/logger';
 import {
   isConnectedPlatform,
@@ -47,11 +49,10 @@ import { robotsPerOrigin } from '@/lib/import/robots';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
 import {
   channelIdForCreator,
-  readUploadsFeed,
-  uploadsFeedUrl,
-  youtubeAccessToken,
+  fetchVideos,
+  listUploads,
   youtubeSourceDocument,
-  UPLOADS_FEED_MAX,
+  UPLOADS_PAGE_SIZE,
   type YouTubeVideo,
 } from '@/lib/youtube';
 import {
@@ -68,7 +69,8 @@ import {
 } from '@/lib/tiktok';
 import { formatTelemetry } from '@/lib/import/telemetry';
 import type { FeedKind } from '@/lib/import/feed';
-import type { ImportResult, SourceDocument } from '@/lib/import/types';
+import type { ConditionalValidators } from '@/lib/import/ssrf';
+import type { GateMode, ImportResult, SourceDocument } from '@/lib/import/types';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -101,6 +103,16 @@ export interface SyncItem {
   mealName: string | null;
   /** How many fields the review card will flag. The reason to look at this one first. */
   needALook: number | null;
+  /**
+   * The two facts that make an email about this draft a decision rather than a
+   * notification (MEAL-76): the picture, and how much recipe there is. Carried
+   * on the item so the notifier does not have to re-read and re-derive a draft
+   * the pipeline has just finished holding.
+   *
+   * Null on items recorded before MEAL-75, and on every non-drafted outcome.
+   */
+  photoUrl: string | null;
+  ingredientCount: number | null;
   costUsd: number;
 }
 
@@ -174,6 +186,28 @@ export interface SyncCreator {
 export interface SyncDeps {
   supabase: SupabaseClient;
   fetchOptions?: SafeFetchOptions;
+  /**
+   * How an `unsure` gate verdict resolves. Defaults to `manual`, which is the
+   * truth for an operator-driven run: they picked the item and are watching.
+   *
+   * The poller sets `poller`, and the difference is the whole reason the mode
+   * exists — nobody asked for that import, so a maybe has to be a no. A false
+   * positive there is not a wasted click, it is a draft and an email about a
+   * post the creator never offered us (MEAL-75).
+   */
+  gateMode?: GateMode;
+  /**
+   * Whose queue a draft lands in. Defaults to `admin`, which is the truth for an
+   * operator-driven run: they started it and they are the ones reading it.
+   *
+   * The poller sets `creator`, and that is not cosmetic — the email it sends
+   * says "Review and publish" and points at the creator portal (MEAL-76), so a
+   * draft left in the operator's queue is a creator asked to act on something
+   * they cannot see. A seam rather than a constant because these are two
+   * different products of the same engine, and the engine must not have to
+   * guess which one it is running for.
+   */
+  reviewBy?: DraftReviewBy;
   /** The import pipeline seam. Tests substitute a stub; production runs the real thing. */
   importer?: (url: string, options: RunImportOptions) => Promise<ImportResult>;
   /** Where an extraction lands. There is no publisher seam here any more — a run cannot publish. */
@@ -182,7 +216,7 @@ export interface SyncDeps {
    * Builds the source document for a source that is not a web page.
    *
    * `advanceRun` fills this in with a resolver memoised per run, so a 40-video
-   * selection reads the channel's uploads feed once rather than forty times.
+   * selection reads the platform once rather than forty times.
    */
   sourceDocument?: SourceDocumentResolver;
   now?: () => number;
@@ -208,8 +242,13 @@ export type SourceDocumentResolver = (
  *
  * Each platform's listing and token refresh happen **once per run**, whatever
  * the selection size: a 40-item selection is one API read, not forty.
+ *
+ * `videoIds` is the whole YouTube selection, handed down so the run can read it
+ * in one `videos.list` call (1 quota unit per 50 ids) instead of one per item.
+ * Empty is a valid answer — the single-item path has only the item in front of
+ * it — and the resolver falls back to that id alone.
  */
-export function createSourceDocumentResolver(deps: SyncDeps): SourceDocumentResolver {
+export function createSourceDocumentResolver(deps: SyncDeps, videoIds: string[] = []): SourceDocumentResolver {
   let channel: Promise<{ videos: Map<string, YouTubeVideo>; accessToken: string | null }> | null = null;
   /** Instagram and TikTok reduce to a document per item id at listing time. */
   let instagram: Promise<Map<string, SourceDocument>> | null = null;
@@ -218,24 +257,44 @@ export function createSourceDocumentResolver(deps: SyncDeps): SourceDocumentReso
   return async (creator, source, item) => {
     if (source === 'youtube') {
       channel ??= (async () => {
-        const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
-        if (!resolved.ok) return { videos: new Map<string, YouTubeVideo>(), accessToken: null };
-        const [feed, accessToken] = await Promise.all([
-          readUploadsFeed(resolved.channelId, deps.fetchOptions),
-          // Null when they have not connected: description-only import still
-          // works, it just cannot fall back to captions.
-          youtubeAccessToken({ supabase: deps.supabase }, resolved.connection),
-        ]);
+        const empty = { videos: new Map<string, YouTubeVideo>(), accessToken: null };
+        // A grant, not a link. `playlistItems.list` and `videos.list` are both
+        // authenticated calls now, so an unconnected creator has no read path at
+        // all — where the uploads feed used to give description-only import for
+        // free (MEAL-74, robots.txt).
+        const { connection, token } = await connectedGrant(deps, creator.id, 'youtube');
+        if (!token) return empty;
+        // The grant's channel id, never one derived from `creator.youtube_url`.
+        // The filter below compares against this value, so an id taken from a
+        // link a creator supplied would only ever be checked against itself.
+        const resolved = channelIdForCreator(connection);
+        if (!resolved.ok) return empty;
+
+        // Read by id rather than by re-listing the channel. A selection made
+        // from page 4 of a 300-video catalogue used to be unreadable, because
+        // the run looked for those ids in the most recent 15 uploads.
+        const listed = await fetchVideos(token, [...new Set(videoIds.length ? videoIds : [item.itemId])], {
+          fetchImpl: platformFetch(deps),
+        });
+        if (!listed.ok) return empty;
+
         return {
-          videos: new Map(feed.ok ? feed.videos.map((video) => [video.videoId, video] as const) : []),
-          accessToken,
+          videos: new Map(
+            listed.videos
+              // The id came from a request body. Without this a hand-edited
+              // selection naming somebody else's video would be extracted and
+              // published under this creator's name.
+              .filter((video) => video.channelId === resolved.channelId)
+              .map((video) => [video.videoId, video] as const),
+          ),
+          accessToken: token,
         };
       })();
 
       const { videos, accessToken } = await channel;
       const video = videos.get(item.itemId);
       if (!video) return null;
-      return youtubeSourceDocument(video, { accessToken });
+      return youtubeSourceDocument(video, { accessToken, fetchImpl: platformFetch(deps), lookup: deps.fetchOptions?.lookup });
     }
 
     if (source === 'instagram') {
@@ -292,8 +351,43 @@ export interface CatalogEntry {
    * The `creator_source_items` record, when there is one. Drives the
    * already-imported marker, and the row starts deselected because select-all on
    * a catalog half of which is already in is the obvious expensive mistake.
+   *
+   * `at` is when we last touched it and `firstSeenAt` when we first met it. Both,
+   * because the poller's retry sweep is bounded from the first meeting and leased
+   * from the last one, and one timestamp cannot say both (MEAL-75).
    */
-  record: { status: string; detail: string | null; at: string | null } | null;
+  record: { status: string; detail: string | null; at: string | null; firstSeenAt: string | null } | null;
+}
+
+/**
+ * The `creator_source_items` id for an entry from a website feed.
+ *
+ * **Derived from the entry's URL, never from the feed's own guid**, because the
+ * id must not depend on which rung of the discovery ladder answered. A creator
+ * with no confirmed `feed_url` walks the whole ladder on every poll, and the
+ * rungs disagree: RSS and Atom carry a guid, a sitemap carries only a location.
+ * One 503 on `/feed` falls through to `/sitemap.xml`, every already-baselined
+ * post is unseen again, and the back catalogue is re-imported — quietly, because
+ * a handful of posts sits under the flood cap (MEAL-75).
+ *
+ * The cost is real and much smaller: a post whose permalink genuinely moves
+ * reads as a new post, where a permalink-guid feed would have recognised it.
+ * Normalising absorbs the cases that are a move in name only — scheme, `www.`,
+ * a trailing slash, a fragment — so what is left is one re-imported post against
+ * a whole archive. The query string is kept: `/?p=123` is a permalink on every
+ * WordPress site that never switched away from the default.
+ */
+export function websiteItemId(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.host.toLowerCase().replace(/^www\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '');
+    return `${host}${path || '/'}${parsed.search}`;
+  } catch {
+    // Not a URL we could parse is not a URL we fetched either; the raw string is
+    // still stable, which is the only property this needs.
+    return url;
+  }
 }
 
 export type CatalogResult =
@@ -304,8 +398,67 @@ export type CatalogResult =
       entries: CatalogEntry[];
       /** True when the source published more than we will list. */
       truncated: boolean;
+      /**
+       * Cursor for the next window of a paged catalogue (YouTube, MEAL-79).
+       *
+       * Present means there is more and an operator can ask for it; absent means
+       * this is everything. Distinct from `truncated`, which says the same thing
+       * for sources that offer no way to go and get the rest.
+       */
+      nextPageToken?: string | null;
+      /**
+       * YouTube Data API units this listing spent, out of a shared 10,000/day.
+       *
+       * Shown on the operator screen for the reason the cost estimate is: a
+       * budget nobody can see is a budget somebody exhausts. Absent on the three
+       * sources that spend none.
+       */
+      quotaUnits?: number;
+      /**
+       * Polling bookkeeping, filled in only on the website path (MEAL-75).
+       *
+       * The other three sources are authenticated JSON APIs read with a bearer
+       * token: they carry no validator we could replay and advertise no
+       * interval, so there is nothing honest to put here for them.
+       */
+      validators?: ConditionalValidators;
+      ttlSeconds?: number | null;
     }
-  | { ok: false; reason: string; detail: string };
+  | {
+      ok: false;
+      /**
+       * `not-modified` is the one value here that is not a problem — the
+       * conditional read worked and the feed is unchanged. Everything a caller
+       * does with it is different from what it does with a failure, so it does
+       * not get folded into one (MEAL-75).
+       */
+      reason: string;
+      detail: string;
+      /**
+       * Units a *failed* listing still spent (YouTube, MEAL-79).
+       *
+       * `playlistItems.list` refusing after `channels.list` succeeded has cost a
+       * unit, and a screen that only adds up successes reports less than Google
+       * charged — which is the wrong direction for a number whose job is to make
+       * somebody stop before the budget does.
+       */
+      quotaUnits?: number;
+    };
+
+export interface CatalogOptions {
+  /**
+   * Replayed as `If-None-Match` / `If-Modified-Since` on the website feed, so a
+   * poll of an unchanged feed costs a 304 instead of a body. Unset for the
+   * operator-facing catalog: an operator opening the screen wants to see the
+   * list, not be told it has not changed since a cron read it.
+   */
+  conditional?: ConditionalValidators;
+  /**
+   * The next window of a paged catalogue, from the previous result's
+   * `nextPageToken`. YouTube only — nothing else here pages.
+   */
+  pageToken?: string | null;
+}
 
 /**
  * Lists everything a creator's source publishes, from feed metadata alone.
@@ -318,8 +471,9 @@ export async function buildCatalog(
   deps: SyncDeps,
   creator: SyncCreator,
   source: PlatformSource,
+  catalogOptions: CatalogOptions = {},
 ): Promise<CatalogResult> {
-  if (source === 'youtube') return buildYouTubeCatalog(deps, creator);
+  if (source === 'youtube') return buildYouTubeCatalog(deps, creator, catalogOptions.pageToken ?? null);
   if (source === 'instagram') return buildInstagramCatalog(deps, creator);
   if (source === 'tiktok') return buildTikTokCatalog(deps, creator);
 
@@ -338,7 +492,16 @@ export async function buildCatalog(
   // different hosts, and applying one host's robots.txt to another's URLs is how
   // a Disallow we were told about goes unread.
   const robots = robotsPerOrigin(deps.fetchOptions);
-  const options = { robots, fetchOptions: deps.fetchOptions, maxEntries: CATALOG_MAX_ENTRIES };
+  const options = {
+    robots,
+    fetchOptions: deps.fetchOptions,
+    maxEntries: CATALOG_MAX_ENTRIES,
+    conditional: catalogOptions.conditional,
+  };
+  // Only a confirmed feed can be read conditionally. The discovery ladder walks
+  // addresses it has never fetched, so it has no validators to replay — which is
+  // also why a creator with no `feed_url` costs the full ladder on every poll,
+  // and why confirming one at onboarding is worth the operator's minute.
   const discovery: FeedDiscoveryResult = creator.feed_url
     ? await readFeed(creator.feed_url, options)
     : await discoverFeed(link, options);
@@ -352,7 +515,10 @@ export async function buildCatalog(
     creator,
     source,
     discovery.feed.entries.map((entry) => ({
-      itemId: entry.id,
+      // Not `entry.id`. See `websiteItemId` — the guid is only as stable as the
+      // rung that happened to answer, and the URL is the one thing all of them
+      // agree about.
+      itemId: websiteItemId(entry.url),
       url: entry.url,
       title: entry.title,
       publishedAt: entry.publishedAt,
@@ -365,16 +531,34 @@ export async function buildCatalog(
     feed: { url: discovery.feed.url, kind: discovery.feed.kind, via: discovery.feed.via },
     entries,
     truncated: entries.length >= CATALOG_MAX_ENTRIES,
+    validators: discovery.feed.validators,
+    ttlSeconds: discovery.feed.ttlSeconds,
   };
 }
 
 /**
+ * Rows read per request, and the number of requests allowed.
+ *
+ * PostgREST answers with at most `max-rows` (1000 on Supabase) unless a range
+ * says otherwise, **and says nothing about having truncated**. A creator whose
+ * `creator_source_items` has grown past that would silently get a partial record
+ * map, and a missing record does not read as "unknown" anywhere here — it reads
+ * as *new*, which on the poller's side means importing a post we have already
+ * imported. So the read is paged explicitly and ordered, since an unordered
+ * OFFSET may repeat one row and skip another.
+ *
+ * The page ceiling is a bound on a screen draw, not a limit on a creator: 20k
+ * items is two orders of magnitude past the largest catalog we will list.
+ */
+const RECORD_PAGE_SIZE = 1000;
+const MAX_RECORD_PAGES = 20;
+
+/**
  * Marks each listed item with what already happened to it.
  *
- * One query for the whole catalog, keyed the way the record is keyed. This and
- * the feed read are the entire cost of drawing the screen — the property that
- * lets an operator open a 200-post blog, or a channel, without spending
- * anything.
+ * One query per page, keyed the way the record is keyed. This and the feed read
+ * are the entire cost of drawing the screen — the property that lets an operator
+ * open a 200-post blog, or a channel, without spending anything.
  */
 async function withImportRecords(
   deps: SyncDeps,
@@ -382,51 +566,90 @@ async function withImportRecords(
   source: PlatformSource,
   entries: Array<Omit<CatalogEntry, 'record'>>,
 ): Promise<CatalogEntry[]> {
-  const { data: records } = await deps.supabase
-    .from('creator_source_items')
-    .select('item_id, status, detail, updated_at')
-    .eq('creator_id', creator.id)
-    .eq('source', source);
+  const byItemId = new Map<string, NonNullable<CatalogEntry['record']>>();
 
-  const byItemId = new Map<string, { status: string; detail: string | null; at: string | null }>();
-  for (const row of (records ?? []) as Array<Record<string, any>>) {
-    byItemId.set(String(row.item_id), {
-      status: String(row.status),
-      detail: row.detail ?? null,
-      at: row.updated_at ?? null,
-    });
+  for (let page = 0; page < MAX_RECORD_PAGES; page++) {
+    const from = page * RECORD_PAGE_SIZE;
+    const { data: records } = await deps.supabase
+      .from('creator_source_items')
+      .select('item_id, status, detail, created_at, updated_at')
+      .eq('creator_id', creator.id)
+      .eq('source', source)
+      .order('item_id', { ascending: true })
+      .range(from, from + RECORD_PAGE_SIZE - 1);
+
+    const rows = (records ?? []) as Array<Record<string, any>>;
+    for (const row of rows) {
+      byItemId.set(String(row.item_id), {
+        status: String(row.status),
+        detail: row.detail ?? null,
+        at: row.updated_at ?? null,
+        firstSeenAt: row.created_at ?? null,
+      });
+    }
+    if (rows.length < RECORD_PAGE_SIZE) break;
   }
 
   return entries.map((entry) => ({ ...entry, record: byItemId.get(entry.itemId) ?? null }));
 }
 
 /**
- * Lists a creator's YouTube channel from the uploads feed (MEAL-74).
+ * Lists one window of a creator's YouTube back catalogue (MEAL-74 / MEAL-79).
  *
- * Feed metadata only: ids, titles and dates, one unauthenticated request, no API
- * quota. The same rule the website path follows — nothing here fetches a video
- * or calls a model to draw a list — and the reason a channel can be listed at
- * all before its owner has connected anything.
+ * Metadata only: ids, titles, dates and descriptions, from `playlistItems.list`
+ * against the channel's uploads playlist. Nothing here fetches a video or calls
+ * a model to draw a list — the same rule the other three catalogs follow.
+ *
+ * Two things changed with MEAL-79 and both are visible from here:
+ *
+ *   - **It needs a grant**, so an unconnected channel is reported the way an
+ *     unconnected Instagram account is. The uploads feed used to make this work
+ *     with no connection at all; `youtube.com/robots.txt` disallows that feed,
+ *     and the sanctioned replacement is authenticated.
+ *   - **It pages, and one press lists one page.** 50 videos for 2 units, or 1
+ *     once the uploads playlist id is memoised for this channel. The operator
+ *     asks for the next window, so a 300-video channel costs 7 units when
+ *     somebody wants all of it and one instance served every press, 12 if none
+ *     of them hit a warm memo, and 2 when they opened the screen to look.
  *
  * `item_id` is the bare video id. MEAL-79's "this meal came from *that* video"
  * relationship is keyed on it, so it has to be the id YouTube's own API uses.
  */
-async function buildYouTubeCatalog(deps: SyncDeps, creator: SyncCreator): Promise<CatalogResult> {
-  const resolved = await channelIdForCreator(deps, creator.id, creator.youtube_url ?? null);
+async function buildYouTubeCatalog(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  pageToken: string | null,
+): Promise<CatalogResult> {
+  const { connection, token, brokenReason } = await connectedGrant(deps, creator.id, 'youtube');
+  if (!token) return notConnectedCatalog('youtube', brokenReason);
+
+  const resolved = channelIdForCreator(connection);
   if (!resolved.ok) {
     return { ok: false, reason: 'not-connected', detail: resolved.detail };
   }
 
-  const feed = await readUploadsFeed(resolved.channelId, deps.fetchOptions);
-  if (!feed.ok) {
-    return { ok: false, reason: 'unreachable', detail: feed.detail };
+  const listed = await listUploads(token, resolved.channelId, {
+    pageToken,
+    limit: UPLOADS_PAGE_SIZE,
+    fetchImpl: platformFetch(deps),
+  });
+  if (!listed.ok) {
+    return { ok: false, reason: 'unreachable', detail: listed.detail, quotaUnits: listed.quotaUnits };
   }
+  // An empty page is not an empty account when there is a cursor behind it.
+  // `listUploads` drops private and deleted placeholders, so a channel whose 50
+  // most recent uploads are private lists nothing on page one — and reporting
+  // that as "this account has nothing posted" is both the one thing an empty
+  // list must never be allowed to mean and a dead end: `emptyAccountCatalog`
+  // carries no cursor, so the public back catalogue behind page one can never be
+  // asked for. With a cursor this is an ordinary short page.
+  if (listed.videos.length === 0 && !pageToken && !listed.nextPageToken) return emptyAccountCatalog('youtube');
 
   const entries = await withImportRecords(
     deps,
     creator,
     'youtube',
-    feed.videos.map((video) => ({
+    listed.videos.map((video) => ({
       itemId: video.videoId,
       url: video.url,
       title: video.title,
@@ -437,12 +660,16 @@ async function buildYouTubeCatalog(deps: SyncDeps, creator: SyncCreator): Promis
   return {
     ok: true,
     source: 'youtube',
-    feed: { url: uploadsFeedUrl(resolved.channelId), kind: 'atom', via: 'uploads-feed' },
+    // No feed URL to offer. There is nothing here an operator could confirm and
+    // store, and handing a `youtube.com` address to the button that writes
+    // `creators.feed_url` only invites an error.
+    feed: null,
     entries,
-    // The uploads feed only ever carries the most recent uploads, so a full one
-    // means there is older material this screen is not showing. Saying so beats
-    // an operator concluding the channel is smaller than it is.
-    truncated: entries.length >= UPLOADS_FEED_MAX,
+    // A next cursor means there is older material this screen is not showing.
+    // Saying so beats an operator concluding the channel is smaller than it is.
+    truncated: Boolean(listed.nextPageToken),
+    nextPageToken: listed.nextPageToken,
+    quotaUnits: listed.quotaUnits,
   };
 }
 
@@ -483,16 +710,24 @@ function notConnectedCatalog(source: ConnectedPlatform, brokenReason: string | n
       ? `This creator's ${SOURCE_LABELS[source]} connection has stopped working: ${brokenReason} ` +
         'Ask them to reconnect it from the creator portal.'
       : `This creator has not connected their ${SOURCE_LABELS[source]} account, and ${SOURCE_LABELS[source]} ` +
-        'shows us nothing without one. Ask them to connect it from the creator portal. Use the one-link ' +
-        'mode for individual posts in the meantime.',
+        'shows us nothing without one. Ask them to connect it from the creator portal. One-link mode is no ' +
+        'help here either: these three are read through the grant and never from their public URL, because ' +
+        'the public URL serves an app shell with no recipe on it.',
   };
 }
 
-/** The grant, plus the reason it is unusable when it is. */
+/**
+ * The grant, plus the reason it is unusable when it is.
+ *
+ * The connection itself comes back too, because YouTube needs the channel id off
+ * it. Loading it twice — once for the token, once for the id — would ask the
+ * same question twice and let the two answers disagree.
+ */
 async function connectedGrant(deps: SyncDeps, creatorId: string, platform: ConnectedPlatform) {
   const connection = await loadConnection(deps.supabase, creatorId, platform);
-  if (!connection) return { token: null, brokenReason: null };
+  if (!connection) return { connection: null, token: null, brokenReason: null };
   return {
+    connection,
     token: await usableAccessToken({ supabase: deps.supabase }, connection),
     brokenReason: connection.brokenReason,
   };
@@ -619,8 +854,9 @@ function isTerminal(item: SyncItem): boolean {
  */
 const MISSING_ITEM_DETAIL: Record<ConnectedPlatform, string> = {
   youtube:
-    "This video is no longer in the channel's recent uploads, so its description could not be read. " +
-    'Re-open the catalog and select it again if it is still listed.',
+    'This video could not be read from the connected channel. It has been deleted or made private, the ' +
+    "YouTube connection has stopped working, or it is not on this creator's channel at all. Re-open the " +
+    'catalog to see which.',
   instagram:
     "This post is no longer in the account's recent media, or the Instagram connection has stopped " +
     'working, so its caption could not be read. Re-open the catalog to see which.',
@@ -630,6 +866,20 @@ const MISSING_ITEM_DETAIL: Record<ConnectedPlatform, string> = {
 };
 
 /**
+ * What `processSyncItem` actually needs to know about the batch it is part of.
+ *
+ * A `SyncRun` satisfies it, and so does the poller, which has no run row at all
+ * — it is a cron pass, not something an operator started and can watch. Narrowed
+ * to these two fields rather than given a fake run: `sync_run_id` is how the
+ * admin screen finds the items it queued, and pointing it at an id that names no
+ * row would be worse than the null that says plainly there was no run.
+ */
+export interface ItemContext {
+  id: string | null;
+  source: PlatformSource;
+}
+
+/**
  * Runs one item: gate, extract, queue for review, record.
  *
  * Never throws. An item that blows up is a failed item, because the alternative
@@ -637,7 +887,7 @@ const MISSING_ITEM_DETAIL: Record<ConnectedPlatform, string> = {
  */
 export async function processSyncItem(
   deps: SyncDeps,
-  run: SyncRun,
+  run: ItemContext,
   creator: SyncCreator,
   item: SyncItem,
 ): Promise<SyncItem> {
@@ -648,19 +898,34 @@ export async function processSyncItem(
   // Already in, from an earlier run or the poller. Skipped rather than
   // re-imported: an operator ticking a row they were warned about should not be
   // able to publish the same recipe twice under a creator's name.
-  const { data: existing } = await supabase
+  const { data: found } = await supabase
     .from('creator_source_items')
-    .select('status')
+    .select('status, detail, updated_at')
     .eq('creator_id', creator.id)
     .eq('source', run.source)
     .eq('item_id', item.itemId)
     .maybeSingle();
+  const existing = (found ?? null) as ItemRecord | null;
 
-  if (existing && (existing as Record<string, any>).status === 'imported') {
+  if (existing?.status === 'imported') {
     return {
       ...item,
       status: 'skipped',
       detail: 'Already imported — skipped so the same recipe is not queued twice.',
+    };
+  }
+
+  // Claimed BEFORE the extraction, not recorded after it. The UNIQUE key on
+  // `(creator_id, source, item_id)` is documented as the idempotency guarantee
+  // for a cron that will eventually overlap itself, and it can only be that if
+  // the row exists before the money is spent — written afterwards it deduplicates
+  // the record while both passes still queue a draft, and
+  // `creator_import_drafts` has no unique key to catch the second one.
+  if (!(await claimItem(deps, creator, run, item, existing))) {
+    return {
+      ...item,
+      status: 'skipped',
+      detail: 'Another import of this post is already in flight, so this one stood down.',
     };
   }
 
@@ -672,7 +937,9 @@ export async function processSyncItem(
   // a verdict on the post instead of on our reach.
   let document: SourceDocument | undefined;
   if (isConnectedPlatform(run.source)) {
-    const resolve = deps.sourceDocument ?? createSourceDocumentResolver(deps);
+    // No hint when one item is being run on its own: the id in front of us is
+    // the whole selection as far as this call knows.
+    const resolve = deps.sourceDocument ?? createSourceDocumentResolver(deps, [item.itemId]);
     const built = await resolve(creator, run.source, item);
     if (!built) {
       return await recordItem(deps, creator, run, {
@@ -688,11 +955,12 @@ export async function processSyncItem(
   try {
     result = await importer(item.url, {
       document,
-      // The operator picked this URL and is watching it, which is exactly the
+      // An operator picked this URL and is watching it, which is exactly the
       // condition `manual` describes: an `unsure` verdict is attempted rather
       // than silently skipped. A `no` still stops it — that is the gate doing
-      // its job, not a bypass to switch off.
-      mode: 'manual',
+      // its job, not a bypass to switch off. The poller overrides this to
+      // `poller`, where nobody is watching and a maybe has to be a no.
+      mode: deps.gateMode ?? 'manual',
       // Scopes the storage bucket path when a page's image is copied in, so a
       // synced photo lands under the creator it belongs to.
       userId: creator.user_id,
@@ -740,7 +1008,7 @@ export async function processSyncItem(
       // every import and then dropped on the floor, so the greens on this path
       // were claims nobody had ever looked at.
       confidence: result.confidence,
-      reviewBy: 'admin',
+      reviewBy: deps.reviewBy ?? 'admin',
     });
 
     // Counted here rather than on the review screen so an operator watching a
@@ -761,6 +1029,8 @@ export async function processSyncItem(
       draftId,
       mealName: result.draft.name,
       needALook: summary.needALook,
+      photoUrl: result.draft.photoUrl ?? null,
+      ingredientCount: result.draft.ingredients?.length ?? 0,
       costUsd,
     });
   } catch (err) {
@@ -791,6 +1061,101 @@ const EMPTY_DRAFT_FIELDS = {
 } satisfies Omit<ImportDraft, 'id' | 'creatorId' | 'sourceUrl' | 'draft' | 'confidence'>;
 
 /**
+ * What a claimed item says while its extraction is in flight.
+ *
+ * `failed` rather than a status of its own, because the set is fixed by a CHECK
+ * constraint and `failed` already means the one thing that is true here: we
+ * started reading this and have not come back with an answer. A worker that dies
+ * mid-extraction therefore leaves a retryable row rather than a wedged one.
+ */
+export const CLAIM_DETAIL =
+  'An import of this post started and has not reported back yet. If it still says this, ' +
+  'whatever was reading it stopped — the retry sweep will pick it up.';
+
+/**
+ * How long a claim stands before the item is considered abandoned.
+ *
+ * Comfortably longer than an extraction — a fetch and two model calls — and far
+ * shorter than a poll cycle, so a genuinely interrupted item is retryable within
+ * the same cycle rather than the next one. Only ever applied to a row still
+ * carrying `CLAIM_DETAIL`: a *finished* failure is retryable immediately, which
+ * is what an operator clicking Retry on a failed item is entitled to.
+ */
+export const CLAIM_LEASE_MS = 10 * 60_000;
+
+/** The columns of an item's record that decide whether we may take it. */
+interface ItemRecord {
+  status: string;
+  detail: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * Takes an item before anything is spent on it.
+ *
+ * Returns false when somebody else already has it, which the caller reports as
+ * `skipped`. Two mechanisms, one for each shape of the race:
+ *
+ *   - **No row yet** — `insert`, so the UNIQUE key rejects the second pass. This
+ *     is the overlap the schema comment has always promised to handle.
+ *   - **A row we are retrying** — a compare-and-swap on `updated_at`. Under READ
+ *     COMMITTED the second UPDATE re-checks the predicate against the row the
+ *     first one committed, so exactly one of them matches.
+ *
+ * A write that fails for some other reason also stands the item down. That is
+ * the right way round: an item nobody recorded is simply new again next pass,
+ * whereas an extraction whose outcome cannot be written is money spent twice.
+ */
+async function claimItem(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  run: ItemContext,
+  item: SyncItem,
+  existing: ItemRecord | null,
+): Promise<boolean> {
+  const now = deps.now?.() ?? Date.now();
+  const at = new Date(now).toISOString();
+
+  if (!existing) {
+    const { error } = await deps.supabase.from('creator_source_items').insert({
+      creator_id: creator.id,
+      source: run.source,
+      item_id: item.itemId,
+      url: item.url,
+      title: item.title,
+      published_at: item.publishedAt,
+      status: 'failed',
+      detail: CLAIM_DETAIL,
+      updated_at: at,
+    });
+    return !error;
+  }
+
+  // Somebody took it moments ago and is still working. The compare-and-swap
+  // below cannot see this — they would swap on the value we just read — so the
+  // live claim is what says no.
+  const heldSince = Date.parse(existing.updated_at ?? '');
+  if (existing.detail === CLAIM_DETAIL && Number.isFinite(heldSince) && now - heldSince < CLAIM_LEASE_MS) {
+    return false;
+  }
+
+  const claim = deps.supabase
+    .from('creator_source_items')
+    .update({ status: 'failed', detail: CLAIM_DETAIL, updated_at: at })
+    .eq('creator_id', creator.id)
+    .eq('source', run.source)
+    .eq('item_id', item.itemId);
+  // `eq(null)` matches nothing in PostgREST, so a row that has never been
+  // touched is swapped on `is null` instead.
+  const guarded = existing.updated_at === null
+    ? claim.is('updated_at', null)
+    : claim.eq('updated_at', existing.updated_at);
+
+  const { data } = await guarded.select('item_id');
+  return Array.isArray(data) && data.length > 0;
+}
+
+/**
  * Writes the durable per-item record.
  *
  * `creator_source_items` is what the poller and the next operator read, so it is
@@ -801,7 +1166,7 @@ const EMPTY_DRAFT_FIELDS = {
 async function recordItem(
   deps: SyncDeps,
   creator: SyncCreator,
-  run: SyncRun,
+  run: ItemContext,
   // Narrowed to the three outcomes worth recording, so a new item status can
   // never quietly become an invalid record write.
   item: SyncItem & { status: 'drafted' | 'rejected' | 'failed' },
@@ -930,9 +1295,19 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
   const deadline = now() + CHUNK_BUDGET_MS;
   let items = [...run.items];
 
-  // Built once per invocation rather than per item, so a 40-video selection
-  // reads the uploads feed once and refreshes the grant once.
-  const chunkDeps: SyncDeps = { ...deps, sourceDocument: deps.sourceDocument ?? createSourceDocumentResolver(deps) };
+  // Built once per invocation rather than per item, so a 40-video selection is
+  // one `videos.list` call and one grant refresh. Only the items still to do go
+  // in: the memo cannot outlive the process, so a resumed run re-reads whatever
+  // it is handed, and handing it the terminal ones too meant a 200-video run
+  // spread over five invocations paid for all 200 five times — 20 units rather
+  // than the 14 it actually needs. One invocation that finishes the run still
+  // costs 4.
+  const chunkDeps: SyncDeps = {
+    ...deps,
+    sourceDocument:
+      deps.sourceDocument ??
+      createSourceDocumentResolver(deps, items.filter((entry) => !isTerminal(entry)).map((entry) => entry.itemId)),
+  };
 
   while (items.some((item) => !isTerminal(item)) && now() < deadline) {
     const wave: number[] = [];
@@ -941,7 +1316,7 @@ export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun
     }
 
     const processed = await Promise.all(
-      wave.map((index) => processSyncItem(chunkDeps, { ...run, items }, creator, items[index])),
+      wave.map((index) => processSyncItem(chunkDeps, { id: run.id, source: run.source }, creator, items[index])),
     );
     wave.forEach((index, position) => {
       items[index] = processed[position];

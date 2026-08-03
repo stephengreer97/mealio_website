@@ -3,6 +3,7 @@ import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { resolvePhotoUrl } from '@/lib/photos';
+import { publishIdentity, releaseLinkClaim } from '@/lib/creator-meals';
 import { servesChangeError, servesTextOf, tagChangeError } from '@/lib/import/vocab';
 import { log } from '@/lib/logger';
 
@@ -37,11 +38,17 @@ export async function PUT(
 
   const supabase = createServerSupabaseClient();
 
-  // Verify ownership. `tags` and `serves` come back too: what the row already
-  // holds is what says whether this save is *changing* either of them.
+  // Verify ownership. Three columns come back with it:
+  //
+  //   `tags` and `serves` — what the row already holds is what says whether this
+  //   save is *changing* either of them, which is the grandfathering rule below.
+  //
+  //   `source` — this meal may be holding a claim over that link (MEAL-93), and
+  //   an edit that moves the meal to a different link has to give the old one
+  //   back.
   const { data: existing } = await supabase
     .from('preset_meals')
-    .select('id, tags, serves')
+    .select('id, tags, serves, source')
     .eq('id', id)
     .eq('creator_id', creator.id)
     .maybeSingle();
@@ -114,6 +121,15 @@ export async function PUT(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // The old link is nobody's any more. Left held, it would refuse the creator's
+  // next publish from a page this meal no longer points at — a claim outliving
+  // the meal that took it is the thing that makes a link unpublishable for good.
+  const before = publishIdentity(existing.source as string | null);
+  const after = updates.source !== undefined ? publishIdentity(updates.source as string) : before;
+  if (before && before !== after) {
+    await releaseLinkClaim(supabase, creator.id, existing.source as string | null).catch(() => {});
+  }
+
   revalidateTag('trending-meals', 'max');
   log({ event: 'CREATOR:MEAL_UPDATE', status: 'success', userId: creator.id, detail: id });
   return NextResponse.json({ meal });
@@ -133,15 +149,29 @@ export async function DELETE(
 
   const supabase = createServerSupabaseClient();
 
-  const { error } = await supabase
+  // Read before the delete, and returned by the delete itself so the link is
+  // read from the row that was actually removed rather than one this request
+  // never touched.
+  const { data: deleted, error } = await supabase
     .from('preset_meals')
     .delete()
     .eq('id', id)
-    .eq('creator_id', creator.id);
+    .eq('creator_id', creator.id)
+    .select('id, source');
 
   if (error) {
     log({ event: 'CREATOR:MEAL_DELETE', status: 'error', detail: id, error });
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Unpublishing gives the link back. The claim was only ever standing in for
+  // this meal, and a creator who deletes a meal to republish it — the wrong
+  // photo, a typo in the title — must not find that the link they published it
+  // from now refuses them, permanently, with an error naming a meal they just
+  // removed. A failure here is not a reason to fail the delete: the meal is
+  // already gone, and `CLAIM_GRACE_MS` frees the record anyway.
+  for (const row of (deleted ?? []) as Array<{ source?: string | null }>) {
+    await releaseLinkClaim(supabase, creator.id, row.source ?? null).catch(() => {});
   }
 
   revalidateTag('trending-meals', 'max');

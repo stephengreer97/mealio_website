@@ -3,7 +3,188 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { getCachedTrendingMeals } from '@/lib/trending-cache';
 import { log } from '@/lib/logger';
+import { adminNotifyEmails, sendCreatorSourceMovedEmail } from '@/lib/email';
 import { HANDLE_RE, RESERVED_HANDLES, normalizeHandle } from '@/lib/handles';
+import {
+  checkPollingInvariants,
+  isConnectedPlatform,
+  isPlatformSource,
+  isPrimarySource,
+  normalizePlatformUrl,
+  SOURCE_COLUMNS,
+  SOURCE_LABELS,
+  type PlatformSource,
+} from '@/lib/creator-sources';
+
+/**
+ * The columns a link edit has to see to judge the row it would leave behind.
+ *
+ * `display_name` and `handle` are not judged by anything — they name the creator
+ * in the operator alert a moved polled link raises, and re-reading the row for
+ * two strings after the write would be a second query for the same row.
+ */
+const LINK_FIELDS =
+  'id, display_name, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url';
+
+/**
+ * The polled link a creator has just changed: which source, and from what to
+ * what.
+ *
+ * Carried out of `applyLinkEdits` because three things downstream need it — the
+ * `import_opt_in` clear, the durable reason written beside it, and the operator
+ * alert that keeps both from being silent. At most one can be set:
+ * `primary_source` names exactly one source.
+ */
+interface PolledLinkChange {
+  source: PlatformSource;
+  from: string;
+  /** Empty when the creator removed the link rather than replacing it. */
+  to: string;
+}
+
+/**
+ * Applies a creator's edit to their four platform links (MEAL-94).
+ *
+ * Collected on the application form and copied onto the row at approval, and
+ * until now unchangeable afterwards — so a creator who started a YouTube channel
+ * six months later could not tell us, which silently blocked connecting it, the
+ * append setting (MEAL-78), a `primary_source` switch and back-catalog import.
+ *
+ * Validated with `normalizePlatformUrl`, the application form's own function, so
+ * the two cannot drift into accepting different things. Per-key rather than all
+ * four at once: a request that mentions one link must not clear the other three.
+ */
+function applyLinkEdits(
+  creator: Record<string, any>,
+  links: Record<string, unknown>,
+):
+  | { ok: true; update: Record<string, string | null>; cleared: PlatformSource[]; polledLink: PolledLinkChange | null }
+  | { ok: false; error: string } {
+  const update: Record<string, string | null> = {};
+  const cleared: PlatformSource[] = [];
+  const touched: PlatformSource[] = [];
+
+  for (const [key, raw] of Object.entries(links)) {
+    if (!isPlatformSource(key)) {
+      return { ok: false, error: `"${key}" is not one of website, youtube, instagram or tiktok.` };
+    }
+    const result = normalizePlatformUrl(key, raw);
+    if (!result.ok) {
+      return { ok: false, error: `${SOURCE_LABELS[key]}: ${result.error}` };
+    }
+    const column = SOURCE_COLUMNS[key];
+    if ((creator[column] ?? null) === result.url) continue;
+    update[column] = result.url;
+    if (!result.url) cleared.push(key);
+    // What the link *means*, against the stored value read the same way. A row
+    // written before this validator existed can hold `chefsarah.com` where the
+    // card now sends `https://chefsarah.com/`: the same place, and rewriting it
+    // is a tidy-up rather than a repointing. Refusing that as a repointing would
+    // lock such a creator out of editing any of their links.
+    const stored = normalizePlatformUrl(key, creator[column] ?? undefined);
+    if ((stored.ok ? stored.url : (creator[column] ?? null)) !== result.url) touched.push(key);
+  }
+
+  // Adding a link tells us a place exists. It does not opt the creator into
+  // anything: which source is polled, and whether it is polled at all, stay an
+  // operator decision (MEAL-81), so nothing here writes `primary_source` or
+  // `import_opt_in`. The one edit that touches polling reports it back for the
+  // caller to act on — and only ever to turn it off.
+  const primarySource = isPrimarySource(creator.primary_source) ? creator.primary_source : 'none';
+  let polledLink: PolledLinkChange | null = null;
+  for (const source of touched) {
+    if (creator.import_opt_in !== true || primarySource !== source) continue;
+
+    // Touching the polled link is allowed — moved, renamed or removed — and
+    // clears the opt-in with it.
+    //
+    // The risk a move carries is real and unchanged: for a source read straight
+    // off the link (`primary_source` of 'youtube' with no OAuth grant, where
+    // `channelIdForCreator` resolves the channel from `youtube_url`) a
+    // replacement *is* a change of what gets read, so this edit can point an
+    // actively-polled source at a stranger's channel and have their uploads
+    // published under this creator's name. Operator review of the drafts is
+    // mediation, not prevention: the videos really are from the channel the row
+    // now names.
+    //
+    // Refusing it was the first answer and it cost more than it bought. A
+    // creator who moves their blog or renames their channel — not a rare event,
+    // and an entirely legitimate one — could not tell us at all without a human
+    // editing the row by hand, which is the manual step MEAL-81 argued against.
+    // Clearing `import_opt_in` stops the substitution just as completely, since
+    // nothing is polled until an operator turns it back on, and leaves the
+    // creator unblocked. The objection to it was that a creator's edit reverses
+    // an operator's decision with nobody told; that is answered by the alert the
+    // route raises and the reason it records, not by this line, so the three
+    // belong together.
+    //
+    // Removing it takes the same path, which it did not at first. The refusal
+    // was defended on the grounds that clearing has no legitimate case — a
+    // product judgement, not a safety one — while the rule it enforced pointed
+    // the wrong way: a clear substitutes *nothing*, so it carries strictly less
+    // risk than the move that is allowed, and it was the lower-risk operation
+    // that was refused. One rule, one path: the edit lands, polling stops, an
+    // operator is told. A creator who wanted importing stopped has now said so
+    // in the only way the UI gave them.
+    polledLink = {
+      source,
+      from: String(creator[SOURCE_COLUMNS[source]] ?? ''),
+      to: (update[SOURCE_COLUMNS[source]] as string | null) ?? '',
+    };
+  }
+
+  return { ok: true, update, cleared, polledLink };
+}
+
+/**
+ * The sentence `creators.import_paused_reason` keeps.
+ *
+ * Written for the operator who reads it on the Sources tab months later, so it
+ * says who changed what and what it left behind rather than naming a code. Prose
+ * for the same reason `broken_reason` is prose: the useful part is the sentence,
+ * and an enum would have to be extended by whoever adds the next pause.
+ */
+function pauseReason(change: PolledLinkChange): string {
+  const label = SOURCE_LABELS[change.source];
+  return change.to
+    ? `The creator changed the ${label} link we poll, from ${change.from} to ${change.to}. Polling is off until ` +
+      'someone confirms the new link is theirs.'
+    : `The creator removed the ${label} link we poll (it was ${change.from}). Polling is off; there is nothing ` +
+      'left to read.';
+}
+
+/**
+ * What a creator has to be told about a link they just cleared.
+ *
+ * Removing an Instagram URL does not revoke the Instagram grant — the grant is a
+ * separate record, made on a separate screen, and the sync reads a connected
+ * channel whether or not a link sits on the row. Saying nothing would leave a
+ * creator believing they had disconnected something they had not, which is the
+ * kind of thing nobody goes back to check.
+ */
+async function grantNotices(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  creatorId: string,
+  cleared: PlatformSource[],
+): Promise<string[]> {
+  const connectable = cleared.filter(isConnectedPlatform);
+  if (connectable.length === 0) return [];
+
+  const { data } = await supabase
+    .from('creator_platform_accounts')
+    .select('platform')
+    .eq('creator_id', creatorId);
+
+  const connected = new Set(((data ?? []) as Array<{ platform: string }>).map((row) => row.platform));
+  return connectable
+    .filter((platform) => connected.has(platform))
+    .map(
+      (platform) =>
+        `Your connected ${SOURCE_LABELS[platform]} account is still connected — removing the link here does not ` +
+        `disconnect it, and Mealio can still read what you allowed it to. Disconnect it from the ` +
+        `${SOURCE_LABELS[platform]} card if that is what you meant.`,
+    );
+}
 
 // PATCH /api/creator/me — update creator profile fields
 export async function PATCH(request: NextRequest) {
@@ -15,9 +196,100 @@ export async function PATCH(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const body = await request.json();
-  const { photoUrl, handle, bio, socialHandle } = body;
+  const { photoUrl, handle, bio, socialHandle, links } = body;
 
   const updates: Record<string, unknown> = {};
+  const notices: string[] = [];
+  /** Set when a changed polled link paused the import — the operator alert's input. */
+  let polledLink: PolledLinkChange | null = null;
+  /** Creator identity for that alert, read with the link columns. */
+  let creatorIdentity: { display_name?: unknown; handle?: unknown } = {};
+
+  if (links !== undefined) {
+    if (typeof links !== 'object' || links === null || Array.isArray(links)) {
+      return NextResponse.json({ error: 'links must be an object keyed by platform.' }, { status: 400 });
+    }
+    const { data: creator } = await supabase
+      .from('creators')
+      .select(LINK_FIELDS)
+      .eq('user_id', decoded.userId)
+      .maybeSingle();
+    if (!creator) {
+      return NextResponse.json({ error: 'Only approved creators have links to edit.' }, { status: 403 });
+    }
+
+    const edit = applyLinkEdits(creator as Record<string, any>, links as Record<string, unknown>);
+    if (!edit.ok) {
+      return NextResponse.json({ error: edit.error }, { status: 400 });
+    }
+
+    polledLink = edit.polledLink;
+    creatorIdentity = creator as { display_name?: unknown; handle?: unknown };
+
+    // The backstop, on the row this write would leave behind and through the
+    // same function the admin source picker uses. `applyLinkEdits` already
+    // handles the two cases a creator can actually reach — a moved polled link
+    // and a removed one — each with a sentence written for them; this catches
+    // every combination neither of us thought of, including rows an operator
+    // left in a state no UI can produce.
+    //
+    // Its verdict stops the polling rather than the edit. The wording is the
+    // operator's — "confirm the discovered feed URL" names a screen the creator
+    // cannot open — and a 400 would hard-block them from touching *any* of their
+    // links until somebody repaired a row they did not break. A row that cannot
+    // be polled coherently should not be polled, so the switch goes off and the
+    // creator is told plainly; the operator's own route still refuses to turn it
+    // back on until the row makes sense.
+    //
+    // Two reasons now write this switch and both write it the same way. A
+    // changed polled link is the second: the row it leaves behind can be
+    // perfectly coherent — the same source, a link that is present and on the
+    // right host — so no invariant catches it, and pausing is a decision about
+    // *who* changed it rather than about the row. It still may only ever write
+    // `false`: nothing a creator sends can start polling.
+    const resulting = { ...(creator as Record<string, unknown>), ...edit.update };
+    const verdict = checkPollingInvariants(resulting);
+    const importOptIn = verdict.ok && !edit.polledLink ? verdict.importOptIn : false;
+    if (importOptIn !== (resulting.import_opt_in === true)) {
+      updates.import_opt_in = importOptIn;
+      // Why, on the row, next to the switch it explains.
+      //
+      // The email below is the prompt and this is the record. An email is
+      // push-only: delete it and the pause exists nowhere but a log line, and
+      // "why is this creator not being polled?" asked three months later has no
+      // answer. The Sources tab reads these two columns
+      // (`describeSourceHealth`), so an operator sees which creators are paused
+      // and why without going back through their inbox.
+      updates.import_paused_reason = edit.polledLink
+        ? pauseReason(edit.polledLink)
+        : `The row stopped being pollable after the creator edited their links: ${verdict.ok ? 'the chosen source was cleared.' : verdict.error}`;
+      updates.import_paused_at = new Date().toISOString();
+
+      if (edit.polledLink) {
+        // Said in the same response as the save, because the alternative is a
+        // creator discovering it by noticing nothing arrives. It also says what
+        // they do not have to do: the pause is ours to lift, not theirs.
+        notices.push(
+          edit.polledLink.to
+            ? `Your ${SOURCE_LABELS[edit.polledLink.source]} link is saved. Mealio was importing your recipes from ` +
+              'it, so we have paused that import until someone here has checked the new link — nothing is read ' +
+              'from it in the meantime. Somebody has been told; there is nothing else for you to do.'
+            : `Your ${SOURCE_LABELS[edit.polledLink.source]} link is removed. Mealio was importing your recipes ` +
+              'from it, so that import has stopped — there is nothing left for us to read. Somebody has been told; ' +
+              'if you want importing to start again, send us the new link.',
+        );
+      } else if (!verdict.ok) {
+        notices.push(
+          "We've paused importing your recipes automatically. The import settings on your account no longer add " +
+            "up, and we'd rather stop than publish the wrong thing under your name — get in touch and we'll sort " +
+            'it out.',
+        );
+      }
+    }
+
+    Object.assign(updates, edit.update);
+    notices.push(...(await grantNotices(supabase, (creator as { id: string }).id, edit.cleared)));
+  }
 
   if (photoUrl !== undefined) updates.photo_url = photoUrl ?? null;
   if (bio !== undefined) updates.bio = typeof bio === 'string' ? (bio.trim() || null) : null;
@@ -62,7 +334,14 @@ export async function PATCH(request: NextRequest) {
     }
   }
 
-  if (Object.keys(updates).length === 0) return NextResponse.json({ ok: true });
+  // Whether this request turned polling off, as a fact rather than as prose the
+  // client would have to match a string against. The card shows "Mealio is
+  // importing your recipes from your X" off its own copy of the row, which this
+  // write has just invalidated — without this it would keep saying so beside a
+  // notice saying the opposite.
+  const importPaused = updates.import_opt_in === false;
+
+  if (Object.keys(updates).length === 0) return NextResponse.json({ ok: true, notices, importPaused: false });
 
   const { error } = await supabase
     .from('creators')
@@ -74,7 +353,34 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
   log({ event: 'CREATOR:PROFILE_UPDATE', status: 'success', userId: decoded.userId, email: decoded.email, detail: Object.keys(updates).join(',') });
-  return NextResponse.json({ ok: true });
+
+  // The operator half of a changed polled link, raised only once the write it
+  // describes has actually landed. An operator's decision has just been reversed
+  // by somebody else's request, and this is what keeps that from being something
+  // they find out weeks later because a creator's imports stopped. Same reason
+  // the token sweep writes `broken_reason` rather than logging a refresh
+  // failure: a poller that finds nothing must never be the first sign.
+  //
+  // The prompt, not the record — `import_paused_reason` above is the record, and
+  // it is what survives this mail being deleted.
+  //
+  // After the response has been decided, and swallowed like the application
+  // alert: a creator's save must not fail because Resend is down. The log line
+  // is the fallback, not the signal.
+  if (polledLink) {
+    await sendCreatorSourceMovedEmail({
+      adminEmails: await adminNotifyEmails(supabase),
+      creatorName: typeof creatorIdentity.display_name === 'string' ? creatorIdentity.display_name : 'A creator',
+      handle: typeof creatorIdentity.handle === 'string' ? creatorIdentity.handle : null,
+      sourceLabel: SOURCE_LABELS[polledLink.source],
+      previousUrl: polledLink.from,
+      newUrl: polledLink.to,
+    }).catch((err) =>
+      log({ event: 'CREATOR:SOURCE_MOVED_ALERT', status: 'error', userId: decoded.userId, error: err?.message }),
+    );
+  }
+
+  return NextResponse.json({ ok: true, notices, importPaused });
 }
 
 // GET /api/creator/me — creator profile + their meals with save stats
@@ -94,7 +400,10 @@ export async function GET(request: NextRequest) {
   // Get creator profile
   const { data: creator, error: creatorError } = await supabase
     .from('creators')
-    .select('id, display_name, bio, social_handle, photo_url, approved_at, handle')
+    // The four links, and the polling settings that decide what the link editor
+    // is allowed to say about them: a creator whose website is being polled has
+    // to be told so *before* they try to clear it, not only when it is refused.
+    .select('id, display_name, bio, social_handle, photo_url, approved_at, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in')
     .eq('user_id', decoded.userId)
     .maybeSingle();
 

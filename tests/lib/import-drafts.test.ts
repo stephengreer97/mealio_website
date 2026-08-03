@@ -4,7 +4,14 @@ import { fakeDb } from '../helpers/supabase-mock';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 import type { CreatorMealDraft, ImportConfidence, ImportSuccess } from '@/lib/import/types';
 
-vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
+/**
+ * Captured rather than anonymous, because the audit trail is one of the things
+ * under test. `DraftDeps.role` changes the event name and nothing else, and an
+ * anonymous `vi.fn()` here is what let that distinction be silently deleted:
+ * forcing every event back to the `ADMIN:` names left the whole suite green.
+ */
+const log = vi.fn();
+vi.mock('@/lib/logger', () => ({ log: (...args: unknown[]) => log(...args) }));
 
 const sendCreatorSyncPublishedEmail = vi.fn();
 vi.mock('@/lib/email', () => ({
@@ -29,17 +36,21 @@ import {
   approveDraft,
   cancelDraft,
   editDraft,
+  countPendingDrafts,
+  draftBelongsToCreator,
   editableDraft,
-  HANDOFF_UNAVAILABLE,
+  listAllPendingDrafts,
   listDraftQueue,
   listHandedOverDrafts,
   notifyApproved,
+  queueOf,
   reclaimDraft,
   reviewDraft,
   sendDraftToCreator,
   stripEditedConfidence,
   type DraftDeps,
   type ImportDraft,
+  type PendingDraft,
 } from '@/lib/import-drafts';
 
 /**
@@ -111,11 +122,20 @@ function lastUpdate(table: string) {
   return fakeDb.calls.filter((c) => c.table === table && c.method === 'update').at(-1)?.args[0];
 }
 
+/** The event names logged so far, in order. */
+function loggedEvents(): string[] {
+  return log.mock.calls.map((call) => (call[0] as { event: string }).event);
+}
+
 beforeEach(async () => {
   fakeDb.reset();
   sendCreatorSyncPublishedEmail.mockReset();
   sendMarketingEmail.mockReset();
   guacamole = await importedGuacamole();
+  // After the fixture, not before: building it runs the import pipeline, which
+  // logs a `CREATOR:MEAL_IMPORT` of its own that has nothing to do with a
+  // decision.
+  log.mockReset();
 });
 
 // ── Presentation ─────────────────────────────────────────────────────────────
@@ -206,6 +226,62 @@ describe('listDraftQueue', () => {
     await listDraftQueue(supabase, 'creator');
     const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
     expect(filters.map((c) => c.args)).toContainEqual(['review_by', 'creator']);
+  });
+});
+
+describe('the creator queue is scoped to one creator', () => {
+  it('returns only that creator’s drafts', async () => {
+    // `review_by = 'creator'` is true of every poller draft in the table, for
+    // every creator on the platform. Without the creator filter the queue would
+    // hand each of them everyone else's unpublished recipes.
+    fakeDb.seed('creator_import_drafts', [
+      queueRow({ id: 'mine', review_by: 'creator', creator_id: 'c1' }),
+      queueRow({ id: 'theirs', review_by: 'creator', creator_id: 'c2' }),
+    ]);
+
+    const rows = await listDraftQueue(supabase, 'creator', { creatorId: 'c1' });
+
+    expect(rows.map((row) => row.id)).toEqual(['mine']);
+  });
+
+  it('counts what is waiting on them, and nothing else', async () => {
+    fakeDb.seed('creator_import_drafts', [
+      queueRow({ id: 'a', review_by: 'creator', creator_id: 'c1' }),
+      queueRow({ id: 'b', review_by: 'creator', creator_id: 'c1' }),
+      // Already decided — out of the queue and out of the badge.
+      queueRow({ id: 'c', review_by: 'creator', creator_id: 'c1', status: 'cancelled' }),
+      // Still an operator's to decide; not waiting on this creator at all.
+      queueRow({ id: 'd', review_by: 'admin', creator_id: 'c1' }),
+      queueRow({ id: 'e', review_by: 'creator', creator_id: 'c2' }),
+    ]);
+
+    expect(await countPendingDrafts(supabase, 'c1')).toBe(2);
+  });
+
+  it('asks the database for a count rather than for the recipes', async () => {
+    // Every portal load and every app foreground calls this, and a draft is a
+    // jsonb recipe. Fetching rows to call `.length` on them is the version of
+    // this that works fine until a creator has forty.
+    fakeDb.seed('creator_import_drafts', [queueRow({ review_by: 'creator', creator_id: 'c1' })]);
+    await countPendingDrafts(supabase, 'c1');
+
+    const select = fakeDb.calls.find((c) => c.table === 'creator_import_drafts' && c.method === 'select');
+    expect(select?.args[1]).toMatchObject({ head: true, count: 'exact' });
+  });
+});
+
+describe('draftBelongsToCreator — whose recipe is this', () => {
+  it('says yes only for the owner', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    expect(await draftBelongsToCreator(supabase, 'd1', 'c1')).toBe(true);
+    expect(await draftBelongsToCreator(supabase, 'd1', 'c2')).toBe(false);
+  });
+
+  it('fails closed on a draft that does not exist', async () => {
+    // A uuid in a request body is not evidence of anything. The safe answer to
+    // "we cannot find this row" is no.
+    fakeDb.seed('creator_import_drafts', []);
+    expect(await draftBelongsToCreator(supabase, 'nope', 'c1')).toBe(false);
   });
 });
 
@@ -474,34 +550,45 @@ describe('notifyApproved', () => {
 
 // ── Send to creator ──────────────────────────────────────────────────────────
 
-describe('sendDraftToCreator — an escape hatch with nowhere to go', () => {
-  it('refuses, and moves nothing, while there is no creator queue to hand to', async () => {
-    // `review_by = 'creator'` is read by one query in this repository and it asks
-    // for `'admin'`. Flipping the column moved a draft out of the only queue
-    // anybody reads and into nothing: no creator endpoint, no creator screen, no
-    // way back — and `creator_source_items` says `imported`, so no later sync
-    // re-imports the post. The recipe was lost on the first click.
+describe('sendDraftToCreator — the escape hatch, now that it lands somewhere', () => {
+  it('moves the draft into the creator queue, still undecided', async () => {
+    // The button was disabled until MEAL-89: `review_by = 'creator'` was read by
+    // one query in this repository and it asked for `'admin'`, so flipping the
+    // column moved a draft out of the only queue anybody read and into nothing.
+    // `listDraftQueue(supabase, 'creator', { creatorId })` is the reader that
+    // makes this a handoff rather than a trapdoor, and it is asserted below.
     fakeDb.seed('creator_import_drafts', [draftRow()]);
 
     const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
 
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.error).toMatch(/MEAL-89/);
-    // Not a warning, a refusal: the row is untouched and still in the queue.
+    expect(result.ok).toBe(true);
     expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
-      review_by: 'admin',
+      review_by: 'creator',
+      sent_to_creator_by: 'admin-1',
+      // Handing the decision over is not making it.
       status: 'pending_review',
+      decided_at: null,
+      decided_by: null,
     });
-    expect(fakeDb.row('creator_import_drafts', 'd1')).not.toHaveProperty('sent_to_creator_at');
-    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
   });
 
-  it('says nothing untrue about where the draft went', async () => {
-    // The screen used to say "It is in their queue now, not yours."
+  it('lands where the creator will actually find it', async () => {
+    // The whole reason the button was switched off. A handoff that the creator's
+    // own queue does not return is a recipe nobody can see and no later poll
+    // re-imports, so this is asserted end to end rather than on the column.
     fakeDb.seed('creator_import_drafts', [draftRow()]);
+    await sendDraftToCreator(deps(), 'd1', 'admin-1');
+
+    const theirs = await listDraftQueue(supabase, 'creator', { creatorId: 'c1' });
+    expect(theirs.map((row) => row.id)).toEqual(['d1']);
+    expect(await countPendingDrafts(supabase, 'c1')).toBe(1);
+  });
+
+  it('refuses to hand over one that is already theirs', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
     const result = await sendDraftToCreator(deps(), 'd1', 'admin-1');
-    expect(result.ok === false && result.error).toMatch(/queue|nothing/i);
-    expect(HANDOFF_UNAVAILABLE).not.toMatch(/in their queue/i);
+    expect(result.ok).toBe(false);
+    expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
   });
 
   it('publishes nothing on the way — that is the whole point of the button', async () => {
@@ -514,8 +601,8 @@ describe('sendDraftToCreator — an escape hatch with nowhere to go', () => {
   });
 });
 
-describe('drafts already handed over — nothing is left in neither queue', () => {
-  /** What production has: rows the button moved before it was switched off. */
+describe('drafts handed over — visible to the operator who let go of them', () => {
+  /** Rows an operator sent to a creator who has not decided them yet. */
   const handedOver = (overrides: Record<string, unknown> = {}) =>
     draftRow({
       review_by: 'creator',
@@ -540,6 +627,186 @@ describe('drafts already handed over — nothing is left in neither queue', () =
     expect(await listHandedOverDrafts(supabase)).toHaveLength(0);
   });
 
+  /**
+   * The escape hatch, and the reason it has to exist.
+   *
+   * `listDraftQueue('admin')` and `listHandedOverDrafts` are both narrower than
+   * "pending", so between them is a gap that no screen reaches. These assert the
+   * rows that fall into it come back — because the failure mode is not a wrong
+   * count, it is a recipe nobody can ever see again.
+   */
+  describe('listAllPendingDrafts', () => {
+    /** `n` pending poller drafts, oldest first, so a page boundary can be crossed. */
+    function pending(n: number, overrides: Record<string, unknown> = {}) {
+      return Array.from({ length: n }, (_, i) => queueRow({
+        id: `d${String(i).padStart(4, '0')}`,
+        review_by: 'creator',
+        created_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+        ...overrides,
+      }));
+    }
+
+    it('returns the poller’s drafts, which neither normal query asks for', async () => {
+      const poller = queueRow({ id: 'd-poll', review_by: 'creator' });
+      fakeDb.seed('creator_import_drafts', [poller]);
+
+      // Invisible to both of the queries the screen normally runs...
+      expect(await listDraftQueue(supabase, 'admin')).toHaveLength(0);
+      expect(await listHandedOverDrafts(supabase)).toHaveLength(0);
+      // ...and reachable by the one that asks on status alone.
+      expect((await listAllPendingDrafts(supabase)).drafts.map((d) => d.id)).toEqual(['d-poll']);
+    });
+
+    it('is not filtered on review_by or sent_to_creator_at at all', async () => {
+      fakeDb.seed('creator_import_drafts', [
+        queueRow({ id: 'a', review_by: 'admin' }),
+        queueRow({ id: 'b', review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }),
+        queueRow({ id: 'c', review_by: 'creator' }),
+      ]);
+
+      const all = await listAllPendingDrafts(supabase);
+
+      expect(all.drafts.map((d) => d.id).sort()).toEqual(['a', 'b', 'c']);
+      const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
+      expect(filters.map((c) => c.args)).toEqual([['status', 'pending_review']]);
+      expect(fakeDb.calls.some((c) => c.method === 'not')).toBe(false);
+    });
+
+    it('still leaves decided drafts out — this widens the queue, it does not undo a decision', async () => {
+      fakeDb.seed('creator_import_drafts', [
+        queueRow({ id: 'gone', review_by: 'creator', status: 'cancelled' }),
+        queueRow({ id: 'live', review_by: 'creator', status: 'approved' }),
+        queueRow({ id: 'waiting', review_by: 'creator' }),
+      ]);
+
+      const all = await listAllPendingDrafts(supabase);
+      expect(all.drafts.map((d) => d.id)).toEqual(['waiting']);
+      // The count is over the same WHERE clause, so a decided draft is not in it
+      // either — otherwise the screen would report work that no longer exists.
+      expect(all.total).toBe(1);
+    });
+
+    it('carries what the stranded list draws, and nothing it does not', async () => {
+      fakeDb.seed('creator_import_drafts', [queueRow({ review_by: 'creator' })]);
+
+      const [row] = (await listAllPendingDrafts(supabase)).drafts;
+
+      // Three strings and the id that takes it back.
+      expect(row).toMatchObject({
+        id: 'd1',
+        name: 'Best Guacamole',
+        sourceUrl: 'https://chefsarah.test/guacamole',
+        creatorName: 'Chef Sarah',
+      });
+      // Not the recipe body and not a per-field assessment: this list has no card
+      // to open, and shipping them is kilobytes a row to draw three strings.
+      expect(row).not.toHaveProperty('draft');
+      expect(row).not.toHaveProperty('confidence');
+      expect(row).not.toHaveProperty('summary');
+      expect(row).not.toHaveProperty('review');
+    });
+
+    /**
+     * The page boundary — the thing that decides whether "nothing is unreachable"
+     * is true or is a sentence on a screen.
+     *
+     * The escape hatch exists because pending poller drafts accumulate and no
+     * queue drains them, so passing the limit is the steady state and not a
+     * corner case. What must never happen is a page reporting its own length as
+     * a total.
+     */
+    it('reports the database’s count, not the page length, past the limit', async () => {
+      fakeDb.seed('creator_import_drafts', pending(12));
+
+      const all = await listAllPendingDrafts(supabase, 5);
+
+      expect(all.drafts).toHaveLength(5);
+      // The oldest first, so the same rows are not the ones left behind forever.
+      expect(all.drafts.map((d) => d.id)).toEqual(['d0000', 'd0001', 'd0002', 'd0003', 'd0004']);
+      expect(all.total).toBe(12);
+      expect(all.limit).toBe(5);
+      expect(all.truncated).toBe(true);
+    });
+
+    it('counts every pending draft, whichever queue it is nominally in', async () => {
+      // The count is what the banner reports as "pending in all", so it has to
+      // span the two narrow queues as well as the gap between them.
+      fakeDb.seed('creator_import_drafts', [
+        ...pending(4, { review_by: 'admin' }).map((r, i) => ({ ...r, id: `admin-${i}` })),
+        ...pending(3).map((r, i) => ({ ...r, id: `poll-${i}` })),
+        queueRow({ id: 'decided', review_by: 'creator', status: 'cancelled' }),
+      ]);
+
+      const all = await listAllPendingDrafts(supabase, 2);
+
+      expect(all.total).toBe(7);
+      expect(all.truncated).toBe(true);
+    });
+
+    it('does not call a full read truncated', async () => {
+      fakeDb.seed('creator_import_drafts', pending(5));
+
+      const all = await listAllPendingDrafts(supabase, 5);
+
+      expect(all.total).toBe(5);
+      expect(all.drafts).toHaveLength(5);
+      // Exactly the limit and exactly the count: everything is here, and the
+      // screen is allowed to say so.
+      expect(all.truncated).toBe(false);
+    });
+
+    it('asks the database to count, rather than counting the page', async () => {
+      fakeDb.seed('creator_import_drafts', pending(3));
+      await listAllPendingDrafts(supabase);
+
+      const select = fakeDb.calls.find((c) => c.table === 'creator_import_drafts' && c.method === 'select')!;
+      expect(select.args[1]).toMatchObject({ count: 'exact' });
+    });
+
+    /**
+     * How a row is placed, and why it is not a set difference.
+     *
+     * The two narrow lists are capped at 200 each. Subtracting their ids from
+     * this one's therefore calls the 201st row of the admin's own queue "in no
+     * queue at all" — a false statement about a row the operator is looking at,
+     * and one whose *Take it back* then fails with "already in your queue".
+     * Reading `review_by` and `sent_to_creator_at` off the row cannot do that.
+     */
+    describe('queueOf', () => {
+      const row = (over: Partial<PendingDraft>): PendingDraft => ({
+        id: 'd1', name: 'Best Guacamole', sourceUrl: 'https://chefsarah.test/guacamole',
+        creatorName: 'Chef Sarah', reviewBy: 'creator', sentToCreatorAt: null,
+        createdAt: '2026-08-02T10:00:00.000Z', ...over,
+      });
+
+      it('places a row in the same list the query for it would', () => {
+        expect(queueOf(row({ reviewBy: 'admin' }))).toBe('admin');
+        expect(queueOf(row({ reviewBy: 'creator', sentToCreatorAt: '2026-08-02T11:00:00.000Z' }))).toBe('handed-over');
+        expect(queueOf(row({ reviewBy: 'creator' }))).toBe('none');
+      });
+
+      it('places an admin row from beyond the admin queue’s page in the admin queue', () => {
+        // The row a set difference gets wrong: pending, the operator's own, and
+        // past the 200 that `listDraftQueue` returned.
+        expect(queueOf(row({ id: 'd0201', reviewBy: 'admin' }))).toBe('admin');
+      });
+    });
+
+    it('treats a missing count as “there may be more”, never as a total', async () => {
+      // A proxy that dropped Content-Range, an older PostgREST: no count came
+      // back and a full page is the only signal there is.
+      fakeDb.queue('creator_import_drafts', {
+        data: pending(2).map((r) => ({ ...r, creators: { display_name: 'Chef Sarah' } })),
+        count: null,
+      });
+
+      const all = await listAllPendingDrafts(supabase, 2);
+
+      expect(all.total).toBe(2);
+      expect(all.truncated).toBe(true);
+    });
+  });
+
   it('takes one back into the admin queue', async () => {
     fakeDb.seed('creator_import_drafts', [handedOver()]);
 
@@ -559,6 +826,195 @@ describe('drafts already handed over — nothing is left in neither queue', () =
     const result = await reclaimDraft(deps(), 'd1', 'admin-2');
     expect(result.ok).toBe(false);
     expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
+  });
+});
+
+// ── Which queue is deciding ──────────────────────────────────────────────────
+
+/**
+ * Queue membership governs **authority**, not only visibility.
+ *
+ * `review_by` used to be a read filter and nothing else: it decided what each
+ * side was shown and never what either could write. So "Take it back" removed a
+ * draft from the creator's queue and from their badge while leaving them able to
+ * publish it — and a poller draft the operator had never been shown was equally
+ * theirs to approve, given the id.
+ *
+ * The guarantee is the predicate in `decideDraft`, not the pre-read that words
+ * the refusal: the race below is the case a pre-read cannot cover, because
+ * `review_by` is precisely the column that changes under someone holding the
+ * card open.
+ */
+describe('a decision is refused when the draft has moved to the other queue', () => {
+  const theirs = (overrides: Record<string, unknown> = {}) => draftRow({ review_by: 'creator', ...overrides });
+
+  it('a creator cannot publish a draft an operator has taken back', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'admin' })]);
+    const publisher = vi.fn();
+
+    const result = await approveDraft(
+      deps({ role: 'creator', publisher: publisher as unknown as DraftDeps['publisher'] }),
+      'd1',
+      'u1',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(publisher).not.toHaveBeenCalled();
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'pending_review', review_by: 'admin' });
+    // Said from their side rather than as a refusal: their recipe has not been
+    // rejected, somebody else is looking at it. "Already decided in another tab"
+    // would be both wrong and alarming.
+    expect(result.ok === false && result.error).toMatch(/took that one back/i);
+  });
+
+  it('a creator cannot decline or edit one either', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'admin' })]);
+
+    const declined = await cancelDraft(deps({ role: 'creator' }), 'd1', 'u1');
+    const edited = await editDraft(deps({ role: 'creator' }), 'd1', { ...guacamole.draft, serves: '99' }, 'u1');
+
+    expect(declined.ok).toBe(false);
+    expect(edited.ok).toBe(false);
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'pending_review', edited_at: null });
+  });
+
+  it('an operator cannot decide one that is sitting in the creator’s queue', async () => {
+    // The mirror, and the quieter half: a poller draft is `review_by='creator'`
+    // and never appears on the admin screen, so deciding one means acting on a
+    // recipe an operator was never shown.
+    fakeDb.seed('creator_import_drafts', [theirs()]);
+    const publisher = vi.fn();
+
+    const result = await approveDraft(deps({ publisher: publisher as unknown as DraftDeps['publisher'] }), 'd1', 'admin-1');
+
+    expect(result.ok).toBe(false);
+    expect(publisher).not.toHaveBeenCalled();
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'pending_review' });
+    // Names the creator and the way out, because there is one: reclaim it.
+    expect(result.ok === false && result.error).toMatch(/Chef Sarah[\s\S]*Take it back/);
+  });
+
+  /**
+   * "Take it back", landing after the creator's read and before their write.
+   *
+   * The injected clock is the seam because it is called between the two — the
+   * same trick `reconnectsMidFlight` uses in the token sweep's tests. This is
+   * the case a pre-read cannot cover and the one the column actually produces:
+   * the reviewer has the card open, so their read genuinely saw the draft as
+   * theirs, and only the predicate on the write is left to refuse it.
+   */
+  const reclaimedMidFlight = () => {
+    let done = false;
+    return () => {
+      if (!done) { fakeDb.patch('creator_import_drafts', 'd1', { review_by: 'admin' }); done = true; }
+      return 1_800_000_000_000;
+    };
+  };
+
+  it('publishes nothing when the reclaim lands between the creator’s read and their write', async () => {
+    fakeDb.seed('creator_import_drafts', [theirs()]);
+    const publisher = vi.fn(async () => ({ id: 'meal-1', name: 'Best Guacamole' }));
+
+    const result = await approveDraft(
+      deps({ role: 'creator', now: reclaimedMidFlight(), publisher: publisher as unknown as DraftDeps['publisher'] }),
+      'd1',
+      'u1',
+    );
+
+    expect(result.ok).toBe(false);
+    // The one outcome that must not happen: a live meal on Discover for a draft
+    // the operator believes is back in their queue, undecided.
+    expect(publisher).not.toHaveBeenCalled();
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+      status: 'pending_review',
+      review_by: 'admin',
+      published_meal_id: null,
+      decided_by: null,
+    });
+  });
+
+  it('saves no edit when the reclaim lands in the same gap', async () => {
+    fakeDb.seed('creator_import_drafts', [theirs()]);
+
+    const result = await editDraft(
+      deps({ role: 'creator', now: reclaimedMidFlight() }),
+      'd1',
+      { ...guacamole.draft, name: 'Rewritten underneath them' },
+      'u1',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ edited_at: null });
+    expect(fakeDb.row('creator_import_drafts', 'd1').draft.name).toBe(guacamole.draft.name);
+  });
+
+  it('still lets each side decide the drafts that really are waiting on it', async () => {
+    // The predicate has to refuse the other queue without refusing the ordinary
+    // case, which is every decision this feature exists for.
+    fakeDb.seed('creator_import_drafts', [theirs(), draftRow({ id: 'd2', review_by: 'admin' })]);
+
+    const byCreator = await cancelDraft(deps({ role: 'creator' }), 'd1', 'u1');
+    const byAdmin = await cancelDraft(deps(), 'd2', 'admin-1');
+
+    expect(byCreator.ok).toBe(true);
+    expect(byAdmin.ok).toBe(true);
+  });
+});
+
+// ── The audit trail ──────────────────────────────────────────────────────────
+
+/**
+ * `DraftDeps.role` and the log.
+ *
+ * MEAL-77's consent story turns on *who* decided. Every line in this file used
+ * to say `ADMIN:`, so a creator approving their own recipe was recorded as an
+ * operator publishing under their name — the exact distinction the audit trail
+ * exists to make. Asserted here because it is the only visible effect of the
+ * flag: no route response and no row carries it.
+ */
+describe('who decided is recorded as who decided', () => {
+  it('records a creator’s own decisions under CREATOR:', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
+
+    await approveDraft(deps({ role: 'creator' }), 'd1', 'u1');
+    fakeDb.seed('creator_import_drafts', [draftRow({ id: 'd2', review_by: 'creator' })]);
+    await cancelDraft(deps({ role: 'creator' }), 'd2', 'u1');
+    fakeDb.seed('creator_import_drafts', [draftRow({ id: 'd3', review_by: 'creator' })]);
+    await editDraft(deps({ role: 'creator' }), 'd3', { ...guacamole.draft, serves: '6' }, 'u1');
+
+    expect(loggedEvents()).toEqual(['CREATOR:DRAFT_DECIDE', 'CREATOR:DRAFT_DECIDE', 'CREATOR:DRAFT_EDIT']);
+  });
+
+  it('records an operator’s decisions under ADMIN:', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+
+    await approveDraft(deps(), 'd1', 'admin-1');
+    fakeDb.seed('creator_import_drafts', [draftRow({ id: 'd2' })]);
+    await cancelDraft(deps(), 'd2', 'admin-1');
+    fakeDb.seed('creator_import_drafts', [draftRow({ id: 'd3' })]);
+    await editDraft(deps(), 'd3', { ...guacamole.draft, serves: '6' }, 'admin-1');
+
+    expect(loggedEvents()).toEqual(['ADMIN:DRAFT_APPROVE', 'ADMIN:DRAFT_CANCEL', 'ADMIN:DRAFT_EDIT']);
+  });
+
+  it('defaults to admin, because every caller before MEAL-89 was one', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    await approveDraft({ supabase, publisher: deps().publisher, now: () => 1_800_000_000_000 }, 'd1', 'admin-1');
+    expect(loggedEvents()).toEqual(['ADMIN:DRAFT_APPROVE']);
+  });
+
+  it('names the actor, not just the side they are on', async () => {
+    // "A creator decided this" is not the record MEAL-77 needs; "u1 decided this
+    // draft, and it published meal-1" is.
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
+
+    await approveDraft(deps({ role: 'creator' }), 'd1', 'u1');
+
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'CREATOR:DRAFT_DECIDE',
+      userId: 'u1',
+      detail: expect.stringContaining('draft=d1'),
+    }));
   });
 });
 

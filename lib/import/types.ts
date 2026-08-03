@@ -110,7 +110,16 @@ export type FetchFailureReason =
   | 'timeout'
   | 'http-error'
   | 'unsupported-content-type'
-  | 'network-error';
+  | 'network-error'
+  /**
+   * The server answered a conditional request with `304 Not Modified`
+   * (MEAL-75). Not a failure in any ordinary sense — it is the *good* answer,
+   * and the reason a poller that runs every day costs a publisher a few hundred
+   * bytes rather than a page render. It sits in this union because it is the
+   * one other way a fetch can return no body, and only a caller that sent
+   * `If-None-Match`/`If-Modified-Since` can ever see it.
+   */
+  | 'not-modified';
 
 export interface FetchFailure {
   ok: false;

@@ -14,6 +14,9 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolvePhotoUrl } from '@/lib/photos';
+import { platformSourceForUrl, type PlatformSource } from '@/lib/creator-sources';
+import { urlIdentity } from '@/lib/import/ssrf';
+import { videoIdFromUrl } from '@/lib/youtube';
 import { canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft } from '@/lib/import/types';
 
@@ -25,7 +28,16 @@ export interface PublishingCreator {
 }
 
 /** The nine fields a creator meal carries. `CreatorMealDraft` is exactly this shape. */
-export type CreatorMealInput = Partial<CreatorMealDraft> & Pick<CreatorMealDraft, 'name' | 'ingredients'>;
+export type CreatorMealInput = Partial<CreatorMealDraft> & Pick<CreatorMealDraft, 'name' | 'ingredients'> & {
+  /**
+   * One publish attempt's idempotency key, written to `preset_meals`.
+   *
+   * Null for every path that does not mint one — the admin sync publishes a
+   * reviewed batch where the operator's decision is the record, and the partial
+   * unique index leaves those rows alone.
+   */
+  publishToken?: string | null;
+};
 
 /** The inserted row. Returned whole: the publish route hands it straight back. */
 export interface PublishedMeal {
@@ -34,10 +46,347 @@ export interface PublishedMeal {
   [column: string]: unknown;
 }
 
-function withScheme(url?: string | null): string {
+/**
+ * What gets stored in `preset_meals.source`.
+ *
+ * Exported because the duplicate check has to fold the *stored* value, not the
+ * typed one: a creator who types `chefsarah.com/x` today and pastes
+ * `https://chefsarah.com/x` tomorrow published the same link twice, and a
+ * comparison made before this ran would not know it.
+ */
+export function withScheme(url?: string | null): string {
   const value = url?.trim();
   if (!value) return '';
   return value.startsWith('http://') || value.startsWith('https://') ? value : `https://${value}`;
+}
+
+/**
+ * The identity two publishes of one link share, or null when there is no
+ * usable link. `urlIdentity` folds scheme, `www.`, tracking parameters and a
+ * trailing slash — without it `http://x/y`, `https://x/y` and `https://www.x/y`
+ * are three different meals and no duplicate check ever fires.
+ */
+export function publishIdentity(source?: string | null): string | null {
+  const url = withScheme(source);
+  return url ? urlIdentity(url) : null;
+}
+
+// ── One publish attempt, one meal (MEAL-93) ──────────────────────────────────
+
+/**
+ * Longest publish token we will store.
+ *
+ * A UUID is 36 characters and that is what the portal sends; the room above it
+ * is for a client that keys its attempts some other way. The point of a bound is
+ * that this value is written to a column, read back into log lines and compared
+ * on an index forever after, and none of those places want a client-supplied
+ * string of arbitrary length.
+ */
+const MAX_PUBLISH_TOKEN_CHARS = 128;
+
+export type PublishTokenResult =
+  /** `token` is the trimmed key, or null when the request sent none. */
+  | { ok: true; token: string | null }
+  | { ok: false; error: string };
+
+/**
+ * Validates the idempotency key a publish carries.
+ *
+ * A malformed key is refused rather than dropped. Dropping it would publish the
+ * meal with the double-submit protection silently switched off, which is the
+ * failure shape this whole mechanism exists to remove — the same reasoning that
+ * made `normalizePlatformUrl` refuse a non-string instead of folding it to
+ * blank.
+ */
+export function normalizePublishToken(raw: unknown): PublishTokenResult {
+  if (raw === undefined || raw === null) return { ok: true, token: null };
+  if (typeof raw !== 'string') {
+    return { ok: false, error: 'publishToken must be a string.' };
+  }
+  const token = raw.trim();
+  if (!token) return { ok: true, token: null };
+  if (token.length > MAX_PUBLISH_TOKEN_CHARS) {
+    return { ok: false, error: `publishToken must be ${MAX_PUBLISH_TOKEN_CHARS} characters or fewer.` };
+  }
+  return { ok: true, token };
+}
+
+/**
+ * Raised when `(creator_id, publish_token)` is already taken.
+ *
+ * Not an error the caller reports: it means the meal this request asked for
+ * exists, written by the request that got here first. The caller reads it as
+ * success and returns that meal — see `findMealByPublishToken`.
+ */
+export class PublishTokenTaken extends Error {
+  constructor() {
+    super('This publish attempt has already produced a meal.');
+    this.name = 'PublishTokenTaken';
+  }
+}
+
+/** Postgres' unique-violation SQLSTATE, as PostgREST reports it. */
+const UNIQUE_VIOLATION = '23505';
+
+/** The meal a publish token already produced, for the request that lost the race. */
+export async function findMealByPublishToken(
+  supabase: SupabaseClient,
+  creatorId: string,
+  token: string,
+): Promise<PublishedMeal | null> {
+  const { data } = await supabase
+    .from('preset_meals')
+    .select()
+    .eq('creator_id', creatorId)
+    .eq('publish_token', token)
+    .maybeSingle();
+  return (data as PublishedMeal | null) ?? null;
+}
+
+/** A published meal of this creator's that came from the same link. */
+export interface DuplicateSource {
+  id: string;
+  name: string;
+}
+
+/**
+ * How many of a creator's meals the duplicate prompt reads.
+ *
+ * The comparison is on a folded identity, which no index can serve, so this is
+ * an unfiltered read of the creator's own rows. Unbounded it inherits
+ * PostgREST's default page instead — 1000 rows, silently, with no error and no
+ * marker saying the answer was truncated, so the prompt would simply stop firing
+ * for the most prolific creators and nothing would say why. A stated bound with
+ * the newest rows inside it is a limit we chose; the other kind is one we found
+ * out about. Newest first because a repeat publish is a repeat of recent work.
+ *
+ * The prompt is a warning, never a block — the hard guarantee is the claim
+ * below, which is an indexed lookup on one key and is not affected by this.
+ */
+const DUPLICATE_SCAN_LIMIT = 500;
+
+/**
+ * Has this creator already published a meal from this link?
+ *
+ * Compared in memory rather than in SQL because the stored `source` is whatever
+ * the creator typed and the comparison is on its folded identity — there is no
+ * index to use and a creator's own meals are a handful of rows.
+ */
+export async function findMealFromSameLink(
+  supabase: SupabaseClient,
+  creatorId: string,
+  identity: string,
+): Promise<DuplicateSource | null> {
+  const { data } = await supabase
+    .from('preset_meals')
+    .select('id, name, source')
+    .eq('creator_id', creatorId)
+    .not('source', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(DUPLICATE_SCAN_LIMIT);
+
+  const match = ((data ?? []) as Array<Record<string, any>>).find(
+    (meal) => typeof meal.source === 'string' && publishIdentity(meal.source) === identity,
+  );
+  return match ? { id: String(match.id), name: String(match.name ?? '') } : null;
+}
+
+/**
+ * Claims a link for one publish, so a repeat is recognised instead of re-run.
+ *
+ * The prompt in the portal handles the deliberate case — a creator publishing a
+ * second recipe from a post with two of them. It cannot handle a double-click, a
+ * browser retrying a slow POST, or two tabs, because there the second request
+ * arrives before the first has written anything and there is nothing yet to warn
+ * about. That is the same read-then-write race MEAL-91's review found in
+ * `approveDraft`, and it wants the same answer: claim first, and let the
+ * database decide who won.
+ *
+ * The claim is a `creator_source_items` row, keyed exactly the way the one-link
+ * admin sync keys a pasted URL — `(creator_id, source, item_id)` with the folded
+ * identity as the item. That UNIQUE constraint is already the idempotency
+ * guarantee for the poller (MEAL-75), and it serves the same purpose here: two
+ * racing inserts, one winner. It also means a post a creator published by hand
+ * is not later re-imported from underneath them.
+ *
+ * `imported` with **no** `draft_id` is what a hand publish looks like; the sync
+ * always writes a draft id alongside that status. A record carrying one says a
+ * draft exists in the review queue, which is not a published meal and must not
+ * block a creator publishing their own — so it yields rather than refusing.
+ */
+export type PublishClaim =
+  | { ok: true; release: () => Promise<void> }
+  | { ok: false };
+
+/**
+ * How long a hand-publish claim with no meal behind it is believed.
+ *
+ * The caller only claims when no meal of this creator's holds the link, so a
+ * record already sitting there is one of two things: the twin of a request still
+ * in flight, or an orphan whose request died between the claim and the insert.
+ * Nothing on the row tells them apart — `release()` runs from a `catch`, and a
+ * killed function runs no `catch` — so age does. A publish is one photo copy and
+ * one insert inside a serverless invocation that is killed after seconds; five
+ * minutes is far past any of that, which makes a claim older than this one
+ * nobody is coming back for.
+ *
+ * The consequence of the two mistakes is why the window is generous rather than
+ * tight: taking over too early publishes a second meal, waiting too long only
+ * delays a retry the creator can make themselves.
+ */
+export const CLAIM_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * The `item_id` a hand publish's record has to land under.
+ *
+ * Per source, because the poller's key is per source: YouTube records are keyed
+ * on the bare video id (`parseUploadsFeed`), and a record written under a URL is
+ * one the sync will never find — it re-imports the post the creator published by
+ * hand, which is the exact promise this record exists to keep. The folded
+ * identity is right for a website, where a feed's own guid is a URL anyway.
+ *
+ * Instagram and TikTok have no catalog yet (MEAL-82 / 83), so there is no key to
+ * agree with; they fold to the identity and this is the one place that changes
+ * when those land.
+ *
+ * Shared with the one-link admin sync, which starts from a pasted URL for the
+ * same reason a hand publish does. Two hand paths deriving this separately is
+ * how they would come to disagree about what one video is called.
+ */
+export function sourceItemId(source: PlatformSource, identity: string): string {
+  return (source === 'youtube' && videoIdFromUrl(identity)) || identity;
+}
+
+/** Drops a hand publish's claim, so the link can be published from again. */
+async function dropClaim(
+  supabase: SupabaseClient,
+  creatorId: string,
+  source: PlatformSource,
+  itemId: string,
+): Promise<void> {
+  await supabase
+    .from('creator_source_items')
+    .delete()
+    .eq('creator_id', creatorId)
+    .eq('source', source)
+    .eq('item_id', itemId)
+    // Never a record the sync owns. Those carry a draft in the review queue, and
+    // deleting one here would strand it.
+    .is('draft_id', null);
+}
+
+/**
+ * Releases the claim a published meal holds over its link.
+ *
+ * Called when the meal stops holding it — deleted, or edited onto a different
+ * link. Without this the record outlives the meal it was protecting, and since
+ * the record is what the *next* publish is refused against, deleting a meal
+ * (a typo in the title, the wrong photo — the ordinary reasons) would lock its
+ * link out of publishing for good, with an error saying a meal exists that does
+ * not. Deleting rather than reverting to `seen`: the meal is gone, so the post
+ * genuinely is un-imported and a later sync should offer it again.
+ */
+export async function releaseLinkClaim(
+  supabase: SupabaseClient,
+  creatorId: string,
+  sourceUrl: string | null | undefined,
+): Promise<void> {
+  const identity = publishIdentity(sourceUrl);
+  if (!identity) return;
+  const source = platformSourceForUrl(identity);
+  await dropClaim(supabase, creatorId, source, sourceItemId(source, identity));
+}
+
+export async function claimPublishFromLink(
+  supabase: SupabaseClient,
+  creatorId: string,
+  sourceUrl: string,
+  identity: string,
+  now: () => number = Date.now,
+): Promise<PublishClaim> {
+  const source = platformSourceForUrl(identity);
+  const itemId = sourceItemId(source, identity);
+  const nowIso = new Date(now()).toISOString();
+  const detail = 'Published by the creator from the portal.';
+  const key = { creator_id: creatorId, source, item_id: itemId };
+  const noop = { ok: true as const, release: async () => {} };
+
+  const { data: existing } = await supabase
+    .from('creator_source_items')
+    .select('id, status, draft_id, detail, updated_at')
+    .eq('creator_id', creatorId)
+    .eq('source', source)
+    .eq('item_id', itemId)
+    .maybeSingle();
+
+  const record = existing as Record<string, any> | null;
+
+  if (record && record.status === 'imported') {
+    // Somebody holds it. A draft id says the sync does, and a draft is not a
+    // published meal, so it yields.
+    if (record.draft_id) return noop;
+
+    // Ours, and no meal of this creator's is behind it — the caller checked
+    // before it got here. Either a twin request is still in flight or the one
+    // that claimed this never came back. Age is the only thing that tells them
+    // apart, and a stale claim has to be recoverable: it is the difference
+    // between a creator retrying and a link nobody can ever publish from again.
+    const claimedAt = Date.parse(String(record.updated_at ?? ''));
+    if (!Number.isFinite(claimedAt) || now() - claimedAt <= CLAIM_GRACE_MS) {
+      return { ok: false };
+    }
+
+    // Taken over with the timestamp as the condition, so two requests that both
+    // decide it is stale cannot both win — the same "the write is the test"
+    // shape as the branch below, on the one column that distinguishes them.
+    const { data: taken } = await supabase
+      .from('creator_source_items')
+      .update({ detail, updated_at: nowIso })
+      .eq('id', record.id)
+      .eq('updated_at', record.updated_at)
+      .select('id');
+    if (!Array.isArray(taken) || taken.length === 0) return { ok: false };
+    return { ok: true, release: () => dropClaim(supabase, creatorId, source, itemId) };
+  }
+
+  if (record) {
+    // A `seen`, `failed` or `rejected` record from a sync or the poller. Claimed
+    // with the same conditional-update shape `decideDraft` uses: the write is
+    // the test, so two requests cannot both read `seen` and both proceed.
+    const { data: claimed } = await supabase
+      .from('creator_source_items')
+      .update({ status: 'imported', detail, updated_at: nowIso })
+      .eq('id', record.id)
+      .neq('status', 'imported')
+      .select('id');
+    if (!Array.isArray(claimed) || claimed.length === 0) return { ok: false };
+    const previous = String(record.status);
+    return {
+      ok: true,
+      release: async () => {
+        await supabase
+          .from('creator_source_items')
+          .update({ status: previous, detail: record.detail ?? null, updated_at: new Date(now()).toISOString() })
+          .eq('id', record.id);
+      },
+    };
+  }
+
+  // No record at all. The insert is the atomic decider: the loser of a race gets
+  // the unique violation rather than a second meal.
+  const { error } = await supabase
+    .from('creator_source_items')
+    .insert({ ...key, url: sourceUrl, status: 'imported', detail, updated_at: nowIso });
+  if (error) return { ok: false };
+
+  return {
+    ok: true,
+    // A claim with no meal behind it would block this link forever, and the
+    // creator would be told they had already published something that does not
+    // exist. Released the moment the insert it was protecting fails — and, for
+    // the failure no `catch` can see, aged out by `CLAIM_GRACE_MS` above.
+    release: () => dropClaim(supabase, creatorId, source, itemId),
+  };
 }
 
 /**
@@ -88,11 +437,24 @@ export async function publishCreatorMeal(
       photo_url:  photoUrl || null,
       difficulty: input.difficulty || null,
       serves:     input.serves || null,
+      // Only when one was minted. The index is partial, so a null here is a row
+      // that simply does not take part — which is every meal published before
+      // this existed and every meal the admin sync publishes.
+      ...(input.publishToken ? { publish_token: input.publishToken } : {}),
+      // The canonicalised list from above, not `input.tags`: the row that lands
+      // in `preset_meals` has to be the same list the cap was counted against.
       ...(tags && tags.length ? { tags } : {}),
     })
     .select()
     .single();
 
+  // The index decided that this attempt's meal already exists. Told apart from
+  // every other insert failure here rather than by the caller matching on a
+  // message, because the two answers are opposites: one is a 500, the other is
+  // the meal the creator asked for.
+  if (error && (error as { code?: string }).code === UNIQUE_VIOLATION && input.publishToken) {
+    throw new PublishTokenTaken();
+  }
   if (error || !data) {
     throw new Error(error?.message ?? 'The meal could not be saved.');
   }

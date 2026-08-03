@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   runViabilityCheck,
   SOURCE_PROBES,
@@ -7,6 +7,7 @@ import {
 } from '@/lib/import/viability';
 import type { PlatformSource } from '@/lib/creator-sources';
 import { failingCaller, publicLookup, stubCaller, stubFetch, type StubRoute } from '../helpers/import-stubs';
+import { __resetUploadsPlaylistCache } from '@/lib/youtube';
 
 const HOME = 'https://chefsarah.test/';
 
@@ -302,41 +303,51 @@ describe('import/viability — only the creator’s own pages are read', () => {
   });
 });
 
-// ── YouTube (MEAL-74) ────────────────────────────────────────────────────────
+// ── YouTube (MEAL-74, amended by MEAL-79) ───────────────────────────────────
 
-describe('import/viability — the YouTube probe measures a channel for free', () => {
+describe('import/viability — the YouTube probe needs a grant, and says so when there is none', () => {
   const CHANNEL_ID = 'UCabcdefghijklmnopqrstuv';
-  const UPLOADS_FEED = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
+  const PLAYLIST_ID = 'UUabcdefghijklmnopqrstuv';
+  const YT_API = 'https://www.googleapis.com/youtube/v3';
+
+  // The uploads playlist id is memoised per channel for the life of the
+  // process, so one probe would otherwise pay for the `channels.list` and every
+  // later one in this file would silently skip it.
+  beforeEach(__resetUploadsPlaylistCache);
+
+  const CHANNELS_URL = `${YT_API}/channels?${new URLSearchParams({ part: 'contentDetails', id: CHANNEL_ID })}`;
+  const UPLOADS_URL = `${YT_API}/playlistItems?${new URLSearchParams({
+    part: 'snippet,contentDetails,status',
+    playlistId: PLAYLIST_ID,
+    maxResults: '10',
+  })}`;
 
   /** A description long enough that the gate would judge it rather than call it thin. */
   const RECIPE_DESCRIPTION = `Ingredients:\n2 ripe avocados\n1 lime\n${'Mash them together and season well. '.repeat(8)}`;
 
-  function uploadsFeed(entries: Array<{ id: string; title: string; description: string }>): string {
-    const xml = entries
-      .map(
-        (entry) =>
-          `<entry><id>yt:video:${entry.id}</id><yt:videoId>${entry.id}</yt:videoId>` +
-          `<title>${entry.title}</title>` +
-          `<published>2026-07-29T09:00:00+00:00</published>` +
-          `<media:group><media:description>${entry.description}</media:description>` +
-          `<media:thumbnail url="https://i.ytimg.com/vi/${entry.id}/hqdefault.jpg"/></media:group></entry>`,
-      )
-      .join('');
-    return `<feed xmlns:yt="y" xmlns:media="m">${xml}</feed>`;
+  function jsonRoute(body: unknown): StubRoute {
+    return { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } };
   }
 
-  function channelRoutes(body: string): Record<string, StubRoute> {
-    return { [UPLOADS_FEED]: { body, headers: { 'content-type': 'text/xml' } } };
+  function channelRoutes(entries: Array<{ id: string; title: string; description: string }>): Record<string, StubRoute> {
+    return {
+      [CHANNELS_URL]: jsonRoute({ items: [{ contentDetails: { relatedPlaylists: { uploads: PLAYLIST_ID } } }] }),
+      [UPLOADS_URL]: jsonRoute({
+        items: entries.map((entry) => ({
+          contentDetails: { videoId: entry.id, videoPublishedAt: '2026-07-29T09:00:00Z' },
+          status: { privacyStatus: 'public' },
+          snippet: { title: entry.title, description: entry.description, videoOwnerChannelId: CHANNEL_ID },
+        })),
+      }),
+    };
   }
 
-  it('gates each video on its title and description, fetching only the feed', async () => {
+  it('gates each video on its title and description, listing one page and nothing else', async () => {
     const { calls, fetchOptions: opts } = fetchOptions(
-      channelRoutes(
-        uploadsFeed([
-          { id: 'vid0000000A', title: 'Best Guacamole', description: RECIPE_DESCRIPTION },
-          { id: 'vid0000000B', title: 'Grocery haul', description: RECIPE_DESCRIPTION },
-        ]),
-      ),
+      channelRoutes([
+        { id: 'vid0000000A', title: 'Best Guacamole', description: RECIPE_DESCRIPTION },
+        { id: 'vid0000000B', title: 'Grocery haul', description: RECIPE_DESCRIPTION },
+      ]),
     );
     const call = stubCaller((request) =>
       request.prompt.includes('TITLE: Best Guacamole')
@@ -347,22 +358,21 @@ describe('import/viability — the YouTube probe measures a channel for free', (
     const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
       call,
       fetchOptions: opts,
-      grant: { externalId: CHANNEL_ID, accessToken: null },
+      grant: { externalId: CHANNEL_ID, accessToken: 'ya29-token' },
     });
 
     expect(report.checked).toBe(2);
     expect(report.passed).toBe(1);
-    // One request for the whole measurement. No video page, no API quota — which
-    // is what lets this run before the creator has connected anything.
-    expect(calls).toEqual([UPLOADS_FEED]);
+    // Two units for the whole measurement. No video page opened, and no caption
+    // downloaded — a haul is rejected on its description first.
+    expect(calls).toEqual([CHANNELS_URL, UPLOADS_URL]);
   });
 
-  it('measures a channel with no OAuth grant at all, from the public feed', async () => {
+  it('reports "not measurable until connected" rather than a verdict, with no grant', async () => {
     const { calls, fetchOptions: opts } = fetchOptions({
       'https://youtube.com/@sarah': {
         body: `<html><link rel="canonical" href="https://www.youtube.com/channel/${CHANNEL_ID}"></html>`,
       },
-      ...channelRoutes(uploadsFeed([{ id: 'vid0000000A', title: 'Best Guacamole', description: RECIPE_DESCRIPTION }])),
     });
 
     const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
@@ -370,22 +380,29 @@ describe('import/viability — the YouTube probe measures a channel for free', (
       fetchOptions: opts,
     });
 
-    // Application review happens before anyone has connected a channel, so a
-    // probe that needed a grant would never run when it is actually wanted.
-    expect(report.outcome).toBe('viable');
-    expect(calls).toEqual(['https://youtube.com/robots.txt', 'https://youtube.com/@sarah', UPLOADS_FEED]);
+    // The free lister was the uploads feed and `youtube.com/robots.txt`
+    // disallows it, so this cannot run before the creator connects. Rendering
+    // that as "not viable" is the exact failure `unavailable` was drawn to
+    // avoid — a check that could not run must never look like one that failed.
+    expect(report.outcome).toBe('unavailable');
+    expect(report.outcome).not.toBe('not-viable');
+    expect(report.summary).toMatch(/not measurable until connected/i);
+    // And nothing is fetched to find out: no channel page, no weaker pre-check.
+    expect(calls).toEqual([]);
   });
 
   it('reports a video with no description and no captions rather than gating it', async () => {
     const { fetchOptions: opts } = fetchOptions(
-      channelRoutes(uploadsFeed([{ id: 'vid0000000A', title: 'Sunday vlog', description: '' }])),
+      channelRoutes([{ id: 'vid0000000A', title: 'Sunday vlog', description: '' }]),
     );
     const call = stubCaller(() => ({ verdict: 'yes', reason: 'x' }));
 
     const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
       call,
       fetchOptions: opts,
-      grant: { externalId: CHANNEL_ID, accessToken: null },
+      // A grant with no caption track behind it: the caption list 404s through
+      // the stub, so the document degrades to the empty description.
+      grant: { externalId: CHANNEL_ID, accessToken: 'ya29-token' },
     });
 
     // Counting it as "not a recipe" would measure our access rather than the
@@ -396,17 +413,26 @@ describe('import/viability — the YouTube probe measures a channel for free', (
     expect(call.requests).toEqual([]);
   });
 
-  it('reports unavailable when the channel id cannot be worked out', async () => {
-    const { fetchOptions: opts } = fetchOptions({ 'https://youtube.com/@sarah': { body: '<html></html>' } });
+  it('measures the grant’s channel or none, never the one the creator’s link names', async () => {
+    // A live grant whose row carries no channel id, and a link naming somebody
+    // else's channel outright. The probe used to fall back to the link, so this
+    // measured the stranger's back catalogue and reported it as this creator's
+    // viability — the same fallback, and the same harm, as `channelIdForCreator`.
+    const { calls, fetchOptions: opts } = fetchOptions({
+      'https://youtube.com/channel/UCzzzzzzzzzzzzzzzzzzzzzz': { body: '<html></html>' },
+    });
 
-    const report = await runViabilityCheck('youtube', 'https://youtube.com/@sarah', {
+    const report = await runViabilityCheck('youtube', 'https://youtube.com/channel/UCzzzzzzzzzzzzzzzzzzzzzz', {
       call: stubCaller(() => ({ verdict: 'yes', reason: 'x' })),
       fetchOptions: opts,
+      grant: { externalId: null, accessToken: 'ya29-token' },
     });
 
     expect(report.outcome).toBe('unavailable');
     expect(report.outcome).not.toBe('viable');
-    expect(report.summary).toMatch(/did not name a channel id/);
+    expect(report.summary).toMatch(/carries no channel id/);
+    // Nothing is read at all: not the stranger's channel, not their uploads.
+    expect(calls).toEqual([]);
   });
 });
 

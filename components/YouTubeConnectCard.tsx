@@ -20,6 +20,7 @@ import { useEffect, useState } from 'react';
  */
 
 interface Status {
+  hasChannel: boolean;
   connected: boolean;
   channel: { id: string | null; title: string | null } | null;
   brokenReason: string | null;
@@ -149,6 +150,22 @@ export default function YouTubeConnectCard() {
   };
 
   if (loading || !status) return null;
+
+  /**
+   * Nothing at all for a creator with no YouTube channel (MEAL-78).
+   *
+   * Hidden, not disabled. The append consent below is a permission over property
+   * that is not ours, and a permission prompt about a channel that does not
+   * exist is one a creator learns to click past — which is exactly what makes
+   * the next one worthless. A creator who starts a channel later adds the link
+   * in the editor above (MEAL-94) and this appears.
+   *
+   * The consent tick stays part of *connecting* rather than waiting for a
+   * connection to exist: the Google screen asks for the write scope either way,
+   * so a "Connect YouTube" button with no tick beside it would acquire
+   * description-write access without ever naming it (MEAL-74).
+   */
+  if (!status.hasChannel) return null;
 
   /**
    * A grant row exists — healthy or broken. Broken still needs reconnecting,

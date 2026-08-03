@@ -46,6 +46,11 @@ export const MEAL_TAGS = [
  * `tags` column already imports this module. It was a literal `3` in five
  * places, and the two that enforced nothing at all — `POST /api/creator/meals`
  * and the draft PATCH — are how a six-tag meal reached Discover.
+ *
+ * Deliberately NOT applied by `canonicalizeTags`, which is also the extraction
+ * path: the model is asked for up to eight and the confidence model assesses
+ * every one it returns. Trimming there would drop tags before anybody had
+ * decided which three to keep.
  */
 export const MAX_MEAL_TAGS = 3;
 
@@ -129,8 +134,9 @@ export function servesChangeError(incoming: string, stored: unknown): string | n
  *
  * Selected → deselected; unselected → selected if there is room; at the cap →
  * nothing at all. Three hand-written copies of that rule existed (the creator
- * portal, `my-meals`, the admin draft editor) and one of them counted to a
- * literal `3`. It is the client half of a rule the server refuses on, so it is
+ * portal, `my-meals`, and `components/DraftEditor` — which both review queues
+ * now share) and one of them counted to a literal `3`. It is the client half of
+ * a rule the server refuses on, so it is
  * worth having exactly once and testing exactly once — the copies were the only
  * guard in the tag-cap change with no failing test behind it.
  *

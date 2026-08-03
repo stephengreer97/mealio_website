@@ -106,6 +106,31 @@ describe('POST /api/auth/login', () => {
     expect(lookup?.args[1]).toBe(hashToken('device-token'));
   });
 
+  it('500 when the code could not be sent, rather than a prompt for a code nobody has', async () => {
+    // Resend does not throw on a refusal, it resolves with `{ error }`, so an
+    // unchecked send made a bad key look exactly like a delivered message: the
+    // route logged `AUTH:2FA_SENT` success and the browser asked for a code that
+    // was never sent, which no amount of retrying could produce. `lib/email.ts`
+    // now throws on that, and this is where the throw has to land.
+    signInWithPassword.mockResolvedValue(CONFIRMED_USER);
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'free', is_admin: false } });
+    fakeDb.queue('creators', { data: { id: 'creator-1' } });
+    fakeDb.queue('otp_codes', { error: null });
+    fakeDb.queue('otp_codes', { error: null });
+    vi.mocked(sendOtpEmail).mockRejectedValueOnce(
+      new Error('Resend refused the login code email: The domain is not verified.'));
+
+    const res = await POST(loginRequest());
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.requiresTwoFactor).toBeUndefined();
+    expect(body.twoFactorToken).toBeUndefined();
+    // And no session either — a failed send must not become a way in.
+    expect(body.accessToken).toBeUndefined();
+    expect(res.headers.get('set-cookie') ?? '').not.toContain('mealio_session=');
+  });
+
   it('500 when the OTP insert fails (no silent 2FA bypass)', async () => {
     signInWithPassword.mockResolvedValue(CONFIRMED_USER);
     fakeDb.queue('user_profiles', { data: { subscription_tier: 'free', is_admin: true } });

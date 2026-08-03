@@ -92,7 +92,42 @@ describe('/api/admin/sync/catalog', () => {
     }));
 
     expect(res.status).toBe(200);
-    expect(buildCatalog).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 'c1' }), 'website');
+    expect(buildCatalog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'c1' }),
+      'website',
+      { pageToken: null },
+    );
+  });
+
+  it('carries a page cursor through, so the second window of a back catalogue is reachable', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+    buildCatalog.mockResolvedValue({ ok: true, source: 'youtube', feed: null, entries: [], truncated: false });
+
+    const res = await CATALOG(jsonRequest('/api/admin/sync/catalog', {
+      token,
+      body: { creatorId: 'c1', source: 'youtube', pageToken: 'CDIQAA' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(buildCatalog).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'youtube', { pageToken: 'CDIQAA' });
+  });
+
+  it('refuses a page cursor that is not one YouTube issued, before anything is listed', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+
+    const res = await CATALOG(jsonRequest('/api/admin/sync/catalog', {
+      token,
+      body: { creatorId: 'c1', source: 'youtube', pageToken: 'https://evil.test/ ?x' },
+    }));
+
+    // The cursor cannot point the listing at another channel — the playlist is
+    // resolved from the grant — but an unbounded string from a request body
+    // still does not get interpolated into an outbound URL.
+    expect(res.status).toBe(400);
+    expect(buildCatalog).not.toHaveBeenCalled();
   });
 
   it('422 when the source cannot be listed, carrying the explanation', async () => {
@@ -129,6 +164,26 @@ describe('POST /api/admin/sync', () => {
     expect(insert?.args[0]).toMatchObject({ mode: 'link', source: 'website', requested_by: 'admin-1' });
     expect(insert?.args[0].items).toHaveLength(1);
     expect(insert?.args[0].items[0]).toMatchObject({ url: 'https://chefsarah.test/guacamole', status: 'pending' });
+  });
+
+  it('keys a pasted YouTube link on the video id, not on the URL', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: CREATOR });
+    fakeDb.queue('creator_sync_runs', { data: insertedRun([]) });
+
+    const res = await POST(jsonRequest('/api/admin/sync', {
+      token,
+      body: { creatorId: 'c1', mode: 'link', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
+    }));
+
+    expect(res.status).toBe(201);
+    const insert = fakeDb.calls.find((c) => c.table === 'creator_sync_runs' && c.method === 'insert');
+    // The id the uploads feed uses. Keyed on the URL the worker looks the video
+    // up by a string the channel map has never heard of and fails the item with
+    // "no longer in the channel's recent uploads" — a sentence about the video
+    // rather than about the key, which is the worst kind of wrong message.
+    expect(insert?.args[0].items[0]).toMatchObject({ itemId: 'dQw4w9WgXcQ' });
+    expect(insert?.args[0]).toMatchObject({ source: 'youtube' });
   });
 
   it('never writes a preset meal — a run only enqueues (MEAL-91)', async () => {
