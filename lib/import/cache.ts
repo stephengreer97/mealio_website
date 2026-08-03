@@ -14,7 +14,8 @@
  * cross-instance hits worth having.
  */
 
-import type { GateVerdict, ImportResult } from './types';
+import { createHash } from 'crypto';
+import type { GateVerdict, ImportResult, SourceDocument } from './types';
 
 export interface ImportCache {
   get<T>(key: string): Promise<T | null>;
@@ -75,11 +76,43 @@ export const IMPORT_TTL_MS = 60 * 60 * 1000;
 /** Gate verdicts are cheap to re-derive but change even less often. */
 export const GATE_TTL_MS = 24 * 60 * 60 * 1000;
 
-// Keyed on `urlIdentity`, not `normalizeUrl`: three spellings of one link
-// (http/https, with and without `www.`) are one page, and paying for the same
-// extraction three times is the cheap half of that mistake.
-export const importKey = (url: string) => `import:v1:${urlIdentity(url) ?? url}`;
-export const gateKey = (url: string) => `gate:v1:${urlIdentity(url) ?? url}`;
+/**
+ * Distinguishes two documents that share a URL.
+ *
+ * One URL is not one document. A YouTube watch link fetched as a page is a
+ * JavaScript shell with no recipe in it; the same link supplied by MEAL-74 as
+ * title + description + captions is the recipe itself. Keyed on the URL alone
+ * they share a cache entry, and whichever ran first decides for the other.
+ *
+ * Only the fields the gate and the extractor actually read, so a document that
+ * differs solely in, say, its thumbnail URL still hits. Joined on a NUL, which
+ * cannot occur in any of them, so no two field splits produce one digest.
+ */
+export function documentFingerprint(document: SourceDocument): string {
+  return createHash('sha256')
+    .update([document.title, document.text, document.recipeText, document.jsonLdRaw ?? ''].join('\u0000'))
+    .digest('hex')
+    .slice(0, 32);
+}
+
+/**
+ * Two independent reasons a key is not just the URL, and both apply.
+ *
+ * `urlIdentity` rather than the raw string: three spellings of one link
+ * (http/https, with and without `www.`) are one page, and paying for the same
+ * extraction three times is the cheap half of that mistake.
+ *
+ * `scope` is absent for a fetched page — the URL is the whole identity, and the
+ * keys stay exactly what they were before — and is a document fingerprint when
+ * the caller supplied the content themselves, per the note above.
+ */
+const scoped = (prefix: string, url: string, scope?: string) => {
+  const identity = urlIdentity(url) ?? url;
+  return scope ? prefix + ':' + identity + ':' + scope : prefix + ':' + identity;
+};
+
+export const importKey = (url: string, scope?: string) => scoped('import:v1', url, scope);
+export const gateKey = (url: string, scope?: string) => scoped('gate:v1', url, scope);
 
 /** The process-wide default. Swap via `runImport({ cache })` in tests. */
 export const defaultImportCache = new MemoryImportCache();

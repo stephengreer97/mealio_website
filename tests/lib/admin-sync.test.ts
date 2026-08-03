@@ -4,6 +4,7 @@ import { fakeDb } from '../helpers/supabase-mock';
 import { publicLookup, stubFetch } from '../helpers/import-stubs';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 import type { ImportResult, ImportSuccess } from '@/lib/import/types';
+import type { RunImportOptions } from '@/lib/import/pipeline';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
@@ -56,6 +57,47 @@ const CREATOR = {
 };
 
 const supabase = fakeDb as unknown as SupabaseClient;
+
+// ── YouTube fixtures (MEAL-74) ───────────────────────────────────────────────
+
+const CHANNEL_ID = 'UCabcdefghijklmnopqrstuv';
+const UPLOADS_FEED = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
+
+/** The grant row `creator_platform_accounts` hands back for a connected channel. */
+function connectionRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'pa1',
+    creator_id: 'c1',
+    platform: 'youtube',
+    external_id: CHANNEL_ID,
+    external_name: 'Chef Sarah',
+    access_token: 'ya29-token',
+    refresh_token: '1//refresh',
+    scopes: 'https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.force-ssl',
+    // Well past `now()` in these tests, so nothing tries to refresh.
+    expires_at: '2099-01-01T00:00:00.000Z',
+    broken_reason: null,
+    broken_at: null,
+    ...overrides,
+  };
+}
+
+/** An uploads feed carrying one entry per id, each with a real ingredient list. */
+function uploadsFeed(ids: string[], description = 'Ingredients:\n2 avocados\n1 lime\n\nMash them together.'): string {
+  const entries = ids
+    .map(
+      (id) =>
+        `<entry><id>yt:video:${id}</id><yt:videoId>${id}</yt:videoId>` +
+        `<title>Best Guacamole ${id}</title>` +
+        `<link rel="alternate" href="https://www.youtube.com/watch?v=${id}"/>` +
+        `<published>2026-07-29T09:00:00+00:00</published>` +
+        `<media:group><media:title>Best Guacamole ${id}</media:title>` +
+        `<media:thumbnail url="https://i.ytimg.com/vi/${id}/hqdefault.jpg"/>` +
+        `<media:description>${description}</media:description></media:group></entry>`,
+    )
+    .join('');
+  return `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/">${entries}</feed>`;
+}
 
 function item(overrides: Partial<SyncItem> = {}): SyncItem {
   return {
@@ -198,10 +240,56 @@ describe('buildCatalog — drawing the list is free', () => {
   it('says a platform is not connected rather than showing an empty list', async () => {
     // An empty list would read as "this creator publishes nothing", which is the
     // one thing it must not mean.
+    const result = await buildCatalog({ supabase }, CREATOR, 'instagram');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toMatch(/MEAL-82/);
+  });
+
+  it('lists a connected channel from the uploads feed, fetching no video (MEAL-74)', async () => {
+    const { impl, calls } = stubFetch({
+      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A', 'vid0000000B']), headers: { 'content-type': 'text/xml' } },
+    });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      { ...CREATOR, youtube_url: 'https://youtube.com/@sarah' },
+      'youtube',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The bare video id, because MEAL-79 keys "this meal came from that video"
+    // on it and every YouTube API call takes the same form.
+    expect(result.entries.map((entry) => entry.itemId)).toEqual(['vid0000000A', 'vid0000000B']);
+    expect(result.entries[0].url).toBe('https://www.youtube.com/watch?v=vid0000000A');
+    // One request for the whole channel. No video opened, no model called.
+    expect(calls).toEqual([UPLOADS_FEED]);
+  });
+
+  it('takes the channel id from the grant rather than the creator-supplied link', async () => {
+    const { impl, calls } = stubFetch({
+      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A']), headers: { 'content-type': 'text/xml' } },
+    });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+
+    await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      // A link pointing at somebody else's channel entirely. The grant wins, so
+      // the page behind this URL is never even read.
+      { ...CREATOR, youtube_url: 'https://youtube.com/channel/UCzzzzzzzzzzzzzzzzzzzzzz' },
+      'youtube',
+    );
+
+    expect(calls).toEqual([UPLOADS_FEED]);
+  });
+
+  it('refuses a YouTube catalog for a creator with neither a grant nor a link', async () => {
     const result = await buildCatalog({ supabase }, CREATOR, 'youtube');
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.detail).toMatch(/MEAL-74/);
+    expect(result.detail).toMatch(/connect YouTube/i);
   });
 });
 
@@ -227,6 +315,48 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     // published as well as queued.
     expect(publishCreatorMeal).not.toHaveBeenCalled();
     expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
+  });
+
+  it('imports a video from the channel description, never from its watch page (MEAL-74)', async () => {
+    const { impl, calls } = stubFetch({
+      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A']), headers: { 'content-type': 'text/xml' } },
+    });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    const importer = vi.fn(async (_url: string, _options: RunImportOptions) => success);
+
+    await processSyncItem(
+      deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      run([], { source: 'youtube' }),
+      { ...CREATOR, youtube_url: 'https://youtube.com/@sarah' },
+      item({ itemId: 'vid0000000A', url: 'https://www.youtube.com/watch?v=vid0000000A' }),
+    );
+
+    // `watch?v=…` is a JavaScript shell. Fetching it would have the gate report,
+    // truthfully, that there is no recipe on it — and an operator would read
+    // that as a verdict on the video rather than on our reach.
+    const options = importer.mock.calls[0][1];
+    expect(options.document?.platform).toBe('youtube');
+    expect(options.document?.text).toContain('2 avocados');
+    expect(calls).toEqual([UPLOADS_FEED]);
+  });
+
+  it('fails a video that has dropped out of the uploads feed rather than falling back to the page', async () => {
+    const { impl } = stubFetch({
+      [UPLOADS_FEED]: { body: uploadsFeed(['vid0000000A']), headers: { 'content-type': 'text/xml' } },
+    });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow() });
+    const importer = vi.fn(async () => success);
+
+    const result = await processSyncItem(
+      deps({ importer, fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      run([], { source: 'youtube' }),
+      { ...CREATOR, youtube_url: 'https://youtube.com/@sarah' },
+      item({ itemId: 'vid0000000Z', url: 'https://www.youtube.com/watch?v=vid0000000Z' }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.detail).toMatch(/no longer in the channel/i);
+    expect(importer).not.toHaveBeenCalled();
   });
 
   it('stores the field-level confidence rather than discarding it', async () => {

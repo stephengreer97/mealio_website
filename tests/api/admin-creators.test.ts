@@ -66,6 +66,41 @@ describe('/api/admin/creators', () => {
     expect(body.creators[0]).toMatchObject({ website_url: 'https://chefsarah.test/', primary_source: 'website' });
   });
 
+  it('lists connected platforms without carrying a token into the response', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: [READY] });
+    fakeDb.queue('creator_platform_accounts', {
+      data: [
+        {
+          creator_id: 'c1',
+          platform: 'youtube',
+          external_id: 'UCabcdefghijklmnopqrstuv',
+          external_name: 'Chef Sarah',
+          broken_reason: 'Token has been expired or revoked.',
+          broken_at: '2026-08-01T00:00:00.000Z',
+        },
+      ],
+    });
+
+    const body = await (await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }))).json();
+
+    // A broken grant is otherwise indistinguishable from a creator who published
+    // nothing, so it belongs on the list an operator already reads.
+    expect(body.creators[0].connections).toEqual([
+      {
+        platform: 'youtube',
+        externalId: 'UCabcdefghijklmnopqrstuv',
+        externalName: 'Chef Sarah',
+        brokenReason: 'Token has been expired or revoked.',
+        brokenAt: '2026-08-01T00:00:00.000Z',
+      },
+    ]);
+    // Column-by-column selection, not `select *`: this table holds refresh tokens.
+    const select = fakeDb.calls.find((call) => call.table === 'creator_platform_accounts' && call.method === 'select');
+    expect(select?.args[0]).not.toContain('refresh_token');
+    expect(select?.args[0]).not.toContain('access_token');
+  });
+
   it('sets the primary source', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: { ...READY, primary_source: 'none' } });

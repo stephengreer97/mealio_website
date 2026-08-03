@@ -76,6 +76,17 @@ export interface SafeFetchOptions {
    * that we then re-serve from our own origin.
    */
   requireContentType?: boolean;
+  /**
+   * Extra request headers, for the one caller that fetches an API of ours
+   * rather than a page a stranger chose (MEAL-74's caption download).
+   *
+   * **Dropped the moment a redirect leaves the origin they were sent to.** An
+   * `authorization` header followed across hosts hands a creator's OAuth token
+   * to whoever the redirect names, and redirects here are attacker-influenced
+   * by construction. Google's media downloads redirect to a pre-signed URL that
+   * needs no credential, so nothing legitimate wants them carried over.
+   */
+  headers?: Record<string, string>;
   maxBytes?: number;
   timeoutMs?: number;
   maxRedirects?: number;
@@ -512,6 +523,14 @@ export async function safeFetch(
   const deadline = now() + timeoutMs;
   const redirects: string[] = [];
   let current = rawUrl;
+  /** The origin `options.headers` were meant for. Unparseable means nowhere. */
+  const credentialOrigin = (() => {
+    try {
+      return new URL(rawUrl).origin;
+    } catch {
+      return null;
+    }
+  })();
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
     const remaining = deadline - now();
@@ -552,11 +571,16 @@ export async function safeFetch(
     try {
       let response: Response;
       try {
+        const sameOrigin = credentialOrigin !== null && new URL(current).origin === credentialOrigin;
         response = await fetchImpl(current, {
           method: 'GET',
           redirect: 'manual',
           signal: controller.signal,
-          headers: { 'user-agent': USER_AGENT, accept: 'text/html,application/xhtml+xml' },
+          headers: {
+            'user-agent': USER_AGENT,
+            accept: 'text/html,application/xhtml+xml',
+            ...(sameOrigin ? options.headers : undefined),
+          },
         });
       } catch (err) {
         const aborted = err instanceof Error && err.name === 'AbortError';

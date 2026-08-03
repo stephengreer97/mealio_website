@@ -3,7 +3,7 @@ import { runImport } from '@/lib/import/pipeline';
 import { toSourceDocument } from '@/lib/import/html';
 import { MemoryImportCache } from '@/lib/import/cache';
 import { EXTRACTION_MODEL, GATE_MODEL, type StructuredCaller } from '@/lib/import/anthropic';
-import type { ImportTelemetry } from '@/lib/import/types';
+import type { ImportTelemetry, SourceDocument } from '@/lib/import/types';
 import { formatTelemetry } from '@/lib/import/telemetry';
 import {
   brokenCache,
@@ -692,5 +692,104 @@ describe('import/pipeline — reader comments cannot launder a hallucination', (
     if (result.status !== 'ok') throw new Error('unreachable');
     expect(result.confidence.name.level).toBe('green');
     expect(result.confidence.ingredients[0].level).toBe('green');
+  });
+});
+
+/**
+ * The `document` seam (MEAL-74). Not every source is a page: a YouTube video's
+ * document is its title, description and captions, and fetching `watch?v=…`
+ * gets a JavaScript shell with no recipe in it.
+ */
+describe('import/pipeline — a caller-supplied document', () => {
+  const WATCH_URL = 'https://www.youtube.com/watch?v=abc12345678';
+  const SHELL = '<html><head><title>Perfect Guacamole</title></head><body><div id="app">Loading…</div></body></html>';
+
+  // Past the gate's 250-character thin-content floor, the way a real
+  // description with an ingredient list in it is.
+  const videoText = [
+    'Ingredients:',
+    '4 medium ripe avocados, halved and pitted',
+    '1 lime, juiced',
+    '1/2 small white onion, finely chopped',
+    '2 tablespoons chopped fresh cilantro',
+    '1/2 teaspoon fine sea salt, plus more to taste',
+    '',
+    'Scoop the avocados into a bowl and mash them with a fork until mostly smooth.',
+    'Stir through the lime juice, onion, cilantro and salt, then taste and adjust.',
+    'Serve straight away with tortilla chips.',
+  ].join('\n');
+
+  const videoDocument = (): SourceDocument => ({
+    url: WATCH_URL,
+    title: 'Perfect Guacamole',
+    text: videoText,
+    recipeText: videoText,
+    jsonLd: null,
+    structuredSource: null,
+    jsonLdRaw: null,
+    imageUrl: null,
+    platform: 'youtube',
+  });
+
+  function videoOptions(overrides: Record<string, unknown> = {}) {
+    const { impl } = stubFetch({
+      'https://www.youtube.com/robots.txt': { body: '' },
+      [WATCH_URL]: { body: SHELL },
+    });
+    return {
+      cache,
+      telemetry: (event: ImportTelemetry) => events.push(event),
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+      ...overrides,
+    };
+  }
+
+  const recipeCaller = () =>
+    stubCaller((request) =>
+      request.model === GATE_MODEL
+        ? { verdict: 'yes', reason: 'Ingredients and a method.' }
+        : extractionFixture(),
+    );
+
+  it('is gated on its own content, not on the shell already cached for that URL', async () => {
+    const call = recipeCaller();
+
+    const shell = await runImport(WATCH_URL, videoOptions({ call }));
+    expect(shell.status).toBe('rejected');
+
+    const supplied = await runImport(WATCH_URL, videoOptions({ call, document: videoDocument() }));
+
+    // Both keys were the URL alone, and the cache read came before the
+    // `document` branch — so the shell's "not a recipe" was served straight
+    // back for the real document, `call` was never reached, and the seam that
+    // exists to prevent exactly this failure reproduced it.
+    expect(supplied.meta.cached).toBe(false);
+    expect(supplied.status).toBe('ok');
+  });
+
+  it('does not let a verdict earned from a document decide for the page', async () => {
+    const call = recipeCaller();
+
+    const supplied = await runImport(WATCH_URL, videoOptions({ call, document: videoDocument() }));
+    expect(supplied.status).toBe('ok');
+
+    const page = await runImport(WATCH_URL, videoOptions({ call }));
+
+    // The other direction of the same collision: a video gated "yes" from its
+    // description used to make a later shell fetch skip the gate and extract a
+    // recipe from an empty page.
+    expect(page.status).toBe('rejected');
+  });
+
+  it('still serves an identical document from cache the second time', async () => {
+    const call = recipeCaller();
+
+    const first = await runImport(WATCH_URL, videoOptions({ call, document: videoDocument() }));
+    const second = await runImport(WATCH_URL, videoOptions({ call, document: videoDocument() }));
+
+    // The admin sync re-reads the same feed; keying on content must not cost
+    // idempotency for the case the cache was built for.
+    expect(first.meta.cached).toBe(false);
+    expect(second.meta.cached).toBe(true);
   });
 });

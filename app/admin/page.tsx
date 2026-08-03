@@ -135,6 +135,8 @@ interface CreatorSource {
   primary_source: PrimarySource;
   import_opt_in: boolean;
   feed_url: string | null;
+  /** OAuth grants, with `brokenReason` set when one has stopped working (MEAL-74). */
+  connections?: Array<{ platform: string; externalName: string | null; brokenReason: string | null }>;
 }
 
 const OUTCOME_STYLES: Record<ViabilityOutcome, { bg: string; fg: string; label: string }> = {
@@ -729,6 +731,24 @@ export default function AdminPage() {
                         Not polled
                       </span>
                     )}
+                    {/* A grant that has stopped working looks exactly like a
+                        creator who published nothing, so it is shown here rather
+                        than left in a log for whoever thinks to look (MEAL-74). */}
+                    {(creator.connections ?? []).map(connection => (
+                      <span
+                        key={connection.platform}
+                        title={connection.brokenReason ?? undefined}
+                        style={{
+                          fontSize: '12px', fontWeight: 600, borderRadius: '99px', padding: '2px 10px',
+                          color: connection.brokenReason ? '#c40029' : '#1a7a3a',
+                          background: connection.brokenReason ? '#fdeaee' : '#e6f9ed',
+                        }}
+                      >
+                        {SOURCE_LABELS[connection.platform as PlatformSource] ?? connection.platform}
+                        {connection.brokenReason ? ' disconnected' : ' connected'}
+                        {connection.externalName ? ` · ${connection.externalName}` : ''}
+                      </span>
+                    ))}
                   </div>
 
                   {/* Creator-level answer: importable, not importable, or not yet known. */}

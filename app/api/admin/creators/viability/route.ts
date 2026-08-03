@@ -4,11 +4,13 @@ import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
 import {
   describeHostMismatch,
+  isConnectedPlatform,
   isPlatformSource,
   normalizePlatformUrl,
   SOURCE_COLUMNS,
   SOURCE_LABELS,
 } from '@/lib/creator-sources';
+import { loadConnection, usableAccessToken } from '@/lib/platform-tokens';
 import { runViabilityCheck } from '@/lib/import/viability';
 
 /**
@@ -96,8 +98,21 @@ export async function POST(request: NextRequest) {
     feedUrl = requested.url;
   }
 
+  // The creator's grant, when they have one. Resolved here because this is the
+  // layer with a database — a probe takes a link and returns items. Null is an
+  // ordinary answer: a YouTube channel can be measured from its public uploads
+  // feed before anyone has connected anything, which is exactly the moment an
+  // operator reviewing an application needs the number.
+  const connection = isConnectedPlatform(source)
+    ? await loadConnection(supabase, id, source)
+    : null;
+  const grant = connection
+    ? { externalId: connection.externalId, accessToken: await usableAccessToken({ supabase }, connection) }
+    : null;
+
   const report = await runViabilityCheck(source, link, {
     feedUrl: source === 'website' ? feedUrl : null,
+    grant,
   });
 
   log({

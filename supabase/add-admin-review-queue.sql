@@ -87,7 +87,12 @@ CREATE INDEX IF NOT EXISTS idx_import_drafts_review_queue
   WHERE status = 'pending_review';
 
 -- ---------------------------------------------------------------------------
--- 4. A column for MEAL-79, and nothing that reads it
+-- 4. The append-consent flag
+--
+-- Added here for MEAL-79 with nothing reading it; MEAL-74 is now its first
+-- reader and writer. It is captured when a creator connects YouTube, revocable
+-- from the creator portal in one click, and enforced by `assertAppendAllowed`
+-- in `lib/youtube.ts` — the single gate every append endpoint must go through.
 --
 -- YouTube back-catalog import will run through admin sync, and appending the
 -- Mealio link to a video's description is a **separate** permission from
@@ -96,8 +101,9 @@ CREATE INDEX IF NOT EXISTS idx_import_drafts_review_queue
 -- stretched to cover both.
 --
 -- Carried here only so MEAL-79 does not need a migration of its own for one
--- boolean. Nothing in this branch writes it, reads it, or shows it, and the
--- default is the refusing answer.
+-- boolean. The default is the refusing answer, and it stays that way: anything
+-- other than an explicit `true` refuses, so a null on an older row or a careless
+-- write is not consent.
 -- ---------------------------------------------------------------------------
 
 ALTER TABLE creators

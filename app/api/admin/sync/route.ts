@@ -123,8 +123,20 @@ export async function POST(request: NextRequest) {
     // from their feed, so a cross-host entry means either a hijacked feed or a
     // hand-edited request — and publishing a stranger's recipe under a creator's
     // name is precisely the outcome MEAL-77 exists to prevent.
-    const site = (creator[SOURCE_COLUMNS[source] as keyof typeof creator] as string | null) || creator.feed_url;
-    if (!site) {
+    //
+    // YouTube is exempt from the *link* requirement because the channel comes
+    // from the OAuth grant, so a connected creator can be synced with no
+    // `youtube_url` on their row at all. It is not exempt from the check: the
+    // rule below is stricter, and the worker reads each video out of the
+    // creator's own uploads feed by id whatever the URL claims.
+    // The `feed_url` fallback is website-only. It is the confirmed feed for
+    // their *site*, so letting a YouTube or TikTok selection fall back to it
+    // would host-check videos against a blog — refusing every one of them, and
+    // for a reason no error message could sensibly explain.
+    const site =
+      (creator[SOURCE_COLUMNS[source] as keyof typeof creator] as string | null) ||
+      (source === 'website' ? creator.feed_url : null);
+    if (!site && source !== 'youtube') {
       return NextResponse.json({ error: 'This creator has no link for that source.' }, { status: 400 });
     }
 
@@ -135,14 +147,30 @@ export async function POST(request: NextRequest) {
       if (!url || !itemId) {
         return NextResponse.json({ error: 'Every selected item needs a URL.' }, { status: 400 });
       }
-      // Checked for every source, not only `website`. `buildCatalog` cannot
-      // produce a YouTube selection today, but the guard's whole value is that
-      // it holds for a hand-written request — and "only for one source" is the
-      // kind of exemption that is still there when the source that needed it
-      // arrives.
-      if (!isOnSameSite(site, url)) {
+      // Checked for every source that has a link to check against — not just
+      // `website`, because "only for one source" is the kind of exemption that
+      // is still there when the source that needed it arrives, and the guard's
+      // whole value is that it holds for a hand-written request.
+      //
+      // `site` can only be absent for YouTube: the `!site` guard above already
+      // refused every other source without a link, and YouTube is exempt from
+      // the *link* requirement because the channel comes from the OAuth grant.
+      // It is not exempt from a check — the watch-page rule immediately below
+      // is the stricter one, and the worker reads each video out of the
+      // creator's own uploads feed by id whatever the URL claims.
+      if (site && !isOnSameSite(site, url)) {
         return NextResponse.json(
           { error: `${url} is not on this creator's own ${SOURCE_LABELS[source]}. Refusing the whole selection.` },
+          { status: 400 },
+        );
+      }
+      // The recorded URL has to be the watch page for the very video id being
+      // recorded. Otherwise `creator_source_items` ends up describing one video
+      // with another's link, which is what MEAL-79 later reads to decide which
+      // video a published meal came from.
+      if (source === 'youtube' && url !== `https://www.youtube.com/watch?v=${itemId}`) {
+        return NextResponse.json(
+          { error: `${url} is not the watch page for video ${itemId}. Refusing the whole selection.` },
           { status: 400 },
         );
       }

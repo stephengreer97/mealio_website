@@ -23,6 +23,21 @@ export type PrimarySource = PlatformSource | 'none';
 
 export const PRIMARY_SOURCES: readonly PrimarySource[] = [...PLATFORM_SOURCES, 'none'];
 
+/**
+ * The three sources reached through an OAuth grant rather than a public feed —
+ * the values `creator_platform_accounts.platform` allows.
+ *
+ * A website needs no account: we fetch it the way any reader would. The other
+ * three hand nothing over until their owner says so, which is why the grant
+ * table exists at all (MEAL-74 / 82 / 83).
+ */
+export const CONNECTED_PLATFORMS = ['youtube', 'instagram', 'tiktok'] as const;
+export type ConnectedPlatform = (typeof CONNECTED_PLATFORMS)[number];
+
+export function isConnectedPlatform(value: unknown): value is ConnectedPlatform {
+  return typeof value === 'string' && (CONNECTED_PLATFORMS as readonly string[]).includes(value);
+}
+
 /** Column names on both `creators` and `creator_applications`. */
 export const SOURCE_COLUMNS: Record<PlatformSource, string> = {
   website: 'website_url',

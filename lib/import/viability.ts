@@ -16,8 +16,8 @@
  *   - none anywhere      → this creator is **not importable**, and they are told
  *                          so, rather than the feature quietly doing nothing
  *
- * Only `website` can be probed today. YouTube, Instagram and TikTok need OAuth
- * connections that do not exist yet (MEAL-74 / 82 / 83), so their probes report
+ * `website` and `youtube` can be probed. Instagram and TikTok need OAuth
+ * connections that do not exist yet (MEAL-82 / 83), so their probes report
  * `unavailable` and name the ticket. They are deliberately *not* stubbed to
  * return "viable" — a check that cannot run must never look like a check that
  * passed, since that is the exact failure this whole ticket exists to prevent.
@@ -38,6 +38,7 @@ import { classifySource } from './gate';
 import { toSourceDocument } from './html';
 import { robotsPerOrigin } from './robots';
 import { safeFetch, type SafeFetchOptions } from './ssrf';
+import { isChannelId, readUploadsFeed, resolveChannelId, youtubeSourceDocument } from '@/lib/youtube';
 import type { FeedEntry } from './feed';
 import type { GateVerdictValue } from './types';
 
@@ -107,10 +108,26 @@ export interface ProbedItem {
   error?: string;
 }
 
+/**
+ * The creator's OAuth grant for this platform, reduced to what a probe needs.
+ *
+ * Resolved by the caller, which is the only layer with a database: a probe takes
+ * a link and returns items, and giving it a Supabase client so it could look a
+ * token up itself would make every probe untestable without one.
+ */
+export interface ProbeGrant {
+  /** The platform's own account id — YouTube channel id, IG user id. From the grant, never typed. */
+  externalId: string | null;
+  /** A token good right now, or null when the creator has not connected. */
+  accessToken: string | null;
+}
+
 export interface ProbeContext {
   fetchOptions?: SafeFetchOptions;
   /** A feed URL an operator already confirmed. Skips discovery when present. */
   feedUrl?: string | null;
+  /** Null when there is no connection — which is ordinary, not a failure. */
+  grant?: ProbeGrant | null;
   maxItems: number;
 }
 
@@ -251,6 +268,68 @@ export const websiteProbe: SourceProbe = {
 };
 
 /**
+ * YouTube probe: read the channel's uploads feed and gate each video on its
+ * title and description (MEAL-74).
+ *
+ * Free, and deliberately so. The uploads feed carries the full description of
+ * every recent upload with no API quota and no auth, and creators routinely put
+ * the ingredient list there — so a channel can be measured before its owner has
+ * connected anything, which is when the operator reviewing their application
+ * actually needs the answer.
+ *
+ * Captions are the fallback for a video whose description is too thin to judge,
+ * and only when the creator *has* connected — the ticket's ordering, and the
+ * quota control that goes with it: a vlog is rejected on title and description
+ * before its captions are ever downloaded.
+ *
+ * No `feed` is returned. That field exists so an operator can confirm a
+ * discovered feed URL before it is stored, and nothing is stored here: the
+ * channel id comes from the OAuth grant, and offering a `youtube.com` URL to a
+ * button that writes `creators.feed_url` would only invite an error.
+ */
+export const youtubeProbe: SourceProbe = {
+  source: 'youtube',
+
+  async probe(link, context) {
+    const granted = context.grant?.externalId;
+    const channelId = isChannelId(granted)
+      ? { ok: true as const, channelId: granted }
+      : await resolveChannelId(link, context.fetchOptions);
+    if (!channelId.ok) return { ok: false, detail: channelId.detail };
+
+    const feed = await readUploadsFeed(channelId.channelId, context.fetchOptions);
+    if (!feed.ok) return { ok: false, detail: feed.detail };
+
+    const videos = feed.videos.slice(0, context.maxItems);
+    const items = await mapWithConcurrency(videos, FETCH_CONCURRENCY, async (video): Promise<ProbedItem> => {
+      const document = await youtubeSourceDocument(video, {
+        accessToken: context.grant?.accessToken ?? null,
+      });
+      return {
+        url: document.url,
+        title: document.title || video.url,
+        text: document.text,
+        // There is no JSON-LD on YouTube. Title, description and captions are
+        // the only material the gate gets for a video.
+        hasRecipeJsonLd: false,
+        // A video with neither a description nor captions was never read, so it
+        // is reported rather than gated — counting it as "not a recipe" would
+        // measure our access, not the creator.
+        ...(document.text.trim()
+          ? {}
+          : {
+              error:
+                'Not gated: this video has no description, and no captions were available. ' +
+                'Connecting the channel lets us read captions for videos like this one.',
+            }),
+      };
+    });
+
+    return { ok: true, items };
+  },
+};
+
+/**
  * A probe for a platform whose connection has not been built yet.
  *
  * It fails, loudly, naming the ticket. The tempting alternative — return no
@@ -275,7 +354,7 @@ function pendingConnectionProbe(source: PlatformSource, ticket: string): SourceP
 
 export const SOURCE_PROBES: Record<PlatformSource, SourceProbe> = {
   website: websiteProbe,
-  youtube: pendingConnectionProbe('youtube', 'MEAL-74'),
+  youtube: youtubeProbe,
   instagram: pendingConnectionProbe('instagram', 'MEAL-82'),
   tiktok: pendingConnectionProbe('tiktok', 'MEAL-83'),
 };
@@ -288,6 +367,8 @@ export interface ViabilityOptions {
   fetchOptions?: SafeFetchOptions;
   /** A feed URL already confirmed by an operator. Website only. */
   feedUrl?: string | null;
+  /** The creator's OAuth grant for this source, when they have connected one. */
+  grant?: ProbeGrant | null;
   maxItems?: number;
   /** Overridable probe registry, so a future platform (or a test) can slot in. */
   probes?: Record<PlatformSource, SourceProbe>;
@@ -331,6 +412,7 @@ export async function runViabilityCheck(
   const probed = await probes[source].probe(link, {
     fetchOptions: options.fetchOptions,
     feedUrl: options.feedUrl,
+    grant: options.grant,
     maxItems,
   });
 
