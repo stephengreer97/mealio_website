@@ -67,14 +67,19 @@ export class MemoryImportCache implements ImportCache {
   }
 }
 
+import { urlIdentity } from './ssrf';
+
 /** A finished import is worth an hour; a creator editing a draft re-fetches rarely. */
 export const IMPORT_TTL_MS = 60 * 60 * 1000;
 
 /** Gate verdicts are cheap to re-derive but change even less often. */
 export const GATE_TTL_MS = 24 * 60 * 60 * 1000;
 
-export const importKey = (normalizedUrl: string) => `import:v1:${normalizedUrl}`;
-export const gateKey = (normalizedUrl: string) => `gate:v1:${normalizedUrl}`;
+// Keyed on `urlIdentity`, not `normalizeUrl`: three spellings of one link
+// (http/https, with and without `www.`) are one page, and paying for the same
+// extraction three times is the cheap half of that mistake.
+export const importKey = (url: string) => `import:v1:${urlIdentity(url) ?? url}`;
+export const gateKey = (url: string) => `gate:v1:${urlIdentity(url) ?? url}`;
 
 /** The process-wide default. Swap via `runImport({ cache })` in tests. */
 export const defaultImportCache = new MemoryImportCache();

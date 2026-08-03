@@ -32,6 +32,17 @@ function matchesFilter(row: any, f: Filter): boolean {
     case 'neq': return cell !== f.value;
     case 'in': return Array.isArray(f.value) && f.value.includes(cell);
     case 'is': return f.value === null ? cell === null || cell === undefined : cell === f.value;
+    case 'or': {
+      // `col.op.value,col.op.value` — OR of the same simple terms. Values
+      // containing commas are not supported and nothing here has any.
+      return String(f.value)
+        .split(',')
+        .some((term) => {
+          const [col, op, ...rest] = term.split('.');
+          const raw = rest.join('.');
+          return matchesFilter(row, { op, column: col, value: op === 'is' && raw === 'null' ? null : raw });
+        });
+    }
     case 'not': return !matchesFilter(row, { op: f.value[0], column: f.column, value: f.value[1] });
     case 'lt': return cell !== null && cell !== undefined && compare(cell, f.value) < 0;
     case 'lte': return cell !== null && cell !== undefined && compare(cell, f.value) <= 0;
@@ -52,11 +63,47 @@ function queryStringBytes(filters: Filter[]): number {
   return Buffer.byteLength(parts.join('&'));
 }
 
+/**
+ * Splits a select list on commas that are not inside an embed's parentheses.
+ *
+ * PostgREST embeds a related table as `creators!creator_id ( id, display_name )`,
+ * and those inner commas are not column separators. Splitting on every comma
+ * turned one embed into several nonsense keys and silently dropped the nested
+ * object — which reads exactly like a row whose relation is missing, so the code
+ * under test defaulted its fields and the test failed somewhere else entirely.
+ */
+function splitColumns(columns: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of columns) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out.map((c) => c.trim()).filter(Boolean);
+}
+
 function project(row: any, columns?: string): any {
   if (!columns || columns.trim() === '*') return { ...row };
-  const wanted = columns.split(',').map((c) => c.trim()).filter(Boolean);
   const out: any = {};
-  for (const c of wanted) out[c] = row[c] ?? null;
+  for (const column of splitColumns(columns)) {
+    // `table!fk ( … )` or `table ( … )` — take the whole nested value under the
+    // relation's name. The embed's own column list is not enforced here; a test
+    // seeds the shape it wants and the point is that the relation survives.
+    const embed = /^([A-Za-z_][\w]*)\s*(?:!\w+)?\s*\(/.exec(column);
+    if (embed) {
+      out[embed[1]] = row[embed[1]] ?? null;
+      continue;
+    }
+    out[column] = row[column] ?? null;
+  }
   return out;
 }
 
@@ -113,6 +160,22 @@ export class FakeSupabase {
     return this.tables.get(table) ?? [];
   }
 
+  /** One row by id, or null. */
+  row(table: string, id: string): any | null {
+    return this.rows(table).find((r) => r.id === id) ?? null;
+  }
+
+  /**
+   * Mutate a seeded row in place, so a test can stage a concurrent write —
+   * a creator reconnecting between the sweep's read and its write-back.
+   */
+  patch(table: string, id: string, values: any): this {
+    const target = (this.tables.get(table) ?? []).find((r) => r.id === id);
+    if (!target) throw new Error(`FakeSupabase: no ${table} row with id ${id}`);
+    Object.assign(target, JSON.parse(JSON.stringify(values)));
+    return this;
+  }
+
   reset(): void {
     this.queues.clear();
     this.tables.clear();
@@ -163,7 +226,15 @@ export class FakeSupabase {
         return builder;
       };
     }
-    for (const method of ['contains', 'filter', 'or', 'range']) {
+    // `.or('a.is.null,a.lt.x')` is a real predicate, not a no-op. Left in the
+    // ignored list it matched every row, which is exactly the query the sync
+    // lease depends on refusing.
+    builder.or = (...args: any[]) => {
+      record('or', args);
+      filters.push({ op: 'or', column: '', value: args[0] });
+      return builder;
+    };
+    for (const method of ['contains', 'filter', 'range']) {
       builder[method] = (...args: any[]) => { record(method, args); return builder; };
     }
     builder.order = (...args: any[]) => {

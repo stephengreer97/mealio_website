@@ -331,6 +331,30 @@ export function normalizeUrl(input: string): string | null {
 }
 
 /**
+ * The same URL's *identity*, for deciding whether we have seen it before.
+ *
+ * `normalizeUrl` has to stay a URL we can actually fetch, so it leaves the
+ * scheme and the `www.` alone — an apex that does not resolve, or a host that
+ * only serves http, is a hard failure and neither is ours to guess about. But
+ * `http://blog.test/x`, `https://blog.test/x` and `https://www.blog.test/x` are
+ * one post, and used as `item_id` they are three: three drafts in the review
+ * queue, three published meals under the creator's name, from an operator
+ * pasting the same link on two different days. Which is the ordinary case, not
+ * the adversarial one.
+ *
+ * So identity folds both and fetching does not. Used for the import cache key
+ * and for the `(creator_id, source, item_id)` record a pasted link lands under.
+ */
+export function urlIdentity(input: string): string | null {
+  const normalized = normalizeUrl(input);
+  if (!normalized) return null;
+  const url = new URL(normalized);
+  url.protocol = 'https:';
+  url.hostname = url.hostname.replace(/^www\./, '');
+  return url.toString();
+}
+
+/**
  * Checks one hop: scheme, hostname, and every address the hostname resolves to.
  * Called on the original URL *and again on every redirect target*.
  */

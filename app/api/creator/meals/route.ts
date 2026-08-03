@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
-import { resolvePhotoUrl } from '@/lib/photos';
+import { publishCreatorMeal } from '@/lib/creator-meals';
 import { log } from '@/lib/logger';
 
 async function getCreator(request: NextRequest) {
@@ -37,36 +37,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
   }
 
-  const normalizeUrl = (url?: string) => {
-    if (!url?.trim()) return '';
-    const u = url.trim();
-    return u.startsWith('http://') || u.startsWith('https://') ? u : `https://${u}`;
-  };
-
-  const resolvedPhotoUrl = await resolvePhotoUrl(photoUrl, userId).catch(() => photoUrl ?? null);
-
+  // The insert itself is shared with admin sync (MEAL-90) so attribution — the
+  // author name savers see, and the creator_id the profit share counts — is
+  // written in exactly one place.
   const supabase = createServerSupabaseClient();
-  const { data: meal, error } = await supabase
-    .from('preset_meals')
-    .insert({
-      name:        name.trim(),
-      author:      creator.display_name,
-      creator_id:  creator.id,
-      ingredients,
-      source:      normalizeUrl(source),
-      recipe:      recipe?.trim() || null,
-      story:       story?.trim() || null,
-      photo_url:   resolvedPhotoUrl || null,
-      difficulty:  difficulty || null,
-      serves:      serves || null,
-      ...(Array.isArray(tags) && tags.length ? { tags } : {}),
-    })
-    .select()
-    .single();
-
-  if (error) {
-    log({ event: 'CREATOR:MEAL_CREATE', status: 'error', userId: creator.id, detail: String(error) });
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  let meal;
+  try {
+    meal = await publishCreatorMeal(
+      supabase,
+      { id: creator.id, display_name: creator.display_name, user_id: userId },
+      { name, ingredients, recipe, source, story, photoUrl, difficulty, tags, serves },
+    );
+  } catch (err) {
+    log({ event: 'CREATOR:MEAL_CREATE', status: 'error', userId: creator.id, detail: String(err) });
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Publish failed' }, { status: 500 });
   }
 
   revalidateTag('trending-meals', 'max');

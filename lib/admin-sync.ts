@@ -1,0 +1,802 @@
+/**
+ * Operator-driven sync (MEAL-90).
+ *
+ * Two modes, one engine: paste a single link, or tick items off a creator's
+ * catalog. Both build a `creator_sync_runs` row holding the selection and let a
+ * worker chew through it; running the two through the same code is what makes
+ * "the gate still ran, and here is what it said" true of a one-link sync as much
+ * as a 200-item one.
+ *
+ * Three things this file is careful about, all of them the same worry — that a
+ * batch acting on a creator's behalf gets quietly wrong:
+ *
+ *   1. **Rendering the catalog is free.** Titles, dates and links come from feed
+ *      metadata; nothing here fetches a post or calls a model to draw a list.
+ *      Opening a 200-post blog costs the feed request and the already-imported
+ *      lookup, and nothing else.
+ *   2. **The gate still runs.** An operator selecting an item is not a bypass. A
+ *      selected post that is not a recipe is dropped with its reason recorded,
+ *      so "I selected 12 and got 9" is explainable on screen.
+ *   3. **One failure does not sink the batch.** Every item has its own outcome
+ *      in `creator_source_items`; a failure stays retryable on its own.
+ *
+ * **Nothing here publishes** (MEAL-91). A run produces `creator_import_drafts`
+ * rows waiting on an operator, and `lib/import-drafts.ts` owns what happens
+ * next. MEAL-90 justified publishing directly on the grounds that "a human
+ * operator has read the extraction in the admin UI before triggering it" — but
+ * the operator reads a *title in an RSS feed*, and between the model's
+ * extraction and a live recipe under a creator's name no human saw the
+ * ingredients. The email that made that arrangement honest now fires from
+ * Approve, where there is something true to announce.
+ */
+
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { createImportDraft, reviewDraft, type ImportDraft } from '@/lib/import-drafts';
+import { log } from '@/lib/logger';
+import { SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
+import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
+import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { robotsPerOrigin } from '@/lib/import/robots';
+import type { SafeFetchOptions } from '@/lib/import/ssrf';
+import { formatTelemetry } from '@/lib/import/telemetry';
+import type { FeedKind } from '@/lib/import/feed';
+import type { ImportResult } from '@/lib/import/types';
+
+// ── Shapes ───────────────────────────────────────────────────────────────────
+
+/**
+ * Per-item outcome inside a run.
+ *
+ * `drafted` — not `imported` — is what a successful item reaches now: the recipe
+ * is extracted and waiting in the review queue, and calling it "published" on
+ * screen would restate the exact untruth MEAL-91 exists to remove.
+ *
+ * `rejected` and `failed` mean different things to an operator and must not be
+ * merged: rejected is the gate saying this is not a recipe (a correct answer,
+ * retrying changes nothing), failed is us not managing to read it (a timeout, a
+ * 503, a classifier outage — worth another go).
+ */
+export type SyncItemStatus = 'pending' | 'drafted' | 'rejected' | 'failed' | 'skipped';
+
+export interface SyncItem {
+  /** Feed guid / video id / the URL itself. Half of the `creator_source_items` key. */
+  itemId: string;
+  url: string;
+  title: string | null;
+  publishedAt: string | null;
+  status: SyncItemStatus;
+  /** The gate's sentence, the fetch failure, or why it was skipped. */
+  detail: string | null;
+  /** The queued draft. Where the run hands over to the review queue. */
+  draftId: string | null;
+  /** The extracted recipe's name, so the run reads as recipes rather than URLs. */
+  mealName: string | null;
+  /** How many fields the review card will flag. The reason to look at this one first. */
+  needALook: number | null;
+  costUsd: number;
+}
+
+export type SyncRunStatus = 'queued' | 'running' | 'done';
+export type SyncRunMode = 'link' | 'catalog';
+
+export interface SyncRun {
+  id: string;
+  creatorId: string;
+  source: PlatformSource;
+  mode: SyncRunMode;
+  status: SyncRunStatus;
+  items: SyncItem[];
+  createdAt: string | null;
+  finishedAt: string | null;
+}
+
+/** Counts the sync screen shows, so "selected 12, queued 9" adds up on screen. */
+export interface SyncRunTotals {
+  selected: number;
+  pending: number;
+  drafted: number;
+  rejected: number;
+  failed: number;
+  skipped: number;
+  costUsd: number;
+  /** Across every drafted item. What the queue is about to ask a human to read. */
+  needALook: number;
+}
+
+export function summariseRun(run: SyncRun): SyncRunTotals {
+  const count = (status: SyncItemStatus) => run.items.filter((item) => item.status === status).length;
+  return {
+    selected: run.items.length,
+    pending: count('pending'),
+    drafted: count('drafted'),
+    rejected: count('rejected'),
+    failed: count('failed'),
+    skipped: count('skipped'),
+    costUsd: run.items.reduce((total, item) => total + (item.costUsd || 0), 0),
+    needALook: run.items.reduce((total, item) => total + (item.needALook ?? 0), 0),
+  };
+}
+
+/** Row shape → the type everything else here speaks. */
+export function toSyncRun(row: Record<string, any>): SyncRun {
+  return {
+    id: row.id,
+    creatorId: row.creator_id,
+    source: row.source,
+    mode: row.mode,
+    status: row.status,
+    items: Array.isArray(row.items) ? (row.items as SyncItem[]) : [],
+    createdAt: row.created_at ?? null,
+    finishedAt: row.finished_at ?? null,
+  };
+}
+
+export interface SyncCreator {
+  id: string;
+  user_id: string;
+  display_name: string;
+  website_url?: string | null;
+  youtube_url?: string | null;
+  instagram_url?: string | null;
+  tiktok_url?: string | null;
+  feed_url?: string | null;
+}
+
+/** Everything the creator engine needs, injectable so tests need no network. */
+export interface SyncDeps {
+  supabase: SupabaseClient;
+  fetchOptions?: SafeFetchOptions;
+  /** The import pipeline seam. Tests substitute a stub; production runs the real thing. */
+  importer?: (url: string, options: RunImportOptions) => Promise<ImportResult>;
+  /** Where an extraction lands. There is no publisher seam here any more — a run cannot publish. */
+  queue?: typeof createImportDraft;
+  now?: () => number;
+}
+
+// ── Catalog ──────────────────────────────────────────────────────────────────
+
+/**
+ * Ceiling on catalog size, matching the feed parser's own cap. A blog with more
+ * posts than this is not a checklist problem, it is a "sync the recent ones and
+ * come back" problem.
+ */
+export const CATALOG_MAX_ENTRIES = 500;
+
+export interface CatalogEntry {
+  itemId: string;
+  url: string;
+  title: string | null;
+  publishedAt: string | null;
+  /**
+   * The `creator_source_items` record, when there is one. Drives the
+   * already-imported marker, and the row starts deselected because select-all on
+   * a catalog half of which is already in is the obvious expensive mistake.
+   */
+  record: { status: string; detail: string | null; at: string | null } | null;
+}
+
+export type CatalogResult =
+  | {
+      ok: true;
+      source: PlatformSource;
+      feed: { url: string; kind: FeedKind; via: string } | null;
+      entries: CatalogEntry[];
+      /** True when the source published more than we will list. */
+      truncated: boolean;
+    }
+  | { ok: false; reason: string; detail: string };
+
+/**
+ * Lists everything a creator's source publishes, from feed metadata alone.
+ *
+ * A confirmed `feed_url` is re-read rather than re-discovered — an operator
+ * already looked at that feed and said yes, and re-deriving it would make the
+ * confirmation meaningless (and cost three more requests).
+ */
+export async function buildCatalog(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  source: PlatformSource,
+): Promise<CatalogResult> {
+  if (source !== 'website') {
+    // Same rule as the viability probe: a source we cannot enumerate reports
+    // that plainly and names the ticket. An empty list would read as "this
+    // creator publishes nothing", which is the one thing it must not mean.
+    const ticket = { youtube: 'MEAL-74', instagram: 'MEAL-82', tiktok: 'MEAL-83' }[source];
+    return {
+      ok: false,
+      reason: 'not-connected',
+      detail:
+        `${SOURCE_LABELS[source]} cannot be listed yet: it needs the account connection from ${ticket}, ` +
+        'which is not built. Use the one-link mode for individual posts in the meantime.',
+    };
+  }
+
+  const link = creator[SOURCE_COLUMNS[source] as keyof SyncCreator] as string | null | undefined;
+  if (!link) {
+    return { ok: false, reason: 'no-link', detail: `This creator has no ${SOURCE_LABELS[source]} link.` };
+  }
+
+  try {
+    new URL(creator.feed_url || link);
+  } catch {
+    return { ok: false, reason: 'no-link', detail: `"${link}" is not a URL we can fetch.` };
+  }
+
+  // Per origin, not per run. A feed and the item pages inside it can sit on
+  // different hosts, and applying one host's robots.txt to another's URLs is how
+  // a Disallow we were told about goes unread.
+  const robots = robotsPerOrigin(deps.fetchOptions);
+  const options = { robots, fetchOptions: deps.fetchOptions, maxEntries: CATALOG_MAX_ENTRIES };
+  const discovery: FeedDiscoveryResult = creator.feed_url
+    ? await readFeed(creator.feed_url, options)
+    : await discoverFeed(link, options);
+
+  if (!discovery.ok) {
+    return { ok: false, reason: discovery.reason, detail: discovery.detail };
+  }
+
+  // One query for the whole catalog, keyed the way the record is keyed. This and
+  // the feed read are the entire cost of drawing the screen.
+  const { data: records } = await deps.supabase
+    .from('creator_source_items')
+    .select('item_id, status, detail, updated_at')
+    .eq('creator_id', creator.id)
+    .eq('source', source);
+
+  const byItemId = new Map<string, { status: string; detail: string | null; at: string | null }>();
+  for (const row of (records ?? []) as Array<Record<string, any>>) {
+    byItemId.set(String(row.item_id), {
+      status: String(row.status),
+      detail: row.detail ?? null,
+      at: row.updated_at ?? null,
+    });
+  }
+
+  const entries: CatalogEntry[] = discovery.feed.entries.map((entry) => ({
+    itemId: entry.id,
+    url: entry.url,
+    title: entry.title,
+    publishedAt: entry.publishedAt,
+    record: byItemId.get(entry.id) ?? null,
+  }));
+
+  return {
+    ok: true,
+    source,
+    feed: { url: discovery.feed.url, kind: discovery.feed.kind, via: discovery.feed.via },
+    entries,
+    truncated: entries.length >= CATALOG_MAX_ENTRIES,
+  };
+}
+
+// ── Running a selection ──────────────────────────────────────────────────────
+
+/**
+ * How long a worker may hold a run.
+ *
+ * Two browser tabs polling the same run must not import the same post twice, and
+ * a worker killed mid-chunk must not wedge the run forever — so this is a lease
+ * with an expiry rather than a boolean.
+ *
+ * The number has to be longer than a wave can possibly take, because a lease
+ * that expires *while its holder is still importing* is worse than no lease: a
+ * second worker claims the run, reads the same still-pending items and imports
+ * them again, and one post ends up as two drafts. With the SDK bound at 30s and
+ * one retry (`lib/import/anthropic.ts`), the arithmetic per item is a 10s fetch
+ * plus a gate call and an extraction of at most ~61s each — 132s worst case,
+ * and a wave runs its items in parallel. 90s did not cover that; 180s does.
+ */
+export const LEASE_MS = 180_000;
+
+/**
+ * Wall-clock budget for one worker invocation, under the 60s function limit with
+ * room for the write-back and the notification. Whatever is left over is picked
+ * up by the next call.
+ */
+export const CHUNK_BUDGET_MS = 40_000;
+
+/** Items imported at once. Each is a fetch plus two model calls; two is plenty. */
+export const CHUNK_CONCURRENCY = 2;
+
+function isTerminal(item: SyncItem): boolean {
+  return item.status !== 'pending';
+}
+
+/**
+ * Runs one item: gate, extract, queue for review, record.
+ *
+ * Never throws. An item that blows up is a failed item, because the alternative
+ * is one bad post taking the other 199 with it.
+ */
+export async function processSyncItem(
+  deps: SyncDeps,
+  run: SyncRun,
+  creator: SyncCreator,
+  item: SyncItem,
+): Promise<SyncItem> {
+  const supabase = deps.supabase;
+  const importer = deps.importer ?? runImport;
+  const queue = deps.queue ?? createImportDraft;
+
+  // Already in, from an earlier run or the poller. Skipped rather than
+  // re-imported: an operator ticking a row they were warned about should not be
+  // able to publish the same recipe twice under a creator's name.
+  const { data: existing } = await supabase
+    .from('creator_source_items')
+    .select('status')
+    .eq('creator_id', creator.id)
+    .eq('source', run.source)
+    .eq('item_id', item.itemId)
+    .maybeSingle();
+
+  if (existing && (existing as Record<string, any>).status === 'imported') {
+    return {
+      ...item,
+      status: 'skipped',
+      detail: 'Already imported — skipped so the same recipe is not queued twice.',
+    };
+  }
+
+  let result: ImportResult;
+  try {
+    result = await importer(item.url, {
+      // The operator picked this URL and is watching it, which is exactly the
+      // condition `manual` describes: an `unsure` verdict is attempted rather
+      // than silently skipped. A `no` still stops it — that is the gate doing
+      // its job, not a bypass to switch off.
+      mode: 'manual',
+      // Scopes the storage bucket path when a page's image is copied in, so a
+      // synced photo lands under the creator it belongs to.
+      userId: creator.user_id,
+      fetchOptions: deps.fetchOptions,
+      telemetry: (event) =>
+        log({
+          event: 'CREATOR:MEAL_IMPORT',
+          status: event.outcome === 'ok' ? 'success' : 'error',
+          userId: creator.id,
+          detail: formatTelemetry(event),
+        }),
+    });
+  } catch (err) {
+    return await recordItem(deps, creator, run, {
+      ...item,
+      status: 'failed',
+      detail: `The import threw before it could report: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  if (result.status === 'rejected') {
+    // The gate is an answer about the post; everything else is an answer about
+    // our afternoon. Only the first is permanent.
+    const rejectedByGate = result.stage === 'gate';
+    return await recordItem(deps, creator, run, {
+      ...item,
+      status: rejectedByGate ? 'rejected' : 'failed',
+      detail: result.detail,
+      costUsd: 0,
+    });
+  }
+
+  const costUsd = (result.meta.usage?.costUsd ?? 0) + (result.meta.gateUsage?.costUsd ?? 0);
+
+  try {
+    const draftId = await queue(supabase, {
+      creatorId: creator.id,
+      sourceUrl: result.url,
+      source: run.source,
+      itemId: item.itemId,
+      syncRunId: run.id,
+      draft: result.draft,
+      // Stored, not discarded. Passing the draft on without this is the bug
+      // MEAL-91 was written about: the field-level assessment was computed on
+      // every import and then dropped on the floor, so the greens on this path
+      // were claims nobody had ever looked at.
+      confidence: result.confidence,
+      reviewBy: 'admin',
+    });
+
+    // Counted here rather than on the review screen so an operator watching a
+    // 40-item run already knows how much reading is waiting for them.
+    const { summary } = reviewDraft({
+      ...EMPTY_DRAFT_FIELDS,
+      id: draftId,
+      creatorId: creator.id,
+      sourceUrl: result.url,
+      draft: result.draft,
+      confidence: result.confidence,
+    });
+
+    return await recordItem(deps, creator, run, {
+      ...item,
+      status: 'drafted',
+      detail: null,
+      draftId,
+      mealName: result.draft.name,
+      needALook: summary.needALook,
+      costUsd,
+    });
+  } catch (err) {
+    // Extraction succeeded and the insert did not. Retryable, and the cost of
+    // the extraction is still recorded — it was really spent.
+    return await recordItem(deps, creator, run, {
+      ...item,
+      status: 'failed',
+      detail: `Extracted, but queuing it for review failed: ${err instanceof Error ? err.message : String(err)}`,
+      costUsd,
+    });
+  }
+}
+
+/** The members of `ImportDraft` `reviewDraft` does not read. Kept out of the call site. */
+const EMPTY_DRAFT_FIELDS = {
+  creatorName: null,
+  source: null,
+  itemId: null,
+  syncRunId: null,
+  status: 'pending_review',
+  reviewBy: 'admin',
+  editedAt: null,
+  decidedAt: null,
+  decidedBy: null,
+  publishedMealId: null,
+  createdAt: null,
+} satisfies Omit<ImportDraft, 'id' | 'creatorId' | 'sourceUrl' | 'draft' | 'confidence'>;
+
+/**
+ * Writes the durable per-item record.
+ *
+ * `creator_source_items` is what the poller and the next operator read, so it is
+ * updated even when the batch row already knows — and a write failure here is
+ * logged, not thrown: losing the bookkeeping is bad, losing the run because the
+ * bookkeeping failed is worse.
+ */
+async function recordItem(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  run: SyncRun,
+  // Narrowed to the three outcomes worth recording, so a new item status can
+  // never quietly become an invalid record write.
+  item: SyncItem & { status: 'drafted' | 'rejected' | 'failed' },
+): Promise<SyncItem> {
+  // `imported` in the record means "produced a draft or a published meal" — the
+  // sense `add-creator-sources.sql` already gives it. Writing it the moment the
+  // draft exists rather than when it publishes is what makes a declined recipe
+  // stay declined: the next sync or poll sees the record and skips the post.
+  const recordStatus = item.status === 'drafted' ? 'imported' : item.status;
+
+  try {
+    await deps.supabase.from('creator_source_items').upsert(
+      {
+        creator_id: creator.id,
+        source: run.source,
+        item_id: item.itemId,
+        url: item.url,
+        title: item.title,
+        published_at: item.publishedAt,
+        status: recordStatus,
+        detail: item.detail,
+        draft_id: item.draftId,
+        updated_at: new Date(deps.now?.() ?? Date.now()).toISOString(),
+      },
+      { onConflict: 'creator_id,source,item_id' },
+    );
+  } catch (err) {
+    log({ event: 'ADMIN:SYNC_ITEM', status: 'error', userId: creator.id, detail: `run=${run.id} item=${JSON.stringify(item.itemId)}`, error: err });
+  }
+  return item;
+}
+
+/**
+ * Takes the run's lease, and hands back the row **as it was at that instant**.
+ *
+ * Every write to `items` goes through a lease, which is what makes the array
+ * safe to write whole: the holder is the only writer, so there is no second
+ * copy of the array to lose an item to. `or` covers both "nobody holds it" and
+ * "whoever held it is gone"; PostgREST re-checks the predicate under the row
+ * lock, so exactly one of two simultaneous claimants gets a row back.
+ *
+ * The returned row matters as much as the boolean. Claiming and then working
+ * from a copy read *before* the claim is the same lost update by another route
+ * — a retry that landed in between would be overwritten.
+ */
+async function claimRun(
+  deps: SyncDeps,
+  runId: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ row: Record<string, any>; lease: string } | null> {
+  const now = deps.now ?? Date.now;
+  const nowIso = new Date(now()).toISOString();
+  const lease = new Date(now() + LEASE_MS).toISOString();
+
+  const { data } = await deps.supabase
+    .from('creator_sync_runs')
+    .update({ lease_until: lease, updated_at: nowIso, ...extra })
+    .eq('id', runId)
+    .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+    .select();
+
+  const rows = (Array.isArray(data) ? data : []) as Array<Record<string, any>>;
+  return rows.length > 0 ? { row: rows[0], lease } : null;
+}
+
+/**
+ * Writes to a run we hold the lease on, or reports that we no longer do.
+ *
+ * `lease_until` doubles as the ownership token: the value we wrote when we
+ * claimed is ours until it expires, and whoever claims next necessarily writes
+ * a later one. Carrying it as a predicate is what stops a worker that overran
+ * its lease from writing its items over the new holder's progress — and, on the
+ * final write, from clearing a lease that is no longer its own and letting a
+ * third driver into a run two workers are already inside.
+ */
+async function writeLeased(
+  deps: SyncDeps,
+  runId: string,
+  lease: string,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  const { data } = await deps.supabase
+    .from('creator_sync_runs')
+    .update(patch)
+    .eq('id', runId)
+    .eq('lease_until', lease)
+    .select();
+  return Array.isArray(data) && data.length > 0;
+}
+
+/**
+ * Moves a run forward by one chunk, then returns where it got to.
+ *
+ * This is the whole background job. It is deliberately *resumable* rather than
+ * long-running: it takes a lease, works until its budget is spent, writes what
+ * it did and lets go. The admin screen calls it in a loop while a run is
+ * unfinished, and the daily cron sweeps anything an operator walked away from —
+ * so a closed tab delays a run rather than abandoning it half-imported.
+ */
+export async function advanceRun(deps: SyncDeps, runId: string): Promise<SyncRun | null> {
+  const supabase = deps.supabase;
+  const now = deps.now ?? Date.now;
+
+  const { data: row } = await supabase.from('creator_sync_runs').select('*').eq('id', runId).maybeSingle();
+  if (!row) return null;
+  let run = toSyncRun(row as Record<string, any>);
+
+  const nowIso = new Date(now()).toISOString();
+
+  // If the claim matches nothing, another worker is mid-chunk and we report
+  // progress instead of racing it.
+  const claim = await claimRun(deps, runId, { status: 'running', started_at: row.started_at ?? nowIso });
+  if (!claim) return run;
+
+  // From here on the claimed row is the truth, not the one read a moment ago.
+  run = toSyncRun(claim.row);
+  let lease = claim.lease;
+
+  const creator = await loadSyncCreator(supabase, run.creatorId);
+  if (!creator) {
+    await writeLeased(deps, runId, lease, { status: 'done', finished_at: nowIso, lease_until: null, updated_at: nowIso });
+    log({ event: 'ADMIN:SYNC_RUN', status: 'error', detail: `run=${runId} creator=${run.creatorId} missing` });
+    return { ...run, status: 'done' };
+  }
+
+  const deadline = now() + CHUNK_BUDGET_MS;
+  let items = [...run.items];
+
+  while (items.some((item) => !isTerminal(item)) && now() < deadline) {
+    const wave: number[] = [];
+    for (let i = 0; i < items.length && wave.length < CHUNK_CONCURRENCY; i++) {
+      if (!isTerminal(items[i])) wave.push(i);
+    }
+
+    const processed = await Promise.all(
+      wave.map((index) => processSyncItem(deps, { ...run, items }, creator, items[index])),
+    );
+    wave.forEach((index, position) => {
+      items[index] = processed[position];
+    });
+
+    // Written after every wave, not at the end: the screen polls this row, and a
+    // run that shows nothing for four minutes looks broken. The renewal moves
+    // the token on, so the predicate for the next write is the new one.
+    const renewed = new Date(now() + LEASE_MS).toISOString();
+    const held = await writeLeased(deps, runId, lease, {
+      items,
+      lease_until: renewed,
+      updated_at: new Date(now()).toISOString(),
+    });
+    if (!held) return lostLease(runId, run, items);
+    lease = renewed;
+  }
+
+  const finished = items.every(isTerminal);
+  run = { ...run, items, status: finished ? 'done' : 'running' };
+
+  // No email here any more. A finished run has published nothing, so there is
+  // nothing true to tell a creator yet; the announcement fires from Approve
+  // (`notifyApproved`), where the meals are actually live.
+  const released = await writeLeased(deps, runId, lease, {
+    items,
+    status: finished ? 'done' : 'queued',
+    finished_at: finished ? new Date(now()).toISOString() : null,
+    lease_until: null,
+    updated_at: new Date(now()).toISOString(),
+  });
+  if (!released) return lostLease(runId, run, items);
+
+  const totals = summariseRun({ ...run, items });
+  log({
+    event: 'ADMIN:SYNC_RUN',
+    status: finished ? 'success' : 'pending',
+    userId: creator.id,
+    detail:
+      `run=${runId} source=${run.source} ${finished ? 'done' : 'partial'} ` +
+      `selected=${totals.selected} drafted=${totals.drafted} rejected=${totals.rejected} ` +
+      `failed=${totals.failed} skipped=${totals.skipped} flagged=${totals.needALook} ` +
+      `cost=$${totals.costUsd.toFixed(4)}`,
+  });
+
+  return { ...run, items, status: finished ? 'done' : 'queued' };
+}
+
+/**
+ * What a worker does when it finds it no longer holds the lease.
+ *
+ * Stop, write nothing further, and say so. The items it did import are not
+ * lost — every one of them wrote its own `creator_source_items` record and its
+ * draft as it went, so the worker that took over skips them rather than
+ * importing them again. What is lost is only this worker's copy of the array,
+ * which is exactly the thing that must not be written.
+ */
+function lostLease(runId: string, run: SyncRun, items: SyncItem[]): SyncRun {
+  log({
+    event: 'ADMIN:SYNC_RUN',
+    status: 'error',
+    detail: `run=${runId} lease lost mid-chunk; another worker owns this run. Wrote nothing further.`,
+  });
+  return { ...run, items, status: 'running' };
+}
+
+/** Reads the creator fields the engine needs. */
+async function loadSyncCreator(supabase: SupabaseClient, creatorId: string): Promise<SyncCreator | null> {
+  const { data } = await supabase
+    .from('creators')
+    .select('id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url')
+    .eq('id', creatorId)
+    .maybeSingle();
+
+  if (!data) return null;
+  const row = data as Record<string, any>;
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    display_name: row.display_name,
+    website_url: row.website_url ?? null,
+    youtube_url: row.youtube_url ?? null,
+    instagram_url: row.instagram_url ?? null,
+    tiktok_url: row.tiktok_url ?? null,
+    feed_url: row.feed_url ?? null,
+  };
+}
+
+/**
+ * Puts one failed item back in the queue.
+ *
+ * Only `failed` is retryable. Retrying a gate rejection would just pay for the
+ * same "no" again, and retrying something already drafted is how the same recipe
+ * ends up in the review queue twice.
+ */
+export async function retrySyncItem(
+  deps: SyncDeps,
+  runId: string,
+  itemId: string,
+): Promise<{ ok: true; run: SyncRun } | { ok: false; error: string }> {
+  const now = deps.now ?? Date.now;
+  const { data: row } = await deps.supabase.from('creator_sync_runs').select('*').eq('id', runId).maybeSingle();
+  if (!row) return { ok: false, error: 'Run not found' };
+
+  // Through the same lease the worker takes, for the same reason. Retry used to
+  // read the row, map the array and write the whole thing back with no
+  // predicate at all: a retry landing while a worker was mid-wave was written,
+  // reported to the operator as requeued, and then silently overwritten by the
+  // worker's older copy of the array. Refusing while somebody is working is a
+  // worse button; telling an operator an item is requeued when it is not is a
+  // worse product.
+  const claim = await claimRun(deps, runId);
+  if (!claim) {
+    return {
+      ok: false,
+      error: 'This run is being worked on right now. Wait for the chunk to finish, then retry.',
+    };
+  }
+
+  const run = toSyncRun(claim.row);
+  const release = (patch: Record<string, unknown>) => writeLeased(deps, runId, claim.lease, patch);
+  const nowIso = new Date(now()).toISOString();
+
+  const target = run.items.find((item) => item.itemId === itemId);
+  if (!target || target.status !== 'failed') {
+    await release({ lease_until: null, updated_at: nowIso });
+    if (!target) return { ok: false, error: 'That item is not part of this run.' };
+    return { ok: false, error: `Only failed items can be retried; this one is ${target.status}.` };
+  }
+
+  const items = run.items.map((item) =>
+    item.itemId === itemId ? { ...item, status: 'pending' as const, detail: null } : item,
+  );
+
+  const written = await release({
+    items,
+    status: 'queued',
+    finished_at: null,
+    lease_until: null,
+    updated_at: nowIso,
+  });
+  if (!written) {
+    return { ok: false, error: 'Another worker took this run while we were reading it. Try again.' };
+  }
+
+  return { ok: true, run: { ...run, items, status: 'queued' } };
+}
+
+/**
+ * Wall-clock budget for the cron's sweep of stalled runs.
+ *
+ * The cron does two email passes before it gets here and the whole invocation
+ * has to fit inside `maxDuration`. Without this the sweep would start work it
+ * cannot finish: the function is killed mid-chunk having claimed a lease, and
+ * the run it was "recovering" is then unavailable to anyone else until that
+ * lease expires.
+ */
+export const SWEEP_BUDGET_MS = 25_000;
+
+/**
+ * Resumes runs nobody is driving.
+ *
+ * The admin screen calls the worker in a loop, which means closing the tab
+ * stops the loop, and this is the backstop for that.
+ *
+ * **It is a backstop, not a queue, and the difference is worth being plain
+ * about.** One cron fire a day advances each stalled run by whatever fits in
+ * the budget below — a chunk or two. A 200-item run whose operator walked away
+ * therefore takes weeks to finish here, not a day: the honest recovery is an
+ * operator reopening the run and pressing Resume, and what this guarantees is
+ * only that no run is *forgotten*. Finishing a large abandoned run in one pass
+ * needs a real job queue, which this project does not have.
+ *
+ * Ordered by least-recently-touched rather than oldest-created. `created_at`
+ * ascending meant the same five old stuck runs were picked every single day and
+ * every newer run starved behind them for good; `updated_at` moves a run to the
+ * back of the line the moment it is advanced, so the sweep is a round robin.
+ */
+export async function resumeStalledSyncRuns(deps: SyncDeps, limit = 5): Promise<number> {
+  const now = deps.now ?? Date.now;
+  const nowIso = new Date(now()).toISOString();
+  const deadline = now() + SWEEP_BUDGET_MS;
+
+  const { data } = await deps.supabase
+    .from('creator_sync_runs')
+    .select('id')
+    .neq('status', 'done')
+    .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
+    .order('updated_at', { ascending: true })
+    .limit(limit);
+
+  const rows = (data ?? []) as Array<{ id: string }>;
+  let advanced = 0;
+  for (const row of rows) {
+    // Checked before starting a run rather than after: a chunk we begin without
+    // the time to finish it ends as a killed function holding a live lease.
+    if (now() >= deadline) {
+      log({
+        event: 'ADMIN:SYNC_RUN',
+        status: 'pending',
+        detail: `sweep stopped at its ${SWEEP_BUDGET_MS}ms budget with ${rows.length - advanced} run(s) left for the next fire`,
+      });
+      break;
+    }
+    await advanceRun(deps, row.id);
+    advanced += 1;
+  }
+  return advanced;
+}

@@ -162,6 +162,88 @@ export async function sendBugReportEmail(opts: {
   });
 }
 
+export interface SyncedMealLink {
+  id: string;
+  name: string;
+}
+
+/**
+ * "We published these under your name" (MEAL-90).
+ *
+ * An operator approves a synced recipe and it goes live under the creator's name
+ * without the creator having approved anything — defensible only because a human
+ * read the extraction first, during an onboarding the creator agreed to. This
+ * email is the other half of that bargain: the model is *notify and correct*,
+ * not *ask permission*, and it only holds if the creator learns what went live
+ * in time to do something about it.
+ *
+ * Transactional, and therefore NOT routed through sendMarketingEmail():
+ * `marketing_opt_out` must not suppress it. A creator who unsubscribed from
+ * campaigns still has to be told that nine recipes were published under their
+ * name — the unsubscribe page already promises exactly that ("You'll still get
+ * important account emails").
+ *
+ * One message per creator per batch of approvals, listing only what published.
+ * Gate rejections and extraction failures are the operator's problem, not
+ * something to explain to a creator who did not ask for the sync.
+ *
+ * It does not say "from your own site". Catalog mode is host-checked, but the
+ * one-link path deliberately is not — an operator can paste a recipe of theirs
+ * that lives on a magazine's site — and the sentence would be false in exactly
+ * the case where a creator most needs to look. What is true either way is that
+ * these are recipes they published and these are now on their profile.
+ */
+export async function sendCreatorSyncPublishedEmail(
+  to: string,
+  displayName: string,
+  meals: SyncedMealLink[],
+) {
+  // Nothing published means nothing to say. The caller checks this too; belt and
+  // braces, because an empty "here are your new recipes" is worse than silence.
+  if (meals.length === 0) return;
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://mealio.co';
+  const count = meals.length;
+  const subject = count === 1
+    ? 'A recipe of yours is now live on Mealio'
+    : `${count} of your recipes are now live on Mealio`;
+
+  const rows = meals
+    .map(
+      (meal) => `
+        <li style="margin: 0 0 8px;">
+          <a href="${appUrl}/meal/p/${encodeURIComponent(meal.id)}" style="color: #dd0031; font-size: 14px;">${escapeHtml(meal.name)}</a>
+        </li>`,
+    )
+    .join('');
+
+  await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to,
+    subject,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${escapeHtml(displayName)},</h2>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">
+          We imported ${count === 1 ? 'a recipe' : `${count} recipes`} you published and put ${count === 1 ? 'it' : 'them'} on your Mealio creator profile.
+          <strong>${count === 1 ? 'It is' : 'They are'} live on Discover now</strong> — savers can see ${count === 1 ? 'it' : 'them'} today.
+        </p>
+        <ul style="margin: 0 0 20px; padding-left: 20px; line-height: 1.7;">${rows}</ul>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">
+          Please have a look. We read ${count === 1 ? 'the recipe' : 'each recipe'} off your page automatically, so an ingredient or a step may not
+          be quite how you'd write it. Open your <a href="${appUrl}/creator" style="color: #dd0031;">Creator Portal</a> to edit
+          anything, or to unpublish a meal entirely — unpublishing removes it from Discover straight away.
+        </p>
+        <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 24px;">Review in Creator Portal</a>
+        <p style="color: #999; font-size: 12px; margin: 0;">
+          Not expecting this? Reply to this email or reach us at contact@mealio.co and we'll take ${count === 1 ? 'it' : 'them'} down.
+        </p>
+      </div>
+    `,
+  });
+}
+
 export async function sendOtpEmail(to: string, code: string) {
   await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
