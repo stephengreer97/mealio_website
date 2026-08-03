@@ -34,13 +34,14 @@ export async function GET(request: NextRequest) {
 
   const code = searchParams.get('code');
   if (!code) {
-    return backToPortal('tiktok', 'failed', 'TikTok sent us back without an authorization code.');
+    return backToPortal('tiktok', 'failed', 'no-code');
   }
 
   const exchanged = await exchangeTikTokCode(code);
   if (!exchanged.ok) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=tiktok', reason: exchanged.detail });
-    return backToPortal('tiktok', 'failed', exchanged.detail);
+    // TikTok's own sentence stays in the log line above. See `ConnectFailure`.
+    return backToPortal('tiktok', 'failed', 'exchange');
   }
 
   // A grant without `video.list` cannot list anything, which would present as a
@@ -48,16 +49,11 @@ export async function GET(request: NextRequest) {
   // area is written around. Refuse it while there is still someone to tell.
   if (!exchanged.grant.scopes.includes(TIKTOK_VIDEO_LIST_SCOPE)) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, detail: 'platform=tiktok', reason: 'video.list not granted' });
-    return backToPortal(
-      'tiktok',
-      'failed',
-      'That connection came back without permission to list your videos, so there would be nothing to import. ' +
-        'Connect again and leave the permission ticked.',
-    );
+    return backToPortal('tiktok', 'failed', 'scope');
   }
 
   if (!exchanged.grant.openId) {
-    return backToPortal('tiktok', 'failed', 'TikTok returned no account id for that grant. Try connecting again.');
+    return backToPortal('tiktok', 'failed', 'account');
   }
 
   const supabase = createServerSupabaseClient();
@@ -81,7 +77,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=tiktok', error: err });
-    return backToPortal('tiktok', 'failed', 'We could not store that connection. Try again.');
+    return backToPortal('tiktok', 'failed', 'store');
   }
 
   log({

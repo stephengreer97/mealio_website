@@ -5,6 +5,7 @@ import { log } from '@/lib/logger';
 import { saveConnection } from '@/lib/platform-tokens';
 import { exchangeYouTubeCode, fetchOwnChannel, YOUTUBE_WRITE_SCOPE } from '@/lib/youtube';
 import { STATE_COOKIE } from '../connect/route';
+import type { ConnectFailure } from '@/lib/creator-connect';
 
 /**
  * GET /api/creator/youtube/callback — where Google sends the creator back.
@@ -22,11 +23,20 @@ import { STATE_COOKIE } from '../connect/route';
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://mealio.co';
 const JWT_SECRET = () => new TextEncoder().encode(process.env.JWT_SECRET || '');
 
-/** Sends the creator back to the portal with something it can render, and drops the state cookie. */
-function back(outcome: string, detail?: string): NextResponse {
+/**
+ * Sends the creator back to the portal with a reason **code**, and drops the
+ * state cookie.
+ *
+ * A code and not the sentence, for the argument in `ConnectFailure`
+ * (`lib/creator-connect.ts`): free text in the query string is prose an attacker
+ * chooses, rendered inside our own error styling on our own domain.
+ * `consent-write` and `consent-withdraw` are this route's extra branches — the
+ * two ways the separate append opt-in can fail to save.
+ */
+function back(outcome: string, reason?: ConnectFailure | 'consent-write' | 'consent-withdraw'): NextResponse {
   const url = new URL(`${APP_URL}/creator`);
   url.searchParams.set('youtube', outcome);
-  if (detail) url.searchParams.set('detail', detail);
+  if (reason) url.searchParams.set('reason', reason);
   const response = NextResponse.redirect(url.toString());
   response.cookies.set(STATE_COOKIE, '', { path: '/', maxAge: 0 });
   return response;
@@ -37,7 +47,7 @@ export async function GET(request: NextRequest) {
 
   const stateCookie = request.cookies.get(STATE_COOKIE)?.value;
   if (!stateCookie) {
-    return back('failed', 'This connection attempt has expired. Start again from the creator portal.');
+    return back('failed', 'expired');
   }
 
   let userId: string;
@@ -53,7 +63,7 @@ export async function GET(request: NextRequest) {
     appendOptIn = payload.appendOptIn === true;
   } catch {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', reason: 'invalid state cookie' });
-    return back('failed', 'That connection could not be verified. Start again from the creator portal.');
+    return back('failed', 'unverified');
   }
 
   // Two known, accepted properties of this comparison, recorded so they are not
@@ -65,7 +75,7 @@ export async function GET(request: NextRequest) {
   // to an attacker who already has the creator's cookie jar.
   if (searchParams.get('state') !== nonce) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, reason: 'state mismatch (csrf)' });
-    return back('failed', 'That connection could not be verified. Start again from the creator portal.');
+    return back('failed', 'unverified');
   }
 
   // A creator who changed their mind on Google's screen. Not an error, and
@@ -77,19 +87,20 @@ export async function GET(request: NextRequest) {
 
   const code = searchParams.get('code');
   if (!code) {
-    return back('failed', 'Google sent us back without an authorization code.');
+    return back('failed', 'no-code');
   }
 
   const exchanged = await exchangeYouTubeCode(code);
   if (!exchanged.ok) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=youtube', reason: exchanged.detail });
-    return back('failed', exchanged.detail);
+    // Google's own sentence stays in the log line above. See `ConnectFailure`.
+    return back('failed', 'exchange');
   }
 
   const channel = await fetchOwnChannel(exchanged.grant.accessToken);
   if (!channel.ok) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=youtube', reason: channel.detail });
-    return back('failed', channel.detail);
+    return back('failed', 'account');
   }
 
   const supabase = createServerSupabaseClient();
@@ -116,10 +127,7 @@ export async function GET(request: NextRequest) {
   // leaving us permitted to edit descriptions on the strength of a tick the
   // creator had just removed, while the screen said the attempt had failed.
   if (!appendOptIn && !(await writeAppendOptIn(false))) {
-    return back(
-      'failed',
-      'We could not record that you no longer want Mealio editing your descriptions, so nothing was changed. Try again.',
-    );
+    return back('failed', 'consent-withdraw');
   }
 
   try {
@@ -135,17 +143,14 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=youtube', error: err });
-    return back('failed', 'We could not store that connection. Try again.');
+    return back('failed', 'store');
   }
 
   // Granting comes last, and its result is checked like any other. Reporting
   // `connected` on a failed consent write logged an audit line asserting a
   // permission change that never happened.
   if (appendOptIn && !(await writeAppendOptIn(true))) {
-    return back(
-      'failed',
-      'Your channel is connected, but we could not save your choice about editing descriptions. It is off — set it from the card below.',
-    );
+    return back('failed', 'consent-write');
   }
 
   log({

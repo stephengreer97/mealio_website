@@ -16,6 +16,10 @@ import {
   EXPIRY_SKEW_MS,
   REFRESH_BATCH,
   REFRESH_WINDOW_MS,
+  REFRESH_RETRY_DELAYS_MS,
+  REFRESH_WINDOW_BY_PLATFORM,
+  SWEEP_BUDGET_MS,
+  saveConnection,
   TOKEN_REFRESHERS,
   type PlatformConnection,
   type TokenRefresher,
@@ -209,8 +213,11 @@ describe('platform-tokens — the refresh sweep', () => {
     for (const id of ['pa1', 'pa2']) {
       expect(fakeDb.row(TABLE, id)).toMatchObject({ access_token: 'stale-token', broken_reason: null, broken_at: null });
     }
-    // Retried before being given up on, so a blip inside one run is ridden out.
-    expect(flaky).toHaveBeenCalledTimes(6);
+    // One attempt per row, not three. The sweep does not pay the backoff — see
+    // REFRESH_RETRY_DELAYS_MS — because a row it gives up on today is tried
+    // again tomorrow for free, and 99 rows' worth of sleep is the budget the
+    // platforms further down the loop need.
+    expect(flaky).toHaveBeenCalledTimes(2);
   });
 
   it('a refresher that throws is deferred, not treated as a revoked grant', async () => {
@@ -300,10 +307,272 @@ describe('platform-tokens — the refresh sweep', () => {
     expect(fakeDb.row(TABLE, 'yt-week')?.access_token).not.toBe('fresh-token');
   });
 
+  // ── Finding 1: the budget, the order, and the backoff ─────────────────────
+
+  it('spends nothing on backoff, however many rows fail transiently', async () => {
+    // 99 rows failing transiently used to be 123,750 ms spent purely asleep,
+    // before any provider latency, in a cron invocation with three other passes
+    // already behind it. The retry buys a second attempt at a row that is going
+    // to be tried again tomorrow regardless; what it costs is the budget the
+    // platforms further down the loop need.
+    const rows = Array.from({ length: 30 }, (_, i) => row({ id: `yt-${i}`, creator_id: `c${i}` }));
+    fakeDb.seed(TABLE, rows);
+    let slept = 0;
+
+    const result = await refreshExpiringTokens({
+      supabase,
+      now,
+      sleep: async (ms: number) => { slept += ms; },
+      refreshers: { youtube: outage },
+    });
+
+    expect(result).toMatchObject({ checked: 30, deferred: 30 });
+    expect(slept).toBe(0);
+  });
+
+  it('still retries for the caller with a request waiting on it', async () => {
+    // The backoff is not deleted, it is moved to where a second of it is worth
+    // paying: one row, one user, and a page that either works or does not.
+    fakeDb.seed(TABLE, [row()]);
+    const flaky = vi.fn(outage);
+    let slept = 0;
+
+    await usableAccessToken(
+      { supabase, now, sleep: async (ms: number) => { slept += ms; }, refreshers: { youtube: flaky } },
+      connection({ expiresAt: new Date(NOW - 1000).toISOString() }),
+    );
+
+    expect(flaky).toHaveBeenCalledTimes(1 + REFRESH_RETRY_DELAYS_MS.length);
+    expect(slept).toBe(REFRESH_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0));
+  });
+
+  it('sweeps Instagram before the platforms that can afford to wait', async () => {
+    // `CONNECTED_PLATFORMS` is declaration order and puts Instagram second. A
+    // correlated failure on YouTube — Google's token endpoint slow for an
+    // afternoon — then drains the budget before Instagram is reached, and
+    // Instagram is the one platform where a missed pass cannot be recovered:
+    // the 14-day window is 14 chances, and this removes them all the same way.
+    fakeDb.seed(TABLE, [
+      row({ id: 'yt', platform: 'youtube' }),
+      row({ id: 'ig', platform: 'instagram' }),
+      row({ id: 'tt', platform: 'tiktok' }),
+    ]);
+    const swept: string[] = [];
+    const track = (platform: string): TokenRefresher => async (conn) => {
+      swept.push(platform);
+      return working(conn, {});
+    };
+
+    await refreshExpiringTokens({
+      supabase, now, sleep,
+      refreshers: { youtube: track('youtube'), instagram: track('instagram'), tiktok: track('tiktok') },
+    });
+
+    expect(swept[0]).toBe('instagram');
+    expect(swept.indexOf('instagram')).toBeLessThan(swept.indexOf('youtube'));
+  });
+
+  it('stops at its deadline rather than being killed part-way through', async () => {
+    // A batch size bounds rows, not time, and time is what runs out inside a
+    // cron invocation. Rows the budget does not reach are untouched and first in
+    // tomorrow's query — the same place a deferral leaves them.
+    fakeDb.seed(TABLE, [row({ id: 'pa1' }), row({ id: 'pa2' }), row({ id: 'pa3' })]);
+    let elapsed = 0;
+    const realNow = Date.now;
+    // The first row burns the whole budget; nothing after it should be started.
+    const slow: TokenRefresher = async (conn) => { elapsed = SWEEP_BUDGET_MS + 1; return working(conn, {}); };
+    vi.spyOn(Date, 'now').mockImplementation(() => realNow() + elapsed);
+
+    try {
+      const result = await refreshExpiringTokens({ supabase, now, sleep, refreshers: { youtube: slow } });
+      expect(result).toMatchObject({ checked: 1, refreshed: 1, ranOutOfTime: 2 });
+    } finally {
+      vi.mocked(Date.now).mockRestore();
+    }
+  });
+
+  it('hands each provider call a signal, so one stalled socket is not the ceiling', async () => {
+    // No provider fetch on these paths used to set a timeout, leaving undici's
+    // 300-second header timeout as the only bound on a hung socket.
+    fakeDb.seed(TABLE, [row()]);
+    let seen: AbortSignal | undefined;
+    const capture: TokenRefresher = async (conn, options) => { seen = options.signal; return working(conn, options); };
+
+    await refreshExpiringTokens({ supabase, now, sleep, refreshers: { youtube: capture } });
+
+    expect(seen).toBeInstanceOf(AbortSignal);
+  });
+
+  // ── Finding 5: the rows the `.or()` was widened to include ────────────────
+
+  it('keeps the null-expiry rows when a platform has more in-window rows than its share', async () => {
+    // Postgres sorts NULLs LAST on an ascending order, so a bare
+    // `.order('expires_at')` put the rows the `.or()` above was widened to
+    // include at the tail — where `.limit(share)` drops them first. Permanently
+    // true for YouTube, whose hourly tokens mean every row is always in-window.
+    // `FakeSupabase` used to sort NULLs first, the opposite of Postgres, which
+    // is why the single-row test above passed while this one could not.
+    const share = Math.floor(REFRESH_BATCH / 3);
+    fakeDb.seed(TABLE, [
+      ...Array.from({ length: share }, (_, i) =>
+        row({ id: `yt-${i}`, creator_id: `c${i}`, expires_at: new Date(NOW + 1000 + i).toISOString() }),
+      ),
+      row({ id: 'yt-null', creator_id: 'cn', expires_at: null }),
+    ]);
+
+    await refreshExpiringTokens({
+      supabase, now, sleep,
+      refreshers: { youtube: working, instagram: working, tiktok: working },
+    });
+
+    expect(fakeDb.row(TABLE, 'yt-null')?.access_token).toBe('fresh-token');
+  });
+
+  // ── Finding 4: a grant that defers forever leaves a trace ─────────────────
+
+  it('breaks a grant that has deferred for longer than its own window', async () => {
+    // The unbounded case: no refresh token, a null `expires_at` that
+    // `provablyUnrenewable` cannot judge, and a transient-looking failure every
+    // day. Confirmed at 400 consecutive sweeps with `broken_reason` still null,
+    // `access_token` untouched, and the creator's card still reading
+    // "Connected" — the poller-finds-nothing failure this module exists to
+    // eliminate, reached by the one route left open.
+    //
+    // `updated_at` is the attempt counter and no column had to be added: a
+    // deferral writes nothing, so on a row the sweep can see it is the last
+    // time anything worked.
+    const window = REFRESH_WINDOW_BY_PLATFORM.instagram!;
+    fakeDb.seed(TABLE, [
+      row({
+        id: 'ig-1',
+        platform: 'instagram',
+        refresh_token: null,
+        expires_at: null,
+        updated_at: new Date(NOW - window - 1000).toISOString(),
+      }),
+    ]);
+
+    const result = await refreshExpiringTokens({
+      supabase, now, sleep,
+      refreshers: { instagram: async () => ({ ok: false, reason: 'Instagram refused to refresh this grant: HTTP 400' }) },
+    });
+
+    expect(result).toMatchObject({ checked: 1, broken: 1, deferred: 0 });
+    const after = fakeDb.row(TABLE, 'ig-1')!;
+    expect(after.broken_reason).toMatch(/failed every daily attempt for \d+ days/);
+    expect(after.broken_at).not.toBeNull();
+  });
+
+  it('does not break a healthy Instagram grant the day it enters its window', async () => {
+    // The false positive this rule has to avoid, and the reason it is confined
+    // to rows with no readable expiry. A 60-day Instagram token reaches its
+    // 14-day window 46 days after it was stored, so it arrives carrying an
+    // `updated_at` that is 46 days old through no fault of its own. Reading
+    // that as 46 days of failed attempts would break a grant that is alive, on
+    // its first transient failure, which is the disconnect-everybody failure
+    // this module is written around.
+    const window = REFRESH_WINDOW_BY_PLATFORM.instagram!;
+    fakeDb.seed(TABLE, [
+      row({
+        id: 'ig-healthy',
+        platform: 'instagram',
+        refresh_token: null,
+        // Alive, and now inside the window: a real expiry, so
+        // `provablyUnrenewable` is the rule that applies and it says no.
+        expires_at: new Date(NOW + window - 86_400_000).toISOString(),
+        updated_at: new Date(NOW - 46 * 86_400_000).toISOString(),
+      }),
+    ]);
+
+    const result = await refreshExpiringTokens({
+      supabase, now, sleep,
+      refreshers: { instagram: async () => ({ ok: false, reason: 'Instagram did not answer: socket hang up' }) },
+    });
+
+    expect(result).toMatchObject({ deferred: 1, broken: 0 });
+    expect(fakeDb.row(TABLE, 'ig-healthy')?.broken_reason).toBeNull();
+    expect(fakeDb.row(TABLE, 'ig-healthy')?.access_token).toBe('stale-token');
+  });
+
+  it('leaves a stale grant alone while it still holds a refresh token', async () => {
+    // As narrow as `provablyUnrenewable`. A YouTube or TikTok grant holds a
+    // credential whose life `expires_at` does not measure, so a fortnight of
+    // Google being down costs it nothing — breaking it would be the "a
+    // transient outage disconnects everybody" failure, just slower.
+    fakeDb.seed(TABLE, [
+      row({ id: 'yt-stale', updated_at: new Date(NOW - 400 * 86_400_000).toISOString() }),
+    ]);
+
+    const result = await refreshExpiringTokens({ supabase, now, sleep, refreshers: { youtube: outage } });
+
+    expect(result).toMatchObject({ deferred: 1, broken: 0 });
+    expect(fakeDb.row(TABLE, 'yt-stale')?.broken_reason).toBeNull();
+  });
+
+  it('logs the deferral per row, with when the grant last wrote anything', async () => {
+    // A deferral writes nothing, so this line is the only per-row record that
+    // this grant failed today, and the sequence of them is how an operator
+    // tells "failing every day" from "failed once".
+    fakeDb.seed(TABLE, [row({ id: 'pa1' })]);
+
+    await refreshExpiringTokens({ supabase, now, sleep, refreshers: { youtube: outage } });
+
+    const line = log.mock.calls.map((c) => c[0]).find((c: any) => String(c.detail).includes('deferred'));
+    expect(line).toMatchObject({ event: 'CRON:TOKEN_REFRESH', status: 'error', userId: 'c1' });
+    expect(String(line.detail)).toContain('account=pa1');
+    expect(String(line.detail)).toContain('lastWrote=');
+  });
+
   it('never writes a refresh token into a log line', async () => {
     fakeDb.seed(TABLE, [row()]);
     await refreshExpiringTokens({ supabase, now, sleep, refreshers: { youtube: revoked } });
     expect(everythingWritten()).not.toContain('super-secret-refresh');
+  });
+});
+
+// ── Storing a reconnect ──────────────────────────────────────────────────────
+
+describe('platform-tokens — a reconnect must not inherit a dead refresh token', () => {
+  it('clears the stored refresh token when a rotating platform sends none', async () => {
+    // `saveConnection` omits `refresh_token` from the upsert when the input is
+    // falsy, preserving whatever is stored. That is right for Google, which
+    // issues one on the first consent and none after it. It is wrong for
+    // TikTok, which rotates: the stored one is dead the moment it has been
+    // used, so a brand-new grant that inherits it holds a credential TikTok has
+    // already retired. The next sweep sends it, TikTok answers `invalid_grant`,
+    // and `terminal: true` breaks a connection the creator made this morning.
+    fakeDb.seed(TABLE, [row({ id: 'pa1', platform: 'tiktok', refresh_token: 'rft.rotated-away' })]);
+
+    await saveConnection(supabase, {
+      creatorId: 'c1',
+      platform: 'tiktok',
+      externalId: 'open-id-1',
+      externalName: null,
+      accessToken: 'act.brand-new',
+      refreshToken: null,
+      scopes: ['video.list'],
+      expiresAt: new Date(NOW + 86_400_000).toISOString(),
+    });
+
+    expect(fakeDb.row(TABLE, 'pa1')?.refresh_token).toBeNull();
+  });
+
+  it('keeps the stored refresh token when Google sends none, because it is still the live one', async () => {
+    fakeDb.seed(TABLE, [row({ id: 'pa1', platform: 'youtube', refresh_token: '1//still-good' })]);
+
+    await saveConnection(supabase, {
+      creatorId: 'c1',
+      platform: 'youtube',
+      externalId: 'UC1',
+      externalName: 'Chef Sarah',
+      accessToken: 'ya29-brand-new',
+      refreshToken: null,
+      scopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+      expiresAt: new Date(NOW + 3_600_000).toISOString(),
+    });
+
+    // Nulling this would turn a working connection into one nothing can renew.
+    expect(fakeDb.row(TABLE, 'pa1')?.refresh_token).toBe('1//still-good');
   });
 });
 
@@ -564,6 +833,32 @@ describe('platform-tokens — refreshInstagramGrant', () => {
     // is no path back except the creator consenting again.
     expect(outcome.reason).toMatch(/Session has expired/);
     expect(outcome.reason).toMatch(/reconnect/i);
+    expect(outcome.terminal).toBe(true);
+  });
+
+  it('reads the flat Instagram-Login error envelope too, not only the Graph one', async () => {
+    // `graph.facebook.com` answers `{ error: { code, message } }`; the
+    // Instagram-Login endpoints — the family every call in this feature talks
+    // to — document a flat `{ error_type, code, error_message }`. Reading only
+    // the nested one is not cosmetic: under the flat shape a revoked grant
+    // classifies `terminal: false` and defers, forever on a row with a null
+    // `expires_at`, and Meta's sentence degrades to "HTTP 400". Which shape
+    // actually arrives cannot be settled without a live credential, which is
+    // exactly the argument for accepting both.
+    const fetchImpl = answering(
+      {
+        error_type: 'OAuthException',
+        code: 190,
+        error_message: 'The access token could not be decrypted',
+      },
+      400,
+    );
+
+    const outcome = await refreshInstagramGrant(igConnection(), { fetchImpl, now });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toMatch(/could not be decrypted/);
     expect(outcome.terminal).toBe(true);
   });
 

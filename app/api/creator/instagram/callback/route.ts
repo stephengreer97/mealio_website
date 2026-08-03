@@ -36,29 +36,26 @@ export async function GET(request: NextRequest) {
 
   const code = searchParams.get('code');
   if (!code) {
-    return backToPortal('instagram', 'failed', 'Instagram sent us back without an authorization code.');
+    return backToPortal('instagram', 'failed', 'no-code');
   }
 
   const exchanged = await exchangeInstagramCode(code);
   if (!exchanged.ok) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=instagram', reason: exchanged.detail });
-    return backToPortal('instagram', 'failed', exchanged.detail);
+    // Instagram's own sentence stays in the log line above; the card owns what
+    // the creator reads. See `ConnectFailure`.
+    return backToPortal('instagram', 'failed', 'exchange');
   }
 
   if (!exchanged.grant.scopes.includes(INSTAGRAM_BASIC_SCOPE)) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, detail: 'platform=instagram', reason: 'basic scope not granted' });
-    return backToPortal(
-      'instagram',
-      'failed',
-      'That connection came back without permission to read your posts, so there would be nothing to import. ' +
-        'Connect again and leave the permission ticked.',
-    );
+    return backToPortal('instagram', 'failed', 'scope');
   }
 
   const account = await fetchInstagramAccount(exchanged.grant.accessToken);
   if (!account.ok) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=instagram', reason: account.detail });
-    return backToPortal('instagram', 'failed', account.detail);
+    return backToPortal('instagram', 'failed', 'account');
   }
 
   const supabase = createServerSupabaseClient();
@@ -81,7 +78,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=instagram', error: err });
-    return backToPortal('instagram', 'failed', 'We could not store that connection. Try again.');
+    return backToPortal('instagram', 'failed', 'store');
   }
 
   log({

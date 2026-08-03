@@ -31,7 +31,7 @@ import { GET as IG_STATUS, DELETE as IG_DISCONNECT } from '@/app/api/creator/ins
 import { POST as TT_CONNECT } from '@/app/api/creator/tiktok/connect/route';
 import { GET as TT_CALLBACK } from '@/app/api/creator/tiktok/callback/route';
 import { GET as TT_STATUS, DELETE as TT_DISCONNECT } from '@/app/api/creator/tiktok/route';
-import { stateCookieName } from '@/lib/creator-connect';
+import { stateCookieName, STATE_TTL_SECONDS } from '@/lib/creator-connect';
 import { clearRevocationCache, createAccessToken } from '@/lib/tokens';
 import { INSTAGRAM_BASIC_SCOPE } from '@/lib/instagram';
 import { TIKTOK_VIDEO_LIST_SCOPE } from '@/lib/tiktok';
@@ -158,6 +158,39 @@ describe('POST /api/creator/{instagram,tiktok}/connect', () => {
     expect(claims(cookie!.value)).toMatchObject({ sub: 'u1', creatorId: 'c1', type: `${platform}_connect` });
   });
 
+  it.each([
+    ['instagram', IG_CONNECT] as const,
+    ['tiktok', TT_CONNECT] as const,
+  ])('%s: sets every flag the cookie needs, not only httpOnly', async (platform, handler) => {
+    // `httpOnly` was the only flag anything asserted, and it is the least
+    // interesting of the four. `sameSite: 'lax'` is *required* here rather than
+    // merely advisable — the callback is a top-level cross-site GET, and
+    // `strict` would drop the cookie on the one request that needs it. `maxAge`
+    // matching the JWT's own `exp` is what stops a cookie outliving the claim
+    // inside it, and host-only (no `domain`) keeps it off every subdomain.
+    // `NODE_ENV` is typed read-only, so it is set the way the runtime actually
+    // sees it rather than by assignment.
+    vi.stubEnv('NODE_ENV', 'production');
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    try {
+      const res = await handler(jsonRequest(`/api/creator/${platform}/connect`, { token, body: {} }));
+      const cookie = res.cookies.get(stateCookieName(platform));
+
+      expect(cookie).toMatchObject({
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: STATE_TTL_SECONDS,
+        path: '/',
+      });
+      expect(cookie?.domain).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('gives each platform its own cookie, so two tabs cannot cross', async () => {
     asUser();
     fakeDb.queue('creators', { data: { id: 'c1' } });
@@ -246,6 +279,10 @@ describe('GET /api/creator/instagram/callback', () => {
     // A fresh grant clears whatever was broken about the last one.
     expect(upsert).toMatchObject({ broken_reason: null, broken_at: null });
     expect(JSON.stringify(log.mock.calls)).not.toContain('IGQ-long-lived');
+    // Dropped on the way out even though nothing went wrong. A state cookie
+    // that outlives its round trip is a second chance for somebody else's
+    // callback, and success is the exit path easiest to forget.
+    expect(res.cookies.get(stateCookieName('instagram'))).toMatchObject({ value: '', maxAge: 0 });
   });
 
   it('refuses a personal account with Instagram’s real reason, storing nothing', async () => {
@@ -259,9 +296,13 @@ describe('GET /api/creator/instagram/callback', () => {
 
     const location = new URL(res.headers.get('location') ?? '');
     expect(location.searchParams.get('instagram')).toBe('failed');
-    // The creator reads this sentence and can act on it: switch the account to
-    // Professional. A generic failure leaves them with nothing to do.
-    expect(location.searchParams.get('detail')).toMatch(/personal Instagram account/);
+    // A code, and the card owns the sentence — see `ConnectFailure`. The
+    // account branch is distinguished from every other failure so the card can
+    // still say the thing the creator can act on: switch to Professional.
+    expect(location.searchParams.get('reason')).toBe('account');
+    // And Instagram's own words are still recorded, where they are actually
+    // useful — a log line nobody can author by handing someone a URL.
+    expect(JSON.stringify(log.mock.calls)).toMatch(/personal Instagram account/);
     expect(fakeDb.calls.some((call) => call.method === 'upsert')).toBe(false);
   });
 
@@ -391,11 +432,19 @@ describe('/api/creator/{instagram,tiktok} — status and disconnect', () => {
   ])('%s: disconnecting removes the grant and leaves no token behind', async (platform, handler) => {
     asUser();
     fakeDb.queue('creators', { data: { id: 'c1' } });
+    // Seeded, and that is the whole assertion. This test used to check that
+    // `rft.super-secret` appeared nowhere while no row had ever held it — which
+    // would have passed with the behaviour reverted, and passed against a
+    // handler that did nothing at all.
+    fakeDb.seed('creator_platform_accounts', [
+      { id: 'pa1', creator_id: 'c1', platform, refresh_token: 'rft.super-secret', access_token: 'act.live' },
+    ]);
 
     const res = await handler(jsonRequest(`/api/creator/${platform}`, { method: 'DELETE', token }));
 
     expect(res.status).toBe(200);
-    expect(fakeDb.calls.some((c) => c.table === 'creator_platform_accounts' && c.method === 'delete')).toBe(true);
+    // The row is gone, not merely a delete that was issued.
+    expect(fakeDb.rows('creator_platform_accounts')).toEqual([]);
     expect(everythingWritten()).not.toContain('rft.super-secret');
   });
 

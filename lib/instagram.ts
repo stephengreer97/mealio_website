@@ -38,6 +38,8 @@
  */
 
 import type { SourceDocument } from '@/lib/import/types';
+import { providerSignal, readJsonCapped } from '@/lib/provider-fetch';
+import { instagramError } from '@/lib/platform-tokens';
 
 // ── Scopes ───────────────────────────────────────────────────────────────────
 
@@ -159,12 +161,13 @@ export async function exchangeInstagramCode(
         redirect_uri: instagramRedirectUri(),
         code: cleanAuthCode(code),
       }),
+      signal: providerSignal(),
     });
   } catch (err) {
     return { ok: false, detail: `Instagram did not answer: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
+  const payload = await readJsonCapped(response);
   const short = shortLivedToken(payload);
   if (!response.ok || !short) {
     return { ok: false, detail: `Instagram refused the authorization code (HTTP ${response.status}).` };
@@ -179,12 +182,12 @@ export async function exchangeInstagramCode(
 
   let longLived: Response;
   try {
-    longLived = await fetchImpl(`${INSTAGRAM_GRAPH}/access_token?${exchange}`);
+    longLived = await fetchImpl(`${INSTAGRAM_GRAPH}/access_token?${exchange}`, { signal: providerSignal() });
   } catch (err) {
     return { ok: false, detail: `Instagram did not answer: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const longPayload = (await longLived.json().catch(() => null)) as Record<string, any> | null;
+  const longPayload = await readJsonCapped(longLived);
   if (!longLived.ok || typeof longPayload?.access_token !== 'string') {
     return {
       ok: false,
@@ -196,17 +199,24 @@ export async function exchangeInstagramCode(
 
   const expiresIn = typeof longPayload.expires_in === 'number' ? longPayload.expires_in : null;
 
-  // The permissions Instagram actually granted, which is not necessarily the
-  // list we asked for — a creator can untick one on Meta's own screen. When the
-  // exchange carried none we record what we requested rather than an empty list,
-  // since an empty `scopes` column reads as "granted nothing".
+  // The permissions Instagram actually granted, verbatim, and **no fallback**.
+  //
+  // There used to be one: an empty list became `INSTAGRAM_SCOPES`, on the
+  // reasoning that an empty `scopes` column reads as "granted nothing". It reads
+  // that way because that is what `permissions: ''` means — it is Meta's way of
+  // saying the creator ticked nothing — and the callback gates on this very
+  // value. Substituting the list we *asked* for made the gate check our own
+  // request against itself, so the "connect again and leave the permission
+  // ticked" branch could not be reached, and the row was written claiming a
+  // scope nobody had verified. TikTok takes its scopes straight off the token
+  // response with no fallback; so does this now.
   const granted = parsePermissions(short.permissions);
 
   return {
     ok: true,
     grant: {
       accessToken: longPayload.access_token,
-      scopes: granted.length > 0 ? granted : INSTAGRAM_SCOPES,
+      scopes: granted,
       expiresAt: expiresIn === null ? null : new Date(now() + expiresIn * 1000).toISOString(),
     },
   };
@@ -247,12 +257,12 @@ export async function fetchInstagramAccount(
 
   let response: Response;
   try {
-    response = await fetchImpl(`${INSTAGRAM_GRAPH}/me?${query}`);
+    response = await fetchImpl(`${INSTAGRAM_GRAPH}/me?${query}`, { signal: providerSignal() });
   } catch (err) {
     return { ok: false, detail: `Instagram did not answer: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
+  const payload = await readJsonCapped(response);
   if (!response.ok) {
     return { ok: false, detail: `Instagram refused the account lookup (HTTP ${response.status}).` };
   }
@@ -377,16 +387,17 @@ export async function fetchInstagramMedia(
 
     let response: Response;
     try {
-      response = await fetchImpl(`${INSTAGRAM_GRAPH}/me/media?${query}`);
+      response = await fetchImpl(`${INSTAGRAM_GRAPH}/me/media?${query}`, { signal: providerSignal() });
     } catch (err) {
       return { ok: false, detail: `Instagram did not answer: ${err instanceof Error ? err.message : String(err)}` };
     }
 
-    const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
+    const payload = await readJsonCapped(response);
     if (!response.ok || !Array.isArray(payload?.data)) {
       // Meta's own sentence is the useful half — an expired token and a revoked
       // app say different things here and an operator acts differently on each.
-      const message = typeof payload?.error?.message === 'string' ? payload.error.message : `HTTP ${response.status}`;
+      // Both envelopes, for the reason `instagramError` gives.
+      const { message } = instagramError(payload, response.status);
       return { ok: false, detail: `Instagram refused to list this account's media: ${message}` };
     }
 
@@ -402,15 +413,13 @@ export async function fetchInstagramMedia(
     if (media.length >= limit || !after || typeof payload?.paging?.next !== 'string') break;
   }
 
-  if (media.length === 0) {
-    return {
-      ok: false,
-      detail:
-        'This Instagram account has no media we can read. An account with nothing posted has nothing to ' +
-        'import — that is an answer, not a failure.',
-    };
-  }
-
+  // An empty account is reported as a success with nothing in it, because that
+  // is what it is. This used to return `ok: false` with a detail saying in as
+  // many words that it was "an answer, not a failure" — and every caller then
+  // treated it as one: the catalogs labelled it `reason: 'unreachable'` and the
+  // viability probes turned it into a probe failure. That is the same conflation
+  // `notConnectedCatalog` exists to prevent, applied in reverse. Telling the two
+  // apart is the caller's job, and `media.length` is how.
   return { ok: true, media, truncated: media.length >= limit };
 }
 

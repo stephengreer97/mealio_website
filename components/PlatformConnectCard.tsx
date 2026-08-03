@@ -82,12 +82,36 @@ const COPY: Record<SocialPlatform, CardCopy> = {
   },
 };
 
+/**
+ * What a failed attempt says, keyed by the callback's reason code.
+ *
+ * The card owns every one of these sentences and the URL only picks between
+ * them. See `ConnectFailure` in `lib/creator-connect.ts`: the callback used to
+ * put the sentence itself in the query string, which meant anyone who could get
+ * a creator to open a link chose the prose rendered inside our error styling on
+ * our own domain. An unknown or absent code falls through to the generic line,
+ * so a hand-written URL is at worst a wrong answer and never an attacker's.
+ */
+const FAILURE_COPY: Record<string, (label: string) => string> = {
+  expired: () => 'That connection attempt has expired. Start again from this page.',
+  unverified: () => 'That connection could not be verified. Start again from this page.',
+  'no-code': (label) => `${label} sent you back without an authorization code. Try connecting again.`,
+  exchange: (label) => `${label} would not complete that connection. Try connecting again.`,
+  scope: () =>
+    'That connection came back without permission to read your posts, so there would be nothing to import. ' +
+    'Connect again and leave the permission ticked.',
+  account: (label) =>
+    `We could not use that ${label} account. If it is a personal Instagram account, switch it to Professional ` +
+    '(Business or Creator) in the Instagram app and try again.',
+  store: () => 'We could not store that connection. Try again.',
+};
+
 /** What the OAuth callback redirected back with, if anything. */
-function callbackOutcome(platform: SocialPlatform): { outcome: string; detail: string | null } | null {
+function callbackOutcome(platform: SocialPlatform): { outcome: string; reason: string | null } | null {
   if (typeof window === 'undefined') return null;
   const params = new URLSearchParams(window.location.search);
   const outcome = params.get(platform);
-  return outcome ? { outcome, detail: params.get('detail') } : null;
+  return outcome ? { outcome, reason: params.get('reason') } : null;
 }
 
 function formatExpiry(iso: string | null): string | null {
@@ -185,7 +209,9 @@ export default function PlatformConnectCard({ platform }: { platform: SocialPlat
       </div>
 
       {callback?.outcome === 'failed' && (
-        <p className="text-sm text-red-600 mb-3">{callback.detail || 'That connection did not complete.'}</p>
+        <p className="text-sm text-red-600 mb-3">
+          {(callback.reason && FAILURE_COPY[callback.reason]?.(copy.label)) || 'That connection did not complete.'}
+        </p>
       )}
       {callback?.outcome === 'cancelled' && <p className="text-sm text-gray-500 mb-3">{copy.cancelled}</p>}
 

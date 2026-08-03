@@ -197,6 +197,19 @@ describe('tiktok — listing videos', () => {
     expect(result.detail).toMatch(/invalid or not found/i);
   });
 
+  it('reports an account with nothing posted as an answer, not as a failure', async () => {
+    // See the same change in `fetchInstagramMedia`: an empty account reported
+    // as `ok: false` is what made the catalogs label a creator who has posted
+    // nothing `unreachable`.
+    const { impl } = recording(() => json({ data: { videos: [], has_more: false } }));
+
+    const result = await fetchTikTokVideos('act.tiktok', { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.videos).toEqual([]);
+  });
+
   it('pages while has_more is set and stops at the item budget', async () => {
     let page = 0;
     const { impl, calls } = recording(() => {

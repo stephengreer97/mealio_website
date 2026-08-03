@@ -8,6 +8,19 @@ import { checkPushReceipts } from '@/lib/push';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Four passes in one invocation, the last of which talks to three third parties.
+ *
+ * This route declared no `maxDuration` at all while its siblings declare 30-300,
+ * so it inherited the platform default — and the token sweep can spend real time
+ * waiting on Google, Meta and TikTok. 300 is the ceiling because a run that is
+ * killed part-way through leaves the platforms at the end of the loop unswept,
+ * and Instagram is the one platform where a missed pass costs something that
+ * cannot be recovered. `refreshExpiringTokens` holds its own, tighter deadline
+ * (`SWEEP_BUDGET_MS`) so it stops on its own terms rather than being killed.
+ */
+export const maxDuration = 300;
+
 // Daily cron for the lifecycle passes that must run exactly once a day —
 // everything email. Vercel injects `Authorization: Bearer <CRON_SECRET>` on
 // scheduled invocations.

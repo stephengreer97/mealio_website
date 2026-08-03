@@ -394,6 +394,47 @@ describe('buildCatalog — drawing the list is free', () => {
     expect(result.reason).toBe('not-connected');
     expect(result.detail).toMatch(/stopped working/i);
   });
+
+  it('calls an account with nothing posted empty, not unreachable', async () => {
+    // `fetchInstagramMedia` used to report zero items as `ok: false` with a
+    // detail saying it was "an answer, not a failure" — and this is where that
+    // became one, labelled `unreachable`, which is what an operator reads as
+    // "go and look at the grant or the network". The two facts are opposites.
+    const { impl } = stubFetch({ [IG_MEDIA_URL]: jsonRoute({ data: [] }) });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'instagram',
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('empty');
+    expect(result.reason).not.toBe('unreachable');
+    expect(result.detail).toMatch(/nothing posted/i);
+  });
+
+  it('still calls a refused listing unreachable', async () => {
+    // The other side of the same distinction: a token Meta has stopped
+    // accepting is not an empty account, and must not read as one.
+    const { impl } = stubFetch({
+      [IG_MEDIA_URL]: jsonRoute({ error: { message: 'Error validating access token: Session has expired', code: 190 } }),
+    });
+    fakeDb.queue('creator_platform_accounts', { data: connectionRow({ platform: 'instagram', access_token: 'IGQ-long' }) });
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'instagram',
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('unreachable');
+    expect(result.detail).toMatch(/Session has expired/);
+  });
 });
 
 // ── One item ─────────────────────────────────────────────────────────────────

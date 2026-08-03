@@ -45,11 +45,38 @@ export function stateCookieName(platform: ConnectedPlatform): string {
   return `mealio_${platform}_state`;
 }
 
+/**
+ * Why a connection attempt ended, as a code rather than as prose.
+ *
+ * The callback used to redirect with the failure *sentence* in the query string
+ * and the portal card rendered it as its red error line. React escapes it, so
+ * there was never an XSS — but the sentence was still whatever the URL said, and
+ * `mealio.co/creator?instagram=failed&detail=…` renders arbitrary text inside
+ * our own error styling on our own domain, which is a phishing page we host.
+ *
+ * A code fixes it by construction: the card owns the words, so the worst an
+ * attacker can do with a hand-written URL is pick which of *our* sentences a
+ * creator reads. The provider's own wording is not lost, it just goes where it
+ * was always more use — the `CREATOR:SOURCE_CONNECT` log line, which already
+ * carries it.
+ *
+ * `expired` and `unverified` are the two refusals in `readPlatformConnectState`;
+ * the rest name the branches of the callbacks.
+ */
+export type ConnectFailure =
+  | 'expired'        // no state cookie: a stale tab, or an attempt that began elsewhere
+  | 'unverified'     // a cookie we did not sign, or a nonce that does not match
+  | 'no-code'        // the provider sent the creator back without one
+  | 'exchange'       // the code would not exchange for a token
+  | 'scope'          // the grant came back without permission to read anything
+  | 'account'        // the account itself is unusable (a personal IG account, no open id)
+  | 'store';         // the grant was fine and we could not write it down
+
 /** Where the creator lands afterwards, with something the portal can render. */
-export function backToPortal(platform: ConnectedPlatform, outcome: string, detail?: string): NextResponse {
+export function backToPortal(platform: ConnectedPlatform, outcome: string, reason?: ConnectFailure): NextResponse {
   const url = new URL(`${APP_URL()}/creator`);
   url.searchParams.set(platform, outcome);
-  if (detail) url.searchParams.set('detail', detail);
+  if (reason) url.searchParams.set('reason', reason);
   const response = NextResponse.redirect(url.toString());
   // Dropped whatever happened: a state cookie that outlives its round trip is a
   // second chance for somebody else's callback.
@@ -147,7 +174,7 @@ export async function readPlatformConnectState(
   if (!cookie) {
     return {
       ok: false,
-      response: backToPortal(platform, 'failed', 'This connection attempt has expired. Start again from the creator portal.'),
+      response: backToPortal(platform, 'failed', 'expired'),
     };
   }
 
@@ -164,7 +191,7 @@ export async function readPlatformConnectState(
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', detail: `platform=${platform}`, reason: 'invalid state cookie' });
     return {
       ok: false,
-      response: backToPortal(platform, 'failed', 'That connection could not be verified. Start again from the creator portal.'),
+      response: backToPortal(platform, 'failed', 'unverified'),
     };
   }
 
@@ -172,7 +199,7 @@ export async function readPlatformConnectState(
     log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, detail: `platform=${platform}`, reason: 'state mismatch (csrf)' });
     return {
       ok: false,
-      response: backToPortal(platform, 'failed', 'That connection could not be verified. Start again from the creator portal.'),
+      response: backToPortal(platform, 'failed', 'unverified'),
     };
   }
 

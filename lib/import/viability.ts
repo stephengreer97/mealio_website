@@ -571,11 +571,20 @@ export async function runViabilityCheck(
   const base = { source, checked, passed, items, feed, costUsd, unsupported: null };
 
   if (checked === 0) {
+    // An account we reached that has posted nothing gets its own sentence. The
+    // probe returns `ok: true` with an empty list for that case — reporting it
+    // as a *failure* is what used to make an empty Instagram or TikTok account
+    // read as `unreachable` — and "None of the 0 most recent items could be
+    // read" is not what happened, so it does not get said.
+    const emptyAccount = probed.items.length === 0;
     return report({
       ...base,
       outcome: 'unavailable',
-      summary:
-        unavailableVerdicts > 0
+      summary: emptyAccount
+        ? `We reached this ${SOURCE_LABELS[source]} source and it has nothing posted, so there was nothing to ` +
+          'measure. That is an answer rather than a failure — this is not a verdict on the creator, and it ' +
+          'is not a pass either.'
+        : unavailableVerdicts > 0
           ? `The classifier could not be reached for any of the ${probed.items.length} items, so nothing was ` +
             'measured. This says nothing about the creator — retry once the classifier is back.'
           : `None of the ${probed.items.length} most recent items could be read, so nothing was measured. ` +

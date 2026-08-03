@@ -24,6 +24,29 @@ function compare(a: any, b: any): number {
   return a < b ? -1 : 1;
 }
 
+/**
+ * Orders two cells the way Postgres does, NULLs included.
+ *
+ * Postgres treats NULL as LARGER than every value, so a bare `ORDER BY col ASC`
+ * is `NULLS LAST` and `DESC` is `NULLS FIRST`, and `.order(col, { nullsFirst })`
+ * is how supabase-js overrides that. Sorting NULL as `''` instead - which this
+ * fake used to do - puts it first on ASC, the exact opposite of the default, and
+ * that disagreement hid a real defect: the null-`expires_at` rows the refresh
+ * sweep was widened to include sort to the TAIL in Postgres and are the first
+ * ones `.limit()` drops. A mock that disagrees with the database is worse than
+ * no mock, because it launders the bug into a green test.
+ */
+function compareOrdered(a: any, b: any, ascending: boolean, nullsFirst: boolean): number {
+  const aNull = a === null || a === undefined;
+  const bNull = b === null || b === undefined;
+  if (aNull && bNull) return 0;
+  // NULLs are placed outright rather than compared: their position is set by
+  // `nullsFirst` and is not flipped again by the direction.
+  if (aNull) return nullsFirst ? -1 : 1;
+  if (bNull) return nullsFirst ? 1 : -1;
+  return (ascending ? 1 : -1) * compare(a, b);
+}
+
 /** Postgres three-valued logic: a comparison against NULL never matches. */
 function matchesFilter(row: any, f: Filter): boolean {
   const cell = row[f.column];
@@ -161,7 +184,7 @@ export class FakeSupabase {
     let conflict: string[] = [];
     let returning = false;
     const filters: Filter[] = [];
-    let orderBy: { column: string; ascending: boolean } | null = null;
+    let orderBy: { column: string; ascending: boolean; nullsFirst: boolean } | null = null;
     let rowLimit: number | null = null;
 
     const builder: any = {};
@@ -204,7 +227,10 @@ export class FakeSupabase {
     }
     builder.order = (...args: any[]) => {
       record('order', args);
-      orderBy = { column: args[0], ascending: args[1]?.ascending !== false };
+      const ascending = args[1]?.ascending !== false;
+      // Postgres' default when the caller does not say: NULLS LAST ascending,
+      // NULLS FIRST descending.
+      orderBy = { column: args[0], ascending, nullsFirst: args[1]?.nullsFirst ?? !ascending };
       return builder;
     };
     builder.limit = (...args: any[]) => { record('limit', args); rowLimit = args[0]; return builder; };
@@ -254,8 +280,8 @@ export class FakeSupabase {
         default: {
           let out = [...matched];
           if (orderBy) {
-            const { column, ascending } = orderBy;
-            out.sort((a, b) => (ascending ? 1 : -1) * compare(a[column], b[column]));
+            const { column, ascending, nullsFirst } = orderBy;
+            out.sort((a, b) => compareOrdered(a[column], b[column], ascending, nullsFirst));
           }
           if (rowLimit !== null) out = out.slice(0, rowLimit);
           return { data: out.map((r) => project(r, columns)), error: null, count: out.length };

@@ -210,6 +210,27 @@ describe('import/viability — platforms that are not connected yet', () => {
     },
   );
 
+  it('says an account is empty rather than that nothing could be read', async () => {
+    // An account we reached that has posted nothing is an answer. It used to
+    // come back through `ok: false` — which every caller then treated as a
+    // failure — and now comes back as a probe that succeeded with nothing in
+    // it. Neither a pass nor a verdict on the creator, and it says which.
+    const probe: SourceProbe = { source: 'instagram', async probe(): Promise<ProbeResult> { return { ok: true, items: [] }; } };
+    const call = stubCaller(() => ({ verdict: 'yes', reason: 'x' }));
+
+    const report = await runViabilityCheck('instagram', 'https://instagram.com/@sarah', {
+      call,
+      probes: { ...SOURCE_PROBES, instagram: probe },
+    });
+
+    expect(report.outcome).toBe('unavailable');
+    expect(report.summary).toMatch(/nothing posted/i);
+    // The sentence for a set of items we failed to read must not be used for a
+    // set of items that does not exist.
+    expect(report.summary).not.toMatch(/could not be read/i);
+    expect(call.requests).toEqual([]);
+  });
+
   it('exposes one probe per source, so a new platform is a registry entry', async () => {
     expect(Object.keys(SOURCE_PROBES).sort()).toEqual(['instagram', 'tiktok', 'website', 'youtube']);
   });

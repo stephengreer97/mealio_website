@@ -93,18 +93,40 @@ describe('PlatformConnectCard — connecting', () => {
   });
 
   it('shows the callback failure rather than a card that looks connected', async () => {
-    window.history.replaceState({}, '', '/creator?instagram=failed&detail=Instagram+refused+that+grant.');
+    window.history.replaceState({}, '', '/creator?instagram=failed&reason=scope');
     harness('instagram', NOT_CONNECTED);
-    expect(await screen.findByText('Instagram refused that grant.')).toBeTruthy();
+    expect(await screen.findByText(/leave the permission ticked/i)).toBeTruthy();
+  });
+
+  it('renders its own sentence for a reason code, never the URL\u2019s prose', async () => {
+    // The callback used to redirect with the failure *sentence* in the query
+    // string and this card rendered it. React escapes it, so it was never an
+    // XSS - but `mealio.co/creator?instagram=failed&detail=...` still put
+    // attacker-written prose inside our own error styling on our own domain.
+    window.history.replaceState(
+      {},
+      '',
+      '/creator?instagram=failed&detail=Your+account+is+suspended.+Call+1-800-555-0100.',
+    );
+    harness('instagram', NOT_CONNECTED);
+
+    expect(await screen.findByText(/That connection did not complete\./)).toBeTruthy();
+    expect(screen.queryByText(/1-800-555-0100/)).toBeNull();
+  });
+
+  it('falls back to the generic sentence for a code it does not know', async () => {
+    window.history.replaceState({}, '', '/creator?instagram=failed&reason=not-a-real-code');
+    harness('instagram', NOT_CONNECTED);
+    expect(await screen.findByText(/That connection did not complete\./)).toBeTruthy();
   });
 
   it('reads only its own platform’s callback outcome', async () => {
     // Both cards are on the same page, so a TikTok failure must not render on
     // the Instagram card.
-    window.history.replaceState({}, '', '/creator?tiktok=failed&detail=Nope.');
+    window.history.replaceState({}, '', '/creator?tiktok=failed&reason=scope');
     harness('instagram', NOT_CONNECTED);
     await screen.findByRole('button', { name: /Connect Instagram/i });
-    expect(screen.queryByText('Nope.')).toBeNull();
+    expect(screen.queryByText(/leave the permission ticked/i)).toBeNull();
   });
 });
 

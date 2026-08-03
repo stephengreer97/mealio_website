@@ -455,6 +455,26 @@ async function buildYouTubeCatalog(deps: SyncDeps, creator: SyncCreator): Promis
  * failure with a next move, never as an empty list — "this creator publishes
  * nothing" is the one thing an empty catalog must not be allowed to mean.
  */
+/**
+ * The sentence for an account we reached and which has posted nothing.
+ *
+ * Its own `reason`, not `unreachable`, because those are opposite facts and an
+ * operator does opposite things with them: one is a creator with no back
+ * catalogue yet, the other is a grant or a network to go and look at. Reported
+ * as a failure rather than an empty success for the reason `notConnectedCatalog`
+ * gives — "this creator publishes nothing" is not something an empty list may be
+ * allowed to mean silently — but it says which of the two it is.
+ */
+function emptyAccountCatalog(source: ConnectedPlatform): CatalogResult {
+  return {
+    ok: false,
+    reason: 'empty',
+    detail:
+      `We reached this creator's ${SOURCE_LABELS[source]} account and it has nothing posted that we can read. ` +
+      'That is an answer rather than a failure — there is nothing to import yet.',
+  };
+}
+
 function notConnectedCatalog(source: ConnectedPlatform, brokenReason: string | null): CatalogResult {
   return {
     ok: false,
@@ -498,6 +518,7 @@ async function buildInstagramCatalog(deps: SyncDeps, creator: SyncCreator): Prom
   if (!listed.ok) {
     return { ok: false, reason: 'unreachable', detail: listed.detail };
   }
+  if (listed.media.length === 0) return emptyAccountCatalog('instagram');
 
   const entries = await withImportRecords(
     deps,
@@ -538,6 +559,7 @@ async function buildTikTokCatalog(deps: SyncDeps, creator: SyncCreator): Promise
   if (!listed.ok) {
     return { ok: false, reason: 'unreachable', detail: listed.detail };
   }
+  if (listed.videos.length === 0) return emptyAccountCatalog('tiktok');
 
   const entries = await withImportRecords(
     deps,

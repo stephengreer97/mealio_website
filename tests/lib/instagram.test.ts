@@ -137,9 +137,28 @@ describe('instagram — the code exchange ends in a long-lived token', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // No `permissions` came back, so what we asked for is recorded rather than
-    // an empty list, which would read as "granted nothing".
-    expect(result.grant.scopes).toEqual([INSTAGRAM_BASIC_SCOPE]);
+    // No `permissions` came back, so nothing is claimed. This used to record
+    // what we *asked* for on the reasoning that an empty list reads as "granted
+    // nothing" — which it does, because that is what it means. See the
+    // regression below.
+    expect(result.grant.scopes).toEqual([]);
+  });
+
+  it('does not turn "granted nothing" into the scope we asked for', async () => {
+    // `permissions: ''` is Meta's way of saying the creator ticked nothing on
+    // the consent screen. The old fallback rewrote it into
+    // `instagram_business_basic`, and the callback gates on this very value —
+    // so the gate compared our own request against itself and could not fail.
+    // The row was then written claiming a scope nobody had verified.
+    const { impl } = routed([
+      [/api\.instagram\.com/, () => json({ data: [{ access_token: 'IGQ-short', user_id: '178', permissions: '' }] })],
+      [/graph\.instagram\.com/, () => json({ access_token: 'IGQ-long', expires_in: 5_184_000 })],
+    ]);
+
+    const result = await exchangeInstagramCode('c', { fetchImpl: impl });
+
+    expect(result.ok && result.grant.scopes).toEqual([]);
+    expect(result.ok && result.grant.scopes).not.toContain(INSTAGRAM_BASIC_SCOPE);
   });
 
   it('stores nothing when the long-lived exchange fails', async () => {
@@ -274,6 +293,40 @@ describe('instagram — listing media', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.detail).toMatch(/Session has expired/);
+  });
+
+  it('reports an account with nothing posted as an answer, not as a failure', async () => {
+    // This used to return `ok: false` with a detail saying in as many words
+    // that it was "an answer, not a failure" — and every caller then treated it
+    // as one: the catalogs labelled it `reason: 'unreachable'` and the
+    // viability probes turned it into a probe failure. That is the conflation
+    // `notConnectedCatalog` exists to prevent, applied in reverse.
+    const { impl } = routed([[/\/me\/media/, () => json({ data: [] })]]);
+
+    const result = await fetchInstagramMedia('IGQ-long', { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.media).toEqual([]);
+  });
+
+  it('refuses a response body past the size cap rather than buffering it', async () => {
+    // Perfectly valid JSON, and 3 MB of it. `await response.json()` parses the
+    // lot and hands back a media list; the cap abandons the read. A fixed
+    // credentialed host is not a promise about response size, and these calls
+    // skip the guarded fetcher that would otherwise have bounded them —
+    // deliberately, for the SSRF reasoning, which says nothing about size.
+    const body = JSON.stringify({
+      data: [{ id: 'm1', permalink: 'https://www.instagram.com/reel/m1/', caption: 'x'.repeat(3 * 1024 * 1024) }],
+    });
+    const impl = (async () =>
+      new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+
+    const result = await fetchInstagramMedia('IGQ-long', { fetchImpl: impl });
+
+    // Never parsed, so never a media list. Handled exactly like any other body
+    // that could not be read.
+    expect(result.ok).toBe(false);
   });
 });
 

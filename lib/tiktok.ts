@@ -6,10 +6,10 @@
  * webhook that looks relevant, `video.publish.completed`, fires only for videos
  * uploaded through our own Video Kit, and our creators post from inside the
  * TikTok app — so it could never fire for us, and requesting a product the
- * review demo cannot exercise is a documented rejection reason. The mobile app
- * connects through this same web flow (`AuthSession` opens the browser, TikTok
- * redirects to mealio.co, the app deep-links back), which is why no native
- * platforms are registered either.
+ * review demo cannot exercise is a documented rejection reason. No native
+ * platforms are registered either, and the connect flow is **web only** — see
+ * `app/api/creator/tiktok/connect/route.ts` for why the mobile app cannot
+ * complete it as things stand.
  *
  * Two facts shape everything below.
  *
@@ -33,6 +33,7 @@
  */
 
 import type { SourceDocument } from '@/lib/import/types';
+import { providerSignal, readJsonCapped } from '@/lib/provider-fetch';
 
 // ── Scopes ───────────────────────────────────────────────────────────────────
 
@@ -175,12 +176,13 @@ export async function exchangeTikTokCode(
         grant_type: 'authorization_code',
         redirect_uri: tiktokRedirectUri(),
       }),
+      signal: providerSignal(),
     });
   } catch (err) {
     return { ok: false, detail: `TikTok did not answer: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
+  const payload = await readJsonCapped(response);
   const grant = payload ? toGrant(payload, now) : null;
   if (!response.ok || !grant) {
     return { ok: false, detail: `TikTok refused the authorization code: ${tiktokErrorDetail(payload, response.status)}` };
@@ -296,12 +298,13 @@ export async function fetchTikTokVideos(
           max_count: Math.min(TIKTOK_PAGE_SIZE, limit - videos.length),
           ...(cursor === undefined ? {} : { cursor }),
         }),
+        signal: providerSignal(),
       });
     } catch (err) {
       return { ok: false, detail: `TikTok did not answer: ${err instanceof Error ? err.message : String(err)}` };
     }
 
-    const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
+    const payload = await readJsonCapped(response);
 
     // TikTok answers a failed data call with HTTP 200 and `error.code` set to
     // something other than `ok`. Checking `response.ok` alone reads a revoked
@@ -324,15 +327,9 @@ export async function fetchTikTokVideos(
     if (videos.length >= limit || payload?.data?.has_more !== true || cursor === undefined) break;
   }
 
-  if (videos.length === 0) {
-    return {
-      ok: false,
-      detail:
-        'This TikTok account has no videos we can read. An account with nothing posted has nothing to ' +
-        'import — that is an answer, not a failure.',
-    };
-  }
-
+  // An empty account is a success with nothing in it. See the same change in
+  // `fetchInstagramMedia`: reporting it as a failure is what made every caller
+  // label a creator who has posted nothing as `unreachable`.
   return { ok: true, videos, truncated: videos.length >= limit };
 }
 
