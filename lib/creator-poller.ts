@@ -155,7 +155,7 @@ export const POLL_ITEM_CAP = 5;
  * with no `ORDER BY` is a truncation rather than a selection, so the batch had
  * to be chosen in JavaScript from a wider read, and past that wider read the
  * same starvation returned one order of magnitude up — creator 1001 was never
- * polled and nothing said so. `creators.last_polled_at` (see
+ * polled and nothing said so. `creators.poll_queue_position_at` (see
  * `add-poll-order-and-publish-idempotency.sql`) lets the ordering happen in SQL,
  * so the query now returns the hundred longest-waiting creators and nothing
  * else. A pool on top of that would only be a second, arbitrary cut across an
@@ -171,7 +171,7 @@ export const POLL_CREATOR_BATCH = 100;
  * about how long touching them takes, and time is what runs out inside a cron
  * invocation.
  *
- * Creators the budget did not reach are untouched — `creators.last_polled_at` is
+ * Creators the budget did not reach are untouched — `creators.poll_queue_position_at` is
  * claimed per creator as their turn comes up, never for the batch in one write —
  * so they keep the older timestamp that put them in this batch and sort ahead of
  * everyone this pass reached. That is the property that makes a short pass a
@@ -836,7 +836,7 @@ export interface PollQueue {
  * polling, and the partial index in `add-creator-sources.sql` is shaped for
  * exactly this predicate.
  *
- * **And the order, in the query too.** `ORDER BY last_polled_at NULLS FIRST
+ * **And the order, in the query too.** `ORDER BY poll_queue_position_at NULLS FIRST
  * LIMIT 100` is a selection; the `LIMIT 1000` this used to do, sorted afterwards
  * in JavaScript, was a truncation wearing a selection's clothes — past a
  * thousand opted-in creators Postgres returned whichever page it liked and the
@@ -856,7 +856,7 @@ export async function eligibleCreators(supabase: SupabaseClient): Promise<PollQu
     .select(CREATOR_COLUMNS, { count: 'exact' })
     .eq('import_opt_in', true)
     .neq('primary_source', 'none')
-    .order('last_polled_at', { ascending: true, nullsFirst: true })
+    .order('poll_queue_position_at', { ascending: true, nullsFirst: true })
     .limit(POLL_CREATOR_BATCH);
 
   const rows = (data ?? []) as Array<Record<string, any>>;
@@ -932,7 +932,7 @@ function originOf(creator: PollableCreator): string | null {
 }
 
 /**
- * Takes this creator's turn in the queue: `creators.last_polled_at = now`.
+ * Takes this creator's turn in the queue: `creators.poll_queue_position_at = now`.
  *
  * **Written before the poll, and whatever the poll then does.** Both halves of
  * that are the same rule — the column's only job is to rotate the queue, so
@@ -963,7 +963,7 @@ function originOf(creator: PollableCreator): string | null {
 async function claimTurn(deps: PollDeps, creator: PollableCreator, at: string): Promise<void> {
   const { error } = await deps.supabase
     .from('creators')
-    .update({ last_polled_at: at })
+    .update({ poll_queue_position_at: at })
     .eq('id', creator.id);
 
   if (error) {
@@ -1002,7 +1002,7 @@ export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
   const states = await loadStates(deps.supabase, batch);
   const stateFor = (creator: PollableCreator) => states.get(`${creator.id}:${creator.source}`) ?? null;
 
-  // No sort here. The batch arrives ordered by `creators.last_polled_at`, and
+  // No sort here. The batch arrives ordered by `creators.poll_queue_position_at`, and
   // re-sorting it by the per-source `creator_source_state.last_polled_at` would
   // reorder it by a different fact — one that deliberately does not advance when
   // a poll fails, so a permanently-failing creator would sort to the front of

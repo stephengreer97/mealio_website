@@ -972,14 +972,14 @@ describe('one email per batch (MEAL-76)', () => {
 
 describe('the pass', () => {
   it('polls the longest-waiting creator first, so a short budget cannot starve the tail', async () => {
-    // Ordered on `creators.last_polled_at`, in SQL. `never` has none at all,
+    // Ordered on `creators.poll_queue_position_at`, in SQL. `never` has none at all,
     // which is the case the ordering is easiest to get backwards: Postgres sorts
     // NULLs LAST on ASC, so a query that does not ask for `nullsFirst` puts
     // every creator we have never polled at the very back of the queue.
     fakeDb.seed('creators', [
-      creatorRow({ id: 'recent', website_url: 'https://recent.test/', feed_url: 'https://recent.test/feed', last_polled_at: '2027-01-15T07:00:00.000Z' }),
-      creatorRow({ id: 'stale', website_url: 'https://stale.test/', feed_url: 'https://stale.test/feed', last_polled_at: '2027-01-01T07:00:00.000Z' }),
-      creatorRow({ id: 'never', website_url: 'https://never.test/', feed_url: 'https://never.test/feed', last_polled_at: null }),
+      creatorRow({ id: 'recent', website_url: 'https://recent.test/', feed_url: 'https://recent.test/feed', poll_queue_position_at: '2027-01-15T07:00:00.000Z' }),
+      creatorRow({ id: 'stale', website_url: 'https://stale.test/', feed_url: 'https://stale.test/feed', poll_queue_position_at: '2027-01-01T07:00:00.000Z' }),
+      creatorRow({ id: 'never', website_url: 'https://never.test/', feed_url: 'https://never.test/feed', poll_queue_position_at: null }),
     ]);
     fakeDb.seed('creator_source_state', [
       { creator_id: 'recent', source: 'website', last_polled_at: '2027-01-15T07:00:00.000Z', poll_after: null, consecutive_failures: 0 },
@@ -1006,7 +1006,7 @@ describe('the pass', () => {
     ]);
     // And every one of them has taken their turn, so the next pass starts from
     // an order this pass has already moved on.
-    expect(fakeDb.rows('creators').map((row) => row.last_polled_at)).toEqual([NOW_ISO, NOW_ISO, NOW_ISO]);
+    expect(fakeDb.rows('creators').map((row) => row.poll_queue_position_at)).toEqual([NOW_ISO, NOW_ISO, NOW_ISO]);
   });
 
   it('does not hit an origin twice in one pass after it has refused us', async () => {
@@ -1093,7 +1093,7 @@ describe('the pass', () => {
     const rows = manyCreators(101).map((row, i) => ({
       ...row,
       // The last row is the one waiting longest — and the one a bare LIMIT drops.
-      last_polled_at: i === 100 ? '2020-01-01T00:00:00.000Z' : '2027-01-15T07:00:00.000Z',
+      poll_queue_position_at: i === 100 ? '2020-01-01T00:00:00.000Z' : '2027-01-15T07:00:00.000Z',
     }));
     fakeDb.seed('creators', rows);
     const { impl, calls } = stubFetch(feedRoutesFor(rows));
@@ -1149,7 +1149,7 @@ describe('the pass', () => {
   });
 
   it('sorts a creator who has never been polled ahead of one polled long ago', async () => {
-    // Postgres puts NULLs LAST on ASC. A creator with no `last_polled_at` has
+    // Postgres puts NULLs LAST on ASC. A creator with no `poll_queue_position_at` has
     // waited the longest by definition, so the query has to say `nullsFirst` —
     // and a fake that models NULL as an empty string agrees with the code
     // instead of with the database and hides exactly this.
@@ -1157,7 +1157,7 @@ describe('the pass', () => {
       ...row,
       // Everyone has been polled recently except the last, who has never been
       // polled at all. Without `nullsFirst` they are last in line, forever.
-      last_polled_at: i === 100 ? null : '2027-01-15T07:00:00.000Z',
+      poll_queue_position_at: i === 100 ? null : '2027-01-15T07:00:00.000Z',
     }));
     fakeDb.seed('creators', rows);
     const { impl, calls } = stubFetch(feedRoutesFor(rows));
@@ -1172,7 +1172,7 @@ describe('the pass', () => {
     // wearing a different hat: they sort first, they fail, they sort first
     // again, and every creator behind them waits on a feed that is never going
     // to answer.
-    fakeDb.seed('creators', [creatorRow({ last_polled_at: '2020-01-01T00:00:00.000Z' })]);
+    fakeDb.seed('creators', [creatorRow({ poll_queue_position_at: '2020-01-01T00:00:00.000Z' })]);
     const { impl } = stubFetch({
       'https://chefsarah.test/robots.txt': { body: '' },
       'https://chefsarah.test/feed': { status: 500, body: 'boom' },
@@ -1181,13 +1181,13 @@ describe('the pass', () => {
     const pass = await runPollPass(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }));
 
     expect(pass.sourcesFailed).toBe(1);
-    // The turn was taken. The two `last_polled_at` columns say different things
+    // The turn was taken. The two `poll_queue_position_at` columns say different things
     // on purpose and this is where they part: the one on `creators` is a queue
     // position and has to advance on a failure, and the one on
     // `creator_source_state` means "when we last successfully LISTED this
     // source" — advancing that on a failed attempt would tell the next pass the
     // baseline had run and import the creator's whole back catalogue.
-    expect(fakeDb.row('creators', 'c1')?.last_polled_at).toBe(NOW_ISO);
+    expect(fakeDb.row('creators', 'c1')?.poll_queue_position_at).toBe(NOW_ISO);
     expect(state()?.last_polled_at).toBeNull();
     // And the backoff is untouched by any of it.
     expect(state()?.consecutive_failures).toBe(1);
@@ -1240,9 +1240,9 @@ describe('the pass', () => {
     // rather than a loss: an unreached creator is untouched, keeps the older
     // timestamp that put them in this batch, and leads the next pass.
     fakeDb.seed('creators', [
-      creatorRow({ id: 'a', user_id: 'ua', website_url: 'https://a.test/', feed_url: 'https://a.test/feed', last_polled_at: null }),
-      creatorRow({ id: 'b', user_id: 'ub', website_url: 'https://b.test/', feed_url: 'https://b.test/feed', last_polled_at: null }),
-      creatorRow({ id: 'c', user_id: 'uc', website_url: 'https://c.test/', feed_url: 'https://c.test/feed', last_polled_at: null }),
+      creatorRow({ id: 'a', user_id: 'ua', website_url: 'https://a.test/', feed_url: 'https://a.test/feed', poll_queue_position_at: null }),
+      creatorRow({ id: 'b', user_id: 'ub', website_url: 'https://b.test/', feed_url: 'https://b.test/feed', poll_queue_position_at: null }),
+      creatorRow({ id: 'c', user_id: 'uc', website_url: 'https://c.test/', feed_url: 'https://c.test/feed', poll_queue_position_at: null }),
     ]);
     const routes = feedRoutesFor([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
     const { impl: fast, calls } = stubFetch(routes);
@@ -1258,7 +1258,7 @@ describe('the pass', () => {
     );
 
     expect(short.skipped).toBe(2);
-    expect(fakeDb.rows('creators').map((row) => row.last_polled_at)).toEqual([NOW_ISO, null, null]);
+    expect(fakeDb.rows('creators').map((row) => row.poll_queue_position_at)).toEqual([NOW_ISO, null, null]);
 
     calls.length = 0;
     await runPollPass(deps({ now: () => NOW + 36 * 3_600_000, fetchOptions: { fetchImpl: fast, lookup: publicLookup } }));
