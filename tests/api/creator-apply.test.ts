@@ -10,6 +10,9 @@ vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 vi.mock('@/lib/email', () => ({
   sendCreatorApplicationEmail: vi.fn(async () => {}),
   sendCreatorAppliedEmail: vi.fn(async () => {}),
+  // The route resolves its recipients through the same helper the link editor's
+  // paused-import alert uses, so this file has to stand it in too.
+  adminNotifyEmails: vi.fn(async () => ['admin@mealio.co']),
 }));
 
 import { POST } from '@/app/api/creator/apply/route';

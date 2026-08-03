@@ -9,21 +9,27 @@ import { checkPushReceipts } from '@/lib/push';
 export const dynamic = 'force-dynamic';
 
 /**
- * Four passes in one invocation, the last of which talks to three third parties.
+ * Five passes in one invocation, the last of which talks to three third parties.
  *
  * This route declared no `maxDuration` at all while its siblings declare 30-300,
- * so it inherited the platform default — and the token sweep can spend real time
- * waiting on Google, Meta and TikTok. 300 is the ceiling because a run that is
- * killed part-way through leaves the platforms at the end of the loop unswept,
- * and Instagram is the one platform where a missed pass costs something that
- * cannot be recovered. `refreshExpiringTokens` holds its own, tighter deadline
- * (`SWEEP_BUDGET_MS`) so it stops on its own terms rather than being killed.
+ * so it inherited the platform default — 10s on Hobby. Two separate things went
+ * wrong there. The sync sweep could start 200s of sequential work and be killed
+ * mid-chunk *holding a lease it had just claimed*, leaving the run it was
+ * recovering unavailable to everyone else until that lease expired. And the
+ * token sweep can spend real time waiting on Google, Meta and TikTok.
+ *
+ * 300 is the ceiling because a run killed part-way leaves the platforms at the
+ * end of the loop unswept, and Instagram is the one platform where a missed pass
+ * costs something that cannot be recovered. Both sweeps hold their own tighter
+ * deadlines (`SWEEP_BUDGET_MS` in each) so they stop on their own terms rather
+ * than being killed — the two together are what make the backstop honest.
  */
 export const maxDuration = 300;
 
 // Daily cron for the lifecycle passes that must run exactly once a day —
-// everything email. Vercel injects `Authorization: Bearer <CRON_SECRET>` on
-// scheduled invocations.
+// everything email. Kept to one job so we stay within Vercel Hobby's cron
+// limits (see vercel.json). Vercel injects `Authorization: Bearer <CRON_SECRET>`
+// on scheduled invocations.
 //
 // The two email passes route through sendMarketingEmail() (suppression + dedup
 // + the physical-address gate handled there), so nothing sends until
@@ -74,9 +80,14 @@ export async function GET(request: NextRequest) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'pushReceipts', reason: err.message });
   }
   // Admin sync runs are driven by the admin screen, so closing the tab stops the
-  // loop. This is the backstop: a half-finished run gets finished, and — the
-  // part that actually matters — the creator still gets told what published
-  // under their name. Slow, but it means no run is abandoned silently.
+  // loop. This sweep is the backstop, and it is worth being exact about what it
+  // does and does not promise: one fire a day, bounded by `SWEEP_BUDGET_MS`,
+  // advances each stalled run by a chunk or two. A small abandoned run finishes
+  // here; a 200-item one does not — it takes weeks at a chunk a day, and the
+  // real recovery for that is an operator reopening the run and pressing Resume.
+  // What this guarantees is that no run is *forgotten*, not that every run
+  // finishes without anyone. Nothing publishes from a run either way, so nobody
+  // is mis-notified.
   try {
     results.syncRunsResumed = await resumeStalledSyncRuns({ supabase: createServerSupabaseClient() });
   } catch (err: any) {

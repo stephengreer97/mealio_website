@@ -141,7 +141,12 @@ describe('POST /api/creator/youtube/connect', () => {
     // Identity that round-trips through a third party and comes back in a query
     // string is identity anyone can supply — and what is being attached here is
     // write access to a creator's channel. So the state parameter is an opaque
-    // nonce, and the identity is in the signed cookie Google never sees.
+    // nonce and nothing else, and the identity is in the signed cookie Google
+    // never sees.
+    //
+    // Asserted as a shape, not as "does not contain 'c1'": a random 32-char hex
+    // string contains that pair about 12% of the time, which made this test fail
+    // roughly one run in eight for no reason at all.
     const url = new URL((await res.json()).url);
     expect(url.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
     expect(cookie?.value.split('.')).toHaveLength(3);
@@ -317,6 +322,34 @@ describe('/api/creator/youtube', () => {
     });
     expect(JSON.stringify(body)).not.toContain('super-secret-refresh');
     expect(JSON.stringify(body)).not.toContain('ya29-token');
+  });
+
+  /**
+   * `hasChannel` is what decides whether the append setting is offered at all
+   * (MEAL-78). It is not the enforcement — `assertAppendAllowed` is — but a
+   * consent prompt about a channel that does not exist is one a creator learns
+   * to click past, so it has to be right.
+   */
+  it('reports no channel for a creator with neither a link nor a grant', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_url: null, youtube_append_opt_in: false } });
+    fakeDb.queue('creator_platform_accounts', { data: null });
+
+    const body = await (await GET(jsonRequest('/api/creator/youtube', { method: 'GET', token }))).json();
+
+    expect(body).toMatchObject({ hasChannel: false, connected: false, appendOptIn: false });
+  });
+
+  it('reports a channel on a link alone, so a creator who adds one can connect it', async () => {
+    asUser();
+    // The MEAL-94 case: joined without YouTube, started a channel later, added
+    // the link. Nothing is connected yet and the offer is still honest.
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_url: 'https://youtube.com/@chefsarah', youtube_append_opt_in: false } });
+    fakeDb.queue('creator_platform_accounts', { data: null });
+
+    const body = await (await GET(jsonRequest('/api/creator/youtube', { method: 'GET', token }))).json();
+
+    expect(body).toMatchObject({ hasChannel: true, connected: false });
   });
 
   it('surfaces a broken connection to the one person who can fix it', async () => {

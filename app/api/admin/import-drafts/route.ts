@@ -9,7 +9,9 @@ import {
   editDraft,
   editableDraft,
   listDraftQueue,
+  listHandedOverDrafts,
   notifyApproved,
+  reclaimDraft,
   reviewDraft,
   sendDraftToCreator,
   type ApprovedMeal,
@@ -44,15 +46,22 @@ export async function GET(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const drafts = await listDraftQueue(supabase, 'admin');
+  // What this operator has handed to creators and the creators have not decided
+  // yet. Since MEAL-89 those rows really are in a queue somebody reads, so this
+  // is no longer a stranded list — it is the record of a decision to stop
+  // deciding, which an operator has to be able to see in order to take back.
+  const handedOver = await listHandedOverDrafts(supabase);
 
   // Rendered on the card, not recomputed there: the rules that decide which
   // fields get called out live in `lib/import/draft-form.ts`, and a second copy
   // of them in the browser is a second copy to keep true.
   return NextResponse.json({
     drafts: drafts.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
+    handedOver: handedOver.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
     totals: {
       waiting: drafts.length,
       flagged: drafts.filter((draft) => draft.summary.needALook > 0).length,
+      handedOver: handedOver.length,
     },
   });
 }
@@ -71,10 +80,12 @@ export async function POST(request: NextRequest) {
   }
 
   const action = body.action;
-  if (action !== 'approve' && action !== 'send-to-creator' && action !== 'delete') {
-    return NextResponse.json({ error: "action must be 'approve', 'send-to-creator' or 'delete'" }, { status: 400 });
+  if (action !== 'approve' && action !== 'send-to-creator' && action !== 'delete' && action !== 'reclaim') {
+    return NextResponse.json(
+      { error: "action must be 'approve', 'send-to-creator', 'reclaim' or 'delete'" },
+      { status: 400 },
+    );
   }
-
   const targets = [...new Set([...ids(body.ids), ...ids(body.id)])];
   if (targets.length === 0) {
     return NextResponse.json({ error: 'Select at least one draft.' }, { status: 400 });
@@ -99,7 +110,9 @@ export async function POST(request: NextRequest) {
     // to stay declined, or the next sync of the same post asks again.
     const result = action === 'send-to-creator'
       ? await sendDraftToCreator(deps, id, admin.userId)
-      : await cancelDraft(deps, id, admin.userId);
+      : action === 'reclaim'
+        ? await reclaimDraft(deps, id, admin.userId)
+        : await cancelDraft(deps, id, admin.userId);
     if (result.ok) done += 1;
     else errors.push(result.error);
   }

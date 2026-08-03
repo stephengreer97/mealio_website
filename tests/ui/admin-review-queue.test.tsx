@@ -13,6 +13,8 @@ vi.mock('@/lib/email', () => ({ sendCreatorSyncPublishedEmail: vi.fn() }));
 vi.mock('@/lib/creator-meals', () => ({ publishCreatorMeal: vi.fn() }));
 
 import AdminReviewQueue from '@/components/AdminReviewQueue';
+import { ALL_UNITS } from '@/lib/import/ingredients';
+import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
 import { reviewDraft, type ImportDraft } from '@/lib/import-drafts';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 
@@ -229,20 +231,73 @@ describe('AdminReviewQueue — deciding', () => {
     expect(bodies.find((b) => b.method === 'POST')!.body.notifyCreator).toBe(false);
   });
 
-  it('send to creator hands the decision over and says so', async () => {
-    const { bodies } = harness([], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
-    cleanup();
-    const { bodies: sent } = harness([draft()], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
+  it('hands a draft to the creator, and says where it lands', async () => {
+    // The button was disabled while nothing read `review_by = 'creator'`:
+    // pressing it moved the draft out of the only queue anybody read, and
+    // `creator_source_items` said `imported` so no later sync brought the post
+    // back. MEAL-89 built the far side, so it works — and the note has to say
+    // where the draft goes, because an operator handing over a decision needs to
+    // know whether they can change their mind.
+    const { bodies } = harness([draft()], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
 
     await openFirstRow();
-    fireEvent.click(screen.getByRole('button', { name: 'Send to creator' }));
+    const send = screen.getByTestId('send-to-creator') as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    // Read before the click: acting closes the row, and the note is what tells
+    // an operator the handoff is reversible *before* they make it.
+    expect(screen.getByTestId('draft-actions-note').textContent).toMatch(/take back/i);
+    fireEvent.click(send);
 
-    await waitFor(() => expect(sent.some((b) => b.method === 'POST')).toBe(true));
-    expect(sent.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'send-to-creator', ids: ['d1'] });
-    // Nothing published, so nothing is announced as live.
-    expect(await screen.findByText(/Handed to the creator/)).toBeTruthy();
-    expect(screen.queryByText(/Published/)).toBeNull();
-    expect(bodies).toHaveLength(0);
+    await waitFor(() => expect(bodies.some((b) => b.method === 'POST')).toBe(true));
+    expect(bodies.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'send-to-creator', ids: ['d1'] });
+  });
+
+  it('approves a selection in one request, so one creator gets one email', async () => {
+    // The batching in `notifyApproved` groups by creator and sends one message
+    // per batch. This screen only ever sent `ids: [id]`, so approving a 40-item
+    // sync sent that creator 40 separate emails.
+    const { bodies } = harness([draft(), cleanDraft()], {
+      post: { done: 2, published: [{ id: 'meal-1', name: 'Best Guacamole' }, { id: 'meal-2', name: 'Black bean soup' }], emailsSent: 1, errors: [] },
+    });
+
+    const rows = await screen.findAllByTestId('draft-row');
+    for (const row of rows) fireEvent.click(within(row).getByRole('checkbox'));
+    fireEvent.click(await screen.findByRole('button', { name: /Approve & publish 2/ }));
+
+    await waitFor(() => expect(bodies.some((b) => b.method === 'POST')).toBe(true));
+    const posts = bodies.filter((b) => b.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body).toMatchObject({ action: 'approve', ids: ['d1', 'd2'], notifyCreator: true });
+  });
+
+  it('lists drafts handed over before the button was switched off, and takes one back', async () => {
+    // Otherwise these rows are in no queue at all: out of the admin's by
+    // `review_by`, and into one that was never built.
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    const { bodies } = harness([], { post: { done: 1, published: [], emailsSent: 0, errors: [] } });
+    void bodies;
+    cleanup();
+
+    const posted: Array<{ method: string; body: any }> = [];
+    vi.stubGlobal('fetch', (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (init?.body) posted.push({ method, body: JSON.parse(String(init.body)) });
+      if (method === 'GET') {
+        const rendered = { ...stranded, summary: reviewDraft(stranded).summary, review: reviewDraft(stranded) };
+        return json({ drafts: [], handedOver: [rendered], totals: { waiting: 0, flagged: 0, handedOver: 1 } });
+      }
+      return json({ done: 1, published: [], emailsSent: 0, errors: [] });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    const section = await screen.findByTestId('handed-over');
+    // No longer "waiting on nobody": the creator's queue reads these rows now,
+    // so the section says who it is waiting on and offers the way back.
+    expect(section.textContent).toMatch(/waiting on their creator/i);
+    fireEvent.click(within(section).getByRole('button', { name: 'Take it back' }));
+
+    await waitFor(() => expect(posted.some((b) => b.method === 'POST')).toBe(true));
+    expect(posted.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'reclaim', ids: ['d9'] });
   });
 
   it('delete declines it and says it will not come back', async () => {
@@ -281,6 +336,23 @@ describe('AdminReviewQueue — editing', () => {
     expect((within(editor).getByLabelText('Ingredient 1 name') as HTMLInputElement).value).toBe('avocados');
     expect((within(editor).getByLabelText('Ingredient 2 amount') as HTMLInputElement).value).toBe('3');
     expect((within(editor).getByLabelText('Ingredient 2 unit') as HTMLSelectElement).value).toBe('tbsp');
+  });
+
+  it('offers every unit the pipeline canonicalises to, not only the measured ones', async () => {
+    // `DraftEditor` is shared with the creator's queue, so this list is checked
+    // on both screens. It offered UNITS (11 measured units) while the pipeline
+    // canonicalises to ALL_UNITS = UNITS + COOK_UNITS, which meant a `cloves`
+    // row matched no option and the select fell back to "Qty" — a wrong measure
+    // displayed on the screen whose job is catching wrong measures.
+    harness();
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const editor = await screen.findByTestId('draft-editor');
+    const options = [...(within(editor).getByLabelText('Ingredient 1 unit') as HTMLSelectElement).options]
+      .map((option) => option.value);
+
+    expect(options).toEqual(['qty', ...ALL_UNITS]);
   });
 
   it('saves the edit without publishing it', async () => {
@@ -324,5 +396,20 @@ describe('AdminReviewQueue — editing', () => {
     fireEvent.click(within(picker).getByRole('button', { name: 'No Cook' }));
     fireEvent.click(within(picker).getByRole('button', { name: 'Italian' }));
     expect(chosen()).toEqual(new Set(['Mexican', 'Appetizer', 'Italian']));
+  });
+
+  it('shows the count against the cap, because a draft can arrive over it', async () => {
+    // The model is asked for up to eight tags, so a picker that silently
+    // refuses a fourth next to five already-lit chips reads as broken. The
+    // number says which of the two is happening.
+    harness();
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const editor = await screen.findByTestId('draft-editor');
+
+    expect(within(editor).getByText(`Tags (3 of ${MAX_MEAL_TAGS})`)).toBeTruthy();
+
+    fireEvent.click(within(within(editor).getByTestId('tag-picker')).getByRole('button', { name: 'No Cook' }));
+    expect(within(editor).getByText(`Tags (2 of ${MAX_MEAL_TAGS})`)).toBeTruthy();
   });
 });
