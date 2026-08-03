@@ -10,6 +10,7 @@ import { MAX_TEXT_CHARS } from '@/lib/import/html';
 import {
   assertAppendAllowed,
   channelIdFromUrl,
+  videoIdFromUrl,
   exchangeYouTubeCode,
   fetchOwnChannel,
   parseUploadsFeed,
@@ -149,6 +150,30 @@ describe('youtube — resolving a channel id from a creator link', () => {
     expect(channelIdFromUrl('https://youtube.com/@sarah')).toBeNull();
     // Shape-checked, so a path segment that is not a channel id never becomes one.
     expect(channelIdFromUrl('https://youtube.com/channel/../../etc')).toBeNull();
+  });
+
+  it('reads the video id out of every shape of a video link', () => {
+    // `item_id` for YouTube is the bare id everywhere a sync writes one, so a
+    // caller holding a URL has to arrive at the same string — a record under a
+    // URL and a record under an id are two records for one video.
+    for (const link of [
+      'https://youtube.com/watch?v=dQw4w9WgXcQ',
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s',
+      'https://youtu.be/dQw4w9WgXcQ',
+      'https://youtube.com/shorts/dQw4w9WgXcQ',
+      'https://youtube.com/embed/dQw4w9WgXcQ',
+      'https://m.youtube.com/live/dQw4w9WgXcQ',
+    ]) {
+      expect(videoIdFromUrl(link), link).toBe('dQw4w9WgXcQ');
+    }
+  });
+
+  it('names no video for a link that names no video', () => {
+    expect(videoIdFromUrl('https://youtube.com/@sarah')).toBeNull();
+    expect(videoIdFromUrl('https://youtube.com/playlist?list=PL123')).toBeNull();
+    // Not YouTube at all, and not a URL at all.
+    expect(videoIdFromUrl('https://chefsarah.test/watch?v=dQw4w9WgXcQ')).toBeNull();
+    expect(videoIdFromUrl('chefsarah')).toBeNull();
   });
 
   it('reads it off the channel page for an @handle', async () => {

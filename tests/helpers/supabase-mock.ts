@@ -17,7 +17,22 @@ export type QueryResult = { data?: any; error?: any; count?: number | null };
  */
 export const URL_LIMIT_BYTES = 8 * 1024;
 
+/**
+ * PostgREST's default page size, as the fake enforces it.
+ *
+ * A select with no `.limit()` does not return every row: it returns the first
+ * `db-max-rows` of them — 1000 on Supabase — with no error, no exception and
+ * nothing in the response saying the answer was cut short. Code that folds the
+ * result in memory therefore keeps working perfectly on every test-sized table
+ * and quietly stops being correct for exactly the rows that grew, which is the
+ * kind of bug that only ever shows up on the biggest account.
+ */
+export const DEFAULT_PAGE_ROWS = 1000;
+
 type Filter = { op: string; column: string; value: any };
+
+/** A partial unique index, as `FakeSupabase.unique()` records one. */
+type UniqueIndex = { columns: string[]; name: string };
 
 function compare(a: any, b: any): number {
   if (a === b) return 0;
@@ -166,11 +181,36 @@ function project(row: any, columns?: string): any {
 export class FakeSupabase {
   private queues = new Map<string, QueryResult[]>();
   private tables = new Map<string, any[]>();
+  private uniques = new Map<string, UniqueIndex[]>();
   calls: Array<{ table: string; method: string; args: any[] }> = [];
 
   queue(table: string, result: QueryResult): this {
     if (!this.queues.has(table)) this.queues.set(table, []);
     this.queues.get(table)!.push(result);
+    return this;
+  }
+
+  /**
+   * Declare a unique index on a seeded table, so an insert that collides fails
+   * the way Postgres fails it.
+   *
+   * Opt-in, because a fake that enforced every real constraint would need to
+   * know the schema, and every existing test seeds only the columns it cares
+   * about. But a test for idempotency written against a fake that cannot express
+   * a unique violation is vacuous: the second insert simply succeeds, two rows
+   * appear, and the assertion that "one publish means one meal" passes against
+   * code that does nothing. Declaring the index is how a test says which
+   * constraint it is relying on.
+   *
+   * Partial, matching how this repository writes them
+   * (`… WHERE publish_token IS NOT NULL`): a row with a null in any of the key
+   * columns is outside the index and never conflicts, which is what lets a
+   * column stay null for every row written before the index existed.
+   */
+  unique(table: string, columns: string[], name?: string): this {
+    const list = this.uniques.get(table) ?? [];
+    list.push({ columns, name: name ?? `${table}_${columns.join('_')}_key` });
+    this.uniques.set(table, list);
     return this;
   }
 
@@ -204,7 +244,23 @@ export class FakeSupabase {
   reset(): void {
     this.queues.clear();
     this.tables.clear();
+    this.uniques.clear();
     this.calls = [];
+  }
+
+  /**
+   * The first declared index `candidate` would collide with, or null.
+   *
+   * A null (or absent) value in any key column puts the row outside a partial
+   * index, so it never collides — the same reason two meals published before
+   * `publish_token` existed do not conflict with each other.
+   */
+  private violatedUnique(table: string, rows: any[], candidate: any): UniqueIndex | null {
+    for (const index of this.uniques.get(table) ?? []) {
+      if (index.columns.some((c) => candidate[c] === null || candidate[c] === undefined)) continue;
+      if (rows.some((row) => index.columns.every((c) => row[c] === candidate[c]))) return index;
+    }
+    return null;
   }
 
   from(table: string) {
@@ -295,11 +351,36 @@ export class FakeSupabase {
         case 'insert':
         case 'upsert': {
           const incoming = Array.isArray(payload) ? payload : [payload];
-          const written: any[] = [];
-          for (const value of incoming) {
-            const existing = op === 'upsert' && conflict.length > 0
+          // Which of the incoming values land on a row that is already there,
+          // decided before anything is written: a declared unique index has to
+          // be judged against the rows an insert would *add*, and Postgres
+          // aborts the whole statement on a violation rather than keeping the
+          // rows ahead of it.
+          const plan = incoming.map((value) => ({
+            value,
+            existing: op === 'upsert' && conflict.length > 0
               ? rows.find((row) => conflict.every((c) => row[c] === value[c]))
-              : undefined;
+              : undefined,
+          }));
+          const pending: any[] = [];
+          for (const { value, existing } of plan) {
+            if (existing) continue;
+            const violated = this.violatedUnique(table, [...rows, ...pending], value);
+            if (violated) {
+              return {
+                data: null,
+                count: null,
+                error: {
+                  code: '23505',
+                  message: `duplicate key value violates unique constraint "${violated.name}"`,
+                },
+              };
+            }
+            pending.push(value);
+          }
+
+          const written: any[] = [];
+          for (const { value, existing } of plan) {
             if (existing) { Object.assign(existing, value); written.push(existing); }
             else { const row = { ...value }; rows.push(row); written.push(row); }
           }
@@ -319,7 +400,7 @@ export class FakeSupabase {
             const { column, ascending, nullsFirst } = orderBy;
             out.sort((a, b) => compareOrdered(a[column], b[column], ascending, nullsFirst));
           }
-          if (rowLimit !== null) out = out.slice(0, rowLimit);
+          out = out.slice(0, rowLimit ?? DEFAULT_PAGE_ROWS);
           return { data: out.map((r) => project(r, columns)), error: null, count: out.length };
         }
       }

@@ -109,6 +109,14 @@ const MAX_LINK_CHARS = 2048;
  * mistake that would otherwise only surface as a viability check with no items.
  */
 export function normalizePlatformUrl(source: PlatformSource, raw: unknown): LinkResult {
+  // A missing field is a field nobody typed into; anything else that is not a
+  // string is a client bug, and folding it to blank made that bug *destructive* —
+  // `{website: null}` for a field the form never touched deleted the creator's
+  // link and answered 200. An empty string is the way to clear one, and it is
+  // the only way, because it is the only value that says so unambiguously.
+  if (raw !== undefined && typeof raw !== 'string') {
+    return { ok: false, error: `That is not a link. Send the link as text, or an empty string to remove it. Example: ${EXAMPLES[source]}` };
+  }
   const input = typeof raw === 'string' ? raw.trim() : '';
   if (!input) return { ok: true, url: null };
   if (input.length > MAX_LINK_CHARS) {
@@ -229,6 +237,151 @@ export function toSourceColumns(
     row[SOURCE_COLUMNS[source]] = urls[source] ?? null;
   }
   return row;
+}
+
+// ── The polling invariants, judged on the resulting row ──────────────────────
+
+/**
+ * The columns `checkPollingInvariants` reads. Both `creators` and the object a
+ * PATCH would leave behind satisfy it.
+ */
+export type PollingRow = Record<string, unknown>;
+
+export type PollingVerdict =
+  /** Coherent. `importOptIn` is the value that has to be written, which is not
+   *  always the one that came in — see the `none` case below. */
+  | { ok: true; importOptIn: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Judges the row a write would leave behind, not the fields it sent.
+ *
+ * Every rule here is about a *combination* of columns, so validating only the
+ * ones a request happened to mention validates nothing: the admin radio button
+ * sends `primarySource` alone, the feed-confirm button sends `feedUrl` alone,
+ * and a creator editing their own links (MEAL-94) sends neither — yet any of
+ * the three can walk an already-opted-in creator into a state these lines exist
+ * to refuse. Pointed at a source they have no link for, or polling a website
+ * whose feed was just cleared.
+ *
+ * Shared by the admin source picker and the creator's own link editor because a
+ * rule enforced on one path and not the other is the rule not existing — the
+ * same reason `describeHostMismatch` is shared. The wording is the operator's;
+ * a creator-facing caller checks its own case first, with its own sentence, and
+ * keeps this as the backstop that cannot be talked past.
+ *
+ * `explicitOptIn` is true only when the request *asked* to turn import on, which
+ * separates "leave the switch alone" from "turn it on" — a distinction the row
+ * itself cannot carry.
+ */
+export function checkPollingInvariants(row: PollingRow, explicitOptIn = false): PollingVerdict {
+  const primarySource = isPrimarySource(row.primary_source) ? row.primary_source : 'none';
+  let importOptIn = row.import_opt_in === true;
+
+  // Clearing the source turns polling off with it. Leaving an opt-in set against
+  // 'none' would be a switch that means nothing today and the wrong thing the
+  // day someone picks a source. A request that explicitly asks for opt-in with
+  // no source is a contradiction rather than an off switch, and is refused below.
+  if (primarySource === 'none' && importOptIn && !explicitOptIn) {
+    importOptIn = false;
+  }
+
+  if (importOptIn) {
+    // Nothing is polled until a source is chosen AND opt-in is true. Refusing
+    // the incoherent combination here means the poller never has to wonder what
+    // an opted-in creator with no source means.
+    if (primarySource === 'none') {
+      return { ok: false, error: 'Choose a source of truth before turning import on — nothing is polled without one.' };
+    }
+    if (!row[SOURCE_COLUMNS[primarySource]]) {
+      return { ok: false, error: `This creator has no ${SOURCE_LABELS[primarySource]} link, so there is nothing to poll.` };
+    }
+    // For a website the feed URL *is* the thing polled, and it must be one a
+    // human confirmed — that confirmation step is the whole defence against a
+    // silently wrong discovery.
+    if (primarySource === 'website') {
+      if (!row.feed_url) {
+        return { ok: false, error: 'Confirm the discovered feed URL before turning import on.' };
+      }
+      // The pairing, not just the feed. The admin route checks a feed URL
+      // against the website as it is *stored*, which only holds the two together
+      // while the website link never moves — and since MEAL-94 it does move, on
+      // a request no operator sees. Judged here, on the row, the rule survives
+      // whichever of the two columns changed and whichever route changed it.
+      const mismatch = describeHostMismatch(String(row[SOURCE_COLUMNS.website] ?? ''), String(row.feed_url));
+      if (mismatch) return { ok: false, error: mismatch };
+    }
+  }
+
+  return { ok: true, importOptIn };
+}
+
+// ── What an operator needs to see on the Sources tab ─────────────────────────
+
+export interface SourceHealthNotice {
+  /** Which rule spoke, so the UI can style it without matching prose. */
+  kind: 'paused' | 'feed-host';
+  /** Badge text, beside the connection badges. */
+  label: string;
+  /** The sentence an operator reads. */
+  detail: string;
+  /** When it happened, ISO, or null when the rule has no moment attached. */
+  at: string | null;
+}
+
+/**
+ * Everything wrong with a creator's polling setup that an operator can only
+ * otherwise learn by accident.
+ *
+ * Both entries answer a question asked long after the event. A paused import
+ * currently exists as an email and a log line, so "why is this creator not being
+ * polled?" three months later has no answer at all once the email is deleted —
+ * hence `import_paused_reason` / `import_paused_at` and hence this. A broken
+ * feed/website pairing is worse than silent: it is discoverable only by trying
+ * to turn import back on and reading the 400, which is the wrong moment to find
+ * out and the wrong place to explain it.
+ *
+ * A function rather than JSX so the rule is testable on its own and so the page
+ * stays a renderer of decisions it did not make — the same split as
+ * `summariseCreatorViability`.
+ */
+export function describeSourceHealth(row: PollingRow): SourceHealthNotice[] {
+  const notices: SourceHealthNotice[] = [];
+
+  const reason = typeof row.import_paused_reason === 'string' ? row.import_paused_reason.trim() : '';
+  // Only while it is still true. An operator who has turned import back on has
+  // answered the question, and a stale reason sitting beside a polling creator
+  // is worse than none: it says the opposite of what the row does.
+  if (reason && row.import_opt_in !== true) {
+    notices.push({
+      kind: 'paused',
+      label: 'Import paused',
+      detail: reason,
+      at: typeof row.import_paused_at === 'string' ? row.import_paused_at : null,
+    });
+  }
+
+  // The pairing the admin route confirmed once and nothing re-checks. Since
+  // MEAL-94 a creator can move `website_url` off the host their `feed_url` sits
+  // on, and the poller then reads a feed on a host that is no longer theirs —
+  // every entry fails the item-level host check, the sync returns nothing, and
+  // no message anywhere says why.
+  const feedUrl = typeof row.feed_url === 'string' ? row.feed_url : '';
+  if (feedUrl) {
+    const mismatch = describeHostMismatch(String(row[SOURCE_COLUMNS.website] ?? ''), feedUrl);
+    if (mismatch) {
+      notices.push({
+        kind: 'feed-host',
+        label: 'Feed off-site',
+        detail:
+          `${mismatch} Confirm a feed on the current website before turning import back on — until then this row ` +
+          'cannot be polled, and the admin route will refuse the switch.',
+        at: null,
+      });
+    }
+  }
+
+  return notices;
 }
 
 // ── "Is this on the creator's own site?" ─────────────────────────────────────

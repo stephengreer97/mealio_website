@@ -6,7 +6,7 @@ vi.mock('resend', () => ({
   Resend: class { emails = { send: (payload: { subject: string; html: string }) => send(payload) }; },
 }));
 
-import { sendCreatorSyncPublishedEmail } from '@/lib/email';
+import { sendCreatorSourceMovedEmail, sendCreatorSyncPublishedEmail } from '@/lib/email';
 
 /**
  * The message that makes the bargain honest.
@@ -56,5 +56,47 @@ describe('sendCreatorSyncPublishedEmail', () => {
   it('escapes a display name rather than pasting it into the markup', async () => {
     await sendCreatorSyncPublishedEmail('x@test', '<script>alert(1)</script>', [{ id: 'm1', name: 'Guacamole' }]);
     expect(sent().html).not.toMatch(/<script>/);
+  });
+});
+
+/**
+ * The alert a creator's own link edit raises.
+ *
+ * It exists because the pause it describes reverses an operator's decision on
+ * somebody else's request. Since removing the polled link takes the same path as
+ * moving it, the mail has to say which of the two happened: one is waiting for a
+ * link to be checked, the other for a link to exist at all, and an operator who
+ * cannot tell them apart cannot act on either.
+ */
+describe('sendCreatorSourceMovedEmail', () => {
+  const MOVED = {
+    adminEmails: ['admin@mealio.co'],
+    creatorName: 'Chef Sarah',
+    handle: 'chefsarah',
+    sourceLabel: 'Website',
+    previousUrl: 'https://chefsarah.test/',
+    newUrl: 'https://sarahcooks.test/',
+  };
+
+  it('names the link it moved to', async () => {
+    await sendCreatorSourceMovedEmail(MOVED);
+
+    expect(sent().subject).toMatch(/moved their Website link/i);
+    expect(sent().html).toContain('https://sarahcooks.test/');
+  });
+
+  it('says a removal was a removal, rather than leaving an empty cell', async () => {
+    await sendCreatorSourceMovedEmail({ ...MOVED, newUrl: '' });
+
+    // "Now: (blank)" reads as a rendering bug, and an operator would go looking
+    // for the new link instead of for the creator.
+    expect(sent().subject).toMatch(/removed their Website link/i);
+    expect(sent().html).toMatch(/nothing left to poll/i);
+    expect(sent().html).toMatch(/removed/i);
+  });
+
+  it('sends nothing when there is nobody to tell', async () => {
+    await sendCreatorSourceMovedEmail({ ...MOVED, adminEmails: [] });
+    expect(send).not.toHaveBeenCalled();
   });
 });
