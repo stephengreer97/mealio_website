@@ -23,6 +23,7 @@ import {
 } from './anthropic';
 import {
   defaultImportCache,
+  documentFingerprint,
   gateKey,
   importKey,
   GATE_TTL_MS,
@@ -111,6 +112,10 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
   const emit = options.telemetry ?? defaultTelemetrySink;
   const now = options.now ?? Date.now;
   const startedAt = now();
+  // Undefined for the fetched path, so those keys are unchanged. A supplied
+  // document keys on its own content instead, because the URL alone cannot tell
+  // it apart from the page at the same address — see `documentFingerprint`.
+  const cacheScope = options.document ? documentFingerprint(options.document) : undefined;
 
   // Tracks how far we got, so an unexpected throw is attributed to the right
   // stage rather than always blamed on the fetch.
@@ -191,7 +196,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
   // path that leaves no trace, which is precisely the path worth tracing.
   try {
   if (useCache) {
-    const cached = await cacheGet<ImportResult>(importKey(url));
+    const cached = await cacheGet<ImportResult>(importKey(url, cacheScope));
     if (cached) {
       const hit = { ...cached, meta: { ...cached.meta, cached: true } } as ImportResult;
       return finish(hit, {
@@ -225,7 +230,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       const robots = await checkRobots(url, options.fetchOptions);
       if (!robots.allowed) {
         const result = rejection(url, 'robots', 'blocked-by-robots', robots.detail);
-        if (useCache) await cacheSet(importKey(url), result, IMPORT_TTL_MS);
+        if (useCache) await cacheSet(importKey(url, cacheScope), result, IMPORT_TTL_MS);
         return finish(result, {});
       }
     }
@@ -261,12 +266,12 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
         'Open the recipe itself and paste that link instead.',
       { platform },
     );
-    if (useCache) await cacheSet(importKey(url), result, IMPORT_TTL_MS);
+    if (useCache) await cacheSet(importKey(url, cacheScope), result, IMPORT_TTL_MS);
     return finish(result, { platform });
   }
 
   // ── gate ──────────────────────────────────────────────────────────────────
-  let verdict = useCache ? await cacheGet<GateVerdict>(gateKey(url)) : null;
+  let verdict = useCache ? await cacheGet<GateVerdict>(gateKey(url, cacheScope)) : null;
   let gateUsage: StructuredUsage | null = null;
 
   if (!verdict) {
@@ -278,7 +283,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     gateUsage = result.usage;
     // An `unavailable` verdict is a transient outage, not a fact about the URL.
     if (useCache && verdict.source !== 'classifier-unavailable') {
-      await cacheSet(gateKey(url), verdict, GATE_TTL_MS);
+      await cacheSet(gateKey(url, cacheScope), verdict, GATE_TTL_MS);
     }
   }
 
@@ -289,7 +294,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       platform,
     });
     if (useCache && verdict.verdict === 'no') {
-      await cacheSet(importKey(url), result, IMPORT_TTL_MS);
+      await cacheSet(importKey(url, cacheScope), result, IMPORT_TTL_MS);
     }
     return finish(result, {
       platform,
@@ -368,7 +373,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     },
   };
 
-  if (useCache) await cacheSet(importKey(url), success, IMPORT_TTL_MS);
+  if (useCache) await cacheSet(importKey(url, cacheScope), success, IMPORT_TTL_MS);
 
   const allFields = [
     confidence.name, confidence.recipe, confidence.story, confidence.photoUrl,

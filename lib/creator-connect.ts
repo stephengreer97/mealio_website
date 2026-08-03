@@ -224,7 +224,20 @@ export async function disconnectPlatform(
   const { data: creator } = await supabase.from('creators').select('id').eq('user_id', user.userId).maybeSingle();
   if (!creator) return NextResponse.json({ error: 'Not a creator' }, { status: 403 });
 
-  await deleteConnection(supabase, (creator as { id: string }).id, platform);
+  // A revocation is the one action that must not report success optimistically.
+  // Telling a creator their account is disconnected while the grant is still in
+  // the table — and still live at the provider — is the failure they are least
+  // likely to check up on. `deleteConnection` throws rather than swallowing the
+  // error precisely so this branch exists.
+  try {
+    await deleteConnection(supabase, (creator as { id: string }).id, platform);
+  } catch (err) {
+    log({ event: 'CREATOR:SOURCE_DISCONNECT', status: 'error', userId: user.userId, email: user.email, error: err });
+    return NextResponse.json(
+      { error: `We could not disconnect that account. It is still connected — please try again.` },
+      { status: 500 },
+    );
+  }
 
   log({
     event: 'CREATOR:SOURCE_DISCONNECT',

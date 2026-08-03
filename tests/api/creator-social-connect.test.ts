@@ -399,6 +399,20 @@ describe('/api/creator/{instagram,tiktok} — status and disconnect', () => {
     expect(everythingWritten()).not.toContain('rft.super-secret');
   });
 
+  it('says so when the grant could not actually be removed', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+    fakeDb.queue('creator_platform_accounts', { error: { message: 'permission denied for table' } });
+
+    const res = await IG_DISCONNECT(jsonRequest('/api/creator/instagram', { method: 'DELETE', token }));
+
+    // The one action that must not report success optimistically. A creator told
+    // their account is disconnected will not check again, and the grant is still
+    // live at Instagram.
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/still connected/i);
+  });
+
   it('refuses status and disconnect for someone who is not a creator', async () => {
     asUser();
     fakeDb.queue('creators', { data: null });

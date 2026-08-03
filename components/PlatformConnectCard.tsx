@@ -144,8 +144,17 @@ export default function PlatformConnectCard({ platform }: { platform: SocialPlat
     setBusy(true);
     setError('');
     try {
-      await fetch(endpoint, { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
+      const res = await fetch(endpoint, { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
+      // Never assumed. "Your account is disconnected" is the last thing a
+      // creator will go back and check, so a failed delete has to say so here
+      // rather than leave the grant live behind a card that reads as revoked.
+      if (!res.ok) {
+        setError((await res.json().catch(() => null))?.error || `Could not disconnect that ${copy.label} account.`);
+        return;
+      }
       await load();
+    } catch {
+      setError(`Could not disconnect that ${copy.label} account.`);
     } finally {
       setBusy(false);
     }

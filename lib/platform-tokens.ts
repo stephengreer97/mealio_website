@@ -46,6 +46,13 @@ export interface PlatformConnection {
   expiresAt: string | null;
   brokenReason: string | null;
   brokenAt: string | null;
+  /**
+   * The row's version, and the reason every write here is conditional.
+   *
+   * Read once, written back minutes later — see `updateUnchanged`. Null on a
+   * row written before this column had a default.
+   */
+  updatedAt: string | null;
 }
 
 /** The safe projection: what a route may return and a log line may carry. */
@@ -90,12 +97,13 @@ function toConnection(row: Record<string, any>): PlatformConnection {
     expiresAt: row.expires_at ?? null,
     brokenReason: row.broken_reason ?? null,
     brokenAt: row.broken_at ?? null,
+    updatedAt: row.updated_at ?? null,
   };
 }
 
 /** Every column this module reads. `select *` would drag refresh tokens further than they need to go. */
 const CONNECTION_FIELDS =
-  'id, creator_id, platform, external_id, external_name, access_token, refresh_token, scopes, expires_at, broken_reason, broken_at';
+  'id, creator_id, platform, external_id, external_name, access_token, refresh_token, scopes, expires_at, broken_reason, broken_at, updated_at';
 
 export async function loadConnection(
   supabase: SupabaseClient,
@@ -155,13 +163,52 @@ export async function saveConnection(supabase: SupabaseClient, input: SaveConnec
   if (error) throw new Error(error.message);
 }
 
-/** Removes a grant outright. Disconnecting must not leave a token behind. */
+/**
+ * Removes a grant outright. Disconnecting must not leave a token behind.
+ *
+ * Throws rather than returning quietly. This is a revocation, and the one thing
+ * it must never do is report success while the refresh token is still sitting
+ * in the table — the creator has been told the channel is disconnected and will
+ * not check again.
+ */
 export async function deleteConnection(
   supabase: SupabaseClient,
   creatorId: string,
   platform: ConnectedPlatform,
 ): Promise<void> {
-  await supabase.from(TABLE).delete().eq('creator_id', creatorId).eq('platform', platform);
+  const { error } = await supabase.from(TABLE).delete().eq('creator_id', creatorId).eq('platform', platform);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Applies a write to one grant, but only while it is still the grant we read.
+ *
+ * The sweep reads a batch and then makes up to a batch's worth of sequential
+ * outbound calls, so a row can be minutes stale by the time it is written back
+ * — long enough for the creator to have revoked in their Google account and
+ * reconnected from the portal. `saveConnection` upserts on
+ * `(creator_id, platform)`, so a reconnect keeps the same row id, and a blind
+ * `.eq('id', …)` would then null the access token of the brand-new working
+ * grant on the strength of an `invalid_grant` about the *old* refresh token.
+ *
+ * `updated_at` is the version. Every write in this module stamps it, so
+ * matching on the value we read is what makes the write conditional. False
+ * means the row moved on and nothing was written.
+ */
+async function updateUnchanged(
+  supabase: SupabaseClient,
+  connection: PlatformConnection,
+  values: Record<string, unknown>,
+): Promise<boolean> {
+  const write = supabase.from(TABLE).update(values).eq('id', connection.id);
+  // PostgREST spells "equals null" differently from "equals a value", and a row
+  // written before `updated_at` had a default carries null.
+  const guarded =
+    connection.updatedAt === null ? write.is('updated_at', null) : write.eq('updated_at', connection.updatedAt);
+
+  const { data, error } = await guarded.select('id');
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) && data.length > 0;
 }
 
 /**
@@ -169,31 +216,55 @@ export async function deleteConnection(
  *
  * The access token is cleared with it: a token we know is dead is worse than no
  * token, because a caller that finds one will use it and get an opaque 401 from
- * the platform instead of the reason recorded here.
+ * the platform instead of the reason recorded here. Reserved for failures that
+ * are facts about the grant — see `RefreshOutcome.terminal`.
+ *
+ * That clearing is why the terminal rule has to be narrow. On YouTube and TikTok
+ * the refresh token survives this write; on Instagram the access token is the
+ * only credential there is, so calling this over a socket error would not put a
+ * working creator on a reconnect list, it would destroy the grant to say so.
+ * Everything that reaches here is a grant the provider has already disowned or
+ * one nothing can renew — and `reason` is the operator's whole record of it, so
+ * it says what happened and that reconnecting is the fix.
+ *
+ * Returns false when the write did not land, which is either a database error
+ * or a grant that was replaced while we were deciding this one was dead.
  */
 export async function markConnectionBroken(
   supabase: SupabaseClient,
   connection: PlatformConnection,
   reason: string,
   now: () => number = Date.now,
-): Promise<void> {
-  await supabase
-    .from(TABLE)
-    .update({
+): Promise<boolean> {
+  const stamp = new Date(now()).toISOString();
+
+  let applied = false;
+  let failure: string | null = null;
+  try {
+    applied = await updateUnchanged(supabase, connection, {
       access_token: null,
       broken_reason: reason,
-      broken_at: new Date(now()).toISOString(),
-      updated_at: new Date(now()).toISOString(),
-    })
-    .eq('id', connection.id);
+      broken_at: stamp,
+      updated_at: stamp,
+    });
+  } catch (err) {
+    failure = err instanceof Error ? err.message : String(err);
+  }
 
   log({
     event: 'CRON:TOKEN_REFRESH',
     status: 'error',
     userId: connection.creatorId,
-    detail: `platform=${connection.platform} account=${connection.id} broken`,
+    detail:
+      `platform=${connection.platform} account=${connection.id} ` +
+      (applied
+        ? 'broken'
+        : failure
+          ? `not recorded: ${failure}`
+          : 'superseded by a newer grant, left alone'),
     reason,
   });
+  return applied;
 }
 
 // ── Refreshing ───────────────────────────────────────────────────────────────
@@ -213,19 +284,17 @@ export type RefreshOutcome =
       ok: false;
       reason: string;
       /**
-       * True when the provider never answered at all — a socket error, a
-       * timeout, a 5xx. Such a failure says nothing about the grant, and the
-       * sweep leaves the connection alone and tries again tomorrow instead of
-       * putting a working creator on the reconnect list (see `refreshConnection`
-       * for the bound that keeps this from hiding a real expiry).
+       * True only when this failure is a fact about the *grant*: the provider
+       * said in as many words that it is gone, or there is nothing stored to
+       * renew it with. Everything else — a socket error, a timeout, a 500, a
+       * 503, an HTML error page from a load balancer, a missing client secret —
+       * is a fact about the network or about us, and is retried.
        *
-       * This matters most for Instagram, where marking a connection broken
-       * clears the access token — and the access token is the *only* credential
-       * there is. One flaky minute would otherwise permanently disconnect a
-       * creator whose token had another seven days to run, turning a false alarm
-       * into a true one.
+       * Optional, and false by default, so a refresher that has not thought
+       * about the distinction errs toward retrying rather than toward
+       * disconnecting a creator.
        */
-      retryable?: boolean;
+      terminal?: boolean;
     };
 
 export interface RefreshOptions {
@@ -242,20 +311,32 @@ export type TokenRefresher = (
 /**
  * Google's refresh: swap the stored refresh token for a new access token.
  *
- * `invalid_grant` is the answer when a creator has revoked access in their
- * Google account, and it is permanent — but it is reported the same way as any
- * other failure, because the operator's next move ("ask them to reconnect") is
- * the same either way and guessing at which errors are terminal is how a
- * transient outage disconnects everybody.
+ * **`invalid_grant` is the entire taxonomy, deliberately.** It is Google's
+ * answer when the creator has revoked access, and it is the only failure that
+ * says anything about the grant rather than about the network between us and
+ * Google. Everything else is retried. Guessing at which errors are terminal is
+ * indeed how a transient outage disconnects everybody — but so is the reverse,
+ * and worse: with no distinction at all, thirty seconds of 503s from Google's
+ * token endpoint marks every connected creator broken with their access token
+ * nulled, and the sweep excludes broken rows, so nothing ever revisits them.
+ * One narrow rule, erring toward retrying, is what avoids both.
  */
 export const refreshGoogleGrant: TokenRefresher = async (connection, options) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
-    return { ok: false, reason: 'Google OAuth is not configured on this deployment.' };
+    // A missing env var is the most global failure there is — it would break
+    // every creator on the deployment in the same pass — and it is fixed by
+    // setting the variable, not by anyone reconnecting.
+    return { ok: false, reason: 'Google OAuth is not configured on this deployment.', terminal: false };
   }
   if (!connection.refreshToken) {
-    return { ok: false, reason: 'No refresh token is stored, so this grant cannot be renewed. Reconnect the channel.' };
+    // Nothing to retry with. No amount of waiting produces a refresh token.
+    return {
+      ok: false,
+      reason: 'No refresh token is stored, so this grant cannot be renewed. Reconnect the channel.',
+      terminal: true,
+    };
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -277,7 +358,7 @@ export const refreshGoogleGrant: TokenRefresher = async (connection, options) =>
     return {
       ok: false,
       reason: `Google did not answer the refresh request: ${err instanceof Error ? err.message : String(err)}`,
-      retryable: true,
+      terminal: false,
     };
   }
 
@@ -285,13 +366,15 @@ export const refreshGoogleGrant: TokenRefresher = async (connection, options) =>
   if (!response.ok || !payload || typeof (payload as Record<string, unknown>).access_token !== 'string') {
     // `error_description` is Google's own sentence and is the useful half of
     // this. The request body is never echoed — it carries the refresh token.
-    const error = (payload as Record<string, unknown> | null)?.error_description
-      ?? (payload as Record<string, unknown> | null)?.error
-      ?? `HTTP ${response.status}`;
+    const body = payload as Record<string, unknown> | null;
+    const error = body?.error_description ?? body?.error ?? `HTTP ${response.status}`;
     return {
       ok: false,
       reason: `Google refused to refresh this grant: ${String(error)}`,
-      retryable: response.status >= 500,
+      // The machine-readable code, not the sentence: `error_description` is
+      // prose Google is free to reword. A 503 whose body happens not to be JSON
+      // lands here with no code at all, which is exactly right — it retries.
+      terminal: body?.error === 'invalid_grant',
     };
   }
 
@@ -311,6 +394,20 @@ export const refreshGoogleGrant: TokenRefresher = async (connection, options) =>
 };
 
 /**
+ * The Graph API codes that mean the Instagram token itself is gone.
+ *
+ * Instagram's analogue of `invalid_grant`, and the same discipline: the
+ * machine-readable code, not the sentence. 190 is "error validating access
+ * token" — revoked, invalidated by a password change, or lapsed; 102 is its
+ * older session-expired spelling. Everything else Instagram answers 400 with is
+ * about the request or about Instagram: code 4 is *the app rate limit*, code 1
+ * and code 2 are "unknown error" and "service temporarily unavailable". Reading
+ * any 4xx as terminal would take a creator's account out of service because we
+ * asked Instagram too many questions in an hour.
+ */
+const INSTAGRAM_DEAD_TOKEN_CODES = new Set([102, 190]);
+
+/**
  * Instagram's refresh: trade a **still-valid** long-lived token for a new one.
  *
  * This is not the usual OAuth refresh-token exchange, and the difference is the
@@ -318,22 +415,27 @@ export const refreshGoogleGrant: TokenRefresher = async (connection, options) =>
  * only while it is alive. Miss the ~60-day window by a day and the creator has
  * to consent again — there is no recovery path from our side.
  *
- * Which is why `REFRESH_WINDOW_MS` matters more here than anywhere else: the
- * sweep starts renewing a week out and runs daily, so a token has roughly seven
- * chances before it lapses. Instagram also refuses to refresh a token less than
- * 24 hours old, which never bites in practice because a freshly connected
- * account is sixty days from the window.
+ * Which is why the transient/terminal split matters more here than anywhere
+ * else. `markConnectionBroken` clears the access token, and on Instagram that is
+ * the only credential there is: breaking a grant over a socket error does not
+ * just put a working creator on a reconnect list, it destroys the thing that was
+ * still working. So only Instagram saying the token is dead is terminal, and
+ * `refreshConnection` bounds the rest — see `provablyUnrenewable`.
  *
  * The token travels in the query string because that is the only form this
  * endpoint documents. Nothing here logs a URL.
  */
 export const refreshInstagramGrant: TokenRefresher = async (connection, options) => {
   if (!connection.accessToken) {
+    // Terminal, and the only kind of terminal that is about us: Instagram has no
+    // separate refresh token, so with nothing stored there is nothing any later
+    // attempt could send.
     return {
       ok: false,
       reason:
         'No Instagram token is stored, and Instagram has no separate refresh token to fall back on. ' +
         'Reconnect the account.',
+      terminal: true,
     };
   }
 
@@ -352,19 +454,22 @@ export const refreshInstagramGrant: TokenRefresher = async (connection, options)
     return {
       ok: false,
       reason: `Instagram did not answer the refresh request: ${err instanceof Error ? err.message : String(err)}`,
-      retryable: true,
+      terminal: false,
     };
   }
 
   const payload = (await response.json().catch(() => null)) as Record<string, any> | null;
   if (!response.ok || typeof payload?.access_token !== 'string') {
+    const code = payload?.error?.code;
     const message = typeof payload?.error?.message === 'string' ? payload.error.message : `HTTP ${response.status}`;
+    const dead = typeof code === 'number' && INSTAGRAM_DEAD_TOKEN_CODES.has(code);
     return {
       ok: false,
-      reason:
-        `Instagram refused to refresh this grant: ${message}. Instagram tokens can only be renewed while ` +
-        'they are still valid, so the creator has to reconnect.',
-      retryable: response.status >= 500,
+      reason: dead
+        ? `Instagram says this token is no longer valid: ${message}. Instagram tokens can only be renewed while ` +
+          'they are still valid, so the creator has to reconnect the account.'
+        : `Instagram refused to refresh this grant: ${message}`,
+      terminal: dead,
     };
   }
 
@@ -400,10 +505,18 @@ export const refreshTikTokGrant: TokenRefresher = async (connection, options) =>
   const clientKey = process.env.TIKTOK_CLIENT_KEY;
   const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
   if (!clientKey || !clientSecret) {
-    return { ok: false, reason: 'TikTok OAuth is not configured on this deployment.' };
+    // Same as Google's: a missing env var breaks every TikTok creator on the
+    // deployment in the same pass, and is fixed by setting the variable rather
+    // than by any of them reconnecting.
+    return { ok: false, reason: 'TikTok OAuth is not configured on this deployment.', terminal: false };
   }
   if (!connection.refreshToken) {
-    return { ok: false, reason: 'No refresh token is stored, so this grant cannot be renewed. Reconnect the account.' };
+    // Nothing to retry with. No amount of waiting produces a refresh token.
+    return {
+      ok: false,
+      reason: 'No refresh token is stored, so this grant cannot be renewed. Reconnect the account.',
+      terminal: true,
+    };
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -425,7 +538,7 @@ export const refreshTikTokGrant: TokenRefresher = async (connection, options) =>
     return {
       ok: false,
       reason: `TikTok did not answer the refresh request: ${err instanceof Error ? err.message : String(err)}`,
-      retryable: true,
+      terminal: false,
     };
   }
 
@@ -437,7 +550,11 @@ export const refreshTikTokGrant: TokenRefresher = async (connection, options) =>
     return {
       ok: false,
       reason: `TikTok refused to refresh this grant: ${String(message)}`,
-      retryable: response.status >= 500,
+      // The code, not the sentence, exactly as for Google. TikTok answers
+      // `invalid_grant` when the refresh token has been revoked or has run out
+      // its year; `internal_error`, `rate_limit_exceeded`, a 5xx and an HTML
+      // error page from the edge all land here with no such code, and retry.
+      terminal: payload?.error === 'invalid_grant',
     };
   }
 
@@ -468,24 +585,33 @@ export const TOKEN_REFRESHERS: Partial<Record<ConnectedPlatform, TokenRefresher>
   tiktok: refreshTikTokGrant,
 };
 
-/** Writes a successful refresh back, and returns the connection as it now stands. */
+/**
+ * Writes a successful refresh back, and returns the connection as it now stands.
+ *
+ * Null means the row was replaced while we were talking to the provider. The
+ * token in hand was minted from a refresh token the creator may have just
+ * revoked, so writing it over the grant they replaced it with would break a
+ * working connection with a stale one.
+ */
 async function storeRefresh(
   supabase: SupabaseClient,
   connection: PlatformConnection,
   grant: RefreshedGrant,
   now: () => number,
-): Promise<PlatformConnection> {
+): Promise<PlatformConnection | null> {
+  const stamp = new Date(now()).toISOString();
   const update: Record<string, unknown> = {
     access_token: grant.accessToken,
     expires_at: grant.expiresAt,
     broken_reason: null,
     broken_at: null,
-    updated_at: new Date(now()).toISOString(),
+    updated_at: stamp,
   };
   if (grant.refreshToken) update.refresh_token = grant.refreshToken;
   if (grant.scopes) update.scopes = grant.scopes.join(' ');
 
-  await supabase.from(TABLE).update(update).eq('id', connection.id);
+  const applied = await updateUnchanged(supabase, connection, update);
+  if (!applied) return null;
 
   return {
     ...connection,
@@ -495,6 +621,7 @@ async function storeRefresh(
     expiresAt: grant.expiresAt,
     brokenReason: null,
     brokenAt: null,
+    updatedAt: stamp,
   };
 }
 
@@ -502,74 +629,126 @@ export interface RefreshDeps extends RefreshOptions {
   supabase: SupabaseClient;
   /** Overridable so a test — or a future platform — can slot a refresher in. */
   refreshers?: Partial<Record<ConnectedPlatform, TokenRefresher>>;
+  /** Waits out the backoff. Injected so a test does not spend it. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
- * Is the stored token still good for a while, quite apart from the refresh?
+ * How long to wait between attempts at a grant whose failure looked transient.
  *
- * The bound on `retryable`: a provider outage may be waited out only while there
- * is something left to wait with. Once the token is at or past its expiry, any
- * failure is terminal whatever caused it — otherwise a provider that answers
- * every request with a 503 forever would leave a dead connection looking healthy
- * and a poller quietly finding nothing, which is the exact failure the sweep
- * exists to prevent.
+ * Two extra attempts, under a second and a half in total. Small on purpose: a
+ * whole batch failing during an outage multiplies this by the batch size, and
+ * the real protection is not the retry but what happens when it runs out — the
+ * row is left exactly as it was, so the next sweep and every on-demand caller
+ * try again, indefinitely and for free.
  */
-function stillUsable(connection: PlatformConnection, atMs: number): boolean {
-  if (!connection.accessToken) return false;
-  const expiresAt = connection.expiresAt ? Date.parse(connection.expiresAt) : NaN;
-  return Number.isFinite(expiresAt) && expiresAt - atMs > EXPIRY_SKEW_MS;
+export const REFRESH_RETRY_DELAYS_MS = [250, 1_000];
+
+/**
+ * What one attempt at a grant did.
+ *
+ * `deferred` is the state this module was missing. It is not `refreshed` and it
+ * is emphatically not `broken`: nothing is written, `broken_reason` stays null,
+ * and the row stays in the sweep's own query so the next run picks it up.
+ */
+export type RefreshResult =
+  | { status: 'refreshed'; connection: PlatformConnection }
+  /** No refresher registered for the platform. A fact about us, not the grant. */
+  | { status: 'unsupported'; connection: PlatformConnection }
+  /** Failed in a way that might not fail again. Left alone for the next pass. */
+  | { status: 'deferred'; reason: string }
+  /** The provider says this grant is gone. Recorded, and the token cleared. */
+  | { status: 'broken'; reason: string }
+  /** A newer grant landed under us. Nothing written; theirs wins. */
+  | { status: 'superseded' };
+
+/** Runs a refresher without letting a throw escape as anything but a failure. */
+async function attemptRefresh(
+  refresher: TokenRefresher,
+  connection: PlatformConnection,
+  options: RefreshOptions,
+): Promise<RefreshOutcome> {
+  try {
+    return await refresher(connection, options);
+  } catch (err) {
+    // A refresher that throws has told us about our code or the runtime, not
+    // about the creator's grant. Transient by default, like every other failure
+    // that is not an explicit `invalid_grant`.
+    return {
+      ok: false,
+      reason: `The refresh threw before it could report: ${err instanceof Error ? err.message : String(err)}`,
+      terminal: false,
+    };
+  }
 }
 
 /**
- * What one refresh attempt did. The sweep counts these; `refreshConnection`
- * flattens them back to "a usable connection, or nothing".
+ * The bound on deferring: is there anything left for a later attempt to try?
+ *
+ * Deferring is free only while some credential survives the wait. A YouTube or
+ * TikTok grant keeps a refresh token whose life is not measured by `expires_at`
+ * at all, so an unreachable provider costs nothing but time — the moment it
+ * answers, the grant renews. Instagram has no such second credential: the access
+ * token is the only one there is, it renews only while it is still valid, and
+ * once it is past its own expiry no attempt can ever succeed again. Deferring
+ * that one forever is how a dead grant sits with `broken_reason` null, out of
+ * every operator's list, while the poller quietly finds nothing.
+ *
+ * Deliberately narrow. It needs proof, not suspicion: a refresh token present
+ * means no, and an expiry we cannot parse means no — nulling the one credential
+ * a creator has on a guess is the failure this whole model exists to avoid.
  */
-type RefreshAttempt =
-  | { outcome: 'refreshed' | 'skipped'; connection: PlatformConnection }
-  /** Nothing was written. The grant is untouched and tomorrow's sweep tries again. */
-  | { outcome: 'retry'; connection: PlatformConnection }
-  | { outcome: 'broken'; connection: null };
-
-async function attemptRefresh(deps: RefreshDeps, connection: PlatformConnection): Promise<RefreshAttempt> {
-  const now = deps.now ?? Date.now;
-  const refresher = (deps.refreshers ?? TOKEN_REFRESHERS)[connection.platform];
-  if (!refresher) return { outcome: 'skipped', connection };
-
-  const outcome = await refresher(connection, { fetchImpl: deps.fetchImpl, now });
-  if (!outcome.ok) {
-    if (outcome.retryable && stillUsable(connection, now())) {
-      // Logged rather than written: the connection is fine, we just could not
-      // reach the provider this minute. Recording it as broken would put a
-      // working creator on the reconnect list — and for Instagram it would
-      // destroy the only token they have.
-      log({
-        event: 'CRON:TOKEN_REFRESH',
-        status: 'pending',
-        userId: connection.creatorId,
-        detail: `platform=${connection.platform} account=${connection.id} retrying tomorrow`,
-        reason: outcome.reason,
-      });
-      return { outcome: 'retry', connection };
-    }
-    await markConnectionBroken(deps.supabase, connection, outcome.reason, now);
-    return { outcome: 'broken', connection: null };
-  }
-
-  return { outcome: 'refreshed', connection: await storeRefresh(deps.supabase, connection, outcome.grant, now) };
+function provablyUnrenewable(connection: PlatformConnection, atMs: number): boolean {
+  if (connection.refreshToken) return false;
+  const expiresAt = connection.expiresAt ? Date.parse(connection.expiresAt) : NaN;
+  return Number.isFinite(expiresAt) && expiresAt <= atMs;
 }
 
 /**
  * Refreshes one grant, recording either the new token or why it failed.
  *
- * Returns null when the connection is now unusable, which is the answer every
- * caller wants: there is nothing to retry with and the reason is already durable
- * in `broken_reason`.
+ * A transient failure is retried with a short backoff and then deferred. Only a
+ * terminal one — the provider saying the grant is gone — writes `broken_reason`
+ * and clears the token, because that flag takes a creator's channel out of
+ * service until they reconnect and the sweep never revisits it. The one
+ * exception is `provablyUnrenewable`: deferring is only free while a later
+ * attempt could still work.
  */
 export async function refreshConnection(
   deps: RefreshDeps,
   connection: PlatformConnection,
-): Promise<PlatformConnection | null> {
-  return (await attemptRefresh(deps, connection)).connection;
+): Promise<RefreshResult> {
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const refresher = (deps.refreshers ?? TOKEN_REFRESHERS)[connection.platform];
+  if (!refresher) return { status: 'unsupported', connection };
+
+  const options: RefreshOptions = { fetchImpl: deps.fetchImpl, now };
+  let outcome = await attemptRefresh(refresher, connection, options);
+  for (let attempt = 0; !outcome.ok && !outcome.terminal && attempt < REFRESH_RETRY_DELAYS_MS.length; attempt++) {
+    await sleep(REFRESH_RETRY_DELAYS_MS[attempt]);
+    outcome = await attemptRefresh(refresher, connection, options);
+  }
+
+  if (!outcome.ok) {
+    // A transient failure over a grant nothing can renew any more is still the
+    // end of that grant. Record it with what an operator needs to act — the
+    // last error alone reads as "try again tomorrow", which is precisely what
+    // will not work.
+    const spent = !outcome.terminal && provablyUnrenewable(connection, now());
+    if (!outcome.terminal && !spent) return { status: 'deferred', reason: outcome.reason };
+    const reason = spent
+      ? `${outcome.reason} The stored ${connection.platform} token expired at ${connection.expiresAt}, and there is ` +
+        'no refresh token to renew it with, so no later attempt can succeed. The creator has to reconnect.'
+      : outcome.reason;
+    // Broken only if the flag actually landed. A write that matched nothing
+    // means the grant this `invalid_grant` was about has already been replaced.
+    const applied = await markConnectionBroken(deps.supabase, connection, reason, now);
+    return applied ? { status: 'broken', reason } : { status: 'superseded' };
+  }
+
+  const stored = await storeRefresh(deps.supabase, connection, outcome.grant, now);
+  return stored ? { status: 'refreshed', connection: stored } : { status: 'superseded' };
 }
 
 /**
@@ -596,12 +775,22 @@ export async function usableAccessToken(
   if (connection.brokenReason) return null;
 
   const expiresAt = connection.expiresAt ? Date.parse(connection.expiresAt) : NaN;
+  // An expiry we cannot read is not proof of life. A null or unparseable
+  // `expires_at` parses to NaN, and treating that as "no expiry" made a dead
+  // grant look healthy forever — the silent poller-finds-nothing failure this
+  // module exists to eliminate. `exchangeYouTubeCode` stores null whenever
+  // Google omits `expires_in`, so this is reachable today.
   const stillGood =
-    connection.accessToken && (!Number.isFinite(expiresAt) || expiresAt - now() > EXPIRY_SKEW_MS);
+    Boolean(connection.accessToken) && Number.isFinite(expiresAt) && expiresAt - now() > EXPIRY_SKEW_MS;
   if (stillGood) return connection.accessToken;
 
-  const refreshed = await refreshConnection(deps, connection);
-  return refreshed?.accessToken ?? null;
+  // Anything short of a completed refresh is null. In particular `unsupported`:
+  // the registry's "skip, don't break" rule is right for the sweep and wrong
+  // here — "we have not built this platform's refresher yet" is a fine reason
+  // not to flag a row and a terrible reason to hand a caller a token that has
+  // already expired. MEAL-82 and MEAL-83 land in that branch on day one.
+  const result = await refreshConnection(deps, connection);
+  return result.status === 'refreshed' ? result.connection.accessToken : null;
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────
@@ -609,13 +798,12 @@ export async function usableAccessToken(
 /**
  * How far ahead of expiry the daily sweep renews.
  *
- * Comfortably more than a day, so a cron run that fails still leaves several
- * more before anything lapses. It is deliberately wide enough to catch YouTube's
- * hour-long access tokens on every pass too: those are refreshed on demand
- * anyway, but sweeping them daily is how a *revoked* channel is discovered
- * within a day instead of whenever someone next tries to import from it.
+ * Two days: a day of cadence plus a whole missed run of slack, and no more.
+ * The window used to be a week, which meant every row on every platform was
+ * rewritten on every pass — six days of work done six times, and six days'
+ * worth of grants inside the blast radius of any single bad run.
  */
-export const REFRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const REFRESH_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
 /** One pass has to fit in a cron invocation alongside everything else it runs. */
 export const REFRESH_BATCH = 100;
@@ -624,13 +812,9 @@ export interface RefreshSweepResult {
   checked: number;
   refreshed: number;
   broken: number;
+  /** Failed transiently. Untouched, and in the next run's query unchanged. */
+  deferred: number;
   skipped: number;
-  /**
-   * Grants left alone because the provider was unreachable and the stored token
-   * still has life in it. Counted separately from `broken` because it needs no
-   * action from anybody — tomorrow's pass tries again.
-   */
-  retried: number;
 }
 
 /**
@@ -641,58 +825,75 @@ export interface RefreshSweepResult {
  * platform. Already-broken rows are left alone — they need the creator to
  * reconnect, and retrying them daily forever would bury the ones that just
  * broke under the ones that broke months ago.
+ *
+ * **One batch per platform, not one batch ordered by expiry.** Google's access
+ * tokens live an hour, so every connected YouTube row sorts ahead of an
+ * Instagram grant six days out — no window narrow enough to exclude an hourly
+ * token is wide enough to be useful, so a single ordered batch is entirely
+ * YouTube past ~100 connected creators, and Instagram and TikTok are never
+ * reached. Those are the platforms whose *refresh* tokens die if this sweep
+ * misses them; YouTube's does not. The per-platform share divides the same
+ * total, so adding a platform does not lengthen the cron.
  */
 export async function refreshExpiringTokens(deps: RefreshDeps): Promise<RefreshSweepResult> {
   const now = deps.now ?? Date.now;
   const refreshers = deps.refreshers ?? TOKEN_REFRESHERS;
   const horizon = new Date(now() + REFRESH_WINDOW_MS).toISOString();
+  const result: RefreshSweepResult = { checked: 0, refreshed: 0, broken: 0, deferred: 0, skipped: 0 };
 
-  const { data } = await deps.supabase
-    .from(TABLE)
-    .select(CONNECTION_FIELDS)
-    .in('platform', [...CONNECTED_PLATFORMS])
-    .is('broken_reason', null)
-    .not('expires_at', 'is', null)
-    .lt('expires_at', horizon)
-    .order('expires_at', { ascending: true })
-    .limit(REFRESH_BATCH);
+  // Only platforms something can actually refresh. Querying the others spends
+  // batch slots on rows we would skip — and skipping is still right: "we have
+  // not built this yet" is a fact about us, not about the creator's grant.
+  const platforms = CONNECTED_PLATFORMS.filter((platform) => refreshers[platform]);
+  if (platforms.length === 0) return result;
+  const share = Math.max(1, Math.floor(REFRESH_BATCH / platforms.length));
 
-  const rows = (data ?? []) as Array<Record<string, any>>;
-  const result: RefreshSweepResult = { checked: 0, refreshed: 0, broken: 0, skipped: 0, retried: 0 };
+  for (const platform of platforms) {
+    const { data } = await deps.supabase
+      .from(TABLE)
+      .select(CONNECTION_FIELDS)
+      .eq('platform', platform)
+      .is('broken_reason', null)
+      // A row with no expiry is not a healthy row, it is one nothing can judge.
+      // Excluding it outright is how a grant with a null `expires_at` — which
+      // `exchangeYouTubeCode` writes whenever Google omits `expires_in` — was
+      // never swept, never questioned and never discovered to be dead.
+      .or(`expires_at.is.null,expires_at.lt.${horizon}`)
+      .order('expires_at', { ascending: true })
+      .limit(share);
 
-  for (const row of rows) {
-    const connection = toConnection(row);
-    if (!refreshers[connection.platform]) {
-      // No refresher for this platform yet. Not an error, and emphatically not
-      // a broken grant — marking it would put a perfectly good connection on
-      // an operator's "ask them to reconnect" list for our own missing code.
-      result.skipped++;
-      continue;
-    }
-    result.checked++;
-    // One creator's dead grant must not stop the sweep reaching the rest.
-    try {
-      const attempt = await attemptRefresh(deps, connection);
-      if (attempt.outcome === 'refreshed') result.refreshed++;
-      else if (attempt.outcome === 'retry') result.retried++;
-      else if (attempt.outcome === 'broken') result.broken++;
-    } catch (err) {
-      result.broken++;
-      await markConnectionBroken(
-        deps.supabase,
-        connection,
-        `The refresh threw before it could report: ${err instanceof Error ? err.message : String(err)}`,
-        now,
-      );
+    for (const row of (data ?? []) as Array<Record<string, any>>) {
+      const connection = toConnection(row);
+      result.checked++;
+      // One creator's grant must not stop the sweep reaching the rest, and a
+      // database error writing one row is not evidence about any other.
+      try {
+        const refresh = await refreshConnection(deps, connection);
+        if (refresh.status === 'refreshed') result.refreshed++;
+        else if (refresh.status === 'broken') result.broken++;
+        else if (refresh.status === 'deferred') result.deferred++;
+        else result.skipped++;
+      } catch (err) {
+        result.deferred++;
+        log({
+          event: 'CRON:TOKEN_REFRESH',
+          status: 'error',
+          userId: connection.creatorId,
+          detail: `platform=${connection.platform} account=${connection.id} deferred`,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
   log({
     event: 'CRON:TOKEN_REFRESH',
-    status: result.broken > 0 ? 'error' : 'success',
+    // A run that deferred anything is a run an operator should see: it means
+    // the provider was unreachable, not that everything was already fine.
+    status: result.broken > 0 || result.deferred > 0 ? 'error' : 'success',
     detail:
       `checked=${result.checked} refreshed=${result.refreshed} broken=${result.broken} ` +
-      `retried=${result.retried} skipped=${result.skipped}`,
+      `deferred=${result.deferred} skipped=${result.skipped}`,
   });
 
   return result;

@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     syncRunsResumed: 0,
     tokensRefreshed: 0,
     tokensBroken: 0,
-    tokensRetried: 0,
+    tokensDeferred: 0,
   };
 
   // Isolate the passes so one failing doesn't drop the other.
@@ -60,15 +60,15 @@ export async function GET(request: NextRequest) {
   // three platforms fails the same silent way — an expired or revoked token
   // produces a poller that finds nothing rather than an error — so this pass
   // exists to turn that into a `broken_reason` an operator can list.
-  //
-  // `tokensRetried` is reported alongside: a provider that was unreachable
-  // leaves its grants untouched for tomorrow, and a run where that number is
-  // suddenly large is an outage rather than a set of creators to email.
   try {
     const sweep = await refreshExpiringTokens({ supabase: createServerSupabaseClient() });
     results.tokensRefreshed = sweep.refreshed;
     results.tokensBroken = sweep.broken;
-    results.tokensRetried = sweep.retried;
+    // Reported separately from `broken` on purpose: a provider that was
+    // unreachable leaves its grants untouched for tomorrow, so a run where this
+    // number is suddenly large is an outage at Google, Instagram or TikTok — not
+    // a set of creators to email about reconnecting.
+    results.tokensDeferred = sweep.deferred ?? 0;
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'tokenRefresh', reason: err.message });
   }

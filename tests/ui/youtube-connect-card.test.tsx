@@ -69,7 +69,7 @@ describe('YouTubeConnectCard — connecting', () => {
       url.endsWith('/connect') ? json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' }) : null,
     );
     fireEvent.click(await screen.findByRole('checkbox'));
-    fireEvent.click(screen.getByRole('button', { name: /Connect YouTube/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Connect YouTube/i }));
 
     await waitFor(() => expect(calls.some((call) => call.url.endsWith('/connect'))).toBe(true));
     // The server stores what was on screen, rather than trusting a later call to
@@ -111,6 +111,46 @@ describe('YouTubeConnectCard — once connected', () => {
     // A dead grant is indistinguishable from a quiet channel from the outside,
     // so it is stated to the one person who can fix it.
     expect(await screen.findByText(/expired or revoked/i)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Connect YouTube/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Connect YouTube/i })).toBeTruthy();
+  });
+
+  it('shows a granted permission as granted, and revokes it, on a broken connection', async () => {
+    // A broken connection used to fall into the connect branch, whose checkbox
+    // was bound to local state seeded `false`: a creator who had granted
+    // description edits was shown the box unticked, and had no way to withdraw
+    // the permission or to remove the stored token. The PATCH route supported
+    // both the whole time; nothing in the UI reached it.
+    const { calls } = harness(
+      { ...CONNECTED, brokenReason: 'Token has been expired or revoked.', appendOptIn: true },
+      (_url, init) => (init?.method === 'PATCH' ? json({ ok: true, appendOptIn: false }) : null),
+    );
+
+    const box = (await screen.findByRole('checkbox')) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+
+    fireEvent.click(box);
+
+    await waitFor(() => expect(calls.some((call) => call.method === 'PATCH')).toBe(true));
+    expect(calls.find((call) => call.method === 'PATCH')?.body).toEqual({ appendOptIn: false });
+    expect(screen.getByRole('button', { name: /Disconnect YouTube/i })).toBeTruthy();
+  });
+
+  it('can always be switched off, even on a grant that lost the write scope', async () => {
+    harness({ ...CONNECTED, canWriteDescriptions: false, appendOptIn: true });
+    // Turning it on needs the scope; turning it off must work from every state
+    // there is, or it is not revocation.
+    expect(((await screen.findByRole('checkbox')) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('does not claim the channel was disconnected when the delete failed', async () => {
+    harness(CONNECTED, (_url, init) =>
+      init?.method === 'DELETE' ? json({ error: 'We could not disconnect that channel.' }, 500) : null,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Disconnect YouTube/i }));
+
+    // The card never inspected the response, so a failed revocation left the
+    // grant live and the creator told it was gone.
+    expect(await screen.findByText(/could not disconnect/i)).toBeTruthy();
   });
 });

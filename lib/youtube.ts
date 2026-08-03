@@ -32,8 +32,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { decodeEntities } from '@/lib/import/html-text';
 import { THIN_CONTENT_CHARS } from '@/lib/import/gate';
+import { MAX_TEXT_CHARS } from '@/lib/import/html';
 import { checkRobots } from '@/lib/import/robots';
-import { safeFetch, type SafeFetchOptions } from '@/lib/import/ssrf';
+import { safeFetch, type LookupFn, type SafeFetchOptions } from '@/lib/import/ssrf';
 import {
   loadConnection,
   usableAccessToken,
@@ -108,6 +109,11 @@ export interface GoogleApiOptions {
   /** Injected so tests never reach Google. */
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /**
+   * DNS seam for the one call here that goes through the guarded fetcher — the
+   * caption download. Injected so a test never resolves a name.
+   */
+  lookup?: LookupFn;
 }
 
 /**
@@ -219,6 +225,17 @@ export function isChannelId(value: unknown): value is string {
   return typeof value === 'string' && CHANNEL_ID_RE.test(value);
 }
 
+/** The only hosts a channel id may be read off. Subdomains included: `m.`, `www.`. */
+const YOUTUBE_HOSTS = /^(.+\.)?(youtube\.com|youtu\.be)$/i;
+
+export function isYouTubeHost(link: string): boolean {
+  try {
+    return YOUTUBE_HOSTS.test(new URL(link).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** A `/channel/UC…` link answers without a request. Every other shape does not. */
 export function channelIdFromUrl(link: string): string | null {
   try {
@@ -249,6 +266,17 @@ export async function resolveChannelId(
 ): Promise<{ ok: true; channelId: string } | { ok: false; detail: string }> {
   const direct = channelIdFromUrl(link);
   if (direct) return { ok: true, channelId: direct };
+
+  // The id is taken from whatever the page says, so the page has to be one
+  // YouTube served. Without this, a creator whose `youtube_url` points at a
+  // site they control can emit `"channelId":"UC…"` for somebody else's channel
+  // and have the catalog list that person's videos under their own name.
+  if (!isYouTubeHost(link)) {
+    return {
+      ok: false,
+      detail: `${link} is not a youtube.com link, so no channel id can be read from it.`,
+    };
+  }
 
   // This is a crawl of a page nobody invited us to read, so it is subject to
   // robots.txt like every other page fetch in this codebase. YouTube allows
@@ -401,6 +429,16 @@ export type UploadsFeedResult =
  * with a validated channel id in it, but it still goes through `safeFetch`
  * because the id ultimately traces back to something a creator gave us, and a
  * guarded fetch costs nothing to keep uniform.
+ *
+ * **This is the one page fetch in the codebase that does not call
+ * `checkRobots`, and that is not an oversight to tidy up.** `youtube.com/robots.txt`
+ * carries `Disallow: /feeds/videos.xml` under `User-agent: *`, so adding the
+ * check here does not make this consistent with `resolveChannelId` — it turns
+ * the free-listing half of MEAL-74 off. That is a product and legal call rather
+ * than a code cleanup: the only compliant substitute is `playlistItems.list`
+ * on the Data API, which needs a grant (so it cannot run at application review,
+ * before anyone has connected anything) and spends quota per channel. Recorded
+ * here so the next person finds the decision rather than the gap.
  */
 export async function readUploadsFeed(
   channelId: string,
@@ -411,10 +449,13 @@ export async function readUploadsFeed(
   }
 
   const fetched = await safeFetch(uploadsFeedUrl(channelId), {
+    ...fetchOptions,
+    // After the spread, not before. These two are the contract this call is
+    // written against — a caller passing its own `accept` for some unrelated
+    // reason must not silently switch off the XML allowlist.
     // The feed is served as `text/xml`, which the default HTML allowlist rejects.
     accept: /xml|text\/plain/i,
     expected: 'a YouTube uploads feed',
-    ...fetchOptions,
   });
   if (!fetched.ok) {
     return { ok: false, detail: `Could not read the uploads feed for ${channelId}: ${fetched.detail}` };
@@ -435,6 +476,18 @@ export async function readUploadsFeed(
 // ── The source document ──────────────────────────────────────────────────────
 
 /**
+ * A caption track's ceiling before any of it is parsed.
+ *
+ * Generous against real transcripts — an hour of speech is well under 100 kB of
+ * SRT — and the point is only that there *is* one. `MAX_TEXT_CHARS` trims what
+ * survives to what a prompt will read; this stops the bytes arriving at all.
+ */
+export const MAX_CAPTION_BYTES = 512 * 1024;
+
+/** SRT and WebVTT are served as text; some CDNs answer with a generic type. */
+const CAPTION_CONTENT_TYPES = /text\/|application\/(octet-stream|x-subrip)/i;
+
+/**
  * Captions for one video, as plain text.
  *
  * Owner-only: `captions.list` and `captions.download` both need the channel
@@ -445,6 +498,13 @@ export async function readUploadsFeed(
  * Returns null rather than throwing for every failure: a video with no captions
  * is ordinary, and a caption fetch that fails must degrade to "we have the
  * description" rather than losing the import.
+ *
+ * The *download* goes through `safeFetch`, unlike the other Google calls in
+ * this file. Not for SSRF — the host is fixed — but for the two caps it is the
+ * only thing here that has: bytes counted during streaming, so a track that
+ * never ends fails without being buffered, and a wall-clock deadline, so a slow
+ * one cannot hold a sync run open to the function's ceiling. A measured 4 MB
+ * track previously produced a 4 MB extraction prompt, per video, concurrently.
  */
 export async function fetchCaptions(
   videoId: string,
@@ -472,13 +532,19 @@ export async function fetchCaptions(
     const best = tracks.slice().sort((a, b) => score(b) - score(a))[0];
     if (typeof best?.id !== 'string') return null;
 
-    const downloaded = await fetchImpl(
-      `${YOUTUBE_API}/captions/${encodeURIComponent(best.id)}?tfmt=srt`,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-    );
+    const downloaded = await safeFetch(`${YOUTUBE_API}/captions/${encodeURIComponent(best.id)}?tfmt=srt`, {
+      fetchImpl: options.fetchImpl,
+      lookup: options.lookup,
+      // Dropped if Google redirects the download off googleapis.com, which its
+      // media endpoints do — the signed URL they redirect to needs no token.
+      headers: { authorization: `Bearer ${accessToken}` },
+      accept: CAPTION_CONTENT_TYPES,
+      expected: 'a caption track',
+      maxBytes: MAX_CAPTION_BYTES,
+    });
     if (!downloaded.ok) return null;
 
-    return srtToText(await downloaded.text());
+    return srtToText(downloaded.html);
   } catch {
     return null;
   }
@@ -544,6 +610,13 @@ export async function youtubeSourceDocument(
       usedCaptions = true;
     }
   }
+
+  // The same ceiling the fetched path enforces. `toSourceDocument` caps `text`
+  // at 24k because it is interpolated into the extraction prompt verbatim, and
+  // a document handed straight to the pipeline reaches that prompt by exactly
+  // the same route — skipping the cap because we skipped the fetch would put
+  // the one path that carries a creator's whole transcript outside it.
+  if (text.length > MAX_TEXT_CHARS) text = `${text.slice(0, MAX_TEXT_CHARS)}…`;
 
   return {
     url: video.url,

@@ -146,4 +146,20 @@ describe('PlatformConnectCard — once connected', () => {
 
     await waitFor(() => expect(calls.some((call) => call.method === 'DELETE')).toBe(true));
   });
+
+  it('does not claim the account was disconnected when the delete failed', async () => {
+    harness('instagram', CONNECTED, (_url, init) =>
+      init?.method === 'DELETE'
+        ? json({ error: 'We could not disconnect that account. It is still connected — please try again.' }, 500)
+        : null,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Disconnect Instagram/i }));
+
+    // A revocation reported optimistically is the one a creator never checks up
+    // on: the card would read as disconnected while the grant is still live at
+    // Instagram and the token is still in the table.
+    expect(await screen.findByText(/still connected/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Disconnect Instagram/i })).toBeTruthy();
+  });
 });

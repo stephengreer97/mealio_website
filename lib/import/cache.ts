@@ -14,7 +14,8 @@
  * cross-instance hits worth having.
  */
 
-import type { GateVerdict, ImportResult } from './types';
+import { createHash } from 'crypto';
+import type { GateVerdict, ImportResult, SourceDocument } from './types';
 
 export interface ImportCache {
   get<T>(key: string): Promise<T | null>;
@@ -73,8 +74,37 @@ export const IMPORT_TTL_MS = 60 * 60 * 1000;
 /** Gate verdicts are cheap to re-derive but change even less often. */
 export const GATE_TTL_MS = 24 * 60 * 60 * 1000;
 
-export const importKey = (normalizedUrl: string) => `import:v1:${normalizedUrl}`;
-export const gateKey = (normalizedUrl: string) => `gate:v1:${normalizedUrl}`;
+/**
+ * Distinguishes two documents that share a URL.
+ *
+ * One URL is not one document. A YouTube watch link fetched as a page is a
+ * JavaScript shell with no recipe in it; the same link supplied by MEAL-74 as
+ * title + description + captions is the recipe itself. Keyed on the URL alone
+ * they share a cache entry, and whichever ran first decides for the other — the
+ * shell's "not a recipe" is served to the real document without ever gating it,
+ * and a "yes" earned from a description makes a later shell fetch skip the gate
+ * and extract from an empty page. Both were reproducible.
+ *
+ * Only the fields the gate and the extractor actually read, so a document that
+ * differs solely in, say, its thumbnail URL still hits. Joined on a NUL, which
+ * cannot occur in any of them, so no two field splits produce one digest.
+ */
+export function documentFingerprint(document: SourceDocument): string {
+  return createHash('sha256')
+    .update([document.title, document.text, document.recipeText, document.jsonLdRaw ?? ''].join('\u0000'))
+    .digest('hex')
+    .slice(0, 32);
+}
+
+/**
+ * `scope` is absent for a fetched page — the URL is the whole identity, and the
+ * keys stay exactly what they were before — and is a document fingerprint when
+ * the caller supplied the content themselves.
+ */
+export const importKey = (normalizedUrl: string, scope?: string) =>
+  scope ? `import:v1:${normalizedUrl}:${scope}` : `import:v1:${normalizedUrl}`;
+export const gateKey = (normalizedUrl: string, scope?: string) =>
+  scope ? `gate:v1:${normalizedUrl}:${scope}` : `gate:v1:${normalizedUrl}`;
 
 /** The process-wide default. Swap via `runImport({ cache })` in tests. */
 export const defaultImportCache = new MemoryImportCache();
