@@ -84,6 +84,7 @@ export type EventType =
   | 'KROGER:SET_LOCATION'
   // ── Admin ─────────────────────────────────────────────────────────────────
   | 'ADMIN:APPLICATION_REVIEW'
+  | 'ADMIN:APPLICATION_EMAIL'   // telling the applicant; the decision is already written
   | 'ADMIN:MEAL_DELETE'
   | 'ADMIN:BROADCAST'
   | 'ADMIN:CREATOR_SOURCE'      // which of a creator's links we poll (MEAL-81)

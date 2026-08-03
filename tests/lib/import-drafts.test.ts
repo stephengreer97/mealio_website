@@ -33,15 +33,18 @@ import {
   countPendingDrafts,
   draftBelongsToCreator,
   editableDraft,
+  listAllPendingDrafts,
   listDraftQueue,
   listHandedOverDrafts,
   notifyApproved,
+  queueOf,
   reclaimDraft,
   reviewDraft,
   sendDraftToCreator,
   stripEditedConfidence,
   type DraftDeps,
   type ImportDraft,
+  type PendingDraft,
 } from '@/lib/import-drafts';
 
 /**
@@ -551,6 +554,186 @@ describe('drafts handed over — visible to the operator who let go of them', ()
     // draft an admin *sent* is one this screen has anything to say about.
     fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
     expect(await listHandedOverDrafts(supabase)).toHaveLength(0);
+  });
+
+  /**
+   * The escape hatch, and the reason it has to exist.
+   *
+   * `listDraftQueue('admin')` and `listHandedOverDrafts` are both narrower than
+   * "pending", so between them is a gap that no screen reaches. These assert the
+   * rows that fall into it come back — because the failure mode is not a wrong
+   * count, it is a recipe nobody can ever see again.
+   */
+  describe('listAllPendingDrafts', () => {
+    /** `n` pending poller drafts, oldest first, so a page boundary can be crossed. */
+    function pending(n: number, overrides: Record<string, unknown> = {}) {
+      return Array.from({ length: n }, (_, i) => queueRow({
+        id: `d${String(i).padStart(4, '0')}`,
+        review_by: 'creator',
+        created_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+        ...overrides,
+      }));
+    }
+
+    it('returns the poller’s drafts, which neither normal query asks for', async () => {
+      const poller = queueRow({ id: 'd-poll', review_by: 'creator' });
+      fakeDb.seed('creator_import_drafts', [poller]);
+
+      // Invisible to both of the queries the screen normally runs...
+      expect(await listDraftQueue(supabase, 'admin')).toHaveLength(0);
+      expect(await listHandedOverDrafts(supabase)).toHaveLength(0);
+      // ...and reachable by the one that asks on status alone.
+      expect((await listAllPendingDrafts(supabase)).drafts.map((d) => d.id)).toEqual(['d-poll']);
+    });
+
+    it('is not filtered on review_by or sent_to_creator_at at all', async () => {
+      fakeDb.seed('creator_import_drafts', [
+        queueRow({ id: 'a', review_by: 'admin' }),
+        queueRow({ id: 'b', review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }),
+        queueRow({ id: 'c', review_by: 'creator' }),
+      ]);
+
+      const all = await listAllPendingDrafts(supabase);
+
+      expect(all.drafts.map((d) => d.id).sort()).toEqual(['a', 'b', 'c']);
+      const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
+      expect(filters.map((c) => c.args)).toEqual([['status', 'pending_review']]);
+      expect(fakeDb.calls.some((c) => c.method === 'not')).toBe(false);
+    });
+
+    it('still leaves decided drafts out — this widens the queue, it does not undo a decision', async () => {
+      fakeDb.seed('creator_import_drafts', [
+        queueRow({ id: 'gone', review_by: 'creator', status: 'cancelled' }),
+        queueRow({ id: 'live', review_by: 'creator', status: 'approved' }),
+        queueRow({ id: 'waiting', review_by: 'creator' }),
+      ]);
+
+      const all = await listAllPendingDrafts(supabase);
+      expect(all.drafts.map((d) => d.id)).toEqual(['waiting']);
+      // The count is over the same WHERE clause, so a decided draft is not in it
+      // either — otherwise the screen would report work that no longer exists.
+      expect(all.total).toBe(1);
+    });
+
+    it('carries what the stranded list draws, and nothing it does not', async () => {
+      fakeDb.seed('creator_import_drafts', [queueRow({ review_by: 'creator' })]);
+
+      const [row] = (await listAllPendingDrafts(supabase)).drafts;
+
+      // Three strings and the id that takes it back.
+      expect(row).toMatchObject({
+        id: 'd1',
+        name: 'Best Guacamole',
+        sourceUrl: 'https://chefsarah.test/guacamole',
+        creatorName: 'Chef Sarah',
+      });
+      // Not the recipe body and not a per-field assessment: this list has no card
+      // to open, and shipping them is kilobytes a row to draw three strings.
+      expect(row).not.toHaveProperty('draft');
+      expect(row).not.toHaveProperty('confidence');
+      expect(row).not.toHaveProperty('summary');
+      expect(row).not.toHaveProperty('review');
+    });
+
+    /**
+     * The page boundary — the thing that decides whether "nothing is unreachable"
+     * is true or is a sentence on a screen.
+     *
+     * The escape hatch exists because pending poller drafts accumulate and no
+     * queue drains them, so passing the limit is the steady state and not a
+     * corner case. What must never happen is a page reporting its own length as
+     * a total.
+     */
+    it('reports the database’s count, not the page length, past the limit', async () => {
+      fakeDb.seed('creator_import_drafts', pending(12));
+
+      const all = await listAllPendingDrafts(supabase, 5);
+
+      expect(all.drafts).toHaveLength(5);
+      // The oldest first, so the same rows are not the ones left behind forever.
+      expect(all.drafts.map((d) => d.id)).toEqual(['d0000', 'd0001', 'd0002', 'd0003', 'd0004']);
+      expect(all.total).toBe(12);
+      expect(all.limit).toBe(5);
+      expect(all.truncated).toBe(true);
+    });
+
+    it('counts every pending draft, whichever queue it is nominally in', async () => {
+      // The count is what the banner reports as "pending in all", so it has to
+      // span the two narrow queues as well as the gap between them.
+      fakeDb.seed('creator_import_drafts', [
+        ...pending(4, { review_by: 'admin' }).map((r, i) => ({ ...r, id: `admin-${i}` })),
+        ...pending(3).map((r, i) => ({ ...r, id: `poll-${i}` })),
+        queueRow({ id: 'decided', review_by: 'creator', status: 'cancelled' }),
+      ]);
+
+      const all = await listAllPendingDrafts(supabase, 2);
+
+      expect(all.total).toBe(7);
+      expect(all.truncated).toBe(true);
+    });
+
+    it('does not call a full read truncated', async () => {
+      fakeDb.seed('creator_import_drafts', pending(5));
+
+      const all = await listAllPendingDrafts(supabase, 5);
+
+      expect(all.total).toBe(5);
+      expect(all.drafts).toHaveLength(5);
+      // Exactly the limit and exactly the count: everything is here, and the
+      // screen is allowed to say so.
+      expect(all.truncated).toBe(false);
+    });
+
+    it('asks the database to count, rather than counting the page', async () => {
+      fakeDb.seed('creator_import_drafts', pending(3));
+      await listAllPendingDrafts(supabase);
+
+      const select = fakeDb.calls.find((c) => c.table === 'creator_import_drafts' && c.method === 'select')!;
+      expect(select.args[1]).toMatchObject({ count: 'exact' });
+    });
+
+    /**
+     * How a row is placed, and why it is not a set difference.
+     *
+     * The two narrow lists are capped at 200 each. Subtracting their ids from
+     * this one's therefore calls the 201st row of the admin's own queue "in no
+     * queue at all" — a false statement about a row the operator is looking at,
+     * and one whose *Take it back* then fails with "already in your queue".
+     * Reading `review_by` and `sent_to_creator_at` off the row cannot do that.
+     */
+    describe('queueOf', () => {
+      const row = (over: Partial<PendingDraft>): PendingDraft => ({
+        id: 'd1', name: 'Best Guacamole', sourceUrl: 'https://chefsarah.test/guacamole',
+        creatorName: 'Chef Sarah', reviewBy: 'creator', sentToCreatorAt: null,
+        createdAt: '2026-08-02T10:00:00.000Z', ...over,
+      });
+
+      it('places a row in the same list the query for it would', () => {
+        expect(queueOf(row({ reviewBy: 'admin' }))).toBe('admin');
+        expect(queueOf(row({ reviewBy: 'creator', sentToCreatorAt: '2026-08-02T11:00:00.000Z' }))).toBe('handed-over');
+        expect(queueOf(row({ reviewBy: 'creator' }))).toBe('none');
+      });
+
+      it('places an admin row from beyond the admin queue’s page in the admin queue', () => {
+        // The row a set difference gets wrong: pending, the operator's own, and
+        // past the 200 that `listDraftQueue` returned.
+        expect(queueOf(row({ id: 'd0201', reviewBy: 'admin' }))).toBe('admin');
+      });
+    });
+
+    it('treats a missing count as “there may be more”, never as a total', async () => {
+      // A proxy that dropped Content-Range, an older PostgREST: no count came
+      // back and a full page is the only signal there is.
+      fakeDb.queue('creator_import_drafts', {
+        data: pending(2).map((r) => ({ ...r, creators: { display_name: 'Chef Sarah' } })),
+        count: null,
+      });
+
+      const all = await listAllPendingDrafts(supabase, 2);
+
+      expect(all.total).toBe(2);
+      expect(all.truncated).toBe(true);
+    });
   });
 
   it('takes one back into the admin queue', async () => {

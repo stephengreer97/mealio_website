@@ -310,6 +310,38 @@ describe('AdminReviewQueue — deciding', () => {
     expect(await screen.findByText(/will not be imported again/)).toBeTruthy();
   });
 
+  it('does not congratulate the operator on a reclaim that was refused', async () => {
+    // A per-draft failure comes back 200 with a populated `errors[]`. The notice
+    // used to print regardless, so the screen said "That draft is already in your
+    // queue." and "Back in your queue. It is yours to decide again." at once —
+    // and the row is still there afterwards, so the operator clicks again.
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    vi.stubGlobal('fetch', (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET') {
+        return json({ done: 0, published: [], emailsSent: 0, errors: ['That draft is already in your queue.'] });
+      }
+      const row = { ...stranded, summary: reviewDraft(stranded).summary, review: reviewDraft(stranded) };
+      return json({ drafts: [], handedOver: [row], totals: { waiting: 0, flagged: 0, handedOver: 1 } });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    const section = await screen.findByTestId('handed-over');
+    fireEvent.click(within(section).getByRole('button', { name: 'Take it back' }));
+
+    expect(await screen.findByText('That draft is already in your queue.')).toBeTruthy();
+    expect(screen.queryByText(/Back in your queue/)).toBeNull();
+  });
+
+  it('does not report a decline that declined nothing', async () => {
+    const { bodies } = harness([draft()], { post: { done: 0, published: [], emailsSent: 0, errors: ['That draft no longer exists.'] } });
+    await openFirstRow();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(bodies.some((b) => b.method === 'POST')).toBe(true));
+    expect(await screen.findByText('That draft no longer exists.')).toBeTruthy();
+    expect(screen.queryByText(/will not be imported again/)).toBeNull();
+  });
+
   it('surfaces a refusal rather than pretending the decision landed', async () => {
     harness([draft()], { post: { error: 'That draft was already approved.' }, postStatus: 400 });
     await openFirstRow();
@@ -319,6 +351,265 @@ describe('AdminReviewQueue — deciding', () => {
     // And the draft stays on screen: an operator whose approval was refused
     // still has one to decide.
     expect(screen.getAllByTestId('draft-row')).toHaveLength(1);
+  });
+});
+
+// ── Show every pending draft ─────────────────────────────────────────────────
+
+/**
+ * The escape hatch, from the operator's side.
+ *
+ * The default queue is narrow deliberately, and what that costs is a pending
+ * draft in neither of its two queries — nothing shows it to anyone. The mode has
+ * to be opt-in (a poller draft is the creator's work, not the operator's), so
+ * the things worth asserting are that it is *reachable*, that the extra rows are
+ * *labelled as extra*, and that turning it on does not quietly become the
+ * normal view.
+ */
+describe('AdminReviewQueue — showing every pending draft', () => {
+  const rendered = (row: ImportDraft) => ({ ...row, summary: reviewDraft(row).summary, review: reviewDraft(row) });
+
+  /**
+   * A stranded row as the route sends it: three strings and the id that takes it
+   * back. Not a draft — there is no card to open in this list, so the recipe
+   * body and the per-field assessment are kilobytes a row for nothing.
+   */
+  const strandedRow = (row: ImportDraft) => ({
+    id: row.id,
+    name: row.draft.name,
+    sourceUrl: row.sourceUrl,
+    creatorName: row.creatorName,
+  });
+
+  /** Serves the default payload until `?scope=all` is asked for, recording every URL. */
+  function scopeHarness(
+    unqueued: ImportDraft[],
+    mine: ImportDraft[] = [],
+    counts: { allPending?: number; truncated?: boolean; limit?: number } = {},
+  ) {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method !== 'GET') return json({ done: 1, published: [], emailsSent: 0, errors: [] });
+      urls.push(url);
+      const all = url.includes('scope=all');
+      return json({
+        scope: all ? 'all' : 'default',
+        drafts: mine.map(rendered),
+        handedOver: [],
+        unqueued: all ? unqueued.map(strandedRow) : [],
+        totals: {
+          waiting: mine.length, flagged: 0, handedOver: 0,
+          allPending: all ? counts.allPending ?? mine.length + unqueued.length : null,
+          unqueued: all ? unqueued.length : null,
+          truncated: all ? counts.truncated ?? false : null,
+          limit: all ? counts.limit ?? 500 : null,
+        },
+      });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+    return { urls };
+  }
+
+  it('does not ask for every draft until an operator asks', async () => {
+    const { urls } = scopeHarness([draft({ id: 'd9', reviewBy: 'creator' })]);
+
+    await screen.findByTestId('toggle-scope');
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toMatch(/scope=all/);
+    // The default view is unchanged: no banner, no extra section.
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+    expect(screen.queryByTestId('unqueued')).toBeNull();
+  });
+
+  it('reaches a draft that is in no queue, and says why it is on screen', async () => {
+    // `review_by = 'creator'` with nothing that ever sent it there: the admin
+    // query skips it, the handed-over query skips it, and the creator queue that
+    // would show it was never built (MEAL-89).
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    const { urls } = scopeHarness([stranded]);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    const section = await screen.findByTestId('unqueued');
+    await waitFor(() => expect(urls.some((u) => u.includes('scope=all'))).toBe(true));
+    expect(section.textContent).toMatch(/In their queue, never handed over \(1\)/);
+    expect(section.textContent).toMatch(/Best Guacamole/);
+
+    // The mode is named on screen, and so is the reason the extra row is there —
+    // an operator must not mistake this for the queue having grown.
+    const banner = screen.getByTestId('scope-banner');
+    expect(banner.textContent).toMatch(/Showing every pending draft/);
+    expect(banner.textContent).toMatch(/1 draft is on this screen only because this mode is on/);
+  });
+
+  it('claims completeness only from the count, not from the length of the page', async () => {
+    // `allPending` is the database's own count over the same WHERE clause, so
+    // this is the one sentence on the screen that can honestly say the list is
+    // all of it.
+    scopeHarness([draft({ id: 'd9', reviewBy: 'creator' })], [draft()], { allPending: 2, truncated: false });
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    const banner = await screen.findByTestId('scope-banner');
+    expect(banner.textContent).toMatch(/All 2 pending drafts are on this screen, so none of them is unreachable/);
+  });
+
+  it('stops promising completeness once the page is full', async () => {
+    // The steady state this mode exists for: poller drafts accumulate and no
+    // queue drains them, so a screen that says "nothing can be unreachable" over
+    // the oldest 500 of 812 is telling an operator to stop looking for the 312
+    // it cannot see.
+    scopeHarness(
+      [draft({ id: 'd9', reviewBy: 'creator' })],
+      [],
+      { allPending: 812, truncated: true, limit: 500 },
+    );
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    const banner = await screen.findByTestId('scope-banner');
+    expect(banner.textContent).toMatch(/this page is full/);
+    expect(banner.textContent).toMatch(/812 drafts are pending in all and these are the oldest 500/);
+    expect(banner.textContent).toMatch(/as unreachable as they were before this mode existed/);
+    // And it must not also carry the sentence that says the opposite.
+    expect(banner.textContent).not.toMatch(/none of them is unreachable/);
+  });
+
+  it('does not describe a state the schema cannot produce', async () => {
+    // `creator_id` is NOT NULL REFERENCES creators(id) ON DELETE CASCADE, so a
+    // draft whose creator record "no longer resolves" cannot exist — an operator
+    // reading an empty list was being told a check had come back clean when the
+    // check could never find anything. The hazard that IS real gets said instead.
+    scopeHarness([draft({ id: 'd9', reviewBy: 'creator' })]);
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    const section = await screen.findByTestId('unqueued');
+    expect(section.textContent).not.toMatch(/no longer resolves|creator record has since gone/);
+    expect(section.textContent).toMatch(/Their creator can\s+see them; you cannot/);
+    expect(screen.getByTestId('scope-banner').textContent).not.toMatch(/creator record/);
+  });
+
+  it('is honest when the escape hatch turns nothing up', async () => {
+    scopeHarness([], [draft()]);
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    const banner = await screen.findByTestId('scope-banner');
+    expect(banner.textContent).toMatch(/There are none right now/);
+    // No empty section pretending to be a finding.
+    expect(screen.queryByTestId('unqueued')).toBeNull();
+  });
+
+  it('takes a stranded draft back into the queue that can decide it', async () => {
+    const posted: Array<{ method: string; body: any }> = [];
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (init?.body) posted.push({ method, body: JSON.parse(String(init.body)) });
+      if (method !== 'GET') return json({ done: 1, published: [], emailsSent: 0, errors: [] });
+      const all = String(input).includes('scope=all');
+      return json({
+        scope: all ? 'all' : 'default',
+        drafts: [], handedOver: [], unqueued: all ? [strandedRow(stranded)] : [],
+        totals: {
+          waiting: 0, flagged: 0, handedOver: 0,
+          allPending: all ? 1 : null, unqueued: all ? 1 : null,
+          truncated: all ? false : null, limit: all ? 500 : null,
+        },
+      });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+    const section = await screen.findByTestId('unqueued');
+    fireEvent.click(within(section).getByRole('button', { name: 'Take it back' }));
+
+    await waitFor(() => expect(posted.some((b) => b.method === 'POST')).toBe(true));
+    expect(posted.find((b) => b.method === 'POST')!.body).toMatchObject({ action: 'reclaim', ids: ['d9'] });
+  });
+
+  it('drops the banner and the rows when the next read is refused', async () => {
+    // The banner is a claim about the payload. Leaving it up beside a 403, over
+    // rows from a response that is now arbitrarily old, is this screen making
+    // exactly the kind of unsupported statement it exists to prevent.
+    const stranded = draft({ id: 'd9', reviewBy: 'creator' });
+    let forbidden = false;
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method !== 'GET') return json({ done: 1, published: [], emailsSent: 0, errors: [] });
+      if (forbidden) return json({ error: 'Forbidden' }, 403);
+      const all = String(input).includes('scope=all');
+      return json({
+        scope: all ? 'all' : 'default',
+        drafts: [], handedOver: [], unqueued: all ? [strandedRow(stranded)] : [],
+        totals: {
+          waiting: 0, flagged: 0, handedOver: 0,
+          allPending: all ? 1 : null, unqueued: all ? 1 : null,
+          truncated: all ? false : null, limit: all ? 500 : null,
+        },
+      });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+    await screen.findByTestId('unqueued');
+
+    // The token expires between loads: the reload that follows an action is
+    // refused, and nothing on screen may still be describing the old payload.
+    forbidden = true;
+    fireEvent.click(within(screen.getByTestId('unqueued')).getByRole('button', { name: 'Take it back' }));
+
+    expect(await screen.findByText('Forbidden')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId('scope-banner')).toBeNull());
+    expect(screen.queryByTestId('unqueued')).toBeNull();
+    expect(screen.getByTestId('toggle-scope').textContent).toMatch(/Show every pending draft/);
+  });
+
+  it('does not freeze the screen when the network drops under it', async () => {
+    // `busy` gates approve, decline, edit, reclaim and this button. A rejected
+    // fetch that skips `setBusy(false)` disables all of them until a reload, with
+    // nothing on screen saying why.
+    let offline = false;
+    vi.stubGlobal('fetch', (async () => {
+      if (offline) throw new TypeError('Failed to fetch');
+      return json({
+        scope: 'default', drafts: [], handedOver: [], unqueued: [],
+        totals: { waiting: 0, flagged: 0, handedOver: 0, allPending: null, unqueued: null, truncated: null, limit: null },
+      });
+    }) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    const toggle = await screen.findByTestId('toggle-scope');
+    offline = true;
+    fireEvent.click(toggle);
+
+    expect(await screen.findByText(/Check the connection/)).toBeTruthy();
+    await waitFor(() => expect((screen.getByTestId('toggle-scope') as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('goes back to the normal queue, and stops showing the extra rows', async () => {
+    const { urls } = scopeHarness([draft({ id: 'd9', reviewBy: 'creator' })]);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+    await screen.findByTestId('unqueued');
+
+    fireEvent.click(screen.getByTestId('toggle-scope'));
+    await waitFor(() => expect(screen.queryByTestId('unqueued')).toBeNull());
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
+    expect(urls.at(-1)).not.toMatch(/scope=all/);
+  });
+
+  it('believes the response about which mode it is in, not the click', async () => {
+    // A server that ignores the parameter must not leave the screen announcing a
+    // mode it is not showing — the banner is a claim about the data on screen.
+    vi.stubGlobal('fetch', (async () =>
+      json({ scope: 'default', drafts: [], handedOver: [], unqueued: [], totals: { waiting: 0, flagged: 0, handedOver: 0, allPending: null, unqueued: null } })
+    ) as unknown as typeof fetch);
+    render(<AdminReviewQueue />);
+
+    fireEvent.click(await screen.findByTestId('toggle-scope'));
+
+    await waitFor(() => expect(screen.getByTestId('toggle-scope').textContent).toMatch(/Show every pending draft/));
+    expect(screen.queryByTestId('scope-banner')).toBeNull();
   });
 });
 
