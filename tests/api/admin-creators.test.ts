@@ -201,6 +201,63 @@ describe('/api/admin/creators', () => {
       });
     });
 
+    describe('the pause record', () => {
+      /** A creator paused by their own link edit — the state the operator finds. */
+      const PAUSED = {
+        ...READY,
+        import_paused_reason: 'The creator changed the Website link we poll, from https://old.test/ to https://chefsarah.test/.',
+        import_paused_at: '2026-07-01T00:00:00.000Z',
+      };
+
+      it('is cleared when the operator turns import back on', async () => {
+        asAdmin();
+        fakeDb.seed('creators', [PAUSED]);
+
+        const res = await PATCH(jsonRequest('/api/admin/creators', {
+          method: 'PATCH', token, body: { id: 'c1', importOptIn: true },
+        }));
+
+        expect(res.status).toBe(200);
+        // Turning the switch on is the operator answering the question the
+        // record was holding open. Left behind, the Sources tab would report a
+        // paused import beside a creator that is being polled, and the next
+        // operator would have to work out which of the two to believe.
+        const row = fakeDb.row('creators', 'c1');
+        expect(row?.import_opt_in).toBe(true);
+        expect(row?.import_paused_reason).toBeNull();
+        expect(row?.import_paused_at).toBeNull();
+      });
+
+      it('survives a request that did not touch the switch', async () => {
+        asAdmin();
+        fakeDb.seed('creators', [PAUSED]);
+
+        // Confirming a feed is not "I have looked at this and it is fine to
+        // poll". Erasing the reason here would lose why polling is off while it
+        // is still off.
+        const res = await PATCH(jsonRequest('/api/admin/creators', {
+          method: 'PATCH', token, body: { id: 'c1', feedUrl: 'https://chefsarah.test/feed2' },
+        }));
+
+        expect(res.status).toBe(200);
+        expect(fakeDb.row('creators', 'c1')?.import_paused_reason).toBe(PAUSED.import_paused_reason);
+        expect(fakeDb.row('creators', 'c1')?.import_paused_at).toBe(PAUSED.import_paused_at);
+      });
+
+      it('is listed, so the tab can render it without a second query', async () => {
+        asAdmin();
+        fakeDb.seed('creators', [PAUSED]);
+        fakeDb.seed('creator_platform_accounts', []);
+
+        const body = await (await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }))).json();
+
+        expect(body.creators[0]).toMatchObject({
+          import_paused_reason: PAUSED.import_paused_reason,
+          import_paused_at: PAUSED.import_paused_at,
+        });
+      });
+    });
+
     it('clearing the source turns polling off with it', async () => {
       asAdmin();
       fakeDb.queue('creators', { data: { ...READY, import_opt_in: true } });
@@ -338,12 +395,45 @@ describe('/api/admin/creators/viability', () => {
     expect(runViabilityCheck).not.toHaveBeenCalled();
   });
 
-  it('400 when the creator has no link for that source', async () => {
+  it('400 when the creator has neither a link nor a connected account', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: { ...READY, youtube_url: null } });
     const res = await VIABILITY(jsonRequest('/api/admin/creators/viability', { token, body: { id: 'c1', source: 'youtube' } }));
     expect(res.status).toBe(400);
     expect(runViabilityCheck).not.toHaveBeenCalled();
+  });
+
+  it('checks a connected account with no link on the row at all', async () => {
+    // Instagram and TikTok are read entirely through the grant (MEAL-82 /
+    // MEAL-83), so insisting on a link as well would refuse exactly the
+    // creators who did the connecting properly.
+    asAdmin();
+    fakeDb.queue('creators', { data: { ...READY, instagram_url: null } });
+    fakeDb.queue('creator_platform_accounts', {
+      data: {
+        id: 'pa1',
+        creator_id: 'c1',
+        platform: 'instagram',
+        external_id: '178',
+        external_name: 'chefsarah',
+        access_token: 'IGQ-long',
+        refresh_token: null,
+        scopes: 'instagram_business_basic',
+        expires_at: '2099-01-01T00:00:00.000Z',
+        broken_reason: null,
+        broken_at: null,
+      },
+    });
+    runViabilityCheck.mockResolvedValue({ outcome: 'viable', passed: 3, checked: 4, costUsd: 0.001, items: [], feed: null });
+
+    const res = await VIABILITY(jsonRequest('/api/admin/creators/viability', { token, body: { id: 'c1', source: 'instagram' } }));
+
+    expect(res.status).toBe(200);
+    // The grant is resolved by the route, not by the probe: this is the only
+    // layer with a database.
+    expect(runViabilityCheck.mock.calls[0][2]).toMatchObject({
+      grant: { externalId: '178', accessToken: 'IGQ-long' },
+    });
   });
 
   it('checks the link stored on the creator, never one from the request body', async () => {

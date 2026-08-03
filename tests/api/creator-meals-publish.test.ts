@@ -37,6 +37,10 @@ function seedCreator() {
   fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', display_name: 'Chef Sarah' }]);
   fakeDb.seed('preset_meals', []);
   fakeDb.seed('creator_source_items', []);
+  // `preset_meals_publish_token_key`, partial on a non-null token, as the
+  // migration declares it. Without it the fake happily writes a second row and
+  // every assertion below would pass against code that does nothing.
+  fakeDb.unique('preset_meals', ['creator_id', 'publish_token'], 'preset_meals_publish_token_key');
 }
 
 function publish(token: string, body: Record<string, unknown> = {}) {
@@ -422,6 +426,126 @@ describe('POST /api/creator/meals — the same link twice', () => {
       // Restored rather than deleted: the retry sweep reads `failed`, and
       // dropping the row would lose the post instead of retrying it.
       expect(fakeDb.row('creator_source_items', 'i1')).toMatchObject({ status: 'failed', detail: 'Extraction failed.' });
+    });
+  });
+
+  /**
+   * The race the *claim* cannot see either.
+   *
+   * The claim is deliberately skipped once a creator confirms the duplicate
+   * prompt, because it cannot tell a second recipe from one page apart from a
+   * second click on the same button. The publish token can, because only the
+   * client knows which of its submissions are the same submission: the portal
+   * mints one per publish attempt, so a repeat carries the value that already
+   * produced a meal and loses on `preset_meals_publish_token_key`.
+   *
+   * Every test here goes through the confirmed path, since that is the one with
+   * no other protection left.
+   */
+  describe('one publish attempt, one meal', () => {
+    /** The meal, and the claim it holds — the state a confirmed publish arrives into. */
+    function alreadyPublished() {
+      fakeDb.seed('preset_meals', [existingMeal(URL_STORED)]);
+      fakeDb.seed('creator_source_items', [{
+        id: 'i1', creator_id: 'c1', source: 'website', item_id: URL_STORED, status: 'imported', draft_id: null,
+        updated_at: new Date().toISOString(),
+      }]);
+    }
+
+    it('answers a repeat of one attempt with the meal that attempt already made', async () => {
+      asUser();
+      seedCreator();
+      alreadyPublished();
+
+      const first = await publish(token, { name: 'Guacamole, spicy', confirmDuplicate: true, publishToken: 'attempt-1' });
+      expect(first.status).toBe(201);
+      const made = (await first.json()).meal;
+
+      // The double-click, the browser retrying a slow POST, a second go at
+      // "Publish anyway" — the same attempt arriving twice.
+      asUser();
+      const again = await publish(token, { name: 'Guacamole, spicy', confirmDuplicate: true, publishToken: 'attempt-1' });
+
+      // Success, not an error: the meal they asked for exists. An error would
+      // send them looking for a publish that worked, and the retry of the retry
+      // would find the same thing again.
+      expect(again.status).toBe(200);
+      expect((await again.json()).meal.id).toBe(made.id);
+      expect(fakeDb.rows('preset_meals').map((m) => m.name)).toEqual(['Guacamole', 'Guacamole, spicy']);
+      // And the link is still claimed. Releasing it here would hand the second
+      // request's failure to a meal that is alive and holding it.
+      expect(fakeDb.rows('creator_source_items')).toHaveLength(1);
+    });
+
+    it('publishes a genuine second recipe, which carries a token of its own', async () => {
+      asUser();
+      seedCreator();
+      alreadyPublished();
+
+      await publish(token, { name: 'Guacamole, spicy', confirmDuplicate: true, publishToken: 'attempt-1' });
+      asUser();
+      const res = await publish(token, { name: 'Guacamole, smoky', confirmDuplicate: true, publishToken: 'attempt-2' });
+
+      // The flagship case of the ticket, and the reason the token is minted per
+      // attempt rather than derived from the form: a post really can hold two
+      // recipes, and two near-identical ones must still be two meals.
+      expect(res.status).toBe(201);
+      expect(fakeDb.rows('preset_meals').map((m) => m.name)).toEqual(['Guacamole', 'Guacamole, spicy', 'Guacamole, smoky']);
+    });
+
+    it('stores the token, so the index has something to refuse', async () => {
+      asUser();
+      seedCreator();
+
+      await publish(token, { publishToken: 'attempt-1' });
+
+      expect(fakeDb.rows('preset_meals')[0].publish_token).toBe('attempt-1');
+    });
+
+    it('lets another creator use the same token', async () => {
+      asUser();
+      seedCreator();
+      fakeDb.seed('creators', [
+        { id: 'c1', user_id: 'u1', display_name: 'Chef Sarah' },
+        { id: 'c2', user_id: 'u2', display_name: 'Chef Bob' },
+      ]);
+      fakeDb.seed('preset_meals', [existingMeal('https://chefbob.test/guacamole', {
+        id: 'm9', creator_id: 'c2', publish_token: 'attempt-1',
+      })]);
+
+      const res = await publish(token, { publishToken: 'attempt-1' });
+
+      // The index is scoped to the creator. Two creators' clients cannot collide
+      // by chance, and a token means nothing outside the row it belongs to.
+      expect(res.status).toBe(201);
+      expect(fakeDb.rows('preset_meals')).toHaveLength(2);
+    });
+
+    it('publishes without a token, every time, for the paths that mint none', async () => {
+      asUser();
+      seedCreator();
+
+      expect((await publish(token, { source: '' })).status).toBe(201);
+      asUser();
+      expect((await publish(token, { source: '' })).status).toBe(201);
+
+      // The index is partial. A null token is a row outside it — every meal
+      // published before this existed, and every meal the admin sync publishes.
+      expect(fakeDb.rows('preset_meals')).toHaveLength(2);
+      expect(fakeDb.rows('preset_meals').every((m) => (m.publish_token ?? null) === null)).toBe(true);
+    });
+
+    it('refuses a token that is not a string, rather than publishing without one', async () => {
+      asUser();
+      seedCreator();
+
+      const res = await publish(token, { publishToken: 42 });
+
+      // Dropping it would publish the meal with the double-submit protection
+      // silently switched off — the exact failure this mechanism exists to
+      // remove.
+      expect(res.status).toBe(400);
+      expect(fakeDb.rows('preset_meals')).toHaveLength(0);
     });
   });
 });

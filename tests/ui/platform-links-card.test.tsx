@@ -8,9 +8,11 @@ import PlatformLinksCard, { type CreatorLinks } from '@/components/PlatformLinks
  *
  * The property under test is that this card can only ever say "here is where I
  * publish". It cannot start an import, it cannot choose a source, and it cannot
- * quietly remove the link Mealio is currently reading — those are an operator's
- * to decide (MEAL-81), and a card that could reverse one of them by accident is
- * the failure this ticket is written around.
+ * remove the link Mealio is currently reading — those are an operator's to
+ * decide (MEAL-81), and a card that could reverse one of them by accident is
+ * the failure this ticket is written around. It *can* move the polled link,
+ * which stops the import; the card's job there is to say so first and to stop
+ * claiming otherwise afterwards.
  */
 
 const CREATOR: CreatorLinks = {
@@ -78,15 +80,34 @@ describe('PlatformLinksCard', () => {
     expect(calls.some(call => call.method === 'PATCH')).toBe(false);
   });
 
-  it('says which link is being polled, before they try to edit it', async () => {
+  it('says which link is being polled, and what editing it costs', async () => {
     harness({ ...CREATOR, primary_source: 'website', import_opt_in: true });
 
-    // The refusal is legible only if they already know why. A creator who reads
-    // this never meets it. It has to name the whole rule the route enforces:
-    // the polled link cannot be *changed* either, because a replacement is a
-    // change of what gets read and published under their name.
+    // A pause is only fair if they knew before they typed, and there is one rule
+    // to state now rather than two: touching this link — changing it or clearing
+    // it — stops the import until someone looks.
     expect(screen.getByText(/importing your recipes from your Website/i)).toBeTruthy();
-    expect(screen.getByText(/can’t be changed or removed here/i)).toBeTruthy();
+    expect(screen.getByText(/Change or clear it here/i)).toBeTruthy();
+    expect(screen.getByText(/pause the import/i)).toBeTruthy();
+    // And no promise of a refusal that no longer happens.
+    expect(screen.queryByText(/can’t be removed/i)).toBeNull();
+  });
+
+  it('stops claiming an import is running once the server says it paused one', async () => {
+    harness(
+      { ...CREATOR, primary_source: 'website', import_opt_in: true },
+      () => json({ ok: true, notices: ['Your Website link is saved. We have paused that import.'], importPaused: true }),
+    );
+
+    fireEvent.change(field('Website'), { target: { value: 'sarahcooks.test' } });
+    save();
+
+    // `creator` is the portal's copy of a row this save has just changed. Left
+    // alone, the banner would go on saying "Mealio is importing your recipes"
+    // directly above a notice saying we stopped — and the creator would have to
+    // guess which of the two to believe.
+    expect(await screen.findByText(/paused that import/i)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/importing your recipes from your Website/i)).toBeNull());
   });
 
   it('says nothing about polling when nothing is polled', () => {
@@ -97,13 +118,16 @@ describe('PlatformLinksCard', () => {
   it('shows the server’s refusal rather than claiming a save', async () => {
     harness(
       { ...CREATOR, primary_source: 'website', import_opt_in: true },
-      () => json({ error: 'Mealio is currently importing your recipes from your Website, so that link can\'t be removed.' }, 400),
+      () => json({ error: 'could not connect to the database' }, 500),
     );
 
-    fireEvent.change(field('Website'), { target: { value: '' } });
+    fireEvent.change(field('Website'), { target: { value: 'sarahcooks.test' } });
     save();
 
-    expect(await screen.findByText(/can't be removed/i)).toBeTruthy();
+    // Whatever the server refused with, the creator sees it and does not see
+    // "Saved" — a card that claimed a save it did not get would leave them
+    // believing the old link had gone.
+    expect(await screen.findByText(/could not connect to the database/i)).toBeTruthy();
     expect(screen.queryByText(/^Saved$/)).toBeNull();
   });
 

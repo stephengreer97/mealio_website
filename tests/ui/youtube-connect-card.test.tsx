@@ -82,9 +82,19 @@ describe('YouTubeConnectCard — connecting', () => {
   });
 
   it('shows the callback failure rather than a card that looks connected', async () => {
-    window.history.replaceState({}, '', '/creator?youtube=failed&detail=That+account+has+no+channel.');
+    window.history.replaceState({}, '', '/creator?youtube=failed&reason=account');
     harness(NOT_CONNECTED);
-    expect(await screen.findByText(/no channel/i)).toBeTruthy();
+    expect(await screen.findByText(/could not read a channel/i)).toBeTruthy();
+  });
+
+  it('renders its own sentence for a reason code, never the URL\u2019s prose', async () => {
+    // Same argument as `PlatformConnectCard`: free text in the query string is
+    // prose an attacker picks, rendered in our error styling on our domain.
+    window.history.replaceState({}, '', '/creator?youtube=failed&detail=Call+1-800-555-0100+to+restore+access.');
+    harness(NOT_CONNECTED);
+
+    expect(await screen.findByText(/That connection did not complete\./)).toBeTruthy();
+    expect(screen.queryByText(/1-800-555-0100/)).toBeNull();
   });
 });
 

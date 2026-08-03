@@ -316,6 +316,74 @@ export function checkPollingInvariants(row: PollingRow, explicitOptIn = false): 
   return { ok: true, importOptIn };
 }
 
+// ── What an operator needs to see on the Sources tab ─────────────────────────
+
+export interface SourceHealthNotice {
+  /** Which rule spoke, so the UI can style it without matching prose. */
+  kind: 'paused' | 'feed-host';
+  /** Badge text, beside the connection badges. */
+  label: string;
+  /** The sentence an operator reads. */
+  detail: string;
+  /** When it happened, ISO, or null when the rule has no moment attached. */
+  at: string | null;
+}
+
+/**
+ * Everything wrong with a creator's polling setup that an operator can only
+ * otherwise learn by accident.
+ *
+ * Both entries answer a question asked long after the event. A paused import
+ * currently exists as an email and a log line, so "why is this creator not being
+ * polled?" three months later has no answer at all once the email is deleted —
+ * hence `import_paused_reason` / `import_paused_at` and hence this. A broken
+ * feed/website pairing is worse than silent: it is discoverable only by trying
+ * to turn import back on and reading the 400, which is the wrong moment to find
+ * out and the wrong place to explain it.
+ *
+ * A function rather than JSX so the rule is testable on its own and so the page
+ * stays a renderer of decisions it did not make — the same split as
+ * `summariseCreatorViability`.
+ */
+export function describeSourceHealth(row: PollingRow): SourceHealthNotice[] {
+  const notices: SourceHealthNotice[] = [];
+
+  const reason = typeof row.import_paused_reason === 'string' ? row.import_paused_reason.trim() : '';
+  // Only while it is still true. An operator who has turned import back on has
+  // answered the question, and a stale reason sitting beside a polling creator
+  // is worse than none: it says the opposite of what the row does.
+  if (reason && row.import_opt_in !== true) {
+    notices.push({
+      kind: 'paused',
+      label: 'Import paused',
+      detail: reason,
+      at: typeof row.import_paused_at === 'string' ? row.import_paused_at : null,
+    });
+  }
+
+  // The pairing the admin route confirmed once and nothing re-checks. Since
+  // MEAL-94 a creator can move `website_url` off the host their `feed_url` sits
+  // on, and the poller then reads a feed on a host that is no longer theirs —
+  // every entry fails the item-level host check, the sync returns nothing, and
+  // no message anywhere says why.
+  const feedUrl = typeof row.feed_url === 'string' ? row.feed_url : '';
+  if (feedUrl) {
+    const mismatch = describeHostMismatch(String(row[SOURCE_COLUMNS.website] ?? ''), feedUrl);
+    if (mismatch) {
+      notices.push({
+        kind: 'feed-host',
+        label: 'Feed off-site',
+        detail:
+          `${mismatch} Confirm a feed on the current website before turning import back on — until then this row ` +
+          'cannot be polled, and the admin route will refuse the switch.',
+        at: null,
+      });
+    }
+  }
+
+  return notices;
+}
+
 // ── "Is this on the creator's own site?" ─────────────────────────────────────
 
 /** A hostname in the form two links can be compared on, or null if unparseable. */

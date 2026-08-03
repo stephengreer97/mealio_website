@@ -23,9 +23,16 @@ import {
  * who posts the same guacamole to a blog and a Reel never produces two meals.
  */
 
-/** The columns the admin UI needs. Kept in one place so GET and PATCH agree. */
+/**
+ * The columns the admin UI needs. Kept in one place so GET and PATCH agree.
+ *
+ * `import_paused_reason` / `import_paused_at` are here because the Sources tab
+ * renders them: a paused import used to exist only as an email and a log line,
+ * and "why is this creator not being polled?" three months later had no answer
+ * once the email was gone.
+ */
 const CREATOR_FIELDS =
-  'id, display_name, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url';
+  'id, display_name, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url, import_paused_reason, import_paused_at';
 
 export async function GET(request: NextRequest) {
   const admin = await requireAdmin(request);
@@ -154,6 +161,17 @@ export async function PATCH(request: NextRequest) {
   // request that never mentioned import, in the row and in the log line.
   if (verdict.importOptIn !== (resulting.import_opt_in === true)) {
     update.import_opt_in = verdict.importOptIn;
+  }
+
+  // Turning the switch back on is an operator saying they have looked, which is
+  // the answer the pause record was waiting for. Left behind it would have the
+  // Sources tab report a paused import beside a creator that is being polled —
+  // and the next operator would have to work out which of the two to believe.
+  // Only on the write that turns it on: a request that never touched the switch
+  // must not quietly erase why it is off.
+  if (update.import_opt_in === true) {
+    update.import_paused_reason = null;
+    update.import_paused_at = null;
   }
 
   const { error } = await supabase.from('creators').update(update).eq('id', id);

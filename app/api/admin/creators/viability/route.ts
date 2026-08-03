@@ -65,13 +65,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Creator not found' }, { status: 404 });
   }
 
+  // The creator's grant, when they have one. Resolved here because this is the
+  // layer with a database — a probe takes a link and returns items. Null is an
+  // ordinary answer: a YouTube channel can be measured from its public uploads
+  // feed before anyone has connected anything, which is exactly the moment an
+  // operator reviewing an application needs the number.
+  const connection = isConnectedPlatform(source)
+    ? await loadConnection(supabase, id, source)
+    : null;
+  const grant = connection
+    ? { externalId: connection.externalId, accessToken: await usableAccessToken({ supabase }, connection) }
+    : null;
+
   // The link comes from the creator's row, never from the request body: this
   // endpoint makes our server fetch a URL, and the set of URLs it will fetch
   // should be the set a creator actually gave us.
-  const link = creator[SOURCE_COLUMNS[source] as keyof typeof creator];
-  if (typeof link !== 'string' || !link) {
+  //
+  // A connected account needs no link at all — Instagram and TikTok are read
+  // entirely through the grant (MEAL-82 / MEAL-83), and YouTube prefers the
+  // grant's channel id over anything pasted. Insisting on a link as well would
+  // refuse exactly the creators who did the connecting properly.
+  const stored = creator[SOURCE_COLUMNS[source] as keyof typeof creator];
+  const link = typeof stored === 'string' ? stored : '';
+  if (!link && !grant?.accessToken) {
     return NextResponse.json(
-      { error: `This creator has no ${SOURCE_LABELS[source]} link to check.` },
+      { error: `This creator has no ${SOURCE_LABELS[source]} link to check, and has not connected the account.` },
       { status: 400 },
     );
   }
@@ -97,18 +115,6 @@ export async function POST(request: NextRequest) {
     }
     feedUrl = requested.url;
   }
-
-  // The creator's grant, when they have one. Resolved here because this is the
-  // layer with a database — a probe takes a link and returns items. Null is an
-  // ordinary answer: a YouTube channel can be measured from its public uploads
-  // feed before anyone has connected anything, which is exactly the moment an
-  // operator reviewing an application needs the number.
-  const connection = isConnectedPlatform(source)
-    ? await loadConnection(supabase, id, source)
-    : null;
-  const grant = connection
-    ? { externalId: connection.externalId, accessToken: await usableAccessToken({ supabase }, connection) }
-    : null;
 
   const report = await runViabilityCheck(source, link, {
     feedUrl: source === 'website' ? feedUrl : null,

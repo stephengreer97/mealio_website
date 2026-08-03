@@ -20,7 +20,10 @@ import { normalizePlatformUrl, PLATFORM_SOURCES, SOURCE_LABELS, type PlatformSou
  *
  * Adding a link tells us a place exists and nothing more: which source Mealio
  * polls, and whether it polls at all, stay an operator decision (MEAL-81), so
- * nothing on this card can turn importing on.
+ * nothing on this card can turn importing on. Touching the link that *is* being
+ * polled — changing it or clearing it, one rule for both — can turn it off: the
+ * server pauses the import pending review and says so, and this card stops
+ * claiming otherwise the moment it hears that back.
  */
 
 const PLACEHOLDERS: Record<PlatformSource, string> = {
@@ -67,16 +70,24 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [notices, setNotices] = useState<string[]>([]);
+  /**
+   * Set from the save that paused the import, because `creator` is the portal's
+   * copy of a row the server has just changed. Without it the banner below would
+   * go on saying "Mealio is importing your recipes" directly above a notice
+   * saying we have stopped — until something reloaded the page.
+   */
+  const [paused, setPaused] = useState(false);
 
   /**
    * The source Mealio actually polls, when it is polling at all.
    *
    * Said before they try to edit it rather than only when the save is refused:
-   * "this is where your recipes come from" is the whole reason that link cannot
-   * be changed, and a creator who reads it first never meets the refusal.
+   * "this is where your recipes come from" is why changing that link pauses the
+   * import and why removing it is refused outright, and a creator who reads it
+   * first is never surprised by either.
    */
   const polled =
-    creator.import_opt_in === true && creator.primary_source && creator.primary_source !== 'none'
+    !paused && creator.import_opt_in === true && creator.primary_source && creator.primary_source !== 'none'
       ? (creator.primary_source as PlatformSource)
       : null;
 
@@ -117,6 +128,7 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
         instagram: stored.instagram ?? '', tiktok: stored.tiktok ?? '',
       });
       setNotices(Array.isArray(data.notices) ? data.notices : []);
+      if (data.importPaused === true) setPaused(true);
       setSaved(true);
       onSaved(stored);
     } catch {
@@ -158,9 +170,9 @@ export default function PlatformLinksCard({ creator, onSaved }: Props) {
 
       {polled && (
         <p className="text-xs text-gray-500 mb-4">
-          Mealio is importing your recipes from your {SOURCE_LABELS[polled]}, so that one can&rsquo;t be changed or
-          removed here &mdash; it&rsquo;s the link we read your recipes from. Send us the new link and we&rsquo;ll
-          move the import across, or ask us to stop importing first.
+          Mealio is importing your recipes from your {SOURCE_LABELS[polled]}. Moved, renamed or finished with it?
+          Change or clear it here and we&rsquo;ll pause the import &mdash; it&rsquo;s the one we publish from under
+          your name, so it gets a look before anything starts again.
         </p>
       )}
 

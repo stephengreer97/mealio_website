@@ -1,7 +1,7 @@
 {
   "id": "10-package-units",
   "url": "https://pantryraid.example/three-bean-chilli",
-  "note": "Units the editor cannot display — cans, cloves, bunches, sprigs. All must fold to a count so the cart can act on them.",
+  "note": "Cook's units the cart cannot buy by weight — cans, cloves, bunches, sprigs. Each must survive as the word the line used, with the count in measure, so the editor shows what the cook wrote and the cart still gets a number.",
   "source": {
     "title": "Store Cupboard Three Bean Chilli",
     "text": "Serves 6 generously.\n\n2 cans kidney beans, drained\n1 can black beans, drained\n1 can chopped tomatoes\n4 cloves garlic, crushed\n1 bunch spring onions, sliced\n2 sprigs thyme\n1 tablespoon smoked paprika\n2 teaspoons ground cumin\n500 ml vegetable stock\n\nEverything in one pot. Simmer 30 minutes. Better the next day.",
@@ -13,39 +13,39 @@
     "ingredients": [
       {
         "ingredientName": "kidney beans",
-        "qty": 2,
-        "unit": "qty",
-        "measure": null
+        "qty": 1,
+        "unit": "cans",
+        "measure": "2"
       },
       {
         "ingredientName": "black beans",
         "qty": 1,
-        "unit": "qty",
-        "measure": null
+        "unit": "cans",
+        "measure": "1"
       },
       {
         "ingredientName": "chopped tomatoes",
         "qty": 1,
-        "unit": "qty",
-        "measure": null
+        "unit": "cans",
+        "measure": "1"
       },
       {
         "ingredientName": "garlic",
-        "qty": 4,
-        "unit": "qty",
-        "measure": null
+        "qty": 1,
+        "unit": "cloves",
+        "measure": "4"
       },
       {
         "ingredientName": "spring onions",
         "qty": 1,
-        "unit": "qty",
-        "measure": null
+        "unit": "bunches",
+        "measure": "1"
       },
       {
         "ingredientName": "thyme",
-        "qty": 2,
-        "unit": "qty",
-        "measure": null
+        "qty": 1,
+        "unit": "sprigs",
+        "measure": "2"
       },
       {
         "ingredientName": "smoked paprika",
