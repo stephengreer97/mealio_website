@@ -163,6 +163,8 @@ function item(overrides: Partial<SyncItem> = {}): SyncItem {
     draftId: null,
     mealName: null,
     needALook: null,
+    photoUrl: null,
+    ingredientCount: null,
     costUsd: 0,
     ...overrides,
   };
@@ -272,8 +274,11 @@ describe('buildCatalog — drawing the list is free', () => {
     });
     fakeDb.queue('creator_source_items', {
       data: [
-        { item_id: 'guid-1', status: 'imported', detail: null, updated_at: '2026-07-01T00:00:00.000Z' },
-        { item_id: 'guid-2', status: 'rejected', detail: 'Not a recipe: a roundup post', updated_at: null },
+        // Keyed by the entry URL, normalised — see `websiteItemId`. The feed's
+        // own guid is not the identity, because it is only as stable as the rung
+        // of the discovery ladder that happened to answer.
+        { item_id: 'chefsarah.test/post-1', status: 'imported', detail: null, updated_at: '2026-07-01T00:00:00.000Z' },
+        { item_id: 'chefsarah.test/post-2', status: 'rejected', detail: 'Not a recipe: a roundup post', updated_at: null },
       ],
     });
 
@@ -288,6 +293,37 @@ describe('buildCatalog — drawing the list is free', () => {
     expect(result.entries[0].record).toBeNull();
     expect(result.entries[1].record).toMatchObject({ status: 'imported' });
     expect(result.entries[2].record).toMatchObject({ status: 'rejected' });
+  });
+
+  it('finds a record past the first page, where the server stops answering', async () => {
+    // PostgREST returns at most 1000 rows and says nothing about having stopped.
+    // Unpaged, a creator with a longer history gets a partial record map — and a
+    // missing record does not read as "unknown" anywhere: it reads as NEW, so
+    // the poller re-imports a post that is already in.
+    const { impl } = stubFetch({
+      'https://chefsarah.test/robots.txt': { body: '' },
+      'https://chefsarah.test/feed': { body: feedWith(3) },
+    });
+    // `post-1` sorts after every filler id, so it lands on the second page.
+    fakeDb.seed('creator_source_items', [
+      ...Array.from({ length: 1_200 }, (_, i) => ({
+        creator_id: 'c1',
+        source: 'website',
+        item_id: `chefsarah.test/archive-${String(i).padStart(5, '0')}`,
+        status: 'seen',
+      })),
+      { creator_id: 'c1', source: 'website', item_id: 'chefsarah.test/post-1', status: 'imported' },
+    ]);
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'website',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.entries[1].record).toMatchObject({ status: 'imported' });
   });
 
   it('says a platform is not connected rather than showing an empty list', async () => {
@@ -602,6 +638,21 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     expect(queued.confidence).toEqual(success.confidence);
     expect(queued.reviewBy).toBe('admin');
     expect(queued.draft.name).toBe('Best Guacamole');
+  });
+
+  it('files the draft in the queue its caller names, not always the operator\'s', async () => {
+    // The seam the poller needs. Hardcoded `admin`, the poller's drafts sit in
+    // the operator's queue while the creator is emailed "Review and publish" —
+    // a request to act on something they cannot open (MEAL-76 / MEAL-89).
+    const queue = vi.fn(async (_supabase: unknown, input: unknown) => { void input; return 'draft-9'; });
+    await processSyncItem(
+      deps({ importer: async () => success, queue: queue as unknown as SyncDeps['queue'], reviewBy: 'creator' }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
+
+    expect((queue.mock.calls[0][1] as { reviewBy: string }).reviewBy).toBe('creator');
   });
 
   it('counts the flagged fields so the run says how much reading is waiting', async () => {

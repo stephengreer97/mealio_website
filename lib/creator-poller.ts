@@ -1,0 +1,1156 @@
+/**
+ * The feed poller (MEAL-75), and the one email it sends (MEAL-76).
+ *
+ * A cron pass over every creator who has a source set and has opted in, asking
+ * one question — *what has this creator published that we have not seen?* —
+ * and handing the answer to the pipeline that already exists. It is deliberately
+ * **not** a second import engine: listing is `buildCatalog`, and gate → extract →
+ * draft is `processSyncItem`, both unchanged from the operator path. What lives
+ * here is which items are new, how often we may ask, and what happens when a
+ * source starts saying no.
+ *
+ * The five rules that shaped it, each of which is a way this silently goes wrong:
+ *
+ *   1. **Two switches, both an operator's.** `primary_source` and
+ *      `import_opt_in`. Neither is inferred, and the query enforces both — a
+ *      creator who has not agreed to this is not somebody to poll politely, they
+ *      are somebody not to poll.
+ *   2. **The first poll imports nothing.** Every item in a newly connected feed
+ *      is unseen, so the naive version fires an extraction per archived post:
+ *      a blog with 200 of them is ~$13 and 200 drafts nobody asked for. The
+ *      baseline marks them `seen` instead. Back-catalog import is a deliberate,
+ *      separate action (MEAL-79), never a side effect of connecting.
+ *   3. **Never a high-water mark.** "Everything after the last guid" is the
+ *      obvious implementation and it loses posts with no error: scheduled posts
+ *      publish late with earlier dates, edits reorder entries, some platforms
+ *      backdate. `creator_source_items` is keyed `(creator_id, source, item_id)`,
+ *      so what we have seen is a set, and its UNIQUE constraint is also the
+ *      idempotency guarantee for a cron that will eventually overlap itself.
+ *   4. **A cap per creator per poll.** Five. Beyond that we wait for the next
+ *      cycle and say so — a site that republishes its whole archive after a
+ *      migration is indistinguishable from a burst of new recipes until someone
+ *      looks, and the cap is what makes the difference cost one cycle rather
+ *      than the whole archive.
+ *   5. **Every item stands alone.** One failure is one failed item, retryable on
+ *      its own, and the other four still land.
+ *
+ * On hygiene: conditional requests so an unchanged feed costs a 304, the
+ * publisher's own advertised interval honoured where they state one, per-source
+ * and per-origin backoff when we are refused, robots.txt through the same
+ * `robotsPerOrigin` every other fetch here uses, and the honest `MealioBot/1.0
+ * (+https://mealio.co/about)` User-Agent that `ssrf.ts` already sends. **A new
+ * 403 on a source that used to work is a signal, not an error** — a creator's
+ * site starting to block us must not present as their having stopped publishing.
+ */
+
+import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  buildCatalog,
+  processSyncItem,
+  CLAIM_LEASE_MS,
+  type CatalogEntry,
+  type SyncCreator,
+  type SyncDeps,
+  type SyncItem,
+} from '@/lib/admin-sync';
+import { isPlatformSource, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
+import { sendCreatorDraftsReadyEmail, type DraftedRecipe } from '@/lib/email';
+import { log } from '@/lib/logger';
+import type { ConditionalValidators } from '@/lib/import/ssrf';
+
+// ── The schedule, in one place ───────────────────────────────────────────────
+
+/**
+ * How often a source may be polled, in minutes. **The one number to change.**
+ * (Three tests pin the value we ship and the expression it implies; they are the
+ * record of what is deployed, not a fourth place the cadence is decided.)
+ *
+ * MEAL-75 specifies 15, and the arithmetic behind it is sound: a conditional GET
+ * on a 300-byte feed is not the expensive request, the page fetch is, and *that*
+ * rate is set by how often the creator posts rather than by how often we look.
+ * Fifteen minutes takes detection latency from ~12h average to ~7.5min, which is
+ * the difference between a creator pasting their Mealio link into a caption
+ * while still in posting mode and finding out about it two days later.
+ *
+ * We ship **1440** anyway, because Vercel Hobby caps cron jobs at once per day
+ * and a more frequent expression does not degrade — it **fails the deployment**
+ * with "Hobby accounts are limited to daily cron jobs." Shipping 15 would ship
+ * nothing at all.
+ *
+ * On Pro this becomes `15`, `vercel.json` is regenerated from
+ * `cronScheduleFor()` (a test asserts the two agree), and nothing else in this
+ * file changes: `poll_after`, the backoff schedule and the TTL floor are all
+ * expressed in terms of this constant precisely so that they follow it.
+ */
+export const POLL_INTERVAL_MINUTES = 1440;
+
+/** Hour of the day a daily schedule fires, UTC-ish — Hobby's precision is ±59 min. */
+const DAILY_CRON_HOUR = 4;
+
+/**
+ * The cron expression `vercel.json` must carry for a given interval.
+ *
+ * Exported so the schedule and the interval cannot drift apart silently: the
+ * one thing worse than polling daily is *believing* we poll every fifteen
+ * minutes while `vercel.json` says otherwise, and that is invisible from
+ * anywhere inside the application.
+ *
+ * **It throws rather than rounding.** Cron steps restart at the top of their
+ * field, so an interval that does not divide its field cannot be written down: a
+ * 45-minute step fires at :00 and :45 — a 45-minute gap and then a 15-minute one
+ * — and a 7-hour step skips from 21:00 to 00:00. Returning those quietly is how
+ * the drift test goes green while the constant and the real cadence disagree,
+ * which is precisely the failure this function exists to prevent.
+ */
+export function cronScheduleFor(minutes: number): string {
+  const inexpressible = (why: string) =>
+    new Error(`A ${minutes}-minute poll interval has no honest cron expression: ${why}`);
+
+  if (!Number.isInteger(minutes) || minutes < 1) {
+    throw inexpressible('it is not a whole number of minutes.');
+  }
+  if (minutes < 60) {
+    if (60 % minutes !== 0) throw inexpressible('a minute step restarts every hour, so it would fire unevenly.');
+    return `*/${minutes} * * * *`;
+  }
+  if (minutes < 1440) {
+    const hours = minutes / 60;
+    if (!Number.isInteger(hours) || 24 % hours !== 0) {
+      throw inexpressible('an hour step restarts every day, so it would fire unevenly.');
+    }
+    return `0 */${hours} * * *`;
+  }
+  if (minutes === 1440) return `${0} ${DAILY_CRON_HOUR} * * *`;
+  // Anything less frequent than daily has to be a check inside the pass, because
+  // cron has no field longer than a day and a daily schedule that silently means
+  // weekly is the same lie in the other direction.
+  throw inexpressible('cron has no field longer than a day.');
+}
+
+const MINUTE_MS = 60_000;
+const POLL_INTERVAL_MS = POLL_INTERVAL_MINUTES * MINUTE_MS;
+
+// ── Budgets and caps ─────────────────────────────────────────────────────────
+
+/**
+ * Items extracted per creator per poll.
+ *
+ * Five is a starting number, not a measured one. It is above what any creator
+ * publishes between two polls at any cadence we would run, and far below what a
+ * site re-publishing its archive would produce — so exceeding it is nearly
+ * always the second thing, which is why exceeding it raises a signal rather than
+ * just costing a cycle.
+ */
+export const POLL_ITEM_CAP = 5;
+
+/**
+ * Creators polled in one pass.
+ *
+ * 100 because that is what fits in a PostgREST `.in()` filter: those go in the
+ * QUERY STRING, and Supabase's proxies reject URIs in the 8–16 KB range, so 100
+ * uuids (~4 KB) leaves room for the rest of the URL. The same ceiling `push.ts`
+ * chunks against, for the same reason.
+ *
+ * **There is no longer a larger pool above it.** There used to be: a `LIMIT`
+ * with no `ORDER BY` is a truncation rather than a selection, so the batch had
+ * to be chosen in JavaScript from a wider read, and past that wider read the
+ * same starvation returned one order of magnitude up — creator 1001 was never
+ * polled and nothing said so. `creators.last_polled_at` (see
+ * `add-poll-order-and-publish-idempotency.sql`) lets the ordering happen in SQL,
+ * so the query now returns the hundred longest-waiting creators and nothing
+ * else. A pool on top of that would only be a second, arbitrary cut across an
+ * order that is already correct.
+ */
+export const POLL_CREATOR_BATCH = 100;
+
+/**
+ * Wall-clock budget for one pass, under the route's `maxDuration = 300`.
+ *
+ * Bounded by a clock and not only by a row count, for the reason the token sweep
+ * gives: a batch size bounds how many creators are touched and says nothing
+ * about how long touching them takes, and time is what runs out inside a cron
+ * invocation.
+ *
+ * Creators the budget did not reach are untouched — `creators.last_polled_at` is
+ * claimed per creator as their turn comes up, never for the batch in one write —
+ * so they keep the older timestamp that put them in this batch and sort ahead of
+ * everyone this pass reached. That is the property that makes a short pass a
+ * delay rather than a starvation, and it only holds because the claim is
+ * per-creator: one write for the whole batch at the end would advance creators
+ * the pass never looked at, and a budget that runs out at the same point every
+ * pass would then starve the tail permanently and silently.
+ */
+export const POLL_PASS_BUDGET_MS = 240_000;
+
+/**
+ * Longest a publisher's advertised TTL may push us out.
+ *
+ * The TTL is honoured — it is what they asked for, in writing, on their own feed
+ * — but a `<sy:updatePeriod>monthly</sy:updatePeriod>` is far more often a
+ * template default nobody chose than a considered request, and a month of
+ * silence is indistinguishable from the feature being broken. A week is the
+ * compromise: still far more conservative than our own cadence, still short
+ * enough that a creator notices nothing.
+ */
+const MAX_TTL_MS = 7 * 24 * 60 * MINUTE_MS;
+
+/** Backoff ceiling. Past this, a source is not "busy", it is a thing to go and look at. */
+const MAX_BACKOFF_MS = 7 * 24 * 60 * MINUTE_MS;
+
+/** Doubling per consecutive failure, off the poll interval, capped above. */
+function backoffMs(consecutiveFailures: number): number {
+  const doublings = Math.min(consecutiveFailures, 10);
+  return Math.min(POLL_INTERVAL_MS * 2 ** doublings, MAX_BACKOFF_MS);
+}
+
+/**
+ * How long an item that failed extraction stays retryable, from when we first
+ * met it.
+ *
+ * Three poll intervals, so it is about three further attempts at whatever
+ * cadence we run — bounded, which is the part that matters. The comments here,
+ * the schema comment on `status` and the `idx_source_items_failed` index have
+ * always said a failure "stays retryable"; without a sweep that was a promise
+ * nobody kept, and a single model timeout lost a creator's recipe permanently
+ * and silently. Bounded rather than forever because a post that fails four times
+ * is not a transient outage — it is a page we cannot read, and paying for the
+ * same failure every day until the feed rolls over is worse than saying so once.
+ */
+const RETRY_WINDOW_MS = 3 * POLL_INTERVAL_MS;
+
+/**
+ * Listing size below which "everything is new" says nothing.
+ *
+ * A two-entry feed on a creator who publishes daily is all-new every pass and
+ * means nothing by it. Three is where the shape starts to be evidence.
+ */
+const RESET_MIN_ENTRIES = 3;
+
+// ── Shapes ───────────────────────────────────────────────────────────────────
+
+/**
+ * A creator the poller may touch: source set, opted in.
+ *
+ * No email address on it. The address is looked up at the end of the pass, for
+ * the creators who actually have something waiting — a poll that drafts nothing
+ * has no business having carried anyone's address around in the first place.
+ */
+export interface PollableCreator extends SyncCreator {
+  source: PlatformSource;
+}
+
+/** `creator_source_state`, as this file speaks it. */
+interface SourceState {
+  etag: string | null;
+  lastModified: string | null;
+  /**
+   * When we last **successfully listed** this source — not when we last tried.
+   *
+   * That distinction is load-bearing twice over. It is how a first poll is
+   * recognised (null means we have never enumerated this feed, so the baseline
+   * has not run and importing everything in it would be the $13 mistake), and it
+   * is how a *new* 403 is told from a source that has never worked. Writing it
+   * on a failed attempt would collapse both.
+   */
+  lastPolledAt: string | null;
+  pollAfter: string | null;
+  consecutiveFailures: number;
+}
+
+/**
+ * Why an operator should look at a source.
+ *
+ * Every kind describes something behaving differently rather than badly, which
+ * is exactly the case a log line at `error` would bury and a silent skip would
+ * lose entirely.
+ */
+export interface PollSignal {
+  creatorId: string;
+  source: PlatformSource;
+  /**
+   * `blocked`  — a source that used to work now refuses us.
+   * `flood`    — more new items in one poll than the cap.
+   * `all-new`  — nothing we had seen before is in the listing any more, which is
+   *              an identity change rather than a publishing burst, and is
+   *              invisible to `flood` because it is usually under the cap.
+   * `lost`     — an item failed its last permitted attempt. One recipe, gone,
+   *              and this is the only place it is ever mentioned.
+   */
+  kind: 'blocked' | 'flood' | 'all-new' | 'lost';
+  detail: string;
+}
+
+export interface PollCreatorResult {
+  creatorId: string;
+  source: PlatformSource;
+  status: 'polled' | 'not-modified' | 'baselined' | 'skipped' | 'failed' | 'blocked';
+  /** Items in the listing we had no record of. */
+  newItems: number;
+  /** Marked `seen` without importing, on the first poll of a source. */
+  baselined: number;
+  drafted: number;
+  rejected: number;
+  failed: number;
+  /** Previously-failed items given another attempt this pass. */
+  retried: number;
+  /** New items left for the next cycle: over the cap, or past the pass budget. */
+  deferred: number;
+  detail: string | null;
+  /** Empty is the healthy case. More than one is possible: a flood is often also a reset. */
+  signals: PollSignal[];
+  /** What the creator will be emailed about, in the order they were processed. */
+  drafts: DraftedRecipe[];
+}
+
+export interface PollDeps extends SyncDeps {
+  /** The transactional notifier. Injected in tests; production sends for real. */
+  notifier?: typeof sendCreatorDraftsReadyEmail;
+  /** Real-clock deadline for the whole pass. Defaults to `POLL_PASS_BUDGET_MS` from now. */
+  deadline?: number;
+}
+
+// ── One creator ──────────────────────────────────────────────────────────────
+
+/** Blank fields for a `SyncItem` the poller builds from a catalog entry. */
+function toSyncItem(entry: CatalogEntry): SyncItem {
+  return {
+    itemId: entry.itemId,
+    url: entry.url,
+    title: entry.title,
+    publishedAt: entry.publishedAt,
+    status: 'pending',
+    detail: null,
+    draftId: null,
+    mealName: null,
+    needALook: null,
+    photoUrl: null,
+    ingredientCount: null,
+    costUsd: 0,
+  };
+}
+
+/**
+ * A zeroed result.
+ *
+ * A function, not a shared constant: `drafts` is mutable, and a module-level
+ * literal spread into every result would hand every creator in the pass the same
+ * array — so the first creator's drafts would ride along in the second
+ * creator's email, under their name.
+ */
+function emptyResult() {
+  return {
+    newItems: 0,
+    baselined: 0,
+    drafted: 0,
+    rejected: 0,
+    failed: 0,
+    retried: 0,
+    deferred: 0,
+    detail: null as string | null,
+    signals: [] as PollSignal[],
+    drafts: [] as DraftedRecipe[],
+  };
+}
+
+/**
+ * Whether a failed item gets another go this pass.
+ *
+ * Two clocks, and both are load-bearing: bounded from when we first met the item
+ * so the retries end, and leased off when it was last touched (`CLAIM_LEASE_MS`,
+ * the same lease `processSyncItem` claims under) so an overlapping pass does not
+ * queue up behind an extraction that is still running.
+ */
+function retryable(record: CatalogEntry['record'], at: number): boolean {
+  if (!record || record.status !== 'failed') return false;
+  const firstSeen = Date.parse(record.firstSeenAt ?? '');
+  const touched = Date.parse(record.at ?? '');
+  // A row carrying neither date cannot be bounded, and an unbounded retry is the
+  // thing this is careful about — so it is left alone rather than retried on
+  // faith.
+  if (!Number.isFinite(firstSeen) || !Number.isFinite(touched)) return false;
+  return at - firstSeen < RETRY_WINDOW_MS && at - touched >= CLAIM_LEASE_MS;
+}
+
+/** True when a failure now was this item's last permitted attempt. */
+function outOfAttempts(record: CatalogEntry['record'], at: number): boolean {
+  const firstSeen = Date.parse(record?.firstSeenAt ?? '');
+  return Number.isFinite(firstSeen) && at + POLL_INTERVAL_MS - firstSeen >= RETRY_WINDOW_MS;
+}
+
+/**
+ * Polls one creator's one source.
+ *
+ * Never throws: a pass over fifty creators must not end because one of them has
+ * a feed that returns nonsense. Everything it learns about the source — the
+ * validators, the interval, the failure count — is written back to
+ * `creator_source_state` before it returns, including on the paths where nothing
+ * was imported.
+ */
+export async function pollCreator(
+  deps: PollDeps,
+  creator: PollableCreator,
+  state: SourceState | null,
+): Promise<PollCreatorResult> {
+  const now = deps.now ?? Date.now;
+  const source = creator.source;
+  const base = { creatorId: creator.id, source, ...emptyResult() };
+
+  // Re-asserted even though the query already filtered on it. `none` is the off
+  // switch and is not a `PlatformSource`, so this one check covers both "not
+  // set" and "not a value we know". It is the line between importing a
+  // creator's posts and importing a stranger's, and it costs one comparison to
+  // make it true of the function rather than only of its one caller.
+  if (!isPlatformSource(source)) {
+    return { ...base, status: 'skipped', detail: 'No source is set for this creator.' };
+  }
+
+  const catalog = await buildCatalog(deps, creator, source, {
+    conditional: state ? { etag: state.etag, lastModified: state.lastModified } : undefined,
+  });
+
+  if (!catalog.ok) {
+    // The good failure: the publisher answered our conditional request with
+    // "nothing has changed", which is the whole point of sending one. Counts as
+    // a successful poll — we asked and got an answer.
+    if (catalog.reason === 'not-modified') {
+      await writeState(deps, creator, {
+        etag: state?.etag ?? null,
+        lastModified: state?.lastModified ?? null,
+        polledAt: new Date(now()).toISOString(),
+        pollAfter: new Date(now() + POLL_INTERVAL_MS).toISOString(),
+        consecutiveFailures: 0,
+        status: 304,
+        error: null,
+      });
+      return { ...base, status: 'not-modified' };
+    }
+
+    // A source refusing us is not the same fact as a source having nothing new,
+    // and the difference only exists if we remember it used to work. `blocked`
+    // covers 401/403/429 — `ssrf.ts` folds those together because for a creator
+    // pasting a link they mean the same thing; here the *change* is the signal.
+    const refused = catalog.reason === 'blocked-by-site' || catalog.reason === 'blocked-by-robots';
+    const wasWorking = Boolean(state?.lastPolledAt);
+    const failures = (state?.consecutiveFailures ?? 0) + 1;
+
+    await writeState(deps, creator, {
+      etag: state?.etag ?? null,
+      lastModified: state?.lastModified ?? null,
+      // Untouched: this attempt listed nothing, so it must not make the next
+      // pass think the source has ever worked.
+      polledAt: state?.lastPolledAt ?? null,
+      pollAfter: new Date(now() + backoffMs(failures)).toISOString(),
+      consecutiveFailures: failures,
+      status: refused ? 403 : null,
+      error: catalog.detail,
+    });
+
+    const signals: PollSignal[] = [];
+    if (refused && wasWorking) {
+      signals.push({
+        creatorId: creator.id,
+        source,
+        kind: 'blocked',
+        detail:
+          `${creator.display_name}'s ${SOURCE_LABELS[source]} source has started refusing us after ` +
+          `previously working: ${catalog.detail} Their posts will stop arriving until this clears — ` +
+          'this is a conversation to have with them, not a source to quietly drop.',
+      });
+      log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'newly blocked', detail: signals[0].detail });
+    }
+
+    return {
+      ...base,
+      status: refused ? 'blocked' : 'failed',
+      detail: catalog.detail,
+      signals,
+    };
+  }
+
+  const validators: ConditionalValidators = catalog.validators ?? {};
+  const polledAt = new Date(now()).toISOString();
+  // The publisher's stated interval wins when it is longer than ours; ours wins
+  // when it is shorter, because a feed asking to be read hourly is not an
+  // instruction to read it hourly.
+  const ttlMs = catalog.ttlSeconds ? Math.min(catalog.ttlSeconds * 1000, MAX_TTL_MS) : 0;
+  const nextState = {
+    etag: validators.etag ?? null,
+    lastModified: validators.lastModified ?? null,
+    polledAt,
+    pollAfter: new Date(now() + Math.max(POLL_INTERVAL_MS, ttlMs)).toISOString(),
+    consecutiveFailures: 0,
+    status: 200,
+    error: null as string | null,
+  };
+
+  // A record — of any status — is the whole memory. `seen`, `imported`,
+  // `rejected` and `failed` all mean "we have met this item"; only the absence
+  // of a row means new. No dates are compared and no position in the feed is
+  // trusted, which is what makes a backdated or reordered entry a non-event.
+  const unseen = catalog.entries.filter((entry) => entry.record === null);
+
+  // ── The first poll: mark, do not import ───────────────────────────────────
+  if (!state?.lastPolledAt) {
+    const baseline = await markSeen(deps, creator, source, unseen, polledAt);
+
+    if (!baseline.ok) {
+      // **The rows were not written, so this source has not been polled.** The
+      // state write has to agree with that or the baseline is atomic in name
+      // only: `last_polled_at` set with nothing marked seen means the next pass
+      // is no longer a first poll, all 200 archived posts are unseen, five are
+      // extracted and the creator is emailed about them — every pass, for forty
+      // passes, at about $13 and forty emails. Left as a first poll, the
+      // baseline simply runs again next cycle and costs one feed read.
+      const failures = (state?.consecutiveFailures ?? 0) + 1;
+      await writeState(deps, creator, {
+        // Validators withheld along with the timestamp. Stored on their own they
+        // would let the next pass send a conditional request, take a 304 for a
+        // successful poll, and reach the same place by the other door.
+        etag: state?.etag ?? null,
+        lastModified: state?.lastModified ?? null,
+        polledAt: null,
+        pollAfter: new Date(now() + backoffMs(failures)).toISOString(),
+        consecutiveFailures: failures,
+        status: null,
+        error: baseline.detail,
+      });
+      log({
+        event: 'POLL:SOURCE',
+        status: 'error',
+        userId: creator.id,
+        reason: 'baseline write failed',
+        detail: `${source} first poll: ${unseen.length} items could not be marked seen, so it stays a first poll`,
+      });
+      return { ...base, status: 'failed', newItems: unseen.length, detail: baseline.detail };
+    }
+
+    await writeState(deps, creator, nextState);
+    log({
+      event: 'POLL:SOURCE',
+      status: 'success',
+      userId: creator.id,
+      detail: `${source} first poll: ${baseline.marked} existing items marked seen, none imported`,
+    });
+    return { ...base, status: 'baselined', newItems: unseen.length, baselined: baseline.marked };
+  }
+
+  // Items whose extraction failed and whose attempts are not spent. Behind the
+  // new ones in the batch: fresh posts are what the creator is waiting for, and
+  // a retry has three cycles to find room.
+  const retries = catalog.entries.filter((entry) => retryable(entry.record, now()));
+  const overCap = Math.max(0, unseen.length - POLL_ITEM_CAP);
+  const batch = [...unseen, ...retries].slice(0, POLL_ITEM_CAP);
+
+  const signals: PollSignal[] = [];
+  if (overCap > 0) {
+    signals.push({
+      creatorId: creator.id,
+      source,
+      kind: 'flood',
+      detail:
+        `${creator.display_name}'s ${SOURCE_LABELS[source]} source produced ${unseen.length} new items in ` +
+        `one poll; ${POLL_ITEM_CAP} were processed and ${overCap} wait for the next cycle. A creator does ` +
+        'not publish that fast — a site re-publishing its archive after a migration looks exactly like ' +
+        'this, and so does a feed whose item ids have changed.',
+    });
+  }
+  // The shape, not the volume. A source we have polled before whose listing
+  // contains nothing we recognise has not published a whole new archive — its
+  // ids have changed under us, because the discovery ladder fell to a different
+  // rung, or a feed URL was edited, or a permalink scheme moved. `flood` cannot
+  // see this: the common case is a five-post feed, which is under the cap.
+  if (catalog.entries.length >= RESET_MIN_ENTRIES && unseen.length === catalog.entries.length) {
+    signals.push({
+      creatorId: creator.id,
+      source,
+      kind: 'all-new',
+      detail:
+        `Every one of the ${catalog.entries.length} items in ${creator.display_name}'s ` +
+        `${SOURCE_LABELS[source]} listing is new to us, though we have polled it before. That is what a ` +
+        'changed item id looks like, not a burst of publishing — check whether the feed URL, the feed ' +
+        'itself or the permalinks have moved before trusting the drafts this produced.',
+    });
+  }
+
+  for (const signal of signals) {
+    log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: signal.kind, detail: signal.detail });
+  }
+
+  const result: PollCreatorResult = {
+    ...base,
+    status: 'polled',
+    newItems: unseen.length,
+    deferred: unseen.length + retries.length - batch.length,
+    signals,
+  };
+
+  // `null` rather than a synthesised id: there is no `creator_sync_runs` row
+  // behind a cron pass, and inventing one would put a dangling reference in
+  // every draft the poller creates.
+  const context = { id: null, source };
+  // Two settings, both wrong by default for this path and both set here rather
+  // than left to the caller. The gate resolves an `unsure` verdict as a **no**,
+  // because nobody asked for this import and a maybe reaching the creator is a
+  // draft and an email about a post they never offered us. And the draft is
+  // queued for the *creator*, which is who the email it triggers tells to
+  // "Review and publish" — an operator's queue would leave them asked to act on
+  // something they cannot open.
+  const itemDeps: PollDeps = {
+    ...deps,
+    gateMode: deps.gateMode ?? 'poller',
+    reviewBy: deps.reviewBy ?? 'creator',
+  };
+
+  for (const entry of batch) {
+    // Checked before the item, not after. An extraction is a fetch and two model
+    // calls; starting one we cannot finish spends the money and loses the
+    // result. An item not started has no record, so it is simply new again next
+    // cycle — the same place a deferred item sits.
+    if (Date.now() >= passDeadline(deps)) {
+      result.deferred += 1;
+      continue;
+    }
+
+    // Never throws, by construction. A failure is recorded as `failed` on the
+    // item and is retried by the sweep above for three more cycles; the rest of
+    // the batch is unaffected.
+    if (entry.record !== null) result.retried += 1;
+    const processed = await processSyncItem(itemDeps, context, creator, toSyncItem(entry));
+
+    if (processed.status === 'drafted') {
+      result.drafted += 1;
+      result.drafts.push({
+        draftId: processed.draftId ?? '',
+        name: processed.mealName ?? processed.title ?? 'Untitled recipe',
+        sourceUrl: processed.url,
+        photoUrl: processed.photoUrl,
+        ingredientCount: processed.ingredientCount ?? 0,
+        needALook: processed.needALook ?? 0,
+      });
+    } else if (processed.status === 'rejected') {
+      // Silently. Nobody asked for this import, so a gate false positive that
+      // reached the creator would be spam with our name on it — and the gate is
+      // right often enough that telling them about every "no" would be noise
+      // even when it is correct. The record is the audit trail.
+      result.rejected += 1;
+    } else if (processed.status === 'skipped') {
+      // Another pass claimed it between our listing and our attempt. It is
+      // somebody else's item now, not a failure and not ours to count.
+      result.deferred += 1;
+    } else {
+      result.failed += 1;
+      if (outOfAttempts(entry.record, now())) {
+        // The end of the road for one post. Nothing else in the system will ever
+        // mention it again, so this is the only chance to say a recipe was lost.
+        result.signals.push({
+          creatorId: creator.id,
+          source,
+          kind: 'lost',
+          detail:
+            `${creator.display_name}'s post ${entry.url} failed every attempt we allow and will not be ` +
+            `tried again: ${processed.detail ?? 'no detail was recorded.'} If it is a recipe, it has to be ` +
+            'imported by hand.',
+        });
+        log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'lost', detail: entry.url });
+      }
+    }
+  }
+
+  await writeState(deps, creator, nextState);
+
+  log({
+    event: 'POLL:SOURCE',
+    status: 'success',
+    userId: creator.id,
+    detail:
+      `${source} new=${result.newItems} drafted=${result.drafted} rejected=${result.rejected} ` +
+      `failed=${result.failed} retried=${result.retried} deferred=${result.deferred}`,
+  });
+
+  return result;
+}
+
+function passDeadline(deps: PollDeps): number {
+  return deps.deadline ?? Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Records every listed item as `seen`, importing none of them.
+ *
+ * Only items with no record at all, so an operator's earlier sync is not
+ * downgraded: a post already `imported` must keep pointing at its draft, and a
+ * post already `rejected` must stay rejected. `upsert` on the natural key on top
+ * of that, because two overlapping passes must not fight.
+ *
+ * **Reports whether it wrote.** The caller cannot treat the source as polled
+ * unless it did, and a count of zero cannot carry that: zero is also what an
+ * empty listing legitimately returns.
+ */
+type BaselineResult = { ok: true; marked: number } | { ok: false; detail: string };
+
+async function markSeen(
+  deps: PollDeps,
+  creator: PollableCreator,
+  source: PlatformSource,
+  entries: CatalogEntry[],
+  at: string,
+): Promise<BaselineResult> {
+  if (entries.length === 0) return { ok: true, marked: 0 };
+
+  const { error } = await deps.supabase.from('creator_source_items').upsert(
+    entries.map((entry) => ({
+      creator_id: creator.id,
+      source,
+      item_id: entry.itemId,
+      url: entry.url,
+      title: entry.title,
+      published_at: entry.publishedAt,
+      status: 'seen',
+      detail:
+        'Already published when this source was connected. Marked seen without importing — ' +
+        'back-catalog import is a separate, deliberate action.',
+      updated_at: at,
+    })),
+    { onConflict: 'creator_id,source,item_id' },
+  );
+
+  if (error) {
+    // Logged here for the database error itself; the caller decides what the
+    // failure means for the source, which is that it has not been polled.
+    log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'baseline write failed', error });
+    return {
+      ok: false,
+      detail:
+        `The first-poll baseline for this source could not be written (${error.message ?? String(error)}), ` +
+        'so it is still a first poll and nothing has been imported.',
+    };
+  }
+  return { ok: true, marked: entries.length };
+}
+
+interface StateWrite {
+  etag: string | null;
+  lastModified: string | null;
+  polledAt: string | null;
+  pollAfter: string;
+  consecutiveFailures: number;
+  status: number | null;
+  error: string | null;
+}
+
+async function writeState(deps: PollDeps, creator: PollableCreator, next: StateWrite): Promise<void> {
+  const { error } = await deps.supabase.from('creator_source_state').upsert(
+    {
+      creator_id: creator.id,
+      source: creator.source,
+      etag: next.etag,
+      last_modified: next.lastModified,
+      last_polled_at: next.polledAt,
+      poll_after: next.pollAfter,
+      consecutive_failures: next.consecutiveFailures,
+      last_status: next.status,
+      last_error: next.error,
+    },
+    { onConflict: 'creator_id,source' },
+  );
+
+  if (error) {
+    // Logged, not thrown. Losing the bookkeeping costs us a conditional request
+    // and, at worst, a repeated poll; losing the pass because the bookkeeping
+    // failed costs every creator behind this one.
+    log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'state write failed', error });
+  }
+}
+
+// ── The pass ─────────────────────────────────────────────────────────────────
+
+export interface PollPassResult {
+  /**
+   * Everyone eligible, which past `POLL_CREATOR_BATCH` is more than this pass
+   * took. The tail is not lost — it is at the front of the next pass — but a
+   * number far above the batch, pass after pass, is the queue outgrowing the
+   * cadence, and that is only visible if it is reported.
+   */
+  eligible: number;
+  polled: number;
+  notModified: number;
+  baselined: number;
+  drafted: number;
+  rejected: number;
+  /** Items we could not read. Per item, not per source — see `sourcesFailed`. */
+  failed: number;
+  retried: number;
+  deferred: number;
+  blocked: number;
+  /**
+   * Sources whose listing itself failed.
+   *
+   * Its own counter because `failed` counts items, and a source that could not
+   * be listed has no items to count — so a pass in which every single feed
+   * returned a 500 reported `polled: 0, failed: 0` and read exactly like a quiet
+   * healthy pass. This is the number that says otherwise.
+   */
+  sourcesFailed: number;
+  emailsSent: number;
+  /**
+   * Creators in this pass's batch that were not polled: the budget ran out, a
+   * `poll_after` had not expired, or their origin had already refused us.
+   *
+   * Not the creators past the batch — those were never read, and counting rows
+   * the query deliberately left in the queue as "skipped" would make a healthy
+   * pass over a long queue look like a pass that dropped work.
+   */
+  skipped: number;
+  /** Operator-facing sentences. Non-empty means someone should look. */
+  signals: string[];
+}
+
+const CREATOR_COLUMNS =
+  'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url, ' +
+  'primary_source, import_opt_in';
+
+/** One pass's worth of the poll queue, and how long the queue actually is. */
+export interface PollQueue {
+  /** The creators this pass may poll, longest-waiting first. */
+  creators: PollableCreator[];
+  /**
+   * Everyone matching the predicate, not only the batch.
+   *
+   * Counted rather than inferred from `creators.length`, because with the
+   * ordering in SQL those two numbers are the same right up until the queue
+   * outgrows a pass, which is the one moment the difference is worth knowing.
+   * `eligible` far above `POLL_CREATOR_BATCH` for several passes running says
+   * the cadence can no longer drain the queue — a thing an operator can only act
+   * on if it is a number somewhere, and PostgREST returns it in the same round
+   * trip as the rows.
+   */
+  eligible: number;
+}
+
+/**
+ * The front of the poll queue: longest-waiting creators first.
+ *
+ * **Both switches, in the query.** `import_opt_in` is the creator's consent
+ * (MEAL-77) and `primary_source` is the operator's decision about which of a
+ * creator's four links is the one we read (MEAL-81); either one absent means no
+ * polling, and the partial index in `add-creator-sources.sql` is shaped for
+ * exactly this predicate.
+ *
+ * **And the order, in the query too.** `ORDER BY last_polled_at NULLS FIRST
+ * LIMIT 100` is a selection; the `LIMIT 1000` this used to do, sorted afterwards
+ * in JavaScript, was a truncation wearing a selection's clothes — past a
+ * thousand opted-in creators Postgres returned whichever page it liked and the
+ * rest were never polled, with no error and no signal.
+ *
+ * `nullsFirst` is not a detail. Postgres sorts NULLs *last* on ASC, so the
+ * default would put every creator we have never polled at the back of the queue
+ * behind everyone we have — precisely inverting the intent, and doing it to the
+ * creators who have waited longest. `idx_creators_poll_order` is shaped for this
+ * ordering and this predicate; keep the two `eq`/`neq` clauses verbatim or the
+ * planner stops being able to prove the partial index applies and this becomes a
+ * sort of the whole table.
+ */
+export async function eligibleCreators(supabase: SupabaseClient): Promise<PollQueue> {
+  const { data, count } = await supabase
+    .from('creators')
+    .select(CREATOR_COLUMNS, { count: 'exact' })
+    .eq('import_opt_in', true)
+    .neq('primary_source', 'none')
+    .order('last_polled_at', { ascending: true, nullsFirst: true })
+    .limit(POLL_CREATOR_BATCH);
+
+  const rows = (data ?? []) as Array<Record<string, any>>;
+  return {
+    // The CHECK constraint on `primary_source` allows only the four platforms
+    // and `none`, so this guard drops nothing today; it is the same defence in
+    // depth `pollCreator` re-asserts. A row it *did* drop would hold its place
+    // at the front of the queue — an ordered batch is a fixed number of slots,
+    // and anything that occupies one without ever being polled is head-of-line
+    // blocking — but only for as long as the constraint that makes it
+    // impossible was missing.
+    creators: rows
+      .filter((row) => isPlatformSource(row.primary_source))
+      .map((row) => ({
+        id: row.id,
+        user_id: row.user_id,
+        display_name: row.display_name ?? '',
+        website_url: row.website_url ?? null,
+        youtube_url: row.youtube_url ?? null,
+        instagram_url: row.instagram_url ?? null,
+        tiktok_url: row.tiktok_url ?? null,
+        feed_url: row.feed_url ?? null,
+        source: row.primary_source as PlatformSource,
+      })),
+    eligible: count ?? rows.length,
+  };
+}
+
+/** State rows for the creators in hand, keyed the way the table is. */
+async function loadStates(
+  supabase: SupabaseClient,
+  creators: PollableCreator[],
+): Promise<Map<string, SourceState>> {
+  const byKey = new Map<string, SourceState>();
+  if (creators.length === 0) return byKey;
+
+  const ids = creators.map((creator) => creator.id);
+  // Chunked at `POLL_CREATOR_BATCH`, which is also what the batch is limited to,
+  // so this is one request today. It stays a loop because the two are separate
+  // facts: `POLL_CREATOR_BATCH` is a policy about how much work a pass does, and
+  // this is the transport ceiling. An `.in()` filter travels in the QUERY
+  // STRING, and an over-long URI is rejected by the proxy in front of PostgREST
+  // rather than by the database — so it comes back as no state at all, which
+  // reads as "never polled" for every creator at once, which is the $13
+  // back-catalogue import for every creator at once.
+  for (let from = 0; from < ids.length; from += POLL_CREATOR_BATCH) {
+    const { data } = await supabase
+      .from('creator_source_state')
+      .select('creator_id, source, etag, last_modified, last_polled_at, poll_after, consecutive_failures')
+      .in('creator_id', ids.slice(from, from + POLL_CREATOR_BATCH));
+
+    for (const row of (data ?? []) as Array<Record<string, any>>) {
+      byKey.set(`${row.creator_id}:${row.source}`, {
+        etag: row.etag ?? null,
+        lastModified: row.last_modified ?? null,
+        lastPolledAt: row.last_polled_at ?? null,
+        pollAfter: row.poll_after ?? null,
+        consecutiveFailures: row.consecutive_failures ?? 0,
+      });
+    }
+  }
+  return byKey;
+}
+
+/** The origin a creator's source is fetched from, or null for the API-backed platforms. */
+function originOf(creator: PollableCreator): string | null {
+  if (creator.source !== 'website') return null;
+  try {
+    return new URL(creator.feed_url || creator.website_url || '').origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Takes this creator's turn in the queue: `creators.last_polled_at = now`.
+ *
+ * **Written before the poll, and whatever the poll then does.** Both halves of
+ * that are the same rule — the column's only job is to rotate the queue, so
+ * anything that leaves it unchanged leaves that creator at the front of the next
+ * pass, and the pass after that, holding one of a hundred slots forever. A
+ * creator whose feed 500s every time, a creator inside a seven-day backoff, a
+ * creator whose poll throws something unforeseen, a creator on an origin that
+ * already refused us this pass: every one of them must move to the back, or
+ * everyone behind them starves. That is the bug this file was just fixed for,
+ * wearing a different hat.
+ *
+ * Before rather than after so that a hard kill — `maxDuration`, an OOM, a
+ * rolled deployment — cannot single out one creator as the one that always ends
+ * the pass and therefore never advances. The cost of claiming first is that a
+ * pass killed mid-creator delays that creator by one cycle; the cost of claiming
+ * last is that a creator who reliably kills the pass blocks the queue for good.
+ *
+ * **Not the same fact as `creator_source_state.last_polled_at`, and the two must
+ * not be made to agree.** That one means "when we last successfully *listed*
+ * this source", which is why the failure paths in `pollCreator` deliberately
+ * leave it alone: it is what tells a first poll from a later one and a new 403
+ * from a source that never worked, and advancing it on a failed attempt would
+ * import a creator's whole back catalogue. This one means "when this creator
+ * last had their turn", and it has to advance on exactly the failures the other
+ * one must not. `poll_after` is untouched by either: backoff decides *whether* a
+ * creator is polled when their turn comes, this decides *when* their turn comes.
+ */
+async function claimTurn(deps: PollDeps, creator: PollableCreator, at: string): Promise<void> {
+  const { error } = await deps.supabase
+    .from('creators')
+    .update({ last_polled_at: at })
+    .eq('id', creator.id);
+
+  if (error) {
+    // Logged, not thrown, like every other bookkeeping write here. A lost claim
+    // costs this creator a repeated poll next pass — a conditional request and,
+    // at worst, one duplicate listing that finds nothing new. Failing the pass
+    // over it costs every creator behind them.
+    log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'poll claim failed', error });
+  }
+}
+
+/**
+ * One poll pass over the front of the queue.
+ *
+ * Ordered **longest-since-polled first**, with never-polled creators ahead of
+ * everyone — in SQL, by `eligibleCreators`, so the ordering decides which
+ * creators the pass reads rather than merely rearranging the ones it happened to
+ * get. Each creator's turn is claimed as it comes up, so a creator the budget
+ * did not reach is untouched and sorts to the front of the next pass without
+ * anything having to remember them. The alternative — a stable order — starves
+ * the tail permanently the first time the pass runs long, and does it silently.
+ */
+export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
+  const now = deps.now ?? Date.now;
+  const result: PollPassResult = {
+    eligible: 0, polled: 0, notModified: 0, baselined: 0, drafted: 0,
+    rejected: 0, failed: 0, retried: 0, deferred: 0, blocked: 0, sourcesFailed: 0,
+    emailsSent: 0, skipped: 0, signals: [],
+  };
+
+  const queue = await eligibleCreators(deps.supabase);
+  const batch = queue.creators;
+  result.eligible = queue.eligible;
+  if (batch.length === 0) return result;
+
+  const states = await loadStates(deps.supabase, batch);
+  const stateFor = (creator: PollableCreator) => states.get(`${creator.id}:${creator.source}`) ?? null;
+
+  // No sort here. The batch arrives ordered by `creators.last_polled_at`, and
+  // re-sorting it by the per-source `creator_source_state.last_polled_at` would
+  // reorder it by a different fact — one that deliberately does not advance when
+  // a poll fails, so a permanently-failing creator would sort to the front of
+  // every pass forever.
+
+  // Measured against the real clock even when `now` is injected: a test pinning
+  // `now` to a constant is describing poll windows, not asking for an unbounded
+  // pass.
+  const deadline = deps.deadline ?? Date.now() + POLL_PASS_BUDGET_MS;
+  const passDeps: PollDeps = { ...deps, deadline };
+
+  /**
+   * Origins that refused us during *this* pass.
+   *
+   * `poll_after` carries backoff per source, which is the durable half. This is
+   * the half it cannot express: two creators on the same host would otherwise
+   * both be hit inside one pass, the second one after the first had already been
+   * told to go away. Being told twice in a minute is precisely the behaviour
+   * that turns a temporary 429 into a permanent block.
+   */
+  const refusedOrigins = new Set<string>();
+  const nowIso = new Date(now()).toISOString();
+
+  for (const creator of batch) {
+    if (Date.now() >= deadline) {
+      // Untouched, deliberately: no claim, so this creator keeps the timestamp
+      // that put them in this batch and is at the front of the next one.
+      result.skipped += 1;
+      continue;
+    }
+
+    // Past this line the pass has spent this creator's turn, however it goes.
+    await claimTurn(deps, creator, nowIso);
+
+    const state = stateFor(creator);
+    if (state?.pollAfter && state.pollAfter > nowIso) {
+      // Backing off, or honouring the interval the publisher advertised. Either
+      // way this is the poller doing its job, not skipping work.
+      result.skipped += 1;
+      continue;
+    }
+
+    const origin = originOf(creator);
+    if (origin && refusedOrigins.has(origin)) {
+      result.skipped += 1;
+      continue;
+    }
+
+    // One creator must not be able to end the pass for everyone behind them.
+    // `pollCreator` reports its own failures rather than throwing, so reaching
+    // this catch means something unforeseen — a database error, a parser that
+    // met input nobody imagined. Either way the creator is untouched and first
+    // in the next pass, which is exactly where a deferral leaves them.
+    let outcome: PollCreatorResult;
+    try {
+      outcome = await pollCreator(passDeps, creator, state);
+    } catch (err) {
+      result.sourcesFailed += 1;
+      log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'poll threw', error: err });
+      continue;
+    }
+
+    if (outcome.status === 'blocked' && origin) refusedOrigins.add(origin);
+
+    result.drafted += outcome.drafted;
+    result.rejected += outcome.rejected;
+    result.failed += outcome.failed;
+    result.retried += outcome.retried;
+    result.deferred += outcome.deferred;
+    for (const signal of outcome.signals) result.signals.push(signal.detail);
+
+    if (outcome.status === 'polled') result.polled += 1;
+    else if (outcome.status === 'not-modified') result.notModified += 1;
+    else if (outcome.status === 'baselined') result.baselined += 1;
+    else if (outcome.status === 'blocked') result.blocked += 1;
+    else if (outcome.status === 'skipped') result.skipped += 1;
+    else if (outcome.status === 'failed') result.sourcesFailed += 1;
+
+    // Sent here, inside the loop, rather than gathered up for the end.
+    //
+    // The drafts are already recorded `imported`, so they will never be new
+    // again: an email deferred to the end of the pass and then lost — the
+    // function killed at `maxDuration`, the deployment rolled — is a creator who
+    // is never told, with no path by which they ever could be. One creator's
+    // send failing still only costs that creator's send, which is the property
+    // the batching at the end was there for.
+    if (outcome.drafts.length > 0 && (await notifyDrafted(deps, creator, outcome.drafts))) {
+      result.emailsSent += 1;
+    }
+  }
+
+  return result;
+}
+
+// ── The email (MEAL-76) ──────────────────────────────────────────────────────
+
+/**
+ * One email per creator per pass, listing everything this pass queued for them.
+ *
+ * Batched, because that is the single biggest determinant of whether this feels
+ * helpful or spammy: a creator who publishes three recipes on a Tuesday gets one
+ * message about three drafts. **Nothing drafted means nothing sent** — an empty
+ * "here is what we found" is worse than silence, and the rejected and failed
+ * items are our problem, not theirs. One creator has one source, so their pass
+ * produces one batch and therefore one message.
+ *
+ * Transactional, so it goes through `lib/email.ts` directly and never
+ * `sendMarketingEmail`: `marketing_opt_out` must not be able to suppress a
+ * message about content queued under someone's own name. The unsubscribe page
+ * already promises exactly that — "You'll still get important account emails".
+ */
+async function notifyDrafted(
+  deps: PollDeps,
+  creator: PollableCreator,
+  drafts: DraftedRecipe[],
+): Promise<boolean> {
+  const notifier = deps.notifier ?? sendCreatorDraftsReadyEmail;
+
+  // The address is read here and nowhere else, for a creator who has something
+  // waiting. Deliberately **not** joined onto the creator query: a pass that
+  // drafts nothing would otherwise have pulled every opted-in creator's email
+  // address into memory for no reason at all.
+  //
+  // No `marketing_opt_out` in the predicate. This is transactional, and a
+  // creator who unsubscribed from campaigns has still asked us to import their
+  // recipes — drafts they are never told about are worse than no drafts.
+  const { data } = await deps.supabase
+    .from('user_profiles')
+    .select('id, email')
+    .eq('id', creator.user_id)
+    .maybeSingle();
+
+  const email = (data as Record<string, any> | null)?.email;
+  if (!email) {
+    // Worth a line: the drafts exist and are waiting, and nobody has been told.
+    log({ event: 'POLL:NOTIFY', status: 'error', userId: creator.id, reason: 'creator has no email address' });
+    return false;
+  }
+
+  try {
+    await notifier(String(email), creator.display_name, drafts);
+    log({ event: 'POLL:NOTIFY', status: 'success', userId: creator.id, detail: `drafts=${drafts.length}` });
+    return true;
+  } catch (err) {
+    // The drafts are queued either way, so this does not fail the pass — but an
+    // operator who believes the creator was told when they were not is the
+    // failure mode, so it is said out loud.
+    log({ event: 'POLL:NOTIFY', status: 'error', userId: creator.id, error: err });
+    return false;
+  }
+}
