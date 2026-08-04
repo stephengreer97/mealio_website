@@ -54,10 +54,25 @@ export function normIng(raw: any): Ingredient {
  * stored plural and "1 cans" is the storage decision showing through.
  */
 export function fmtMeasurement(ing: Ingredient): string {
-  // A count of one is not information — every line the source never quantified
-  // ("salt to taste", "many grinds of black pepper") arrives as a countable 1,
-  // and printing it states an amount nobody wrote.
-  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.qty} ${ing.ingredientName}` : ing.ingredientName;
+  // Countables answer to `measure` like everything else.
+  //
+  // The old rule read `qty` and hid any count of one, because an unquantified
+  // line ("salt to taste") arrives as a countable 1 and printing it would state
+  // an amount nobody wrote. But that hid "1 onion" too — `qty: 1` cannot tell
+  // the two apart, so suppressing both was the only safe answer available.
+  //
+  // `measure` can tell them apart, and always could: it is what the source
+  // said, where `qty` is how many products to buy. Present means the recipe
+  // gave a number, so print it; absent means it did not, so "salt" stays salt.
+  //
+  // The `qty` fallback stays underneath for now. Most preset rows still carry
+  // their amount there with `measure` null (MEAL-103), and dropping to the name
+  // alone would turn "12 corn tortillas" into "corn tortillas" — a regression
+  // until that migration lands. It can go once it has.
+  if (!ing.unit || ing.unit === 'qty') {
+    const counted = (ing.measure ?? '').trim() || ((ing.qty ?? 1) > 1 ? String(ing.qty) : '');
+    return counted ? `${counted} ${ing.ingredientName}` : ing.ingredientName;
+  }
   // A unit with no measure is the same case one step along: "a handful of
   // parsley" keeps its unit but has no number. Singular, because there is no
   // number for it to agree with — "handful parsley" is a line a cook writes and

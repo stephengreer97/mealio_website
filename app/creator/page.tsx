@@ -118,7 +118,13 @@ function toFormIng(ing: Ingredient): IngredientForm {
     // for ("many grinds of black pepper") arrives as a countable 1, and typing
     // that into the box reads as a quantity we read rather than one we assumed.
     // `fromFormIng` parses an empty measure straight back to 1.
-    measure: ing.unit === 'qty' ? ((ing.qty ?? 1) > 1 ? String(ing.qty) : '') : (ing.measure ?? ''),
+    // `measure` first for countables too, now that it is what the card reads.
+    // The `qty` fallback is for rows written before that (MEAL-103); without it
+    // a creator opening an old meal would see an empty box and save the number
+    // away.
+    measure: ing.unit === 'qty'
+      ? ((ing.measure ?? '').trim() || ((ing.qty ?? 1) > 1 ? String(ing.qty) : ''))
+      : (ing.measure ?? ''),
     unit: ing.unit ?? 'qty',
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
@@ -127,12 +133,17 @@ function toFormIng(ing: Ingredient): IngredientForm {
 
 function fromFormIng(form: IngredientForm): Ingredient {
   if (form.unit === 'qty') {
-    const q = parseInt(form.measure) || 1;
+    const typed = form.measure.trim();
+    const q = parseInt(typed) || 1;
     return {
       ingredientName: form.ingredientName.trim(),
       qty: q,
       unit: 'qty',
-      measure: null,
+      // Kept, not discarded. The card prints `measure` for countables now, so
+      // writing null here would show a creator "1 onion" while they typed it and
+      // "onion" the moment they saved — and an empty box stays empty, which is
+      // how "salt" goes on staying salt.
+      measure: typed || null,
       searchTerm: form.searchTerm ?? null,
       productQty: q,
     };
