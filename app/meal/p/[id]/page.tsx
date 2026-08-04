@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+import { mealIdFromParam } from '@/lib/sourcePlatform';
 
 const STORES = [
   { id: 'acme',          label: 'Acme Markets' },
@@ -93,7 +94,8 @@ function DifficultyDots({ level }: { level: number }) {
 export default function SharedPresetMealPage() {
   const router = useRouter();
   const params = useParams();
-  const id = params.id as string;
+  // `weeknight-garlic-butter-shrimp-<uuid>` or a bare uuid — both resolve.
+  const id = mealIdFromParam(params.id as string);
 
   const [meal, setMeal] = useState<PresetMeal | null>(null);
   const [notFound, setNotFound] = useState(false);

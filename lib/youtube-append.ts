@@ -151,7 +151,7 @@ export async function listAppendableMeals(
       mealName: typeof row.draft?.name === 'string' ? row.draft.name : 'Untitled',
       videoId,
       videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
-      mealUrl: mealShareUrl(mealId),
+      mealUrl: mealShareUrl(mealId, typeof row.draft?.name === 'string' ? row.draft.name : null),
       approvedAt: row.decided_at ?? null,
     });
   }
@@ -208,7 +208,7 @@ export async function appendMealioLink(
 
   const { data } = await supabase
     .from('creator_import_drafts')
-    .select('id, creator_id, source, item_id, published_meal_id, status')
+    .select('id, creator_id, source, item_id, published_meal_id, status, draft')
     .eq('id', draftId)
     .maybeSingle();
 
@@ -266,7 +266,7 @@ export async function appendMealioLink(
     };
   }
 
-  const mealUrl = mealShareUrl(mealId);
+  const mealUrl = mealShareUrl(mealId, typeof draft.draft?.name === 'string' ? draft.draft.name : null);
   const edit = withMealioLink(snapshot.snippet.description, mealUrl);
 
   if (edit.status === 'already-present') {

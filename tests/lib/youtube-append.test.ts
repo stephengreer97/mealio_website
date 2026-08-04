@@ -25,7 +25,7 @@ import { MEALIO_LINK_INTRO, YOUTUBE_QUOTA, YOUTUBE_WRITE_SCOPE } from '@/lib/you
 
 const CHANNEL_ID = 'UCabcdefghijklmnopqrstuv';
 const VIDEO_ID = 'vid0000000A';
-const MEAL_URL = 'https://mealio.co/meal/p/meal-1';
+const MEAL_URL = 'https://mealio.co/meal/p/best-guacamole-meal-1';
 const YT_API = 'https://www.googleapis.com/youtube/v3';
 
 const VIDEOS_URL = `${YT_API}/videos?${new URLSearchParams({ part: 'snippet', id: VIDEO_ID })}`;

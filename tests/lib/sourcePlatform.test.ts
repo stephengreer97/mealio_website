@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectSourcePlatform, captionGuidance, mealShareUrl } from '@/lib/sourcePlatform';
+import { detectSourcePlatform, captionGuidance, mealIdFromParam, mealShareUrl, mealSlug } from '@/lib/sourcePlatform';
 
 // The platform decides which caption guidance a creator sees after publishing,
 // and only TikTok's copy carries the 7-day edit deadline. A false positive on a
@@ -60,6 +60,40 @@ describe('captionGuidance', () => {
 
 describe('mealShareUrl', () => {
   it('points at the public preset-meal page', () => {
+    // No name given: exactly as before, so every link already sitting in a
+    // description keeps resolving and old callers need no change.
     expect(mealShareUrl('abc-123')).toBe('https://mealio.co/meal/p/abc-123');
+  });
+
+  it('puts the name in front of the id, because truncation eats the end', () => {
+    // YouTube cuts a description link at roughly forty characters. A bare uuid
+    // therefore showed a viewer `mealio.co/meal/p/9ca4eee0-d12b-404…` — nothing
+    // about where it goes. The readable half has to come first to survive.
+    const id = '9ca4eee0-d12b-4041-9c4e-4a1f2b3c4d5e';
+    expect(mealShareUrl(id, 'Weeknight Garlic Butter Shrimp'))
+      .toBe(`https://mealio.co/meal/p/weeknight-garlic-butter-shrimp-${id}`);
+  });
+
+  it('reads the id back out, slug or no slug', () => {
+    const id = '9ca4eee0-d12b-4041-9c4e-4a1f2b3c4d5e';
+    expect(mealIdFromParam(`weeknight-garlic-butter-shrimp-${id}`)).toBe(id);
+    expect(mealIdFromParam(id)).toBe(id);
+    // A name that is all hyphens once slugged must not eat into the id, and a
+    // name full of digits must not be mistaken for part of it.
+    expect(mealIdFromParam(`chicken-65-${id}`)).toBe(id);
+    // Nothing resolvable: handed on untouched, so the lookup fails honestly
+    // rather than this inventing an id.
+    expect(mealIdFromParam('not-a-meal')).toBe('not-a-meal');
+  });
+
+  it('makes a slug that is safe in a URL, or none at all', () => {
+    expect(mealSlug('Grandma’s "Best" Chicken & Rice!')).toBe('grandma-s-best-chicken-rice');
+    expect(mealSlug('')).toBe('');
+    expect(mealSlug(null)).toBe('');
+    // Long names are cut, and never leave a trailing hyphen to double up
+    // against the one that joins the id.
+    const long = mealSlug('a'.repeat(80));
+    expect(long.length).toBeLessThanOrEqual(60);
+    expect(long.endsWith('-')).toBe(false);
   });
 });
