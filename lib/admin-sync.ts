@@ -1239,6 +1239,22 @@ async function recordItem(
  * from a copy read *before* the claim is the same lost update by another route
  * — a retry that landed in between would be overwritten.
  */
+/**
+ * Do two timestamps name the same instant?
+ *
+ * Not a string compare, because the two sides format it differently: JS writes
+ * `2026-08-04T01:31:49.370Z` and Postgres reads back `2026-08-04T01:31:49.37+00:00`
+ * — same moment, trailing zero trimmed, offset spelled out. Comparing the text
+ * made every lease check fail, which is a slower way of the same bug the
+ * read-back was added to fix.
+ */
+function sameInstant(a: unknown, b: unknown): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  const left = new Date(a as string).getTime();
+  const right = new Date(b as string).getTime();
+  return Number.isFinite(left) && left === right;
+}
+
 async function claimRun(
   deps: SyncDeps,
   runId: string,
@@ -1278,7 +1294,7 @@ async function claimRun(
     .maybeSingle();
 
   const row = after as Record<string, any> | null;
-  return row && row.lease_until === lease ? { row, lease } : null;
+  return row && sameInstant(row.lease_until, lease) ? { row, lease } : null;
 }
 
 /**
@@ -1314,8 +1330,8 @@ async function writeLeased(
     .eq('id', runId)
     .maybeSingle();
 
-  const wrote = (patch as { lease_until?: unknown }).lease_until;
-  return Boolean(after) && (after as Record<string, any>).lease_until === (wrote ?? null);
+  const wrote = (patch as { lease_until?: unknown }).lease_until ?? null;
+  return Boolean(after) && sameInstant((after as Record<string, any>).lease_until, wrote);
 }
 
 /**
