@@ -328,10 +328,15 @@ describe('the promise the whole feature rests on', () => {
     expect(catalogue.textContent).toMatch(/nothing you posted before now is imported on its own/i);
   });
 
-  it('says plainly when it is actually watching, rather than when it might be', async () => {
+  it('offers a way out only once there is something to stop', async () => {
+    // The "Mealio is watching your Website now" line went with the redesign: the
+    // promise at the top of the section already says what a connected source
+    // does, and repeating it under the control read as filler. What has to
+    // survive is the Disconnect beside it — that sentence was the only thing
+    // anchoring the button, and the button is the off switch.
     harness({ creator: SYNCING });
 
-    expect((await screen.findByTestId('sync-live')).textContent).toMatch(/Mealio is watching your Website now/i);
+    expect((await screen.findByTestId('sync-disconnect')).textContent).toMatch(/Disconnect Website/i);
   });
 
   it('claims nothing for a creator who has set nothing up', () => {
@@ -832,7 +837,7 @@ describe('the back-catalogue checklist', () => {
     harness({ creator: SYNCING, entries: [already, entry(2)] });
     await screen.findByTestId('catalogue');
 
-    expect(screen.getByText('Already in')).toBeTruthy();
+    expect(screen.getByText('Already Imported')).toBeTruthy();
 
     tickAll();
 

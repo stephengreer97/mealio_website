@@ -324,7 +324,11 @@ export default function PlatformConnectCard({
         </>
       ) : (
         <>
-          <p className="text-sm text-gray-600 leading-relaxed mb-4">{copy.connectedNote}</p>
+          {/* The connected note belongs to the standalone card. Inside the
+              sync section the promise at the top has already said what Mealio
+              does with a connected account, and saying it again under the
+              account name reads as a disclaimer rather than an explanation. */}
+          {!embedded && <p className="text-sm text-gray-600 leading-relaxed mb-4">{copy.connectedNote}</p>}
 
           {/* Instagram's grant genuinely expires. It renews itself, but showing
               the date means a creator can notice if it ever stops moving —

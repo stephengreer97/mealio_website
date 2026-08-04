@@ -78,6 +78,9 @@ interface Props {
   onSaved?: (changes: Partial<SyncSectionCreator>) => void;
 }
 
+/** The card shell every section of this feature sits on. */
+const CARD = 'bg-white rounded-2xl shadow-sm border border-gray-100 p-5 sm:p-6';
+
 /** How long between worker calls while a run is unfinished. */
 const POLL_DELAY_MS = 750;
 
@@ -678,7 +681,8 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const label = source === 'none' ? '' : SOURCE_LABELS[source];
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 sm:p-6" data-testid="sync-source-section">
+    <>
+    <div className={CARD} data-testid="sync-source-section">
       <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Your recipes</p>
       <h2 className="text-base font-bold text-gray-900 leading-tight mb-2">Sync your content with Mealio</h2>
 
@@ -817,12 +821,6 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           revocable, and the connect card no longer offers its own button. */}
       {(syncingFromThis || ready) && (
         <div className="mt-5 pt-5 border-t border-gray-100" data-testid="sync-live">
-          {syncingFromThis && (
-            <p className="text-sm text-gray-700 leading-relaxed">
-              Mealio is watching your {label} now. New posts arrive in your review queue as drafts — nothing is
-              published until you approve it.
-            </p>
-          )}
           {/* The off switch, and only shown once there is something to switch
               off. It says what it will do to the connection as well as to the
               syncing, because "Disconnect" alone does not tell a creator they
@@ -843,13 +841,17 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
         </div>
       )}
 
-      {/* ── The back catalogue ──────────────────────────────────────────────
-          The checklist exists because the first poll baselines: everything
-          already published is marked seen, not imported. Said here, where the
-          list is, because without it connecting a source reads as "nothing
-          happened". */}
+    </div>
+
+      {/* ── The back catalogue, on a card of its own ────────────────────────
+          A different decision from "where do you publish", and one that only
+          exists once an account is connected — so it gets its own card rather
+          than a rule across the middle of the first one. The checklist is here
+          at all because the first poll baselines: everything already published
+          is marked seen, not imported, and without saying so connecting a
+          source reads as nothing having happened. */}
       {ready && (
-        <div className="mt-5 pt-5 border-t border-gray-100" data-testid="catalogue">
+        <div className={CARD} data-testid="catalogue">
           <h3 className="text-sm font-bold text-gray-900 mb-1.5">What you have already posted</h3>
           <p className="text-sm text-gray-600 leading-relaxed mb-4">
             Syncing starts from today: <strong className="font-semibold text-gray-800">nothing you posted before
@@ -930,7 +932,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                       </span>
                       {already && (
                         <span className="flex-shrink-0 text-[11px] font-semibold text-green-700 bg-green-50 border border-green-100 rounded-md px-2 py-0.5">
-                          Already in
+                          Already Imported
                         </span>
                       )}
                       {/* Not a failure to apologise for and not a promise to try
@@ -1001,7 +1003,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
 
       {/* ── What the import did ─────────────────────────────────────────── */}
       {run && totals && (
-        <div className="mt-5 pt-5 border-t border-gray-100" data-testid="run-summary">
+        <div className={`${CARD} mt-4`} data-testid="run-summary">
           <div className="flex flex-wrap items-baseline gap-3 mb-1.5">
             <h3 className="text-sm font-bold text-gray-900">
               {run.status === 'done' ? 'Import finished' : 'Importing…'}
@@ -1021,7 +1023,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
             Chose {totals.selected} · <strong className="font-semibold text-gray-800">{totals.drafted}</strong> waiting
             in your review queue
             {totals.rejected > 0 && <> · {totals.rejected} did not look like a recipe, so we left {totals.rejected === 1 ? 'it' : 'them'} alone</>}
-            {totals.skipped > 0 && <> · {totals.skipped} already in</>}
+            {totals.skipped > 0 && <> · {totals.skipped} already imported</>}
             {totals.failed > 0 && <> · {totals.failed} we could not read</>}
             {totals.pending > 0 && <> · {totals.pending} still to go</>}
           </p>
@@ -1078,7 +1080,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                             : 'In your review queue'
                           : item.status === 'pending'
                             ? 'Waiting'
-                            : item.detail || (item.status === 'skipped' ? 'Already in' : 'We could not read this one')}
+                            : item.detail || (item.status === 'skipped' ? 'Already Imported' : 'We could not read this one')}
                     </span>
                   </span>
                 </li>
@@ -1087,6 +1089,6 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           </ul>
         </div>
       )}
-    </div>
+    </>
   );
 }
