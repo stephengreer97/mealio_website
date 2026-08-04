@@ -1007,7 +1007,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
 
       {/* ── What the import did ─────────────────────────────────────────── */}
       {run && totals && (
-        <div className={`${CARD} mt-4`} data-testid="run-summary">
+        <div className={CARD} data-testid="run-summary">
           <div className="flex flex-wrap items-baseline gap-3 mb-1.5">
             <h3 className="text-sm font-bold text-gray-900">
               {run.status === 'done' ? 'Import finished' : 'Importing…'}

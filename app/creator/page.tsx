@@ -2018,12 +2018,23 @@ export default function CreatorPortal() {
             aria-labelledby="portal-tab-settings"
             hidden={tab !== 'settings'}
           >
-            {/* Two columns on a wide screen rather than three. The sync card
-                carries a dropdown, a connect panel and a scrolling checklist of
-                post titles; at a third of 1180px those titles wrapped to three
-                lines each and the card read as a column of fragments. Forms
-                want width more than they want company. */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(460px, 100%), 1fr))', gap: '16px', alignItems: 'start', maxWidth: '1180px' }}>
+            {/* Masonry, via multi-column rather than grid.
+                
+                A grid gives every card in a row the height of the tallest one,
+                so the back catalogue — which is short until it has a list in it
+                — sat under a band of white space waiting for the sync card
+                beside it to finish. Columns flow instead: a card starts where
+                the one above it ended, and when the window narrows the
+                catalogue slides up under the sync card rather than leaving a
+                gap where a third column used to be.
+                
+                `break-inside: avoid` on the children is what stops a card being
+                sliced in half across a column boundary, and the bottom margin is
+                the row gap — `gap` only sets the space *between* columns. */}
+            <div
+              className="[&>*]:break-inside-avoid [&>*]:mb-4"
+              style={{ columnWidth: '400px', columnGap: '16px', maxWidth: '1560px' }}
+            >
 
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 {!editingProfile ? (
