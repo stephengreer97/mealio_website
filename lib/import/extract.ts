@@ -31,6 +31,25 @@ import {
 } from './anthropic';
 import { canonicalizeIngredients } from './ingredients';
 import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, MAX_MEAL_TAGS, MEAL_TAGS } from './vocab';
+
+/**
+ * Drops footnote markers a recipe card left on the end of a line.
+ *
+ * Budget Bytes' own JSON-LD ends a step "…remove them from the heat and
+ * enjoy!**", where the asterisks point at a note printed under their recipe
+ * card. Lifted out of that page the marker refers to nothing, so it arrives in
+ * a Mealio draft as two characters of noise the creator deletes by hand.
+ *
+ * Only trailing runs, and only per line. An asterisk inside a line may be doing
+ * real work — "1 tbsp butter *or* oil" — and a step that legitimately ends in
+ * one is not a thing that happens.
+ */
+export function stripFootnoteMarkers(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/\s*\*+\s*$/, ''))
+    .join('\n');
+}
 import { nullPhotoResolver, type PhotoResolution, type PhotoResolver } from './photo';
 import type {
   CreatorMealDraft,
@@ -379,7 +398,7 @@ export async function extractDraft(
   const output: ExtractionOutput = {
     name: raw.name,
     ingredients,
-    recipe: raw.recipe,
+    recipe: { ...raw.recipe, value: stripFootnoteMarkers(raw.recipe.value) },
     story: raw.story,
     photoUrl,
     difficulty: { ...raw.difficulty, value: canonicalizeDifficulty(raw.difficulty.value) },
