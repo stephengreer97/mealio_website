@@ -14,6 +14,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolvePhotoUrl } from '@/lib/photos';
+import { log } from '@/lib/logger';
 import { platformSourceForUrl, type PlatformSource } from '@/lib/creator-sources';
 import { urlIdentity } from '@/lib/import/ssrf';
 import { videoIdFromUrl } from '@/lib/youtube';
@@ -337,13 +338,36 @@ export async function withdrawImportedItem(
 
   // Only from `imported`. A row an operator or a later run has moved on to some
   // other status is not this meal's to rewrite.
-  await supabase
+  const { error } = await supabase
     .from('creator_source_items')
     .update({ status: 'withdrawn', updated_at: new Date().toISOString() })
     .eq('creator_id', creatorId)
     .eq('source', row.source)
     .eq('item_id', row.item_id)
     .eq('status', 'imported');
+
+  // Said out loud rather than swallowed. The caller deliberately ignores a
+  // failure here — the meal is already deleted and refusing that would be
+  // worse — but "ignored by the caller" and "invisible to us" are different
+  // things, and the first attempt at this failed silently: the row kept saying
+  // `imported`, the checklist kept refusing the post, and there was nothing
+  // anywhere to say why. A CHECK constraint that does not know `withdrawn` is
+  // the likeliest reason and would look exactly like this.
+  if (error) {
+    log({
+      event: 'CREATOR:SOURCE_WITHDRAW',
+      status: 'error',
+      detail: `creator=${creatorId} meal=${mealId} source=${row.source} item=${row.item_id}`,
+      error,
+    });
+    return;
+  }
+
+  log({
+    event: 'CREATOR:SOURCE_WITHDRAW',
+    status: 'success',
+    detail: `creator=${creatorId} meal=${mealId} source=${row.source} item=${row.item_id}`,
+  });
 }
 
 export async function claimPublishFromLink(
