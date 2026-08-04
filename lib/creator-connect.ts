@@ -83,6 +83,11 @@ export function backToPortal(platform: ConnectedPlatform, outcome: string, reaso
   const url = new URL(`${APP_URL()}/creator`);
   url.searchParams.set(platform, outcome);
   if (reason) url.searchParams.set('reason', reason);
+  // Back to the tab they left from. The portal opens on Meals, so without this a
+  // creator returning from a consent screen lands somewhere that says nothing
+  // about what just happened — and the card carrying the answer, success or
+  // failure, is one they have to go and find.
+  url.hash = 'settings';
   const response = NextResponse.redirect(url.toString());
   // Dropped whatever happened: a state cookie that outlives its round trip is a
   // second chance for somebody else's callback.

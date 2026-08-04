@@ -37,6 +37,9 @@ function back(outcome: string, reason?: ConnectFailure | 'consent-write' | 'cons
   const url = new URL(`${APP_URL}/creator`);
   url.searchParams.set('youtube', outcome);
   if (reason) url.searchParams.set('reason', reason);
+  // Back to the tab they left from — see `backToPortal` in
+  // `lib/creator-connect.ts`, which does the same for the other platforms.
+  url.hash = 'settings';
   const response = NextResponse.redirect(url.toString());
   response.cookies.set(STATE_COOKIE, '', { path: '/', maxAge: 0 });
   return response;

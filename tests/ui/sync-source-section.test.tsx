@@ -338,6 +338,31 @@ describe('choosing a source', () => {
     expect(screen.getByTestId('sync-off').textContent).toMatch(/not reading anything you publish/i);
   });
 
+  it('offers exactly one Disconnect, not one per card', async () => {
+    // The connect cards carry their own Disconnect for standalone use, and
+    // YouTube's is a separate component from the other platforms' — so
+    // suppressing one of them embedded is not suppressing both. Two buttons with
+    // the same label, one of which only revokes the grant and leaves the row
+    // pointing at it, is worse than either alone.
+    harness({
+      creator: { ...CREATOR, primary_source: 'youtube', import_opt_in: true },
+      routes: {
+        // A live grant, which is the only state in which either button renders.
+        '/api/creator/youtube': () => json({
+          hasChannel: true,
+          connected: true,
+          channel: { title: 'Chef Sarah' },
+          brokenReason: null,
+          canWriteDescriptions: true,
+          appendOptIn: false,
+        }),
+      },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('sync-disconnect')).toBeTruthy());
+    expect(screen.getAllByText(/^Disconnect YouTube$/)).toHaveLength(1);
+  });
+
   it('revokes the grant before it says a connected account is disconnected', async () => {
     const { calls } = harness({ creator: { ...CREATOR, primary_source: 'youtube', import_opt_in: true } });
 

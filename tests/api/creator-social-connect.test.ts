@@ -266,6 +266,11 @@ describe('GET /api/creator/instagram/callback', () => {
     const res = await IG_CALLBACK(callbackRequest('instagram', { code: 'c', state: 'nonce-1' }, await stateCookie('instagram')));
 
     expect(res.headers.get('location')).toContain('instagram=connected');
+    // Back to the tab they left from. The portal opens on Meals, so without the
+    // fragment a creator returns from a consent screen to a page that says
+    // nothing about what just happened, and has to go and find the card holding
+    // the answer.
+    expect(res.headers.get('location')).toContain('#settings');
     const upsert = fakeDb.calls.find((call) => call.method === 'upsert')?.args[0] as Record<string, unknown>;
     expect(upsert).toMatchObject({
       creator_id: 'c1',

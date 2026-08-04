@@ -211,6 +211,8 @@ describe('GET /api/creator/youtube/callback', () => {
     const res = await CALLBACK(callbackRequest({ code: 'c', state: 'nonce-1' }, await stateCookie()));
 
     expect(res.headers.get('location')).toContain('youtube=connected');
+    // The tab they left from, same as the other platforms' callbacks.
+    expect(res.headers.get('location')).toContain('#settings');
     const upsert = fakeDb.calls.find((call) => call.method === 'upsert')?.args[0] as Record<string, unknown>;
     // Derived from the grant, never typed by a creator and never taken off the
     // link on their application.

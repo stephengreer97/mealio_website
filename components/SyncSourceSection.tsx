@@ -626,12 +626,18 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           Said once the row actually says it, and in the present tense, because
           "we will watch this" and "we are watching this" are different claims
           and only one of them is checkable. */}
-      {syncingFromThis && (
+      {/* Shown when there is a connection, which is not the same as when the row
+          says it is syncing. A grant that exists but is not being polled — the
+          moment between connecting and the write landing — still has to be
+          revocable, and the connect card no longer offers its own button. */}
+      {(syncingFromThis || ready) && (
         <div className="mt-5 pt-5 border-t border-gray-100" data-testid="sync-live">
-          <p className="text-sm text-gray-700 leading-relaxed">
-            Mealio is watching your {label} now. New posts arrive in your review queue as drafts — nothing is
-            published until you approve it.
-          </p>
+          {syncingFromThis && (
+            <p className="text-sm text-gray-700 leading-relaxed">
+              Mealio is watching your {label} now. New posts arrive in your review queue as drafts — nothing is
+              published until you approve it.
+            </p>
+          )}
           {/* The off switch, and only shown once there is something to switch
               off. It says what it will do to the connection as well as to the
               syncing, because "Disconnect" alone does not tell a creator they

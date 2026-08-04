@@ -311,8 +311,14 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
       )}
 
       {/* Offered whenever a grant exists, broken included. A creator who cannot
-          reconnect must still be able to take the stored token away. */}
-      {hasConnection && (
+          reconnect must still be able to take the stored token away.
+
+          Embedded, the sync section owns this: revoking the grant is only half
+          of stopping, and the half that leaves the row pointing at a source with
+          nothing behind it. The exception is a *broken* grant, which the section
+          reads as "not connected" and so offers no button for — and that is
+          precisely the creator who most needs one. */}
+      {hasConnection && (!embedded || Boolean(status.brokenReason)) && (
         <button
           onClick={disconnect}
           disabled={busy}
