@@ -243,6 +243,31 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    */
   useEffect(() => {
     const returned = returnedFromConnect();
+
+    // Consumed, not just read. The parameter is a one-time message about a round
+    // trip that has finished, but it sits in the address bar afterwards — so
+    // every later refresh replayed it: `chose` was set, the source switched back
+    // to whichever platform was last connected, and the effect below then
+    // *wrote* it. A creator who connected TikTok, later chose their website, and
+    // reloaded the page had that choice silently reversed.
+    //
+    // Stripped a turn late, on purpose. The connect card reads the same
+    // parameter for its own "connected" and "did not connect" messages, and it
+    // mounts in the render this effect is about to cause — clearing the URL here
+    // and now would swallow the sentence explaining a failed connection, which
+    // is the one a creator most needs. A timer runs after that commit.
+    //
+    // `replaceState`, and the hash is kept, so the portal stays on the tab the
+    // callback sent them to.
+    if (returned && typeof window !== 'undefined') {
+      setTimeout(() => {
+        const url = new URL(window.location.href);
+        for (const platform of CONNECTED_PLATFORMS) url.searchParams.delete(platform);
+        url.searchParams.delete('reason');
+        window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+      }, 0);
+    }
+
     // Instagram is not selectable, so a stray `?instagram=` must not strand the
     // dropdown on a value it will not show.
     if (!returned || creatorSourceBlockedReason(returned)) return;
@@ -545,7 +570,18 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
 
   const entries: CatalogEntry[] = catalog?.ok ? catalog.entries : [];
   const isImported = (entry: CatalogEntry) => entry.record?.status === 'imported';
-  const unimported = entries.filter(entry => !isImported(entry));
+  /**
+   * The gate read this post and said it was not a recipe.
+   *
+   * Permanent, unlike a fetch that failed: `recordItem` writes `rejected` only
+   * for the gate's own answer, and everything that went wrong on our side is
+   * `failed` and worth another go. So this is not a post to offer again — the
+   * answer would be the same, and it would cost a model call to get it.
+   */
+  const isRejected = (entry: CatalogEntry) => entry.record?.status === 'rejected';
+  /** Neither already in, nor known to be something we cannot use. */
+  const importable = (entry: CatalogEntry) => !isImported(entry) && !isRejected(entry);
+  const unimported = entries.filter(importable);
   const atCap = selected.length >= CREATOR_SELECTION_MAX;
 
   const toggle = (itemId: string) => {
@@ -863,17 +899,24 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
               <div className="border border-gray-100 rounded-xl overflow-hidden max-h-80 overflow-y-auto">
                 {entries.map((entry, i) => {
                   const already = isImported(entry);
+                  const rejected = isRejected(entry);
+                  // Nothing to decide about either one, so there is no tick to
+                  // offer. A box that can be ticked and then silently does
+                  // nothing is worse than no box: the creator counts it into
+                  // their selection and the run reports a number they did not
+                  // expect.
+                  const settled = already || rejected;
                   const checked = selected.includes(entry.itemId);
                   return (
                     <label
                       key={entry.itemId}
-                      className={`flex gap-3 items-start px-3 py-2.5 cursor-pointer ${i === 0 ? '' : 'border-t border-gray-50'} ${already ? 'bg-gray-50' : 'bg-white'}`}
+                      className={`flex gap-3 items-start px-3 py-2.5 ${settled ? 'cursor-default' : 'cursor-pointer'} ${i === 0 ? '' : 'border-t border-gray-50'} ${settled ? 'bg-gray-50' : 'bg-white'}`}
                     >
                       <input
                         type="checkbox"
                         checked={checked}
                         onChange={() => toggle(entry.itemId)}
-                        disabled={!checked && atCap}
+                        disabled={settled || (!checked && atCap)}
                         aria-label={entry.title || entry.url}
                         className="mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-red-600 focus:ring-red-500 disabled:opacity-40"
                       />
@@ -888,6 +931,18 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                       {already && (
                         <span className="flex-shrink-0 text-[11px] font-semibold text-green-700 bg-green-50 border border-green-100 rounded-md px-2 py-0.5">
                           Already in
+                        </span>
+                      )}
+                      {/* Not a failure to apologise for and not a promise to try
+                          again. The post is fine; it just is not a recipe we can
+                          turn into a shopping list. */}
+                      {rejected && (
+                        <span
+                          className="flex-shrink-0 text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 rounded-md px-2 py-0.5"
+                          title={entry.record?.detail ?? undefined}
+                          data-testid="not-a-recipe"
+                        >
+                          No recipe found
                         </span>
                       )}
                     </label>
@@ -970,6 +1025,66 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
             {totals.failed > 0 && <> · {totals.failed} we could not read</>}
             {totals.pending > 0 && <> · {totals.pending} still to go</>}
           </p>
+
+          {/* ── The queue itself ──────────────────────────────────────────
+              An import of forty posts takes minutes, and until now the only
+              thing on screen was a button that said "Importing…". A creator
+              could not tell a run that was working from one that had hung, and
+              the summary above only became true at the end.
+
+              Every row's state comes off the run, which the worker returns in
+              full on each chunk — so this is what actually happened to each
+              post, not an animation standing in for it. */}
+          <ul className="mt-3 border border-gray-100 rounded-xl overflow-hidden max-h-72 overflow-y-auto" data-testid="run-queue">
+            {run.items.map((item, i) => {
+              // The first still-waiting row, while the run is live. The worker
+              // takes them in order, so this is the one being read right now.
+              const working = run.status !== 'done' && item.status === 'pending'
+                && run.items.findIndex(other => other.status === 'pending') === i;
+              return (
+                <li
+                  key={item.itemId}
+                  className={`flex gap-2.5 items-start px-3 py-2 text-sm ${i === 0 ? '' : 'border-t border-gray-50'} ${working ? 'bg-amber-50' : 'bg-white'}`}
+                  data-testid={`run-item-${item.status}`}
+                >
+                  <span className="flex-shrink-0 mt-0.5 w-4 h-4 flex items-center justify-center" aria-hidden>
+                    {working ? (
+                      <svg className="animate-spin w-4 h-4 text-amber-600" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-90" fill="currentColor" d="M12 2a10 10 0 0 1 10 10h-3a7 7 0 0 0-7-7V2z" />
+                      </svg>
+                    ) : item.status === 'drafted' ? (
+                      <span className="text-green-600 font-bold">&#10003;</span>
+                    ) : item.status === 'failed' ? (
+                      <span className="text-amber-600 font-bold">!</span>
+                    ) : item.status === 'pending' ? (
+                      <span className="text-gray-300">&#9679;</span>
+                    ) : (
+                      <span className="text-gray-400">&#8212;</span>
+                    )}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block truncate text-gray-800">
+                      {item.mealName || item.title || item.url}
+                    </span>
+                    {/* The sentence, where there is one. A row that says only
+                        "rejected" sends a creator to ask us why. */}
+                    <span className="block text-xs text-gray-500 leading-relaxed">
+                      {working
+                        ? 'Reading this one\u2026'
+                        : item.status === 'drafted'
+                          ? item.needALook
+                            ? `In your review queue \u00b7 ${item.needALook} ${item.needALook === 1 ? 'field needs' : 'fields need'} a look`
+                            : 'In your review queue'
+                          : item.status === 'pending'
+                            ? 'Waiting'
+                            : item.detail || (item.status === 'skipped' ? 'Already in' : 'We could not read this one')}
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
     </div>

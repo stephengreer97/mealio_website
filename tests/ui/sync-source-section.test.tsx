@@ -771,6 +771,62 @@ describe('the back-catalogue checklist', () => {
     expect(screen.getAllByText(/^Post /)).toHaveLength(2);
   });
 
+  it('cannot tick a post that is already in, or one with no recipe in it', async () => {
+    // Both are settled: the server refuses an already-imported post, and a gate
+    // rejection is permanent — `recordItem` writes `rejected` only for the
+    // gate's own answer, and anything that broke on our side is `failed`. A box
+    // that ticks and then silently does nothing is worse than no box, because
+    // the creator counts it in and the run reports a number they did not expect.
+    const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
+    const rejected = { ...entry(2), record: { status: 'rejected', detail: 'No ingredient list on the page.', at: null, firstSeenAt: null } };
+    harness({ creator: SYNCING, entries: [already, rejected, entry(3)] });
+    await screen.findByTestId('catalogue');
+
+    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(boxes[0].disabled).toBe(true);
+    expect(boxes[1].disabled).toBe(true);
+    expect(boxes[2].disabled).toBe(false);
+
+    expect(screen.getByTestId('not-a-recipe').textContent).toMatch(/No recipe found/i);
+  });
+
+  it('shows every post in the run, with the one being read marked', async () => {
+    // An import of forty posts takes minutes, and the only thing on screen was a
+    // button reading "Importing…" — a run that was working and a run that had
+    // hung looked identical, and the summary only became true at the end.
+    const items = [
+      { itemId: 'a', url: 'https://chefsarah.test/a', title: 'Post A', publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'Harissa Chicken', needALook: 2 },
+      { itemId: 'b', url: 'https://chefsarah.test/b', title: 'Post B', publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null },
+      { itemId: 'c', url: 'https://chefsarah.test/c', title: 'Post C', publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null },
+    ];
+    harness({
+      creator: SYNCING,
+      entries: [entry(1), entry(2), entry(3)],
+      routes: {
+        '/api/creator/sync': () => json({ run: { id: 'r1', status: 'queued', items: [] } }, 201),
+        '/api/creator/sync/worker': () =>
+          json({
+            run: { id: 'r1', status: 'running', items },
+            totals: { selected: 3, pending: 2, drafted: 1, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 2 },
+          }),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 3 posts/ }));
+
+    const queue = await screen.findByTestId('run-queue');
+    // The extracted name rather than the post's title, once we have one: it is
+    // what the creator will look for in their review queue.
+    await waitFor(() => expect(queue.textContent).toMatch(/Harissa Chicken/));
+    expect(queue.textContent).toMatch(/2 fields need a look/);
+    // Exactly one row is being read — the first still waiting, since the worker
+    // takes them in order.
+    expect(queue.textContent).toMatch(/Reading this one/);
+    expect(queue.querySelectorAll('.animate-spin')).toHaveLength(1);
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
