@@ -3,7 +3,7 @@ import { revalidateTag } from 'next/cache';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { resolvePhotoUrl } from '@/lib/photos';
-import { publishIdentity, releaseLinkClaim } from '@/lib/creator-meals';
+import { publishIdentity, releaseLinkClaim, withdrawImportedItem } from '@/lib/creator-meals';
 import { servesChangeError, servesTextOf, tagChangeError } from '@/lib/import/vocab';
 import { log } from '@/lib/logger';
 
@@ -173,6 +173,12 @@ export async function DELETE(
   for (const row of (deleted ?? []) as Array<{ source?: string | null }>) {
     await releaseLinkClaim(supabase, creator.id, row.source ?? null).catch(() => {});
   }
+
+  // And the post it was imported from goes back on the shelf. Same posture as
+  // the claim above: the meal is already gone, so a failure here is not a reason
+  // to fail the delete — it leaves a post marked imported that no longer is,
+  // which is the state this whole call exists to correct rather than to create.
+  await withdrawImportedItem(supabase, creator.id, id).catch(() => {});
 
   revalidateTag('trending-meals', 'max');
   log({ event: 'CREATOR:MEAL_DELETE', status: 'success', userId: creator.id, detail: id });

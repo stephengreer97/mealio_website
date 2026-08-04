@@ -923,7 +923,11 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                         className="mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-red-600 focus:ring-red-500 disabled:opacity-40"
                       />
                       <span className="flex-1 min-w-0">
-                        <span className="block text-sm text-gray-800 font-medium break-words">
+                        {/* Two lines, then an ellipsis. TikTok has no titles —
+                            `tiktokVideoTitle` falls back to the first line of
+                            the description — so a chatty caption filled the row
+                            and pushed the rest of the list off the screen. */}
+                        <span className="block text-sm text-gray-800 font-medium break-words line-clamp-2">
                           {entry.title || entry.url}
                         </span>
                         <span className="block text-xs text-gray-400 truncate">

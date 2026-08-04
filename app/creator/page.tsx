@@ -2018,10 +2018,12 @@ export default function CreatorPortal() {
             aria-labelledby="portal-tab-settings"
             hidden={tab !== 'settings'}
           >
-            {/* Capped at three columns' worth: these are forms, and a fourth
-                column of them across a wide monitor is a wall to scan rather
-                than a settings page to read. */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: '16px', alignItems: 'start', maxWidth: '1180px' }}>
+            {/* Two columns on a wide screen rather than three. The sync card
+                carries a dropdown, a connect panel and a scrolling checklist of
+                post titles; at a third of 1180px those titles wrapped to three
+                lines each and the card read as a column of fragments. Forms
+                want width more than they want company. */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(460px, 100%), 1fr))', gap: '16px', alignItems: 'start', maxWidth: '1180px' }}>
 
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 {!editingProfile ? (

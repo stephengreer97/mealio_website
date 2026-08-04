@@ -297,6 +297,55 @@ export async function releaseLinkClaim(
   await dropClaim(supabase, creatorId, source, sourceItemId(source, identity));
 }
 
+/**
+ * Marks a deleted meal's source post as withdrawn rather than imported.
+ *
+ * Deleting a meal used to leave `creator_source_items` saying `imported`
+ * forever, so the post could never be imported again: the catalogue showed it
+ * as already in and `recordItem` refused it server-side. A creator who deleted
+ * a meal to redo it found the post they made it from permanently out of reach.
+ *
+ * Not cleared, though, and the difference is the whole design. The same table
+ * tells the *poller* what it has already seen — it treats any record as seen,
+ * whatever its status — so wiping the row would have the next poll find an
+ * unrecognised post and import it again, the creator delete it again, and round
+ * it goes. And deleting a meal often means "I do not want this on Mealio",
+ * which is precisely what that loop overrides.
+ *
+ * `withdrawn` answers both. The poller still sees a record and leaves it alone;
+ * the catalogue and `recordItem` both test for the exact string `imported`, so
+ * a withdrawn post becomes tickable again and re-imports on request. Automatic
+ * sync stays away, a deliberate re-import is one click.
+ */
+export async function withdrawImportedItem(
+  supabase: SupabaseClient,
+  creatorId: string,
+  mealId: string,
+): Promise<void> {
+  // The draft is what knows which post the meal came from: `published_meal_id`
+  // was written at publish, and `item_id` is half the `creator_source_items`
+  // key. A meal published by hand has no draft and nothing to withdraw.
+  const { data: draft } = await supabase
+    .from('creator_import_drafts')
+    .select('source, item_id')
+    .eq('creator_id', creatorId)
+    .eq('published_meal_id', mealId)
+    .maybeSingle();
+
+  const row = draft as { source?: string | null; item_id?: string | null } | null;
+  if (!row?.source || !row.item_id) return;
+
+  // Only from `imported`. A row an operator or a later run has moved on to some
+  // other status is not this meal's to rewrite.
+  await supabase
+    .from('creator_source_items')
+    .update({ status: 'withdrawn', updated_at: new Date().toISOString() })
+    .eq('creator_id', creatorId)
+    .eq('source', row.source)
+    .eq('item_id', row.item_id)
+    .eq('status', 'imported');
+}
+
 export async function claimPublishFromLink(
   supabase: SupabaseClient,
   creatorId: string,
