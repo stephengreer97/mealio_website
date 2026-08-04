@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { disconnectPlatform, platformConnectionStatus } from '@/lib/creator-connect';
+import { tiktokConfigured } from '@/lib/tiktok';
 
 /**
  * The creator's own view of their TikTok connection (MEAL-83).
@@ -14,7 +15,11 @@ import { disconnectPlatform, platformConnectionStatus } from '@/lib/creator-conn
  */
 
 export async function GET(request: NextRequest) {
-  return platformConnectionStatus(request, 'tiktok');
+  // `configured` travels with the status because TikTok is the one platform
+  // whose credentials might not be there: `tiktokAuthUrl` returns null without a
+  // client key, and a Connect button that only reveals that after it is pressed
+  // is indistinguishable from one that is broken.
+  return platformConnectionStatus(request, 'tiktok', tiktokConfigured());
 }
 
 export async function DELETE(request: NextRequest) {

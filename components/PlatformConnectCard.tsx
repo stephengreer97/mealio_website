@@ -34,6 +34,8 @@ interface Status {
   account: { id: string | null; name: string | null } | null;
   brokenReason: string | null;
   expiresAt: string | null;
+  /** False when this deployment has no app credentials for the platform. */
+  configured?: boolean;
 }
 
 interface CardCopy {
@@ -97,6 +99,26 @@ const FAILURE_COPY: Record<string, (label: string) => string> = {
   unverified: () => 'That connection could not be verified. Start again from this page.',
   'no-code': (label) => `${label} sent you back without an authorization code. Try connecting again.`,
   exchange: (label) => `${label} would not complete that connection. Try connecting again.`,
+  /**
+   * The platform refused the account, rather than the creator declining
+   * (MEAL-101).
+   *
+   * The callback used to read *any* `error` on the redirect as "cancelled",
+   * which for TikTok is now usually wrong and is the worst kind of wrong: it
+   * blames a creator for something they did not do and gives them nothing to do
+   * next. While the TikTok app is in sandbox, TikTok only authorises accounts
+   * registered with it as testers, and everyone else is turned down on TikTok's
+   * own screen with nothing on it that mentions Mealio.
+   *
+   * Worded so it is true either way. We cannot be certain from the redirect
+   * whether a given refusal was the allow-list or something else, so this does
+   * not assert which — it names the overwhelmingly likely cause and the one
+   * thing that fixes it.
+   */
+  unavailable: (label) =>
+    `${label} did not connect that account. Our ${label} app is in limited release while it is under review, ` +
+    `so ${label} only lets accounts we have registered for testing connect — if you did not cancel on ` +
+    `${label}'s screen, that is almost certainly why. Tell us and we will add yours.`,
   scope: () =>
     'That connection came back without permission to read your posts, so there would be nothing to import. ' +
     'Connect again and leave the permission ticked.',
@@ -121,7 +143,26 @@ function formatExpiry(iso: string | null): string | null {
   return new Date(parsed).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
 }
 
-export default function PlatformConnectCard({ platform }: { platform: SocialPlatform }) {
+export interface PlatformConnectCardProps {
+  platform: SocialPlatform;
+  /**
+   * Rendered inside the sync section rather than as a card of its own
+   * (MEAL-101). Drops the card chrome and the platform eyebrow, which the
+   * section's own dropdown has already said.
+   */
+  embedded?: boolean;
+  /** Told whether an account is connected, every time this card learns it. */
+  onConnectionChange?: (connected: boolean) => void;
+  /** Shown above the button — what to expect from pressing it. */
+  note?: string | null;
+}
+
+export default function PlatformConnectCard({
+  platform,
+  embedded = false,
+  onConnectionChange,
+  note,
+}: PlatformConnectCardProps) {
   const copy = COPY[platform];
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
@@ -135,7 +176,13 @@ export default function PlatformConnectCard({ platform }: { platform: SocialPlat
   const load = async () => {
     try {
       const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token()}` } });
-      if (res.ok) setStatus(await res.json());
+      if (!res.ok) return;
+      const next: Status = await res.json();
+      setStatus(next);
+      // A broken grant is not a connection as far as the section is concerned:
+      // nothing can be listed through it, so offering a catalogue would be a
+      // button that fails. The reconnect prompt is this card's to show.
+      onConnectionChange?.(next.connected && !next.brokenReason);
     } finally {
       setLoading(false);
     }
@@ -188,11 +235,15 @@ export default function PlatformConnectCard({ platform }: { platform: SocialPlat
 
   const expiry = copy.showExpiry ? formatExpiry(status.expiresAt) : null;
 
+  const unconfigured = status.configured === false;
+
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+    <div className={embedded ? '' : 'bg-white rounded-2xl shadow-sm border border-gray-100 p-6'}>
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">{copy.label}</p>
+          {!embedded && (
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">{copy.label}</p>
+          )}
           <h2 className="text-base font-bold text-gray-900 leading-tight">
             {status.connected
               ? status.account?.name
@@ -227,17 +278,40 @@ export default function PlatformConnectCard({ platform }: { platform: SocialPlat
       {!status.connected || status.brokenReason ? (
         <>
           <p className="text-sm text-gray-600 leading-relaxed mb-4">{copy.pitch}</p>
-          <button
-            onClick={connect}
-            disabled={busy}
-            className={`w-full sm:w-auto ${copy.buttonClass} disabled:opacity-60 text-white text-sm font-semibold rounded-xl px-5 py-2.5 transition-colors`}
-          >
-            {busy ? `Opening ${copy.label}…` : copy.button}
-          </button>
-          <p className="text-[11px] text-gray-400 mt-2">
-            We only ask for permission to read your own posts. Nothing is posted, edited or deleted on your
-            account, and you can disconnect at any time.
-          </p>
+
+          {/* What to expect from the press, said before it. TikTok's app is in
+              sandbox, so the account has to be one we registered — a creator
+              refused on TikTok's own screen sees nothing there that mentions
+              Mealio, and would have no idea why. */}
+          {note && !unconfigured && (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 mb-4 leading-relaxed" data-testid={`note-${platform}`}>
+              {note}
+            </p>
+          )}
+
+          {/* No credentials on this deployment at all. Said instead of the
+              button rather than beside it: `tiktokAuthUrl` returns null without
+              a client key, so the press could only ever produce a 500. */}
+          {unconfigured ? (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 leading-relaxed" data-testid={`unconfigured-${platform}`}>
+              {copy.label} syncing is not switched on here yet. Nothing is wrong with your account — get in touch
+              and we will tell you when it is ready.
+            </p>
+          ) : (
+            <button
+              onClick={connect}
+              disabled={busy}
+              className={`w-full sm:w-auto ${copy.buttonClass} disabled:opacity-60 text-white text-sm font-semibold rounded-xl px-5 py-2.5 transition-colors`}
+            >
+              {busy ? `Opening ${copy.label}…` : copy.button}
+            </button>
+          )}
+          {!unconfigured && (
+            <p className="text-[11px] text-gray-400 mt-2">
+              We only ask for permission to read your own posts. Nothing is posted, edited or deleted on your
+              account, and you can disconnect at any time.
+            </p>
+          )}
         </>
       ) : (
         <>

@@ -7,6 +7,10 @@ import {
   normalizePlatformUrl,
   normalizePlatformUrls,
   summariseCreatorViability,
+  chooseCreatorSource,
+  creatorSourceBlockedReason,
+  CREATOR_SOURCE_OPTIONS,
+  describeWebsiteImportFailure,
   toSourceColumns,
 } from '@/lib/creator-sources';
 
@@ -268,7 +272,7 @@ describe('creator-sources — checkPollingInvariants', () => {
   it('refuses opt-in for a source the creator has no link for', () => {
     const verdict = checkPollingInvariants({ ...READY, primary_source: 'youtube' });
     expect(verdict).toMatchObject({ ok: false });
-    expect((verdict as { error: string }).error).toMatch(/no YouTube link/i);
+    expect((verdict as { error: string }).error).toMatch(/neither a YouTube link nor a connected YouTube account/i);
   });
 
   it('refuses opt-in for a website whose feed was never confirmed', () => {
@@ -381,5 +385,142 @@ describe('creator-sources — what an operator sees on the Sources tab', () => {
     // stop it starting again. An operator needs both to know what to do next.
     expect(describeSourceHealth({ ...PAUSED, feed_url: 'https://chefsarah.test/feed' }).map(n => n.kind))
       .toEqual(['paused', 'feed-host']);
+  });
+});
+
+// ── The creator's own source choice (MEAL-101) ───────────────────────────────
+
+describe('creator-sources — chooseCreatorSource', () => {
+  const CHECKED_SITE = {
+    website_url: 'https://chefsarah.test/',
+    feed_url: 'https://chefsarah.test/feed',
+    primary_source: 'none',
+    import_opt_in: false,
+  };
+
+  it('turns both switches on together', () => {
+    const choice = chooseCreatorSource(CHECKED_SITE, 'website');
+
+    // The poller's query requires `import_opt_in = true AND primary_source <>
+    // 'none'`, so writing one without the other is a creator who chose a source
+    // and is never read. They are one decision and they are written as one.
+    expect(choice).toMatchObject({
+      ok: true,
+      update: { primary_source: 'website', import_opt_in: true },
+    });
+  });
+
+  it('accepts YouTube on the grant alone, with no link on the row', () => {
+    // The channel id comes off the grant and `channelIdForCreator` refuses to
+    // derive one from a link. Insisting on a link would refuse exactly the
+    // creator who connected properly.
+    expect(chooseCreatorSource({ primary_source: 'none' }, 'youtube', ['youtube'])).toMatchObject({ ok: true });
+  });
+
+  it('refuses YouTube with a link but no grant', () => {
+    const choice = chooseCreatorSource({ youtube_url: 'https://youtube.com/@chefsarah' }, 'youtube', []);
+    expect(choice).toMatchObject({ ok: false });
+    expect((choice as { error: string }).error).toMatch(/connect your youtube account first/i);
+  });
+
+  it('refuses Instagram, with the reason on it', () => {
+    // Disabled in the dropdown, and disabled here: a request is not a dropdown,
+    // and a grant does not help while Meta has not approved the app.
+    const choice = chooseCreatorSource({}, 'instagram', ['instagram']);
+    expect(choice).toMatchObject({ ok: false });
+    expect((choice as { error: string }).error).toBe(creatorSourceBlockedReason('instagram'));
+  });
+
+  it('accepts TikTok on its grant, now that the app has credentials', () => {
+    // TikTok sat beside Instagram until `TIKTOK_CLIENT_KEY` was set. Nothing
+    // about the code path changed; the block was about the app's status, so it
+    // is expressed as data (`blockedReason`) rather than as a branch.
+    expect(creatorSourceBlockedReason('tiktok')).toBeNull();
+    expect(chooseCreatorSource({}, 'tiktok', ['tiktok'])).toMatchObject({ ok: true });
+    expect(chooseCreatorSource({}, 'tiktok', [])).toMatchObject({ ok: false });
+  });
+
+  it('carries TikTok’s limited-release caveat as a note, not as a block', () => {
+    const tiktok = CREATOR_SOURCE_OPTIONS.find(option => option.source === 'tiktok');
+    // The distinction is the point: a caveat on the option reads as a soft
+    // disabled, and this one is about what to expect from pressing Connect.
+    expect(tiktok?.blockedReason).toBeNull();
+    expect(tiktok?.label).toBe('TikTok');
+    expect(tiktok?.note).toMatch(/limited release/i);
+  });
+
+  it('refuses a value the CHECK constraint would refuse too', () => {
+    expect(chooseCreatorSource(CHECKED_SITE, 'facebook')).toMatchObject({ ok: false });
+    expect(chooseCreatorSource(CHECKED_SITE, undefined)).toMatchObject({ ok: false });
+  });
+
+  it('always allows off, whatever state the row is in', () => {
+    // Consent that can only be given is not consent. Nothing about a row may
+    // make a creator unable to withdraw.
+    expect(chooseCreatorSource({ primary_source: 'instagram', import_opt_in: true }, 'none')).toMatchObject({
+      ok: true,
+      update: { primary_source: 'none', import_opt_in: false },
+    });
+  });
+
+  it('refuses a website whose feed sits on a host they have left', () => {
+    // Both columns populated, so "both present" would call this ready and poll a
+    // feed that is no longer theirs.
+    expect(chooseCreatorSource(
+      { website_url: 'https://sarahcooks.test/', feed_url: 'https://chefsarah.test/feed' },
+      'website',
+    )).toMatchObject({ ok: false });
+  });
+
+  it('clears the pause the choice has just answered', () => {
+    const choice = chooseCreatorSource(CHECKED_SITE, 'website');
+    expect((choice as { update: Record<string, unknown> }).update).toMatchObject({
+      import_paused_reason: null,
+      import_paused_at: null,
+    });
+  });
+});
+
+describe('creator-sources — describeWebsiteImportFailure', () => {
+  const site = 'https://chefsarah.test/';
+
+  it('says nothing at all about a site that works', () => {
+    expect(describeWebsiteImportFailure(site, { outcome: 'viable', reason: null, checked: 10, passed: 8 })).toBeNull();
+    // `partial` works too. A blog where three in ten are recipes syncs less
+    // often; refusing it would be Mealio deciding a creator publishes the wrong
+    // things.
+    expect(describeWebsiteImportFailure(site, { outcome: 'partial', reason: null, checked: 10, passed: 3 })).toBeNull();
+  });
+
+  it.each([
+    ['no-feed', /could not find a feed/i],
+    ['blocked-by-robots', /robots\.txt/i],
+    ['blocked-by-site', /refused to let Mealio read it/i],
+    ['unreachable', /could not reach/i],
+    ['no-entries', /could not read any posts out of it/i],
+    ['feed-off-site', /not on/i],
+    ['classifier-unavailable', /try again in a few minutes/i],
+    ['empty', /found nothing posted yet/i],
+  ])('turns %s into something a creator can act on', (reason, expected) => {
+    const sentence = describeWebsiteImportFailure(site, { outcome: 'unavailable', reason, checked: 0, passed: 0 });
+    expect(sentence).toMatch(expected);
+    // The rule this function exists for: no status codes, ever. A creator handed
+    // "403 on /feed" has been told nothing they can do anything about.
+    expect(sentence).not.toMatch(/\b[45]\d\d\b/);
+  });
+
+  it('never leaves a creator with no sentence at all', () => {
+    // A reason nobody has seen yet — a new probe, a renamed constant — must not
+    // produce an empty error box.
+    const sentence = describeWebsiteImportFailure(site, { outcome: 'unavailable', reason: 'something-new', checked: 0, passed: 0 });
+    expect(sentence).toMatch(/could not read/i);
+  });
+
+  it('counts what it read when the posts simply are not recipes', () => {
+    expect(describeWebsiteImportFailure(site, { outcome: 'not-viable', reason: null, checked: 10, passed: 0 }))
+      .toMatch(/read the 10 most recent posts/i);
+    // One post is one post.
+    expect(describeWebsiteImportFailure(site, { outcome: 'not-viable', reason: null, checked: 1, passed: 0 }))
+      .toMatch(/the 1 most recent post\b/i);
   });
 });

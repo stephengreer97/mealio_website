@@ -148,11 +148,23 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
   }
 
+  // The creator's OAuth grants, because for YouTube, Instagram and TikTok the
+  // grant *is* the thing that gets polled — the channel id comes off it and
+  // never off a link (MEAL-79 / 82 / 83). Read here rather than left out so this
+  // route and the creator's own picker judge a row on the same evidence; without
+  // it an operator would be refused for a creator who has connected properly and
+  // never pasted a link, which the poller reads perfectly well.
+  const { data: accounts } = await supabase
+    .from('creator_platform_accounts')
+    .select('platform')
+    .eq('creator_id', id);
+  const grants = ((accounts ?? []) as Array<{ platform: string }>).map((row) => row.platform);
+
   // Judged on the row this request would leave behind, not the fields it sent —
   // and by the same function the creator's own link editor calls (MEAL-94), so
   // the two paths cannot drift into disagreeing about what a pollable creator is.
   const resulting = { ...creator, ...update };
-  const verdict = checkPollingInvariants(resulting, body.importOptIn === true);
+  const verdict = checkPollingInvariants(resulting, body.importOptIn === true, grants);
   if (!verdict.ok) {
     return NextResponse.json({ error: verdict.error }, { status: 400 });
   }

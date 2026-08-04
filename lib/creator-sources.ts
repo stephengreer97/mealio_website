@@ -273,8 +273,23 @@ export type PollingVerdict =
  * `explicitOptIn` is true only when the request *asked* to turn import on, which
  * separates "leave the switch alone" from "turn it on" — a distinction the row
  * itself cannot carry.
+ *
+ * `grants` is the platforms this creator has an OAuth grant for, and it exists
+ * because the link rule below was written when YouTube could be listed from its
+ * public uploads feed. It cannot be any more: `youtube.com/robots.txt` disallows
+ * that feed and the sanctioned replacement is authenticated (MEAL-79), and
+ * Instagram and TikTok never showed us anything without a grant at all. So for
+ * those three the thing that gets polled is the grant — `channelIdForCreator`
+ * takes the channel id off it and refuses to derive one from a link — and
+ * demanding a link as well refuses exactly the creator who connected properly.
+ * Left empty the old rule stands, which is the right default for a caller that
+ * has not looked.
  */
-export function checkPollingInvariants(row: PollingRow, explicitOptIn = false): PollingVerdict {
+export function checkPollingInvariants(
+  row: PollingRow,
+  explicitOptIn = false,
+  grants: readonly string[] = [],
+): PollingVerdict {
   const primarySource = isPrimarySource(row.primary_source) ? row.primary_source : 'none';
   let importOptIn = row.import_opt_in === true;
 
@@ -293,8 +308,14 @@ export function checkPollingInvariants(row: PollingRow, explicitOptIn = false): 
     if (primarySource === 'none') {
       return { ok: false, error: 'Choose a source of truth before turning import on — nothing is polled without one.' };
     }
-    if (!row[SOURCE_COLUMNS[primarySource]]) {
-      return { ok: false, error: `This creator has no ${SOURCE_LABELS[primarySource]} link, so there is nothing to poll.` };
+    if (!row[SOURCE_COLUMNS[primarySource]] && !grants.includes(primarySource)) {
+      return {
+        ok: false,
+        error: isConnectedPlatform(primarySource)
+          ? `This creator has neither a ${SOURCE_LABELS[primarySource]} link nor a connected ` +
+            `${SOURCE_LABELS[primarySource]} account, so there is nothing to poll.`
+          : `This creator has no ${SOURCE_LABELS[primarySource]} link, so there is nothing to poll.`,
+      };
     }
     // For a website the feed URL *is* the thing polled, and it must be one a
     // human confirmed — that confirmation step is the whole defence against a
@@ -504,24 +525,48 @@ export interface CreatorSourceOption {
   label: string;
   /** Null when a creator may choose it; otherwise why not, in their terms. */
   blockedReason: string | null;
+  /**
+   * A caveat that belongs *after* the choice, not on it.
+   *
+   * Deliberately not the same field as `blockedReason` and deliberately not on
+   * the option text. An option carrying a warning reads as a soft version of
+   * disabled — a creator scanning a dropdown sees two greyed-looking entries and
+   * stops — whereas this is about what to expect from pressing Connect, which is
+   * only worth reading once Connect is what they are looking at.
+   */
+  note: string | null;
 }
 
 export const CREATOR_SOURCE_OPTIONS: readonly CreatorSourceOption[] = [
-  { source: 'website', label: 'Website or blog', blockedReason: null },
-  { source: 'youtube', label: 'YouTube', blockedReason: null },
+  { source: 'website', label: 'Website or blog', blockedReason: null, note: null },
+  { source: 'youtube', label: 'YouTube', blockedReason: null, note: null },
   {
     source: 'instagram',
     label: 'Instagram — not available yet',
     blockedReason:
       'Instagram is waiting on Meta’s app review. Until they approve Mealio, Instagram hands us nothing at ' +
       'all from your account, so there would be nothing to sync.',
+    note: null,
   },
   {
     source: 'tiktok',
-    label: 'TikTok — not available yet',
-    blockedReason:
-      'TikTok is not available yet: Mealio has not been submitted to TikTok for review. Until it has, TikTok ' +
-      'gives apps no access to your videos, so there would be nothing to sync.',
+    label: 'TikTok',
+    blockedReason: null,
+    /**
+     * The app's credentials are TikTok *sandbox* credentials. The integration
+     * itself is finished and the code path is identical to the approved one —
+     * what is provisional is TikTok's approval, and a sandbox app only
+     * authorises accounts registered with it as testers. So a creator who is not
+     * one is refused by TikTok rather than by us, on TikTok's own screen, with
+     * nothing on it that mentions Mealio.
+     *
+     * Said before they press, because it changes what pressing means. The
+     * callback says it again, and better, when it actually happens.
+     */
+    note:
+      'TikTok is in limited release while our app is under review, so it only works for accounts we have ' +
+      'registered with TikTok for testing. If yours is not one yet, TikTok will turn the connection down on ' +
+      'its own screen — tell us and we will add you.',
   },
 ];
 
@@ -639,6 +684,7 @@ export function chooseCreatorSource(
   const verdict = checkPollingInvariants(
     { ...row, primary_source: requested, import_opt_in: true },
     true,
+    grants,
   );
   if (!verdict.ok) {
     return {

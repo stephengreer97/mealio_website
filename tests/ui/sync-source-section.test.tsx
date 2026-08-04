@@ -1,0 +1,545 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import SyncSourceSection, { type SyncSectionCreator } from '@/components/SyncSourceSection';
+import { CREATOR_SELECTION_MAX, CREATOR_SOURCE_OPTIONS } from '@/lib/creator-sources';
+
+/**
+ * "Sync your content with Mealio" (MEAL-101).
+ *
+ * One section in place of four cards, and the properties worth defending are
+ * about what it *says* as much as what it does:
+ *
+ *  - **The promise is on the screen.** "Whatever you post from now on syncs
+ *    automatically and comes back as a draft" is the whole product and it was
+ *    nowhere on the creator's own page. A section that quietly loses that
+ *    sentence in a redesign has lost the point of the ticket.
+ *  - **The baseline is said where the list is.** Existing posts are marked seen,
+ *    not imported, which is exactly why the checklist exists — unsaid, the
+ *    creator connects a source, watches nothing arrive, and concludes it broke.
+ *  - **Instagram is visible, unselectable, and says why.** A dead end reached
+ *    after a decision is the worst order to put those two things in. TikTok was
+ *    in that state until its credentials landed; it is selectable now, and what
+ *    is left of its caveat belongs after the choice rather than on it.
+ *  - **The cap is visible while they tick**, not sprung on them at the button.
+ */
+
+const CREATOR: SyncSectionCreator = {
+  website_url: null,
+  youtube_url: null,
+  instagram_url: null,
+  tiktok_url: null,
+  feed_url: null,
+  primary_source: 'none',
+  import_opt_in: false,
+};
+
+/** A creator whose site has been read and found importable. */
+const SYNCING: SyncSectionCreator = {
+  ...CREATOR,
+  website_url: 'https://chefsarah.test/',
+  feed_url: 'https://chefsarah.test/feed',
+  primary_source: 'website',
+  import_opt_in: true,
+};
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+interface Entry {
+  itemId: string;
+  url: string;
+  title: string;
+  publishedAt: string;
+  record: { status: string; detail: string | null; at: string | null; firstSeenAt: string | null } | null;
+}
+
+function entry(i: number): Entry {
+  return {
+    itemId: `chefsarah.test/post-${i}`,
+    url: `https://chefsarah.test/post-${i}`,
+    title: `Post ${i}`,
+    publishedAt: '2026-01-01T00:00:00.000Z',
+    record: null,
+  };
+}
+
+interface HarnessOptions {
+  creator?: SyncSectionCreator;
+  entries?: Entry[];
+  /** Overrides for individual endpoints, matched on the URL. */
+  routes?: Record<string, () => Response>;
+}
+
+function harness({ creator = CREATOR, entries = [], routes = {} }: HarnessOptions = {}) {
+  const calls: Array<{ url: string; method: string; body: any }> = [];
+  const saved: Array<Record<string, unknown>> = [];
+
+  vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    // Matched on the exact pathname. `includes` looked fine and quietly served
+    // the run response to `/api/creator/sync/catalog`, because that path
+    // contains `/api/creator/sync` — a harness that mis-routes is a test that
+    // passes for the wrong reason.
+    const path = new URL(url, 'http://localhost').pathname;
+    const override = routes[path];
+    if (override) return override();
+
+    if (path === '/api/creator/youtube') {
+      return json({ hasChannel: false, connected: false, channel: null, brokenReason: null, canWriteDescriptions: false, appendOptIn: false });
+    }
+    if (path === '/api/creator/tiktok') {
+      return json({ connected: false, account: null, brokenReason: null, expiresAt: null, configured: true });
+    }
+    if (path === '/api/creator/sync/catalog') {
+      return json({ catalog: { ok: true, source: 'website', feed: null, entries, truncated: false } });
+    }
+    if (path === '/api/creator/me') return json({ ok: true, notices: [] });
+    return json({ ok: true });
+  }) as typeof fetch);
+
+  render(<SyncSourceSection creator={creator} onSaved={changes => { saved.push(changes); }} />);
+  return { calls, saved };
+}
+
+const picker = () => screen.getByLabelText('Where you publish') as HTMLSelectElement;
+
+beforeEach(() => { localStorage.setItem('accessToken', 'test-token'); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+// ── The dropdown ─────────────────────────────────────────────────────────────
+
+describe('the source picker', () => {
+  it('offers exactly the four places, plus an off position', () => {
+    harness();
+    const options = Array.from(picker().options);
+
+    // Not a subset and not a superset. A source missing from here is a creator
+    // who cannot be synced; one that should not be here is a promise we cannot
+    // keep.
+    expect(options.map(o => o.value)).toEqual(['website', 'youtube', 'instagram', 'tiktok', 'none']);
+  });
+
+  it('disables Instagram alone, and leaves the rest selectable', () => {
+    harness();
+    const disabled = Array.from(picker().options).filter(o => o.disabled).map(o => o.value);
+
+    // TikTok was in this list until its credentials landed. The integration was
+    // finished the whole time — what was missing was a client key — so it moves
+    // out the moment that is untrue, rather than staying disabled because the
+    // ticket was written when it was.
+    expect(disabled).toEqual(['instagram']);
+  });
+
+  it('says why the disabled one is disabled', () => {
+    harness();
+
+    // On the option itself, so the reason arrives with the choice rather than
+    // after it — and again underneath, because an `<option>` a creator cannot
+    // select is one many of them will never manage to read.
+    for (const option of CREATOR_SOURCE_OPTIONS.filter(o => o.blockedReason)) {
+      const el = Array.from(picker().options).find(o => o.value === option.source);
+      expect(el?.textContent).toMatch(/not available yet/i);
+      expect(screen.getByTestId(`blocked-${option.source}`).textContent).toContain(option.blockedReason);
+    }
+
+    // And the reason is the real one, not "coming soon".
+    expect(screen.getByTestId('blocked-instagram').textContent).toMatch(/Meta’s app review/i);
+    // TikTok is not in that list at all any more: its caveat is about what to
+    // expect from connecting, which is only worth reading once Connect is what
+    // they are looking at.
+    expect(screen.queryByTestId('blocked-tiktok')).toBeNull();
+  });
+
+  it('sends nothing for a source that cannot be chosen', async () => {
+    const { calls } = harness();
+
+    // jsdom will happily assign a disabled option's value where a browser will
+    // not let a user pick one, so this asserts the half that is ours: no write,
+    // and no body pretending Instagram is a thing they can set up. The server
+    // refuses it too, in `chooseCreatorSource`.
+    fireEvent.change(picker(), { target: { value: 'instagram' } });
+
+    await waitFor(() => expect(calls.some(c => c.method === 'PATCH')).toBe(false));
+    expect(screen.queryByTestId('catalogue')).toBeNull();
+  });
+
+  it('shows the body for whichever source is picked, and only that one', async () => {
+    harness();
+
+    expect(screen.getByLabelText('Your website or blog')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /connect youtube/i })).toBeNull();
+
+    fireEvent.change(picker(), { target: { value: 'youtube' } });
+
+    expect(await screen.findByRole('button', { name: /connect youtube/i })).toBeTruthy();
+    expect(screen.queryByLabelText('Your website or blog')).toBeNull();
+
+    fireEvent.change(picker(), { target: { value: 'tiktok' } });
+
+    expect(await screen.findByRole('button', { name: /connect tiktok/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /connect youtube/i })).toBeNull();
+  });
+});
+
+// ── TikTok, which is real but provisional ────────────────────────────────────
+
+describe('TikTok’s limited release', () => {
+  it('says what to expect before they press Connect, not on the option', async () => {
+    harness();
+    fireEvent.change(picker(), { target: { value: 'tiktok' } });
+
+    // The app's credentials are sandbox credentials: TikTok only authorises
+    // accounts registered with it as testers, and everyone else is refused on
+    // TikTok's own screen with nothing on it that mentions Mealio. A creator
+    // deserves to know that before pressing rather than after.
+    const note = await screen.findByTestId('note-tiktok');
+    expect(note.textContent).toMatch(/limited release/i);
+    expect(note.textContent).toMatch(/registered with TikTok for testing/i);
+    // But the option itself stays a plain choice. A warning on it reads as a
+    // soft version of disabled.
+    expect(Array.from(picker().options).find(o => o.value === 'tiktok')?.textContent).toBe('TikTok');
+  });
+
+  it('explains a refusal from TikTok instead of blaming the creator', async () => {
+    // What the callback now redirects to when TikTok returns an error that is
+    // not `access_denied` — which, while the app is in sandbox, is usually an
+    // account that is not on its allow-list.
+    window.history.replaceState(null, '', '/creator?tiktok=failed&reason=unavailable');
+    harness();
+
+    // It lands on TikTok by itself: a creator who has just been turned down has
+    // to arrive at the panel that can tell them why, and the failure case is the
+    // one where landing anywhere else is worst.
+    await waitFor(() => expect(picker().value).toBe('tiktok'));
+    const message = await screen.findByText(/did not connect that account/i);
+    expect(message.textContent).toMatch(/limited release/i);
+    expect(message.textContent).toMatch(/tell us and we will add yours/i);
+    // And it does not say they cancelled, which is what every TikTok error used
+    // to be reported as.
+    expect(screen.queryByText(/you cancelled/i)).toBeNull();
+
+    window.history.replaceState(null, '', '/creator');
+  });
+
+  it('says so plainly when the deployment has no TikTok credentials', async () => {
+    harness({
+      routes: {
+        '/api/creator/tiktok': () =>
+          json({ connected: false, account: null, brokenReason: null, expiresAt: null, configured: false }),
+      },
+    });
+    fireEvent.change(picker(), { target: { value: 'tiktok' } });
+
+    // `tiktokAuthUrl` returns null with no client key, so the button could only
+    // ever produce a 500. It is replaced rather than left there to fail.
+    expect(await screen.findByTestId('unconfigured-tiktok')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /connect tiktok/i })).toBeNull();
+  });
+});
+
+// ── The promise ──────────────────────────────────────────────────────────────
+
+describe('the promise the whole feature rests on', () => {
+  it('says future posts sync automatically and come back for review', () => {
+    harness();
+
+    const section = screen.getByTestId('sync-source-section');
+    // Both halves. "Syncs automatically" alone is a thing being done *to* them;
+    // "comes back to review" is what makes it acceptable, and neither sentence
+    // is worth much without the other.
+    expect(section.textContent).toMatch(/syncs automatically/i);
+    expect(section.textContent).toMatch(/comes back to you as a draft to review/i);
+    expect(section.textContent).toMatch(/nothing goes live under your name until you say so/i);
+  });
+
+  it('says it before any control, not after a creator has committed', () => {
+    harness();
+
+    const promise = screen.getByText(/syncs automatically/i);
+    // Compared in the DOM rather than by searching the section's text, because
+    // the intro paragraph contains the phrase "where you publish" too and a
+    // string search finds that one first.
+    expect(promise.compareDocumentPosition(picker()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('says the back catalogue is not swept up with it', async () => {
+    harness({ creator: SYNCING, entries: [entry(1)] });
+
+    // The first poll baselines: existing posts are marked seen, not imported.
+    // Said beside the list, because it is the reason the list is there.
+    const catalogue = await screen.findByTestId('catalogue');
+    expect(catalogue.textContent).toMatch(/nothing you posted before now is imported on its own/i);
+  });
+
+  it('says plainly when it is actually watching, rather than when it might be', async () => {
+    harness({ creator: SYNCING });
+
+    expect((await screen.findByTestId('sync-live')).textContent).toMatch(/Mealio is watching your Website now/i);
+  });
+
+  it('claims nothing for a creator who has set nothing up', () => {
+    harness();
+    expect(screen.queryByTestId('sync-live')).toBeNull();
+  });
+});
+
+// ── Choosing, and being refused ──────────────────────────────────────────────
+
+describe('choosing a source', () => {
+  it('takes effect when a ready source is picked', async () => {
+    // Their site is checked, but they are currently syncing from nothing.
+    const { calls, saved } = harness({
+      creator: { ...SYNCING, primary_source: 'none', import_opt_in: false },
+    });
+
+    fireEvent.change(picker(), { target: { value: 'none' } });
+    fireEvent.change(picker(), { target: { value: 'website' } });
+
+    await waitFor(() => {
+      const patch = calls.find(c => c.method === 'PATCH' && c.body?.primarySource === 'website');
+      expect(patch?.url).toBe('/api/creator/me');
+    });
+    // And the portal around it is told, so the rest of the page is not showing
+    // a row the server has moved on from.
+    await waitFor(() => expect(saved.at(-1)).toMatchObject({ primary_source: 'website', import_opt_in: true }));
+  });
+
+  it('lets a creator stop being read at all', async () => {
+    const { calls } = harness({ creator: SYNCING });
+
+    fireEvent.change(picker(), { target: { value: 'none' } });
+
+    // Consent that can only be given is not consent. The off position is not in
+    // the ticket's list of options and it is not optional.
+    await waitFor(() =>
+      expect(calls.some(c => c.method === 'PATCH' && c.body?.primarySource === 'none')).toBe(true));
+    expect(screen.getByTestId('sync-off').textContent).toMatch(/not reading anything you publish/i);
+  });
+
+  it('writes nothing merely because the portal was opened', async () => {
+    // A row an operator set to Instagram, which this dropdown cannot show, so it
+    // opens on "Nothing". Turning that into a write would silently reverse the
+    // operator's decision for anybody who visited their own settings.
+    const { calls } = harness({
+      creator: { ...CREATOR, primary_source: 'instagram', import_opt_in: true },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('sync-off')).toBeTruthy());
+    expect(calls.some(c => c.method === 'PATCH')).toBe(false);
+  });
+
+  it('shows the server’s refusal rather than pretending it worked', async () => {
+    const { calls } = harness({
+      creator: { ...SYNCING, primary_source: 'none', import_opt_in: false },
+      routes: {
+        '/api/creator/me': () => json({ error: 'Connect your YouTube account first.' }, 400),
+      },
+    });
+
+    fireEvent.change(picker(), { target: { value: 'youtube' } });
+    // The connect card reports a live connection, so the section tries to set
+    // the source and the server is the one that says no.
+    await waitFor(() => expect(calls.some(c => c.method === 'PATCH')).toBe(false));
+    expect(screen.queryByTestId('sync-live')).toBeNull();
+  });
+});
+
+// ── The website box ──────────────────────────────────────────────────────────
+
+describe('saving a website', () => {
+  const site = () => screen.getByLabelText('Your website or blog');
+  const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  it('sends the address to the check and shows what came back', async () => {
+    const { calls, saved } = harness({
+      routes: {
+        '/api/creator/website': () =>
+          json({
+            ok: true,
+            websiteUrl: 'https://chefsarah.test/',
+            feedUrl: 'https://chefsarah.test/feed',
+            outcome: 'viable',
+            checked: 10,
+            passed: 8,
+            detail: '8 of the 10 recent posts we read are recipes Mealio can import. From now on new posts sync automatically.',
+          }),
+      },
+    });
+
+    fireEvent.change(site(), { target: { value: 'chefsarah.test' } });
+    save();
+
+    await waitFor(() => expect(calls.some(c => c.url.includes('/api/creator/website'))).toBe(true));
+    expect(await screen.findByTestId('website-detail')).toBeTruthy();
+    // Normalised server-side, so what is shown from here on is what is stored.
+    await waitFor(() => expect((site() as HTMLInputElement).value).toBe('https://chefsarah.test/'));
+    expect(saved.at(-1)).toMatchObject({ primary_source: 'website', import_opt_in: true });
+  });
+
+  it('shows a failed check as a reason, not a status code', async () => {
+    harness({
+      routes: {
+        '/api/creator/website': () =>
+          json({
+            ok: false,
+            outcome: 'unavailable',
+            error: 'We could not find a feed on https://chefsarah.test/. Mealio follows your posts through an RSS or Atom feed.',
+          }),
+      },
+    });
+
+    fireEvent.change(site(), { target: { value: 'chefsarah.test' } });
+    save();
+
+    const failure = await screen.findByTestId('website-error');
+    expect(failure.textContent).toMatch(/could not find a feed/i);
+    // And nothing claims a save happened.
+    expect(screen.queryByTestId('website-detail')).toBeNull();
+    expect(screen.queryByTestId('catalogue')).toBeNull();
+  });
+
+  it('catches a typo before spending a few seconds on a round trip', async () => {
+    const { calls } = harness();
+
+    fireEvent.change(site(), { target: { value: 'https://instagram.com/chefsarah' } });
+    save();
+
+    expect((await screen.findByTestId('website-error')).textContent).toMatch(/Instagram/i);
+    expect(calls.some(c => c.url.includes('/api/creator/website'))).toBe(false);
+  });
+});
+
+// ── The checklist and its cap ────────────────────────────────────────────────
+
+describe('the back-catalogue checklist', () => {
+  const tickAll = () => fireEvent.click(screen.getByRole('button', { name: /Tick the \d+ newest/ }));
+
+  it('appears once a source is connected, without being asked for', async () => {
+    harness({ creator: SYNCING, entries: [entry(1), entry(2)] });
+
+    // Drawing it costs a feed read and one query — no page fetched, no model
+    // called — so making a creator press a button to find out what Mealio can
+    // see would be ceremony over a free answer.
+    const catalogue = await screen.findByTestId('catalogue');
+    expect(within(catalogue).getByLabelText('Post 1')).toBeTruthy();
+    expect(within(catalogue).getByLabelText('Post 2')).toBeTruthy();
+  });
+
+  it('is not offered at all until there is something to list', () => {
+    harness();
+    expect(screen.queryByTestId('catalogue')).toBeNull();
+  });
+
+  it('counts what is chosen against the cap while they tick', async () => {
+    harness({ creator: SYNCING, entries: [entry(1), entry(2)] });
+    await screen.findByTestId('catalogue');
+
+    expect(screen.getByTestId('selection-count').textContent).toBe(`0 of ${CREATOR_SELECTION_MAX} chosen`);
+
+    fireEvent.click(screen.getByLabelText('Post 1'));
+
+    // A limit discovered at the moment it refuses you is a limit that reads as
+    // a bug, so it is on screen from the first tick.
+    expect(screen.getByTestId('selection-count').textContent).toBe(`1 of ${CREATOR_SELECTION_MAX} chosen`);
+  });
+
+  it('stops at the cap rather than letting them tick past it', async () => {
+    const many = Array.from({ length: CREATOR_SELECTION_MAX + 20 }, (_, i) => entry(i));
+    harness({ creator: SYNCING, entries: many });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+
+    // Select-all takes the cap, not the catalogue.
+    expect(screen.getByTestId('selection-count').textContent).toBe(`${CREATOR_SELECTION_MAX} of ${CREATOR_SELECTION_MAX} chosen`);
+    expect(screen.getByTestId('cap-reached')).toBeTruthy();
+
+    // And one more by hand does nothing but stay unticked — a creator who ticked
+    // 140 and is then told to untick 40 has been made to do the counting the
+    // screen was already doing.
+    const overflow = screen.getByLabelText(`Post ${CREATOR_SELECTION_MAX + 5}`) as HTMLInputElement;
+    expect(overflow.disabled).toBe(true);
+    fireEvent.click(overflow);
+    expect(screen.getByTestId('selection-count').textContent).toBe(`${CREATOR_SELECTION_MAX} of ${CREATOR_SELECTION_MAX} chosen`);
+  });
+
+  it('sends at most the cap when the run starts', async () => {
+    const many = Array.from({ length: CREATOR_SELECTION_MAX + 20 }, (_, i) => entry(i));
+    const { calls } = harness({
+      creator: SYNCING,
+      entries: many,
+      routes: {
+        '/api/creator/sync/worker': () =>
+          json({ run: { id: 'r1', status: 'done', items: [] }, totals: { selected: CREATOR_SELECTION_MAX, pending: 0, drafted: CREATOR_SELECTION_MAX, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 } }),
+        '/api/creator/sync': () => json({ run: { id: 'r1', status: 'queued', items: [] } }, 201),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`Import ${CREATOR_SELECTION_MAX} posts`) }));
+
+    await waitFor(() => {
+      const start = calls.find(c => c.url.endsWith('/api/creator/sync') && c.method === 'POST');
+      expect(start?.body.items).toHaveLength(CREATOR_SELECTION_MAX);
+    });
+  });
+
+  it('marks what is already in, and leaves it out of select-all', async () => {
+    const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
+    harness({ creator: SYNCING, entries: [already, entry(2)] });
+    await screen.findByTestId('catalogue');
+
+    expect(screen.getByText('Already in')).toBeTruthy();
+
+    tickAll();
+
+    // Ticking a catalogue half of which is already in is the expensive mistake
+    // this list keeps more than one click away.
+    expect(screen.getByTestId('selection-count').textContent).toBe(`1 of ${CREATOR_SELECTION_MAX} chosen`);
+  });
+
+  it('adds up what the run did, including where the rest went', async () => {
+    harness({
+      creator: SYNCING,
+      entries: [entry(1), entry(2), entry(3)],
+      routes: {
+        '/api/creator/sync/worker': () =>
+          json({
+            run: { id: 'r1', status: 'done', items: [] },
+            totals: { selected: 3, pending: 0, drafted: 2, rejected: 1, failed: 0, skipped: 0, costUsd: 0.03, needALook: 0 },
+          }),
+        '/api/creator/sync': () => json({ run: { id: 'r1', status: 'queued', items: [] } }, 201),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 3 posts/ }));
+
+    // "Chose 3, got 2" with nothing about the third makes a correct run look
+    // broken.
+    const summary = await screen.findByTestId('run-summary');
+    await waitFor(() => expect(summary.textContent).toMatch(/Chose 3/));
+    expect(summary.textContent).toMatch(/2 waiting in your review queue/);
+    expect(summary.textContent).toMatch(/1 did not look like a recipe/);
+  });
+
+  it('says why a catalogue could not be listed, instead of an empty list', async () => {
+    harness({
+      creator: SYNCING,
+      routes: {
+        '/api/creator/sync/catalog': () =>
+          json({ catalog: { ok: false, reason: 'no-feed', detail: 'We could not find a feed on your site.' } }, 422),
+      },
+    });
+
+    expect(await screen.findByText(/could not find a feed on your site/i)).toBeTruthy();
+  });
+});

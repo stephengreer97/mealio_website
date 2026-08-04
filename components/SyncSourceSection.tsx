@@ -2,12 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 import YouTubeConnectCard from './YouTubeConnectCard';
+import PlatformConnectCard from './PlatformConnectCard';
 import {
+  CONNECTED_PLATFORMS,
   CREATOR_SELECTION_MAX,
   CREATOR_SOURCE_OPTIONS,
+  creatorSourceBlockedReason,
   isCreatorSourceReady,
   normalizePlatformUrl,
   SOURCE_LABELS,
+  type ConnectedPlatform,
   type PrimarySource,
 } from '@/lib/creator-sources';
 // Type-only: `lib/admin-sync` reaches the import pipeline and undici, and must
@@ -86,22 +90,45 @@ function formatDate(value: string | null): string {
 }
 
 /**
- * The stored choice, when it is one a creator can still be shown.
+ * The source to open on.
  *
- * A row left on Instagram or TikTok by an operator opens on `none` rather than
- * on a disabled option: the dropdown would otherwise be showing a value it
- * cannot select, and every change away from it would look like a change *to*
- * something the creator never chose.
+ * Three cases and they genuinely differ:
+ *
+ *   - A source this dropdown can show is shown. Obviously.
+ *   - A row an operator left on **Instagram or TikTok** opens on `none`. The
+ *     dropdown cannot display a value it will not let you select, and showing
+ *     `website` instead would be a straightforward lie about what is being
+ *     polled.
+ *   - **Nothing chosen yet** opens on `website`, not on the off switch. This is
+ *     the state every newly approved creator is in, and landing them on
+ *     "Nothing — don't sync anything" with a paragraph about not reading them
+ *     makes the off position the default answer to a question the section exists
+ *     to ask. Website is where an unaided creator can get themselves working.
+ *
+ * Nothing is claimed by opening there: the "Mealio is watching your Website"
+ * line renders off the row, not off the dropdown, and no write happens until the
+ * creator touches something.
  */
 function storedSource(creator: SyncSectionCreator): PrimarySource {
   const stored = creator.primary_source;
-  return stored === 'website' || stored === 'youtube' ? stored : 'none';
+  if (stored === 'website' || stored === 'youtube') return stored;
+  if (stored === 'instagram' || stored === 'tiktok') return 'none';
+  return 'website';
 }
 
-/** Did this page load come back from Google's consent screen? */
-function returnedFromYouTube(): boolean {
-  if (typeof window === 'undefined') return false;
-  return Boolean(new URLSearchParams(window.location.search).get('youtube'));
+/**
+ * Which platform's consent screen this page load came back from, if any.
+ *
+ * Every connect callback returns to `/creator?<platform>=connected|failed|…`, so
+ * the parameter names the platform. Checked for all of them rather than YouTube
+ * alone: a creator who has just been through TikTok's screen — including one
+ * TikTok turned down — has to land on the panel that can tell them what
+ * happened, and the failure case is the one where landing elsewhere is worst.
+ */
+function returnedFromConnect(): ConnectedPlatform | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  return CONNECTED_PLATFORMS.find(platform => params.get(platform)) ?? null;
 }
 
 export default function SyncSourceSection({ creator, onSaved }: Props) {
@@ -130,8 +157,17 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const [websiteError, setWebsiteError] = useState('');
   const [websiteDetail, setWebsiteDetail] = useState('');
 
-  /** Null until the connect card has told us. Not inferred from `youtube_url`. */
-  const [youtubeConnected, setYoutubeConnected] = useState<boolean | null>(null);
+  /**
+   * Per-platform, and null until that platform's connect card has told us.
+   *
+   * Never inferred from the link columns. The grant lives in a different table
+   * and a section that guessed one from the other would offer a catalogue for an
+   * account nobody had connected — and, worse, would offer it for the *wrong*
+   * account after a creator changed a link.
+   */
+  const [connected, setConnected] = useState<Partial<Record<ConnectedPlatform, boolean>>>({});
+  const noteConnection = (platform: ConnectedPlatform) => (is: boolean) =>
+    setConnected(current => (current[platform] === is ? current : { ...current, [platform]: is }));
 
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -165,9 +201,12 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    * first client render agree.
    */
   useEffect(() => {
-    if (!returnedFromYouTube()) return;
+    const returned = returnedFromConnect();
+    // Instagram is not selectable, so a stray `?instagram=` must not strand the
+    // dropdown on a value it will not show.
+    if (!returned || creatorSourceBlockedReason(returned)) return;
     chose.current = true;
-    setSource('youtube');
+    setSource(returned);
   }, []);
 
   const authed = async (path: string, body: unknown, method = 'POST') => {
@@ -183,9 +222,9 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const ready =
     source === 'website'
       ? isCreatorSourceReady({ ...row }, 'website')
-      : source === 'youtube'
-        ? youtubeConnected === true
-        : false;
+      : source === 'none'
+        ? false
+        : connected[source] === true;
 
   const syncingFromThis = row.import_opt_in === true && row.primary_source === source;
 
@@ -510,8 +549,20 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
               </p>
             )}
           </>
+        ) : source === 'youtube' ? (
+          <YouTubeConnectCard embedded onConnectionChange={noteConnection('youtube')} />
         ) : (
-          <YouTubeConnectCard embedded onConnectionChange={setYoutubeConnected} />
+          // Instagram is in the dropdown but disabled, so `source` can only be
+          // 'tiktok' here. Keyed on the platform so switching between two
+          // connect cards remounts rather than reusing one card's status for
+          // the other's account.
+          <PlatformConnectCard
+            key={source}
+            platform={source}
+            embedded
+            note={CREATOR_SOURCE_OPTIONS.find(option => option.source === source)?.note ?? null}
+            onConnectionChange={noteConnection(source)}
+          />
         )}
       </div>
 

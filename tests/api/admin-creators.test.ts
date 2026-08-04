@@ -132,7 +132,7 @@ describe('/api/admin/creators', () => {
       fakeDb.queue('creators', { data: { ...READY, primary_source: 'youtube' } });
       const res = await PATCH(jsonRequest('/api/admin/creators', { method: 'PATCH', token, body: { id: 'c1', importOptIn: true } }));
       expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/no YouTube link/i);
+      expect((await res.json()).error).toMatch(/neither a YouTube link nor a connected YouTube account/i);
     });
 
     it('refuses opt-in for a website whose feed has not been confirmed', async () => {
@@ -172,7 +172,7 @@ describe('/api/admin/creators', () => {
           method: 'PATCH', token, body: { id: 'c1', primarySource: 'youtube' },
         }));
         expect(res.status).toBe(400);
-        expect((await res.json()).error).toMatch(/no YouTube link/i);
+        expect((await res.json()).error).toMatch(/neither a YouTube link nor a connected YouTube account/i);
         expect(fakeDb.calls.some((c) => c.method === 'update')).toBe(false);
       });
 

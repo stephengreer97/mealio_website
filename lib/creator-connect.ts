@@ -70,7 +70,13 @@ export type ConnectFailure =
   | 'exchange'       // the code would not exchange for a token
   | 'scope'          // the grant came back without permission to read anything
   | 'account'        // the account itself is unusable (a personal IG account, no open id)
-  | 'store';         // the grant was fine and we could not write it down
+  | 'store'          // the grant was fine and we could not write it down
+  // The provider turned the account down rather than the creator declining
+  // (MEAL-101). Distinct from `cancelled`, which is an outcome rather than a
+  // failure: reading every redirect `error` as "you cancelled" blames a creator
+  // for something they did not do. TikTok's app is in sandbox, so this is
+  // usually an account not on its tester allow-list.
+  | 'unavailable';
 
 /** Where the creator lands afterwards, with something the portal can render. */
 export function backToPortal(platform: ConnectedPlatform, outcome: string, reason?: ConnectFailure): NextResponse {
@@ -219,6 +225,18 @@ export async function readPlatformConnectState(
 export async function platformConnectionStatus(
   request: NextRequest,
   platform: ConnectedPlatform,
+  /**
+   * Whether this deployment can start a connection for this platform at all.
+   *
+   * Reported here so the card can say so *before* the creator presses Connect.
+   * The connect route already refuses with a clear 500 when the credentials are
+   * missing, but a refusal that only arrives after a press is a button that
+   * looks broken — and on a platform whose availability is genuinely provisional
+   * that is the worst possible ambiguity to leave lying around.
+   *
+   * Defaults true: the two platforms that do not pass it have no such state.
+   */
+  configured = true,
 ): Promise<NextResponse> {
   const user = await requireAuth(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -236,6 +254,7 @@ export async function platformConnectionStatus(
     /** Non-null means the creator has to reconnect before anything can be read. */
     brokenReason: summary?.brokenReason ?? null,
     expiresAt: summary?.expiresAt ?? null,
+    configured,
   });
 }
 

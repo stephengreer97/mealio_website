@@ -363,6 +363,62 @@ describe('GET /api/creator/tiktok/callback', () => {
     expect(res.headers.get('location')).toContain('tiktok=failed');
     expect(fakeDb.calls.some((call) => call.method === 'upsert')).toBe(false);
   });
+
+  /**
+   * TikTok refusing an account is not the creator declining (MEAL-101).
+   *
+   * Every `error` on the redirect used to be reported as "you cancelled on
+   * TikTok's screen". With the app in sandbox that is now usually wrong, and
+   * wrong in the worst direction: TikTok only authorises accounts registered
+   * with it as testers, so the common case is a creator who pressed Connect,
+   * was turned down by TikTok, and is then told by us that they changed their
+   * mind. It blames them for something they did not do and offers no next step.
+   */
+  describe('when TikTok turns the account down', () => {
+    it('still reads access_denied as the creator cancelling', async () => {
+      const res = await TT_CALLBACK(
+        callbackRequest('tiktok', { error: 'access_denied', state: 'nonce-1' }, await stateCookie('tiktok')),
+      );
+
+      // TikTok's documented code for pressing Cancel. That one really is a
+      // cancellation and must keep saying so.
+      expect(res.headers.get('location')).toContain('tiktok=cancelled');
+      expect(exchangeTikTokCode).not.toHaveBeenCalled();
+    });
+
+    it('reports any other refusal as the app being unavailable to them', async () => {
+      const res = await TT_CALLBACK(
+        callbackRequest(
+          'tiktok',
+          { error: 'unauthorized_client', error_description: 'app not available for this user', state: 'nonce-1' },
+          await stateCookie('tiktok'),
+        ),
+      );
+
+      const location = res.headers.get('location')!;
+      expect(location).toContain('tiktok=failed');
+      expect(location).toContain('reason=unavailable');
+      expect(location).not.toContain('cancelled');
+      expect(fakeDb.calls.some((call) => call.method === 'upsert')).toBe(false);
+    });
+
+    it('keeps TikTok’s own words in the log and off the screen', async () => {
+      await TT_CALLBACK(
+        callbackRequest(
+          'tiktok',
+          { error: 'unauthorized_client', error_description: 'app not available for this user', state: 'nonce-1' },
+          await stateCookie('tiktok'),
+        ),
+      );
+
+      // The log is how the exact sandbox error code gets learned rather than
+      // guessed at. The redirect carries a code we chose — see `ConnectFailure`:
+      // prose in the query string lets anyone who can get a creator to open a
+      // link choose the sentence rendered in our error styling on our domain.
+      expect(JSON.stringify(log.mock.calls)).toContain('unauthorized_client');
+      expect(JSON.stringify(log.mock.calls)).toContain('app not available for this user');
+    });
+  });
 });
 
 // ── Status and disconnect ────────────────────────────────────────────────────
@@ -424,6 +480,24 @@ describe('/api/creator/{instagram,tiktok} — status and disconnect', () => {
     const body = await (await IG_STATUS(jsonRequest('/api/creator/instagram', { method: 'GET', token }))).json();
 
     expect(body).toMatchObject({ connected: false, account: null, brokenReason: null });
+  });
+
+  it('says whether this deployment can start a TikTok connection at all', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    const configured = await (await TT_STATUS(jsonRequest('/api/creator/tiktok', { method: 'GET', token }))).json();
+    expect(configured.configured).toBe(true);
+
+    // `tiktokAuthUrl` returns null without a client key, so the connect route
+    // could only ever answer 500 — and a refusal that arrives after the press is
+    // indistinguishable from a broken button. The card replaces it instead.
+    delete process.env.TIKTOK_CLIENT_KEY;
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    const missing = await (await TT_STATUS(jsonRequest('/api/creator/tiktok', { method: 'GET', token }))).json();
+    expect(missing.configured).toBe(false);
   });
 
   it.each([

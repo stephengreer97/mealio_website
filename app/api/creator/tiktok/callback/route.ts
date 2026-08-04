@@ -25,11 +25,30 @@ export async function GET(request: NextRequest) {
   if (!verified.ok) return verified.response;
   const { userId, creatorId } = verified.state;
 
-  // A creator who changed their mind on TikTok's screen. Not an error, and
-  // nothing is stored.
-  if (searchParams.get('error')) {
-    log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, detail: 'platform=tiktok', reason: 'cancelled' });
-    return backToPortal('tiktok', 'cancelled');
+  const error = searchParams.get('error');
+  if (error) {
+    // What TikTok actually said, kept in the log and never put on screen —
+    // `ConnectFailure` exists because a callback that hands prose to the client
+    // lets anyone who can get a creator to open a link choose the sentence
+    // rendered in our error styling on our own domain.
+    //
+    // It is worth keeping *because* of the split below. `access_denied` is
+    // TikTok's documented code for the creator pressing Cancel; anything else is
+    // TikTok refusing rather than the creator declining, and while the app is in
+    // sandbox the overwhelmingly likely reason is an account that is not on its
+    // tester allow-list. Reporting that as "you cancelled on TikTok's screen"
+    // is the dead end this branch exists to avoid: it blames the creator for
+    // something they did not do and tells them nothing to do next. This log line
+    // is how the exact sandbox code gets learned rather than guessed.
+    log({
+      event: 'CREATOR:SOURCE_CONNECT',
+      status: 'failed',
+      userId,
+      detail: `platform=tiktok error=${JSON.stringify(error)} description=${JSON.stringify(searchParams.get('error_description') ?? '')}`,
+      reason: error === 'access_denied' ? 'cancelled' : 'refused',
+    });
+    if (error === 'access_denied') return backToPortal('tiktok', 'cancelled');
+    return backToPortal('tiktok', 'failed', 'unavailable');
   }
 
   const code = searchParams.get('code');

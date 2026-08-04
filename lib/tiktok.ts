@@ -66,6 +66,23 @@ export function tiktokRedirectUri(): string {
   return `${process.env.NEXT_PUBLIC_APP_URL || 'https://mealio.co'}/api/creator/tiktok/callback`;
 }
 
+/**
+ * Can this deployment start a TikTok connection at all?
+ *
+ * Both halves, because they fail at different moments and only one of them is
+ * visible before a creator presses anything: without the key `tiktokAuthUrl`
+ * returns null and the connect route refuses, and without the secret the round
+ * trip gets all the way to TikTok's consent screen and dies at the exchange —
+ * which reads to the creator as TikTok rejecting them.
+ *
+ * Read at call time rather than at module load: `process.env` is populated per
+ * invocation on Vercel, and a constant captured at import would be false forever
+ * on any instance that started before the variable was set.
+ */
+export function tiktokConfigured(): boolean {
+  return Boolean(process.env.TIKTOK_CLIENT_KEY && process.env.TIKTOK_CLIENT_SECRET);
+}
+
 /** The consent URL, or null when this deployment has no TikTok app configured. */
 export function tiktokAuthUrl(state: string): string | null {
   const clientKey = process.env.TIKTOK_CLIENT_KEY;
