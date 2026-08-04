@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ImportFieldNotice from '@/components/ImportFieldNotice';
 import DraftEditor, { FlagBadge, hostOf, input, label, primaryButton, secondaryButton } from '@/components/DraftEditor';
 import { MealDetailBody, type MealNotices, type PresetMeal } from '@/components/MealCard';
-import { noticesFor, summaryLine } from '@/lib/import/draft-form';
+import { FIELD_LABELS, noticesFor, publishBlockers, summaryLine } from '@/lib/import/draft-form';
 import type { CreatorMealDraft } from '@/lib/import/types';
 // Type-only: `lib/import-drafts` reaches Supabase, Resend and the photo copier,
 // and must never be bundled into the client. Erased at compile time.
@@ -268,8 +268,17 @@ export default function AdminReviewQueue() {
       setNotice('Sent. It is on their Creator tab now, as a count they will see next time they open the app — and you can take it back below until they decide it.');
     }
     if (action === 'delete' && landed) setNotice('Declined. It will not be imported again by a later sync or poll.');
-    setOpenId(null);
-    setEditingId(null);
+    // Only a decision that happened closes what the operator was reading. A
+    // refusal used to collapse the row anyway, so "Publishing failed: that is 8
+    // tags" appeared above a list with nothing open and the draft it was about
+    // had to be found again — while the row is still `pending_review` and still
+    // theirs to fix. Nothing here resolves a row (this queue reloads rather than
+    // marking), so the creator queue's lock-out is not reachable from this
+    // screen; losing your place on a failure was.
+    if (!refused) {
+      setOpenId(null);
+      setEditingId(null);
+    }
     await load();
   };
 
@@ -568,6 +577,7 @@ function DraftRow({
   onAct: (action: Action) => void;
 }) {
   const notices = noticesFor(row.review.states) as MealNotices;
+  const blockers = publishBlockers(row.draft);
 
   return (
     <div style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0' }} data-testid="draft-row">
@@ -621,6 +631,43 @@ function DraftRow({
                 </div>
                 <MealDetailBody meal={asPresetMeal(row)} notices={notices} />
               </div>
+
+              {/*
+                What would stop this publishing, before the operator presses the
+                button that would find out. The same `publishBlockers` the
+                creator's queue draws, reading the same helpers
+                `publishCreatorMeal` enforces — an eight-tag draft written before
+                the cap shipped fails, `approveDraft` rolls it back, and without
+                this the only way to learn that is to lose a publish.
+
+                Said, not enforced: this queue approves a *selection*, and a
+                button that decides five drafts cannot be disabled by one of
+                them. `Edit` is beside it and fixes it.
+              */}
+              {blockers.length > 0 && (
+                <div
+                  style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '10px 12px', marginTop: '10px' }}
+                  data-testid="publish-blockers"
+                >
+                  <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#c40029' }}>
+                    This will not publish as it stands
+                  </p>
+                  <ul style={{ margin: '6px 0 0', padding: 0, listStyle: 'none' }}>
+                    {blockers.map(blocker => (
+                      <li
+                        key={blocker.field}
+                        style={{ fontSize: '12px', color: '#c40029', lineHeight: 1.6 }}
+                        data-testid="publish-blocker"
+                        data-field={blocker.field}
+                      >
+                        <span style={{ fontWeight: 700 }}>{FIELD_LABELS[blocker.field]}</span>
+                        {' — '}
+                        {blocker.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#6b7280' }} data-testid="draft-summary">
                 {summaryLine(row.summary)}{' '}

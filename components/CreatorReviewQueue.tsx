@@ -941,12 +941,10 @@ function DraftPanes({
           hairline, on the page background rather than on card white, so it
           reads as a note pinned beside the recipe instead of part of it.
         */}
-        <aside
-          style={{ flex: '2 1 260px', minWidth: 0, background: '#fafaf9', border: '1px solid #e8e6e2', borderRadius: '12px', padding: '14px 16px' }}
-          data-testid="draft-comments"
-        >
+        <aside style={{ flex: '2 1 260px', minWidth: 0 }} data-testid="draft-comments">
           <p style={paneHeading}>What we read</p>
-          <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#6b7280', lineHeight: 1.6 }} data-testid="comments-summary">
+          <div style={{ background: '#f4f3f1', border: '1px solid #e8e6e2', borderRadius: '12px', padding: '14px 16px' }}>
+          <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#52525B', lineHeight: 1.6 }} data-testid="comments-summary">
             {row.summary.needALook === 0
               ? 'Every field we filled matched the page we read. Nothing here needs checking — it is still yours to read before it goes out.'
               : `${summaryLine(row.summary)} Each one below says which field it is about.`}
@@ -977,10 +975,18 @@ function DraftPanes({
                       aria-controls={anchorId(comment.field)}
                       aria-pressed={focused === comment.field}
                       data-testid="comment-jump"
+                      // Ink Muted until it is the one pointing, which is the
+                      // whole reason it is not brand red by default: a comment
+                      // per flagged row means ten of these, and ten red links
+                      // beside a recipe is our working shouting over it again in
+                      // a different column. The red is for the pair that is
+                      // live — this button and the ring on the field it named.
                       style={{
                         background: 'none', border: 'none', padding: '2px 0 0', font: 'inherit',
-                        fontSize: '11px', color: '#dd0031', cursor: 'pointer', textDecoration: 'underline',
+                        fontSize: '11px', cursor: 'pointer', textDecoration: 'underline',
                         textDecorationStyle: 'dotted',
+                        color: focused === comment.field ? '#dd0031' : '#52525B',
+                        fontWeight: focused === comment.field ? 600 : 400,
                       }}
                     >
                       {focused === comment.field ? 'Stop showing me' : 'Show me on the card'}
@@ -997,6 +1003,7 @@ function DraftPanes({
               ))}
             </ul>
           )}
+          </div>
         </aside>
       </div>
 

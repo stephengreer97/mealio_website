@@ -193,6 +193,29 @@ describe('AdminReviewQueue — the meal card', () => {
     expect(screen.getByTestId('draft-summary').textContent).toMatch(/fields verified/);
   });
 
+  it('says what would stop a draft publishing, before Approve is pressed', async () => {
+    // The row that made this necessary: eight tags, written before the cap
+    // shipped. `publishCreatorMeal` refuses it, `approveDraft` rolls it back,
+    // and the only way to find out used to be losing a publish. The sentence is
+    // `tagCapError`'s own — see `tests/lib/publish-blockers.test.ts`, which
+    // asserts the preview and the refusal cannot drift apart.
+    harness([draft({ draft: { ...guacamole.draft, tags: ['Mexican', 'No Cook', 'Appetizer', 'Snack', 'Vegan', 'Healthy', 'Dinner', 'Lunch'] } })]);
+    await openFirstRow();
+
+    const blocker = screen.getByTestId('publish-blocker');
+    expect(blocker.getAttribute('data-field')).toBe('tags');
+    expect(blocker.textContent).toContain('A meal takes at most 3.');
+    // Said, not enforced: this queue approves a selection, and a button that
+    // decides five drafts cannot be turned off by one of them.
+    expect((screen.getByRole('button', { name: /Approve & publish/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('says nothing about a draft that would publish', async () => {
+    harness();
+    await openFirstRow();
+    expect(screen.queryByTestId('publish-blockers')).toBeNull();
+  });
+
   it('offers all four decisions, and a way back to the page we read', async () => {
     harness();
     await openFirstRow();
@@ -217,6 +240,37 @@ describe('AdminReviewQueue — deciding', () => {
     expect(bodies.find((b) => b.method === 'POST')!.body)
       .toMatchObject({ action: 'approve', ids: ['d1'], notifyCreator: true });
     expect(await screen.findByText(/Published Best Guacamole/)).toBeTruthy();
+  });
+
+  it('keeps the draft open when the decision was refused', async () => {
+    // A refusal used to collapse the row anyway, so "Publishing failed: that is
+    // 8 tags" appeared above a list with nothing open and the draft it was about
+    // had to be found again — while the row is still `pending_review` and still
+    // the operator's to fix. Nothing here marks a row decided, so the creator
+    // queue's lock-out was never reachable from this screen; losing your place
+    // on a failure was.
+    harness([draft()], {
+      post: { done: 0, published: [], emailsSent: 0, errors: ['Publishing failed: That is 8 tags. A meal takes at most 3.'] },
+    });
+    await openFirstRow();
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+
+    await waitFor(() => expect(screen.getByText(/That is 8 tags/)).toBeTruthy());
+    // Still open, and Edit — the thing that fixes it — is still one click away.
+    expect(screen.getByTestId('draft-card')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy();
+  });
+
+  it('closes the draft when the decision landed', async () => {
+    // The other half of the same rule: a decision that happened is done with,
+    // and leaving the card open pushes the rest of the queue off the screen.
+    harness();
+    await openFirstRow();
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+
+    await waitFor(() => expect(screen.queryByTestId('draft-card')).toBeNull());
   });
 
   it('the notify checkbox defaults to on and its choice reaches the request', async () => {
