@@ -301,7 +301,11 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
             disabled={busy}
             className="w-full sm:w-auto bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl px-5 py-2.5 transition-colors"
           >
-            {busy ? 'Opening Google…' : 'Connect YouTube — read my videos' + (consent ? ' and edit their descriptions' : '')}
+            {/* Plain when it is only asking to read. The write scope stays
+                named, because a creator who has just ticked that box is about to
+                grant description-editing on their own channel, and a button that
+                said only "Connect YouTube" would be where that disappeared. */}
+            {busy ? 'Opening Google…' : consent ? 'Connect YouTube — and edit descriptions' : 'Connect YouTube'}
           </button>
           <p className="text-[11px] text-gray-400 mt-2">
             Google will ask for permission to manage your YouTube account. We use it to read your videos, and — only

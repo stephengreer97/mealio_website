@@ -195,6 +195,16 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const [left, setLeft] = useState<PlatformSource | null>(null);
 
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
+  /**
+   * Which source the loaded catalogue belongs to.
+   *
+   * Clearing it on every path that changes the source was one path short:
+   * returning from a consent screen sets the source directly, so a creator who
+   * connected TikTok landed on a checklist of their *website's* posts — and the
+   * loader would not replace it, because a catalogue was already loaded. Tying
+   * the list to the source it describes closes that route and the next one.
+   */
+  const [catalogFor, setCatalogFor] = useState<PrimarySource | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   /** A further window on its way in, which is a different thing from the first. */
   const [loadingMore, setLoadingMore] = useState(false);
@@ -470,6 +480,21 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nextPageToken, loadingMore, moreFailed]);
 
+  /**
+   * Re-read the checklist when a meal is published or deleted.
+   *
+   * Deleting a meal withdraws the post it came from (MEAL-105), which un-greys a
+   * row here — but this card is a sibling of the Meals tab with its own fetch,
+   * so it would go on showing "Already Imported" for a meal that no longer
+   * exists until the page was reloaded.
+   */
+  useEffect(() => {
+    const onMealsChanged = () => { if (catalogFor === source) void loadCatalog(); };
+    window.addEventListener('mealio:meals-changed', onMealsChanged);
+    return () => window.removeEventListener('mealio:meals-changed', onMealsChanged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogFor, source]);
+
   const loadCatalog = async (cursor: string | null = null) => {
     if (cursor === null) setLoadingCatalog(true); else setLoadingMore(true);
     setError('');
@@ -491,6 +516,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       return;
     }
     const next = data.catalog as CatalogResult;
+    if (cursor === null) setCatalogFor(source);
     setCatalog(current => {
       if (cursor === null || !current?.ok || !next.ok) return next;
       // Appended, and de-duplicated on the way in: a creator who posts while
@@ -527,12 +553,17 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
     const believedConnected = source !== 'none'
       && row.primary_source === source
       && row.import_opt_in === true;
-    if ((ready || believedConnected) && !catalog && !loadingCatalog) loadCatalog();
+    const stale = catalog !== null && catalogFor !== source;
+    if ((ready || believedConnected) && (!catalog || stale) && !loadingCatalog) loadCatalog();
     // `feed_url` is in here so saving a *different* website re-draws the list:
     // the checklist is of one site's posts, and leaving the old one up beside a
     // new address is the wrong list under the right heading.
+    // `catalogFor` is in here so a list belonging to the previous source is
+    // noticed the moment either changes — the two settle in separate renders,
+    // and with only `source` here the staleness went unseen until something
+    // else happened to re-run this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, source, row.feed_url]);
+  }, [ready, source, row.feed_url, catalog, catalogFor]);
 
   const saveWebsite = async () => {
     setWebsiteError('');
@@ -850,7 +881,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           at all because the first poll baselines: everything already published
           is marked seen, not imported, and without saying so connecting a
           source reads as nothing having happened. */}
-      {ready && (
+      {ready && catalogFor === source && (
         <div className={CARD} data-testid="catalogue">
           <h3 className="text-sm font-bold text-gray-900 mb-1.5">What you have already posted</h3>
           <p className="text-sm text-gray-600 leading-relaxed mb-4">

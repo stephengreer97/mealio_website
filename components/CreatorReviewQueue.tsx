@@ -427,6 +427,11 @@ export default function CreatorReviewQueue() {
         : 'That one is live. Savers can add it to a cart now.';
       setNotice(text);
       outcome = { tone: 'ok', badge: 'Published', text };
+      // A meal now exists that did not a moment ago. The Meals tab and the
+      // back-catalogue checklist are siblings on this page with their own
+      // fetches, and both were last read before this publish — so without this
+      // a creator approves a draft, opens Meals, and finds it empty.
+      window.dispatchEvent(new CustomEvent('mealio:meals-changed'));
     } else {
       const text = 'Declined. We will not offer that one again.';
       setNotice(text);

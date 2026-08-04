@@ -56,7 +56,7 @@ describe('PlatformConnectCard — connecting', () => {
   it('says what Instagram can and cannot read, and names the account requirement', async () => {
     harness('instagram', NOT_CONNECTED);
 
-    expect(await screen.findByRole('button', { name: /read my captions/i })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Connect Instagram$/i })).toBeTruthy();
     // A personal account gets no API access at all. Better said before the
     // creator tries than as a failure afterwards.
     expect(screen.getByText(/Professional \(Business or Creator\)/)).toBeTruthy();
@@ -66,7 +66,7 @@ describe('PlatformConnectCard — connecting', () => {
   it('states TikTok’s ceiling as a limit of TikTok rather than a gap of ours', async () => {
     harness('tiktok', NOT_CONNECTED);
 
-    expect(await screen.findByRole('button', { name: /read my descriptions/i })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Connect TikTok$/i })).toBeTruthy();
     // No video file and no transcript, ever — so there is no future version of
     // this that does better, and the copy should not imply one.
     expect(screen.getByText(/no video file and no transcript/i)).toBeTruthy();

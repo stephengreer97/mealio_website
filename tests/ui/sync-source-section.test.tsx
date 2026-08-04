@@ -832,6 +832,28 @@ describe('the back-catalogue checklist', () => {
     expect(queue.querySelectorAll('.animate-spin')).toHaveLength(1);
   });
 
+  it('drops a catalogue that belongs to another source', async () => {
+    // Returning from a consent screen sets the source directly, without going
+    // through the picker that clears this — so a creator who connected TikTok
+    // landed on a checklist of their website's posts, and the loader would not
+    // replace it because a catalogue was already loaded.
+    window.history.replaceState(null, '', '/creator?tiktok=connected');
+    stubIntersectionObserver();
+    const { calls } = harness({
+      creator: SYNCING,
+      routes: {
+        '/api/creator/tiktok': () =>
+          json({ connected: true, account: { name: 'chefsarah' }, brokenReason: null, expiresAt: null, configured: true }),
+      },
+    });
+
+    await waitFor(() => expect(picker().value).toBe('tiktok'));
+    // Asked for TikTok's list, not left showing the website's.
+    await waitFor(() =>
+      expect(calls.some(c => c.url.includes('/api/creator/sync/catalog') && c.body?.source === 'tiktok')).toBe(true));
+    window.history.replaceState(null, '', '/creator');
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });

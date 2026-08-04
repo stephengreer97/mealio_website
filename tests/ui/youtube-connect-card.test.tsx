@@ -59,13 +59,13 @@ describe('YouTubeConnectCard — connecting', () => {
     harness(NOT_CONNECTED);
     const box = await screen.findByRole('checkbox');
 
-    expect(screen.getByRole('button', { name: /read my videos/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Connect YouTube$/i })).toBeTruthy();
     // Unticked by default: reading their videos and editing their descriptions
     // are different permissions over different property.
     expect((box as HTMLInputElement).checked).toBe(false);
 
     fireEvent.click(box);
-    expect(screen.getByRole('button', { name: /edit their descriptions/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /edit descriptions/i })).toBeTruthy();
   });
 
   it('sends the tick with the request that starts the round trip', async () => {

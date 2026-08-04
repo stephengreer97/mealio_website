@@ -59,7 +59,7 @@ const COPY: Record<SocialPlatform, CardCopy> = {
       'out can be imported instead of typed again. We cannot read what is only spoken in a video — if your ' +
       'recipe lives in the voiceover rather than the caption, this will find very little. Instagram also ' +
       'requires a Professional (Business or Creator) account; personal accounts get no access at all.',
-    button: 'Connect Instagram — read my captions',
+    button: 'Connect Instagram',
     connectedNote:
       'Mealio reads the captions on this account to import recipes from them. Nothing on your account is ever ' +
       'edited.',
@@ -74,7 +74,7 @@ const COPY: Record<SocialPlatform, CardCopy> = {
       'be imported instead of typed again. TikTok gives apps the description and nothing else — no video file ' +
       'and no transcript — so if your recipes are spoken rather than written, there is nothing here for us to ' +
       'read, and that is a limit of TikTok rather than something we can improve.',
-    button: 'Connect TikTok — read my descriptions',
+    button: 'Connect TikTok',
     connectedNote:
       'Mealio reads the descriptions on this account to import recipes from them. Nothing on your account is ' +
       'ever edited.',

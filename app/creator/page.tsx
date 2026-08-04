@@ -1065,7 +1065,15 @@ export default function CreatorPortal() {
       setQueueCounted(true);
     };
     window.addEventListener('mealio:draft-queue-changed', onChanged);
-    return () => window.removeEventListener('mealio:draft-queue-changed', onChanged);
+    // A publish from the review queue creates a meal this page is already
+    // showing a list of. Re-read rather than patch: the queue knows a meal was
+    // made, not what it looks like.
+    const onMealsChanged = () => { void loadPortal(); };
+    window.addEventListener('mealio:meals-changed', onMealsChanged);
+    return () => {
+      window.removeEventListener('mealio:draft-queue-changed', onChanged);
+      window.removeEventListener('mealio:meals-changed', onMealsChanged);
+    };
   }, []);
 
   useEffect(() => { loadPortal(); }, []);
@@ -1602,6 +1610,9 @@ export default function CreatorPortal() {
       headers: { Authorization: `Bearer ${token}` },
     });
     loadPortal();
+    // The post it came from is withdrawn now (MEAL-105), so the checklist in
+    // Settings has a row to un-grey.
+    window.dispatchEvent(new CustomEvent('mealio:meals-changed'));
   };
 
   if (loading) {
