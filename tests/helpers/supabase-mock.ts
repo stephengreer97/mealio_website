@@ -462,6 +462,14 @@ export class FakeSupabase {
         }
         case 'update': {
           for (const row of matched) Object.assign(row, payload);
+          // PostgREST applies the filters to the RETURNED REPRESENTATION after
+          // the write, not only when choosing rows. So an update that changes a
+          // column it also filtered on lands, and hands back nothing — which is
+          // how a compare-and-swap on `lease_until` claimed a sync run and then
+          // reported that it had failed. Modelling Postgres' `RETURNING` here
+          // instead is what let that ship: the fake returned the updated rows,
+          // every test agreed, and production disagreed.
+          const stillMatches = matched.filter((row) => filters.every((f) => matchesFilter(row, f)));
           return {
             data: returning ? matched.map((r) => project(r, columns)) : null,
             error: null,

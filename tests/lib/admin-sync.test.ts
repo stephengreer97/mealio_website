@@ -1189,6 +1189,29 @@ describe('advanceRun and retrySyncItem — concurrent writers', () => {
     }
   });
 
+  it('claims a fresh run even though the CAS filters on the column it writes', async () => {
+    // The bug this exists for, and the reason it survived: PostgREST applies the
+    // filters to the RETURNED REPRESENTATION after the write. `claimRun` filters
+    // `lease_until.is.null,lease_until.lt.now` and then writes `lease_until`, so
+    // the row stops matching its own predicate and comes back as an empty array
+    // — the claim lands and reports failure.
+    //
+    // `advanceRun` then returned early, and a brand new run sat at `running`
+    // behind a lease nobody was using, every item pending, while the screen said
+    // it was "already being worked on somewhere else". Verified against the real
+    // API: rows returned 0, row read back as running.
+    storeRun(runRow([item({ itemId: 'a', url: 'https://chefsarah.test/a' })]));
+
+    const run = await advanceRun(deps({ importer: async () => success }), 'r1');
+
+    // The claim was taken, so the work actually happened.
+    expect(run?.items[0].status).toBe('drafted');
+    // And the lease was handed back rather than left behind.
+    const stored = fakeDb.row('creator_sync_runs', 'r1')!;
+    expect(stored.lease_until).toBeNull();
+    expect(stored.status).toBe('done');
+  });
+
   it('does not overwrite a drafted item with a stale pending copy', async () => {
     // The reverse interleaving, both sides real. A retry written from a copy
     // read before the wave finished resets `a` to pending, which re-runs it,
@@ -1207,8 +1230,22 @@ describe('advanceRun and retrySyncItem — concurrent writers', () => {
 
     const stored = fakeDb.row('creator_sync_runs', 'r1')!;
     const items = stored.items as SyncItem[];
-    // Whoever wrote last, the imported item keeps its draft.
-    expect(items.find((entry) => entry.itemId === 'a')).toMatchObject({ status: 'drafted', draftId: 'draft-1' });
+    // Whoever won the lease, `a` is never left as a drafted item with nothing
+    // pointing at the draft. Which side wins is not the assertion — with a
+    // correct compare-and-swap exactly one of them claims the run and the other
+    // defers, so `a` is either processed (drafted, carrying its draft id) or
+    // untouched (pending, with no orphan draft behind it). Asserting a winner
+    // was asserting the old, wrong CAS: the fake used to hand back the updated
+    // rows, so both callers believed they held the lease.
+    const a = items.find((entry) => entry.itemId === 'a')!;
+    if (a.status === 'drafted') {
+      expect(a.draftId).toBe('draft-1');
+    } else {
+      expect(a.status).toBe('pending');
+      expect(a.draftId).toBeNull();
+      // Deferred, not lost: the run still has work and says so.
+      expect(stored.status).not.toBe('done');
+    }
     // And a retry the operator was told succeeded is still queued.
     if (retried.ok) {
       expect(items.find((entry) => entry.itemId === 'b')?.status).toBe('pending');

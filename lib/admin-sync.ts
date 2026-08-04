@@ -1248,15 +1248,37 @@ async function claimRun(
   const nowIso = new Date(now()).toISOString();
   const lease = new Date(now() + LEASE_MS).toISOString();
 
-  const { data } = await deps.supabase
+  // The compare-and-swap itself. Deliberately NOT `.select()`ed — see below.
+  await deps.supabase
     .from('creator_sync_runs')
     .update({ lease_until: lease, updated_at: nowIso, ...extra })
     .eq('id', runId)
-    .or(`lease_until.is.null,lease_until.lt.${nowIso}`)
-    .select();
+    .or(`lease_until.is.null,lease_until.lt.${nowIso}`);
 
-  const rows = (Array.isArray(data) ? data : []) as Array<Record<string, any>>;
-  return rows.length > 0 ? { row: rows[0], lease } : null;
+  // Who won is decided by reading the row back, not by what the UPDATE
+  // returned, because **PostgREST applies the filters to the returned
+  // representation after the write**. A CAS that filters on the very column it
+  // overwrites therefore updates the row and hands back an empty array: the
+  // lease is no longer null and no longer in the past, so the row no longer
+  // matches the predicate that selected it.
+  //
+  // That is not hypothetical. It claimed the run, reported failure, and the
+  // caller returned early — leaving a brand new run at `running` behind a lease
+  // nobody was using, every item still pending, while the screen insisted it
+  // was "already being worked on somewhere else". Verified against the real
+  // API: rows returned 0, row read back as `running`.
+  //
+  // The read-back is still a correct CAS. Each worker writes a lease value
+  // unique to it, so exactly one can find its own value there afterwards; a
+  // loser reads the winner's lease and correctly gives up.
+  const { data: after } = await deps.supabase
+    .from('creator_sync_runs')
+    .select('*')
+    .eq('id', runId)
+    .maybeSingle();
+
+  const row = after as Record<string, any> | null;
+  return row && row.lease_until === lease ? { row, lease } : null;
 }
 
 /**
@@ -1275,13 +1297,25 @@ async function writeLeased(
   lease: string,
   patch: Record<string, unknown>,
 ): Promise<boolean> {
-  const { data } = await deps.supabase
+  await deps.supabase
     .from('creator_sync_runs')
     .update(patch)
     .eq('id', runId)
-    .eq('lease_until', lease)
-    .select();
-  return Array.isArray(data) && data.length > 0;
+    .eq('lease_until', lease);
+
+  // Same reason as `claimRun`: this filters on `lease_until` and every patch
+  // here rewrites it, so the returned representation is empty even when the
+  // write landed. Read back and compare against what we asked for — still a
+  // correct ownership check, because only the holder of `lease` could have
+  // matched the predicate in the first place.
+  const { data: after } = await deps.supabase
+    .from('creator_sync_runs')
+    .select('lease_until')
+    .eq('id', runId)
+    .maybeSingle();
+
+  const wrote = (patch as { lease_until?: unknown }).lease_until;
+  return Boolean(after) && (after as Record<string, any>).lease_until === (wrote ?? null);
 }
 
 /**
