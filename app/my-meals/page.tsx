@@ -9,6 +9,11 @@ import AppFooter from '@/components/AppFooter';
 import CreatorPopup from '@/components/CreatorPopup';
 import KrogerStorePickerModal from '@/components/KrogerStorePickerModal';
 import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, toggleTag } from '@/lib/import/vocab';
+// One copy, in `components/MealCard.tsx`. Five pages carried their own
+// byte-identical version of this, so "chopped tomatoes, 2 cans" was five places
+// to fix and the amount-first rewrite would have made My Meals disagree with
+// Discover about the same ingredient.
+import { fmtMeasurement } from '@/components/MealCard';
 
 interface User {
   id: string;
@@ -53,11 +58,6 @@ function normIng(raw: any): Ingredient {
   };
 }
 
-function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
-  const amount = ing.measure ?? '';
-  return amount ? `${ing.ingredientName}, ${amount} ${ing.unit}` : `${ing.ingredientName}, ${ing.unit}`;
-}
 
 function ingSearchTerm(ing: Ingredient): string {
   if (ing.searchTerm) return ing.searchTerm;

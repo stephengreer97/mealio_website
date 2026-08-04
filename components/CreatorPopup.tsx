@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { fmtMeasurement as sharedFmtMeasurement, normIng } from '@/components/MealCard';
 
 interface CreatorInfo {
   id: string;
@@ -51,11 +52,16 @@ function ingName(ing: FullPresetMeal['ingredients'][number]): string {
   return ing.ingredientName ?? ing.productName ?? (ing as any).product_name ?? ing.name ?? '';
 }
 
+/**
+ * One copy of this line format, in `components/MealCard.tsx`.
+ *
+ * This was a sixth hand-rolled version, differing from the other five only in
+ * reading `quantity` as well as `qty` — which is what `normIng` is for. Same
+ * meal, same ingredient, three different renderings depending on which screen a
+ * saver happened to be on.
+ */
 function fmtMeasurement(ing: FullPresetMeal['ingredients'][number]): string {
-  const n = ingName(ing);
-  const qty = ing.qty ?? ing.quantity ?? 1;
-  if (!ing.unit || ing.unit === 'qty') return qty > 1 ? `${n}, ${qty}` : n;
-  return `${n}, ${ing.measure ?? ''} ${ing.unit}`.replace(/\s+/g, ' ').trim();
+  return sharedFmtMeasurement(normIng(ing));
 }
 
 function DifficultyDots({ level }: { level: number }) {

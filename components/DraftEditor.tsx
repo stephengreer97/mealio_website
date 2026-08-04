@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { ALL_UNITS } from '@/lib/import/ingredients';
 import { canonicalizeTags, MAX_MEAL_TAGS, MEAL_TAGS, tagCapError, toggleTag } from '@/lib/import/vocab';
+import type { ImportSummary } from '@/lib/import/draft-form';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
 
 /**
@@ -74,6 +75,30 @@ export const label: React.CSSProperties = {
 /** Bare hostname, for saying which page a draft was read from. */
 export function hostOf(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
+/**
+ * How much of a draft needs looking at, on the row that opens it.
+ *
+ * Counts, never a score — a "92% confident" badge is the anti-pattern MEAL-72
+ * exists to avoid. Lives here with the rest of the shared review chrome because
+ * both queues are lists of drafts now, and the same fact wearing two different
+ * badges on the two screens is two designs by accident.
+ */
+export function FlagBadge({ summary }: { summary: ImportSummary }) {
+  const clean = summary.needALook === 0;
+  return (
+    <span
+      style={{
+        fontSize: '11px', fontWeight: 700, borderRadius: '99px', padding: '2px 8px', flexShrink: 0,
+        background: clean ? '#f3f4f6' : '#fff8e1',
+        color: clean ? '#6b7280' : '#b45309',
+      }}
+      data-testid="flag-badge"
+    >
+      {clean ? 'all verified' : `${summary.needALook} to check`}
+    </span>
+  );
 }
 
 export default function DraftEditor({

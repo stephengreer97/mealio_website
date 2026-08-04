@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ImportFieldNotice from '@/components/ImportFieldNotice';
-import DraftEditor, { hostOf, input, label, primaryButton, secondaryButton } from '@/components/DraftEditor';
+import DraftEditor, { FlagBadge, hostOf, input, label, primaryButton, secondaryButton } from '@/components/DraftEditor';
 import { MealDetailBody, type MealNotices, type PresetMeal } from '@/components/MealCard';
-import { noticesFor, summaryLine, type ImportSummary } from '@/lib/import/draft-form';
+import { noticesFor, summaryLine } from '@/lib/import/draft-form';
 import type { CreatorMealDraft } from '@/lib/import/types';
 // Type-only: `lib/import-drafts` reaches Supabase, Resend and the photo copier,
 // and must never be bundled into the client. Erased at compile time.
@@ -663,22 +663,5 @@ function DraftRow({
         </div>
       )}
     </div>
-  );
-}
-
-/** Counts, never a score — a "92% confident" badge is the anti-pattern MEAL-72 exists to avoid. */
-function FlagBadge({ summary }: { summary: ImportSummary }) {
-  const clean = summary.needALook === 0;
-  return (
-    <span
-      style={{
-        fontSize: '11px', fontWeight: 700, borderRadius: '99px', padding: '2px 8px', flexShrink: 0,
-        background: clean ? '#f3f4f6' : '#fff8e1',
-        color: clean ? '#6b7280' : '#b45309',
-      }}
-      data-testid="flag-badge"
-    >
-      {clean ? 'all verified' : `${summary.needALook} to check`}
-    </span>
   );
 }

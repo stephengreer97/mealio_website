@@ -2,6 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+// One copy, in `components/MealCard.tsx`. Five pages carried their own
+// byte-identical version of this, so "chopped tomatoes, 2 cans" was five places
+// to fix and the amount-first rewrite would have made My Meals disagree with
+// Discover about the same ingredient.
+import { fmtMeasurement } from '@/components/MealCard';
 
 const STORES = [
   { id: 'acme',          label: 'Acme Markets' },
@@ -59,11 +64,6 @@ function normIng(raw: any): Ingredient {
   };
 }
 
-function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
-  const amount = ing.measure ?? '';
-  return amount ? `${ing.ingredientName}, ${amount} ${ing.unit}` : `${ing.ingredientName}, ${ing.unit}`;
-}
 
 interface SharedMeal {
   id: string;

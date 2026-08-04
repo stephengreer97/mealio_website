@@ -31,6 +31,11 @@ import {
 import PublishedLinkModal from '@/components/PublishedLinkModal';
 import CreatorReviewQueue from '@/components/CreatorReviewQueue';
 import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, tagCapError, toggleTag } from '@/lib/import/vocab';
+// One copy, in `components/MealCard.tsx`. Five pages carried their own
+// byte-identical version of this, so "chopped tomatoes, 2 cans" was five places
+// to fix and the amount-first rewrite would have made My Meals disagree with
+// Discover about the same ingredient.
+import { fmtMeasurement } from '@/components/MealCard';
 
 interface Creator {
   id: string;
@@ -108,11 +113,6 @@ function normIng(raw: any): Ingredient {
   };
 }
 
-function fmtMeasurement(ing: Ingredient): string {
-  if (!ing.unit || ing.unit === 'qty') return (ing.qty ?? 1) > 1 ? `${ing.ingredientName}, ${ing.qty}` : ing.ingredientName;
-  const amount = ing.measure ?? '';
-  return amount ? `${ing.ingredientName}, ${amount} ${ing.unit}` : `${ing.ingredientName}, ${ing.unit}`;
-}
 
 function toFormIng(ing: Ingredient): IngredientForm {
   return {
@@ -993,6 +993,50 @@ export default function CreatorPortal() {
   const [tab, setTab] = useState<PortalTab>('meals');
 
   /**
+   * `/creator#drafts` opens the Drafts tab.
+   *
+   * The drafts-ready email's only button says "Review and publish" and used to
+   * land on `/creator`, which is the Meals tab — the creator arrived at a page
+   * about publishing new meals having been asked to review the ones we already
+   * read, and had to go and find the tab. The hash is the cheapest thing that
+   * fixes it: no route, no query string, no server involvement.
+   *
+   * Read on mount rather than in `useState`'s initialiser: this component
+   * renders on the server first, `location` does not exist there, and a tab
+   * chosen from a hash the server cannot see is a hydration mismatch. One frame
+   * on Meals is the cost, and every panel is mounted anyway.
+   *
+   * `hashchange` as well, for the link clicked while the portal is already open
+   * — a second click on the same mail otherwise changes the URL and nothing
+   * else. An unknown or absent hash leaves the default alone, so `#anything`
+   * from anywhere cannot blank the page.
+   */
+  useEffect(() => {
+    const fromHash = () => {
+      const name = window.location.hash.replace(/^#/, '');
+      if (name === 'meals' || name === 'drafts' || name === 'settings') setTab(name);
+    };
+    fromHash();
+    window.addEventListener('hashchange', fromHash);
+    return () => window.removeEventListener('hashchange', fromHash);
+  }, []);
+
+  /**
+   * Switching tabs writes the hash, so the URL says where you are.
+   *
+   * `replaceState` rather than assigning `location.hash`: assigning pushes a
+   * history entry per tab click, so Back walks a creator through every tab they
+   * touched instead of leaving the portal. It also fires `hashchange`, which the
+   * listener above would then handle redundantly.
+   */
+  const goToTab = (next: PortalTab) => {
+    setTab(next);
+    try {
+      window.history.replaceState(null, '', `#${next}`);
+    } catch { /* Nothing about the tab depends on the URL having been updated. */ }
+  };
+
+  /**
    * How many drafts are waiting, for the tab badge and the callout.
    *
    * Read from the event the queue already fires rather than from a request of
@@ -1658,7 +1702,7 @@ export default function CreatorPortal() {
                 aria-selected={tab === 'meals'}
                 aria-controls="portal-panel-meals"
                 style={tabStyle('meals')}
-                onClick={() => setTab('meals')}
+                onClick={() => goToTab('meals')}
               >
                 Meals
                 {meals.length > 0 && <span style={tabCountStyle}>{meals.length}</span>}
@@ -1669,7 +1713,7 @@ export default function CreatorPortal() {
                 aria-selected={tab === 'drafts'}
                 aria-controls="portal-panel-drafts"
                 style={tabStyle('drafts')}
-                onClick={() => setTab('drafts')}
+                onClick={() => goToTab('drafts')}
               >
                 Drafts
                 {/* The count, not a dot — the same call `AppHeader` makes, and
@@ -1684,7 +1728,7 @@ export default function CreatorPortal() {
                 aria-selected={tab === 'settings'}
                 aria-controls="portal-panel-settings"
                 style={tabStyle('settings')}
-                onClick={() => setTab('settings')}
+                onClick={() => goToTab('settings')}
               >
                 Settings
               </button>
@@ -1739,7 +1783,7 @@ export default function CreatorPortal() {
                   </p>
                 </div>
                 <button
-                  onClick={() => setTab('drafts')}
+                  onClick={() => goToTab('drafts')}
                   className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl px-4 py-2 text-sm transition-colors flex-shrink-0"
                 >
                   Review drafts

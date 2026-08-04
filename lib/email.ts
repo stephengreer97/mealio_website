@@ -487,7 +487,11 @@ export async function sendCreatorDraftsReadyEmail(
           <strong>Nothing is published</strong> — ${count === 1 ? 'it is' : 'they are'} waiting for you to look.
         </p>
         ${rows}
-        <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin: 8px 0 24px;">Review and publish</a>
+        <!-- #drafts, not /creator: the portal opens on Meals, and a mail whose
+             only button is "Review and publish" landing on a tab that is not the
+             drafts is asking the creator to go and find the thing we just wrote
+             to them about. The portal reads this hash on load. -->
+        <a href="${appUrl}/creator#drafts" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin: 8px 0 24px;">Review and publish</a>
         <p style="color: #666; font-size: 13px; line-height: 1.6; margin: 0 0 16px;">
           We read ${count === 1 ? 'this' : 'these'} off your page automatically, so a measure or a step may not be quite how you'd write it.
           Edit anything on the review screen before you publish, or discard ${count === 1 ? 'it' : 'them'} — we won't ask about the same post twice.

@@ -74,6 +74,42 @@ const UNIT_ALIASES: Record<string, string> = {
 };
 
 /**
+ * The singular spelling of a stored unit, for the one place it is read aloud.
+ *
+ * Storing the plural is right — one token per unit, and the aliases above fold
+ * "clove" and "cloves" onto it — but it is a *storage* decision that leaked into
+ * the render: a card showed "cannellini beans, 1 cans" and "parsley, 1 bunches",
+ * which is our data model talking rather than a recipe. Only the words that
+ * actually inflect are in here; `tbsp`, `g` and `fl oz` read the same either
+ * way and must not be trimmed to `tbs`, `` or `fl o`.
+ */
+const SINGULAR_UNITS: Record<string, string> = {
+  cups: 'cup',
+  cloves: 'clove',
+  cans: 'can',
+  bunches: 'bunch',
+  sprigs: 'sprig',
+  pinches: 'pinch',
+  handfuls: 'handful',
+  grinds: 'grind',
+  slices: 'slice',
+};
+
+/**
+ * How a unit should be spelled beside `amount`.
+ *
+ * Singular for exactly one and nothing else. Deliberately a string comparison
+ * rather than `parseAmount`: that reads "1 1/2" as 1 — it is built to answer
+ * "how many packages" — and one and a half cups is still cups. Anything that is
+ * not the bare character "1" keeps the stored plural, which is the safe way for
+ * this to be wrong.
+ */
+export function unitLabel(unit: string, amount: string | number | null | undefined): string {
+  const one = typeof amount === 'number' ? amount === 1 : String(amount ?? '').trim() === '1';
+  return one ? (SINGULAR_UNITS[unit] ?? unit) : unit;
+}
+
+/**
  * Vulgar fractions in their ASCII form. Kept as text rather than numbers so one
  * table serves both readers: `parseAmount` wants the value, `statedAmounts`
  * rewrites "1½" to "1 1/2" so a single scanner handles both spellings.
