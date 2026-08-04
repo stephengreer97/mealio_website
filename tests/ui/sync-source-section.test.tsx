@@ -116,6 +116,35 @@ function harness({ creator = CREATOR, entries = [], routes = {} }: HarnessOption
 
 const picker = () => screen.getByLabelText('Where you publish') as HTMLSelectElement;
 
+/**
+ * jsdom has no IntersectionObserver, and the catalogue's infinite scroll is
+ * built on one. This records every observer so a test can say "the creator
+ * scrolled to the bottom" without pretending to lay anything out.
+ */
+const observers: Array<{ cb: IntersectionObserverCallback; targets: Element[] }> = [];
+function stubIntersectionObserver() {
+  observers.length = 0;
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(cb: IntersectionObserverCallback) { this.entry = { cb, targets: [] }; observers.push(this.entry); }
+    entry: { cb: IntersectionObserverCallback; targets: Element[] };
+    observe(node: Element) { this.entry.targets.push(node); }
+    disconnect() { const i = observers.indexOf(this.entry); if (i >= 0) observers.splice(i, 1); }
+    unobserve() {}
+    takeRecords() { return []; }
+    root = null; rootMargin = ''; thresholds = [];
+  });
+}
+
+/** Scroll the sentinel into view, for whichever observer is watching it. */
+function scrollToBottom() {
+  for (const observer of [...observers]) {
+    for (const target of observer.targets) {
+      observer.cb([{ isIntersecting: true, target } as unknown as IntersectionObserverEntry],
+        null as unknown as IntersectionObserver);
+    }
+  }
+}
+
 beforeEach(() => { localStorage.setItem('accessToken', 'test-token'); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -663,6 +692,49 @@ describe('the back-catalogue checklist', () => {
     await waitFor(() => expect(imported).toHaveBeenCalled());
 
     window.removeEventListener('mealio:drafts-imported', imported);
+  });
+
+  it('fetches the next window when the creator scrolls to the bottom', async () => {
+    // TikTok answers twenty at a time. Reading a hundred up front was five round
+    // trips before the portal could draw anything, so the list takes one window
+    // and asks for the next as the creator reaches it.
+    stubIntersectionObserver();
+    let page = 0;
+    const { calls } = harness({
+      creator: { ...CREATOR, primary_source: 'tiktok', import_opt_in: true },
+      routes: {
+        '/api/creator/tiktok': () =>
+          json({ connected: true, account: { name: 'chefsarah' }, brokenReason: null, expiresAt: null, configured: true }),
+        '/api/creator/sync/catalog': () => {
+          page++;
+          return json({
+            catalog: {
+              ok: true,
+              source: 'tiktok',
+              feed: null,
+              entries: [entry(page * 10), entry(page * 10 + 1)],
+              truncated: false,
+              nextPageToken: page < 2 ? String(1_785_000_000_000 - page) : null,
+            },
+          });
+        },
+      },
+    });
+
+    await screen.findByTestId('catalogue-more');
+    expect(screen.getAllByText(/^Post /)).toHaveLength(2);
+
+    scrollToBottom();
+
+    // Appended, not replaced — a list that swapped one window for the next would
+    // lose whatever the creator had already ticked further up.
+    await waitFor(() => expect(screen.getAllByText(/^Post /)).toHaveLength(4));
+    const paged = calls.filter(c => c.url.includes('/api/creator/sync/catalog') && c.body?.pageToken);
+    expect(paged).toHaveLength(1);
+
+    // And it stops: the second window says there is no more, so the sentinel goes
+    // with it rather than asking forever.
+    await waitFor(() => expect(screen.queryByTestId('catalogue-more')).toBeNull());
   });
 
   it('marks what is already in, and leaves it out of select-all', async () => {

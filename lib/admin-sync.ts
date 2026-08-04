@@ -68,6 +68,7 @@ import {
   fetchTikTokVideos,
   tiktokSourceDocument,
   tiktokVideoTitle,
+  TIKTOK_PAGE_SIZE,
   TIKTOK_VIDEO_MAX,
 } from '@/lib/tiktok';
 import { formatTelemetry } from '@/lib/import/telemetry';
@@ -478,7 +479,7 @@ export async function buildCatalog(
 ): Promise<CatalogResult> {
   if (source === 'youtube') return buildYouTubeCatalog(deps, creator, catalogOptions.pageToken ?? null);
   if (source === 'instagram') return buildInstagramCatalog(deps, creator);
-  if (source === 'tiktok') return buildTikTokCatalog(deps, creator);
+  if (source === 'tiktok') return buildTikTokCatalog(deps, creator, catalogOptions.pageToken ?? null);
 
   const link = creator[SOURCE_COLUMNS[source] as keyof SyncCreator] as string | null | undefined;
   if (!link) {
@@ -789,15 +790,35 @@ async function buildInstagramCatalog(deps: SyncDeps, creator: SyncCreator): Prom
  * `share_url`, because that is the page a human can open; `embed_link` is a
  * player and is no use in a record somebody reads later.
  */
-async function buildTikTokCatalog(deps: SyncDeps, creator: SyncCreator): Promise<CatalogResult> {
+/**
+ * One window of a TikTok account, not the whole thing.
+ *
+ * TikTok answers twenty at a time, so reading the full hundred was five
+ * round trips before the portal could draw anything — the slowest thing on the
+ * creator's page by a distance. The catalogue now reads one page and hands back
+ * a cursor, and the list asks for the next as the creator scrolls.
+ *
+ * Polling is unchanged and still reads the full window: a sweep that stopped at
+ * twenty would stop seeing posts from a creator who published more than that
+ * between two polls.
+ */
+async function buildTikTokCatalog(deps: SyncDeps, creator: SyncCreator, cursor: string | null): Promise<CatalogResult> {
   const { token, brokenReason } = await connectedGrant(deps, creator.id, 'tiktok');
   if (!token) return notConnectedCatalog('tiktok', brokenReason);
 
-  const listed = await fetchTikTokVideos(token, { limit: TIKTOK_VIDEO_MAX, fetchImpl: platformFetch(deps) });
+  const listed = await fetchTikTokVideos(token, {
+    limit: TIKTOK_PAGE_SIZE,
+    maxPages: 1,
+    cursor: cursor === null ? null : Number(cursor),
+    fetchImpl: platformFetch(deps),
+  });
   if (!listed.ok) {
     return { ok: false, reason: 'unreachable', detail: listed.detail };
   }
-  if (listed.videos.length === 0) return emptyAccountCatalog('tiktok');
+  // Only the first window can say the account is empty. A later one coming back
+  // empty means the creator scrolled to the end, and telling them they have
+  // posted nothing at the bottom of a list of their posts is nonsense.
+  if (listed.videos.length === 0 && cursor === null) return emptyAccountCatalog('tiktok');
 
   const entries = await withImportRecords(
     deps,
@@ -811,7 +832,14 @@ async function buildTikTokCatalog(deps: SyncDeps, creator: SyncCreator): Promise
     })),
   );
 
-  return { ok: true, source: 'tiktok', feed: null, entries, truncated: listed.truncated };
+  return {
+    ok: true,
+    source: 'tiktok',
+    feed: null,
+    entries,
+    truncated: listed.truncated,
+    nextPageToken: listed.nextCursor === null ? null : String(listed.nextCursor),
+  };
 }
 
 // ── Turning a ticked checklist into a run ────────────────────────────────────

@@ -210,6 +210,39 @@ describe('tiktok — listing videos', () => {
     expect(result.videos).toEqual([]);
   });
 
+  it('reads a single page and says where the next one starts', async () => {
+    // What the catalogue asks for. Reading all hundred was five round trips to
+    // TikTok before the portal could draw anything, and it was the slowest thing
+    // on the creator's page — so the list takes one window and fetches the rest
+    // as the creator scrolls into it.
+    const { impl, calls } = recording(() =>
+      json({
+        data: { videos: [videoRow('v1'), videoRow('v2')], cursor: 1_785_059_999_000, has_more: true },
+        error: { code: 'ok' },
+      }));
+
+    const result = await fetchTikTokVideos('act.tiktok', { fetchImpl: impl, limit: 20, maxPages: 1 });
+
+    expect(calls).toHaveLength(1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.nextCursor).toBe(1_785_059_999_000);
+  });
+
+  it('resumes from a cursor rather than starting at the top again', async () => {
+    const { impl, calls } = recording(() =>
+      json({ data: { videos: [videoRow('v9')], cursor: 0, has_more: false }, error: { code: 'ok' } }));
+
+    const result = await fetchTikTokVideos('act.tiktok', { fetchImpl: impl, limit: 20, maxPages: 1, cursor: 1_785_059_999_000 });
+
+    expect(calls[0].body).toMatchObject({ cursor: 1_785_059_999_000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The end of the account. Null so the list stops asking rather than fetching
+    // the same empty window for as long as the creator sits at the bottom of it.
+    expect(result.nextCursor).toBeNull();
+  });
+
   it('pages while has_more is set and stops at the item budget', async () => {
     let page = 0;
     const { impl, calls } = recording(() => {

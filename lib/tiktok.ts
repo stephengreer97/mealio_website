@@ -251,7 +251,21 @@ const MAX_TITLE_CHARS = 300;
 const VIDEO_FIELDS = 'id,title,video_description,duration,cover_image_url,embed_link,share_url,create_time';
 
 export type TikTokVideoResult =
-  | { ok: true; videos: TikTokVideo[]; truncated: boolean }
+  | {
+      ok: true;
+      videos: TikTokVideo[];
+      truncated: boolean;
+      /**
+       * Where the next window starts, or null when this is the end of the
+       * account.
+       *
+       * TikTok's cursor is the last returned video's creation time in
+       * milliseconds. Returned so a caller reading one page at a time can ask
+       * for the next — the catalogue does, so that opening the portal costs one
+       * request to TikTok rather than five.
+       */
+      nextCursor: number | null;
+    }
   | { ok: false; detail: string };
 
 function toVideo(row: Record<string, any>): TikTokVideo | null {
@@ -294,15 +308,26 @@ function toVideo(row: Record<string, any>): TikTokVideo | null {
  */
 export async function fetchTikTokVideos(
   accessToken: string,
-  options: TikTokApiOptions & { limit?: number } = {},
+  options: TikTokApiOptions & { limit?: number; cursor?: number | null; maxPages?: number } = {},
 ): Promise<TikTokVideoResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const limit = Math.max(1, Math.min(options.limit ?? TIKTOK_VIDEO_MAX, TIKTOK_VIDEO_MAX));
+  // How many round trips this call may make, separate from how many items it
+  // wants. A page can come back shorter than `max_count` — TikTok does that
+  // routinely — so a caller asking for twenty items would otherwise keep paging
+  // until it had twenty, which is exactly the five round trips the catalogue is
+  // trying not to make. It asks for one page and takes what is in it.
+  const maxPages = Math.max(1, Math.min(options.maxPages ?? TIKTOK_MAX_PAGES, TIKTOK_MAX_PAGES));
 
   const videos: TikTokVideo[] = [];
-  let cursor: number | undefined;
+  // Where to resume. Absent means the top of the account, which is every caller
+  // that wants the whole listing; the catalogue passes the previous window's
+  // `nextCursor` to read on from where the creator has already scrolled.
+  let cursor: number | undefined =
+    typeof options.cursor === 'number' && Number.isFinite(options.cursor) ? options.cursor : undefined;
+  let more = false;
 
-  for (let page = 0; page < TIKTOK_MAX_PAGES; page++) {
+  for (let page = 0; page < maxPages; page++) {
     let response: Response;
     try {
       response = await fetchImpl(`${TIKTOK_VIDEO_LIST_URL}?fields=${encodeURIComponent(VIDEO_FIELDS)}`, {
@@ -341,13 +366,19 @@ export async function fetchTikTokVideos(
 
     const nextCursor = payload?.data?.cursor;
     cursor = typeof nextCursor === 'number' ? nextCursor : undefined;
-    if (videos.length >= limit || payload?.data?.has_more !== true || cursor === undefined) break;
+    more = payload?.data?.has_more === true && cursor !== undefined;
+    if (videos.length >= limit || !more) break;
   }
 
   // An empty account is a success with nothing in it. See the same change in
   // `fetchInstagramMedia`: reporting it as a failure is what made every caller
   // label a creator who has posted nothing as `unreachable`.
-  return { ok: true, videos, truncated: videos.length >= limit };
+  //
+  // `truncated` and `nextCursor` answer different questions and a one-page
+  // caller needs both: truncated says "we stopped early", nextCursor says where
+  // to resume. Null when TikTok says there is no more, so a list that has run
+  // out stops asking rather than fetching the same empty page forever.
+  return { ok: true, videos, truncated: videos.length >= limit && more, nextCursor: more && cursor !== undefined ? cursor : null };
 }
 
 // ── The source document ──────────────────────────────────────────────────────

@@ -58,8 +58,18 @@ export async function POST(request: NextRequest) {
   // cannot point the listing at another channel — the playlist is resolved
   // server-side from the grant — but an unbounded string from a request body
   // still has no business reaching Google.
-  if (body.pageToken != null && !isUploadsPageToken(body.pageToken)) {
-    return NextResponse.json({ error: 'pageToken is not a cursor YouTube issued' }, { status: 400 });
+  //
+  // Two sources page and their cursors are different animals: YouTube's is an
+  // opaque token, TikTok's is a creation time in milliseconds that goes into a
+  // JSON body as a number. Each is checked against its own shape rather than one
+  // rule loose enough to admit both.
+  if (body.pageToken != null) {
+    const valid = body.source === 'tiktok'
+      ? typeof body.pageToken === 'string' && /^\d{1,19}$/.test(body.pageToken)
+      : isUploadsPageToken(body.pageToken);
+    if (!valid) {
+      return NextResponse.json({ error: 'pageToken is not a cursor that source issued' }, { status: 400 });
+    }
   }
 
   const supabase = createServerSupabaseClient();

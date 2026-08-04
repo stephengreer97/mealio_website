@@ -193,6 +193,17 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
 
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
+  /** A further window on its way in, which is a different thing from the first. */
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** The bottom of the list, watched so scrolling into it asks for more. */
+  const sentinel = useRef<HTMLDivElement | null>(null);
+  /**
+   * A window that failed, so the scroll stops asking.
+   *
+   * Without it a creator resting at the bottom of the list fires one failed
+   * request per intersection, forever.
+   */
+  const [moreFailed, setMoreFailed] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
 
   const [run, setRun] = useState<SyncRun | null>(null);
@@ -371,6 +382,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
     setSelected([]);
     setRun(null);
     setTotals(null);
+    setMoreFailed(false);
     setError('');
     setWebsiteError('');
     setWebsiteDetail('');
@@ -400,20 +412,65 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, source, row.primary_source, row.import_opt_in]);
 
-  const loadCatalog = async () => {
-    setLoadingCatalog(true);
+  /**
+   * One window of the creator's back catalogue.
+   *
+   * With a cursor it appends; without one it replaces. TikTok answers twenty at
+   * a time, so reading a hundred meant five round trips before anything could be
+   * drawn — the list now shows the first twenty immediately and fetches the rest
+   * as the creator scrolls into them.
+   */
+  /** Where the next window starts, or null when the list is complete. */
+  const nextPageToken = catalog?.ok ? catalog.nextPageToken ?? null : null;
+
+  /**
+   * Ask for the next window when the creator scrolls into the end of the list.
+   *
+   * An observer rather than a scroll handler: the list lives in its own
+   * scrolling box, and the sentinel is inside it, so "have they reached the
+   * bottom" is a question about intersection rather than about arithmetic on two
+   * elements' offsets.
+   */
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || !nextPageToken || loadingMore || moreFailed) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadCatalog(nextPageToken);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextPageToken, loadingMore, moreFailed]);
+
+  const loadCatalog = async (cursor: string | null = null) => {
+    if (cursor === null) setLoadingCatalog(true); else setLoadingMore(true);
     setError('');
-    const { res, data } = await authed('/api/creator/sync/catalog', { source });
+    const { res, data } = await authed('/api/creator/sync/catalog', {
+      source,
+      ...(cursor === null ? {} : { pageToken: cursor }),
+    });
     if (!mounted.current) return;
-    setLoadingCatalog(false);
+    if (cursor === null) setLoadingCatalog(false); else setLoadingMore(false);
     // A 422 still carries a catalogue — one that says why it could not be
     // listed, which is the useful half. Only a response with neither is a
     // failure of this call rather than an answer from it.
     if (!data.catalog) {
       setError((!res.ok && data.error) || 'Could not read what you have published.');
+      // A window that failed must stop the scroll asking for it again, or a
+      // creator sitting at the bottom of the list generates one failed request
+      // per frame.
+      if (cursor !== null) setMoreFailed(true);
       return;
     }
-    setCatalog(data.catalog as CatalogResult);
+    const next = data.catalog as CatalogResult;
+    setCatalog(current => {
+      if (cursor === null || !current?.ok || !next.ok) return next;
+      // Appended, and de-duplicated on the way in: a creator who posts while
+      // scrolling shifts TikTok's window, and the same video arriving twice
+      // would render twice and be importable twice.
+      const seen = new Set(current.entries.map(entry => entry.itemId));
+      return { ...next, entries: [...current.entries, ...next.entries.filter(e => !seen.has(e.itemId))] };
+    });
   };
 
   // Drawn as soon as there is something to draw. It costs a feed read and one
@@ -830,6 +887,28 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                     </label>
                   );
                 })}
+
+                {/* The bottom of the list, which is also the request for more of
+                    it. Inside the scrolling box rather than after it, because
+                    the box is what scrolls — a sentinel outside would be on
+                    screen from the start and fetch every page at once. */}
+                {nextPageToken && !moreFailed && (
+                  <div ref={sentinel} className="px-3 py-3 text-xs text-gray-400" data-testid="catalogue-more">
+                    {loadingMore ? 'Reading more…' : 'Scroll for more'}
+                  </div>
+                )}
+                {moreFailed && (
+                  <div className="px-3 py-3 text-xs text-gray-500">
+                    We could not read any more of your posts.{' '}
+                    <button
+                      type="button"
+                      onClick={() => { setMoreFailed(false); void loadCatalog(nextPageToken); }}
+                      className="font-semibold text-gray-700 underline"
+                    >
+                      Try again
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-3 mt-4">
