@@ -977,7 +977,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                             `tiktokVideoTitle` falls back to the first line of
                             the description — so a chatty caption filled the row
                             and pushed the rest of the list off the screen. */}
-                        <span className="block text-sm text-gray-800 font-medium break-words line-clamp-2">
+                        <span className="text-sm text-gray-800 font-medium break-words line-clamp-2">
                           {entry.title || entry.url}
                         </span>
                         <span className="block text-xs text-gray-400 truncate">
@@ -1056,7 +1056,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       )}
 
       {/* ── What the import did ─────────────────────────────────────────── */}
-      {run && totals && (
+      {run && (
         <div className={CARD} data-testid="run-summary">
           <div className="flex flex-wrap items-baseline gap-3 mb-1.5">
             <h3 className="text-sm font-bold text-gray-900">
@@ -1072,7 +1072,14 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
             )}
           </div>
           {/* The arithmetic on screen: chose 12, got 9, and where the other
-              three went. Anything less makes a correct run look broken. */}
+              three went. Anything less makes a correct run look broken.
+              
+              Only once there is arithmetic to show. It arrives with the first
+              worker chunk, and gating the whole card on it meant a creator
+              pressed Import and watched a dead button for as long as that chunk
+              took — the queue below has everything it needs from the run
+              itself, which exists the moment the run is created. */}
+          {totals && (
           <p className="text-sm text-gray-600 leading-relaxed">
             Chose {totals.selected} · <strong className="font-semibold text-gray-800">{totals.drafted}</strong> waiting
             in your review queue
@@ -1081,6 +1088,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
             {totals.failed > 0 && <> · {totals.failed} we could not read</>}
             {totals.pending > 0 && <> · {totals.pending} still to go</>}
           </p>
+          )}
 
           {/* ── The queue itself ──────────────────────────────────────────
               An import of forty posts takes minutes, and until now the only

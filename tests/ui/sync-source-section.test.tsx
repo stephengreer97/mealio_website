@@ -876,6 +876,34 @@ describe('the back-catalogue checklist', () => {
     await waitFor(() => expect(field().value).toBe('https://chefsarah.test/'));
   });
 
+  it('shows the queue as soon as the run exists, not when the first chunk ends', async () => {
+    // The card was gated on `totals`, which arrives with the first worker chunk
+    // — so a creator pressed Import and watched a dead button for however long
+    // that chunk took. The run is created with its items already in it, which is
+    // everything the queue needs.
+    let releaseWorker: (v: Response) => void = () => {};
+    harness({
+      creator: SYNCING,
+      entries: [entry(1), entry(2)],
+      routes: {
+        '/api/creator/sync': () =>
+          json({ run: { id: 'r1', status: 'queued', items: [
+            { itemId: 'a', url: 'u', title: 'Post A', publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null },
+          ] } }, 201),
+        // Never answers, standing in for a chunk that is still working.
+        '/api/creator/sync/worker': () => new Response(new ReadableStream({ start() {} })),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 2 posts/ }));
+
+    const queue = await screen.findByTestId('run-queue');
+    expect(queue.textContent).toMatch(/Post A/);
+    void releaseWorker;
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
