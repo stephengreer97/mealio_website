@@ -84,8 +84,18 @@ import type { ConditionalValidators } from '@/lib/import/ssrf';
  */
 export const POLL_INTERVAL_MINUTES = 1440;
 
-/** Hour of the day a daily schedule fires, UTC-ish — Hobby's precision is ±59 min. */
-const DAILY_CRON_HOUR = 4;
+/**
+ * When a daily schedule fires, UTC-ish — Hobby's precision is ±59 min, so this
+ * names an hour rather than a moment.
+ *
+ * 14:15 UTC is mid-morning in America/Chicago, which is deliberate while the
+ * interval is still daily: a pass that only runs once a day should run when
+ * somebody is awake to see it fail. It stops mattering entirely the day the
+ * plan allows a fifteen-minute cron, because a minute-step expression does not
+ * name an hour at all.
+ */
+const DAILY_CRON_HOUR = 14;
+const DAILY_CRON_MINUTE = 20;
 
 /**
  * The cron expression `vercel.json` must carry for a given interval.
@@ -120,7 +130,7 @@ export function cronScheduleFor(minutes: number): string {
     }
     return `0 */${hours} * * *`;
   }
-  if (minutes === 1440) return `${0} ${DAILY_CRON_HOUR} * * *`;
+  if (minutes === 1440) return `${DAILY_CRON_MINUTE} ${DAILY_CRON_HOUR} * * *`;
   // Anything less frequent than daily has to be a check inside the pass, because
   // cron has no field longer than a day and a daily schedule that silently means
   // weekly is the same lie in the other direction.

@@ -168,7 +168,7 @@ describe('the schedule is one constant', () => {
     // fails at DEPLOY time with "Hobby accounts are limited to daily cron jobs"
     // — it does not silently degrade, it ships nothing.
     expect(POLL_INTERVAL_MINUTES).toBe(1440);
-    expect(cronScheduleFor(1440)).toBe('0 4 * * *');
+    expect(cronScheduleFor(1440)).toBe('20 14 * * *');
   });
 
   it('produces the sub-hourly expression the Pro plan unlocks', () => {
