@@ -12,6 +12,7 @@ vi.mock('@/lib/creator-poller', async () => {
   return { ...actual, runPollPass: () => runPollPass() };
 });
 
+import { POLL_INTERVAL_MINUTES } from '@/lib/creator-poller';
 import { GET } from '@/app/api/cron/poll/route';
 
 /**
@@ -46,7 +47,7 @@ describe('/api/cron/poll', () => {
 
     // `intervalMinutes` in the body because the deployed schedule is the one
     // thing about this feature that cannot be checked from inside it.
-    expect(body).toMatchObject({ ok: true, intervalMinutes: 1440, drafted: 4, emailsSent: 2 });
+    expect(body).toMatchObject({ ok: true, intervalMinutes: POLL_INTERVAL_MINUTES, drafted: 4, emailsSent: 2 });
   });
 
   it('does not poll unauthenticated', async () => {

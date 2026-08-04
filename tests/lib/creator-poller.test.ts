@@ -163,11 +163,19 @@ beforeEach(async () => {
 // ── The schedule ─────────────────────────────────────────────────────────────
 
 describe('the schedule is one constant', () => {
-  it('ships daily, because a shorter Vercel Hobby cron fails the deployment', () => {
-    // Not a preference. Hobby caps cron jobs at once per day and `*/15 * * * *`
-    // fails at DEPLOY time with "Hobby accounts are limited to daily cron jobs"
-    // — it does not silently degrade, it ships nothing.
-    expect(POLL_INTERVAL_MINUTES).toBe(1440);
+  it('polls every fifteen minutes, which requires the Pro plan', () => {
+    // Hobby caps cron jobs at once per day, and a shorter expression there does
+    // not degrade — it fails at DEPLOY time with "Hobby accounts are limited to
+    // daily cron jobs". So this value is a statement about the plan as much as
+    // about the cadence, and a build that refuses on Hobby is the intended
+    // outcome rather than a regression.
+    expect(POLL_INTERVAL_MINUTES).toBe(15);
+    expect(cronScheduleFor(15)).toBe('*/15 * * * *');
+  });
+
+  it('still knows the daily expression, for a fall back to Hobby', () => {
+    // Kept because reverting is one constant, and the hour it would land on
+    // should not have to be rediscovered under pressure.
     expect(cronScheduleFor(1440)).toBe('20 14 * * *');
   });
 
@@ -523,6 +531,11 @@ describe('a failed item is retried, and its loss is said out loud', () => {
   const polled = { lastPolledAt: '2027-01-14T08:00:00.000Z', etag: null, lastModified: null, pollAfter: null, consecutiveFailures: 0 };
   const HOUR = 3_600_000;
   const DAY = 24 * HOUR;
+  // Derived from the interval, not written as a fixed number of days. The retry
+  // window is `3 * POLL_INTERVAL_MS`, so a fixture spelled "one day ago" was
+  // inside the window at 1440 minutes and outside it at 15 — the tests broke on
+  // the upgrade for a reason that had nothing to do with retrying.
+  const INTERVAL = POLL_INTERVAL_MINUTES * 60_000;
 
   /** A post we tried to extract and could not, first met and last touched when it says. */
   function failedItem(firstSeenAgo: number, touchedAgo: number) {
@@ -544,7 +557,7 @@ describe('a failed item is retried, and its loss is said out loud', () => {
     // timeout loses one recipe permanently, and nothing anywhere says so.
     const { impl } = feedRoutes(feedWith(1));
     const importer = vi.fn(async () => success);
-    fakeDb.seed('creator_source_items', [failedItem(DAY, DAY)]);
+    fakeDb.seed('creator_source_items', [failedItem(INTERVAL, INTERVAL)]);
 
     const result = await pollCreator(
       deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
@@ -596,7 +609,7 @@ describe('a failed item is retried, and its loss is said out loud', () => {
       status: 'rejected', url, stage: 'extract', reason: 'timeout',
       detail: 'The model timed out again.', meta: { cached: false },
     }));
-    fakeDb.seed('creator_source_items', [failedItem(2.5 * DAY, DAY)]);
+    fakeDb.seed('creator_source_items', [failedItem(2.5 * INTERVAL, INTERVAL)]);
 
     const result = await pollCreator(
       deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
