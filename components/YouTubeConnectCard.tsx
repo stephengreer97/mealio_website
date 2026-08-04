@@ -56,7 +56,37 @@ function callbackOutcome(): { outcome: string; reason: string | null } | null {
   return outcome ? { outcome, reason: params.get('reason') } : null;
 }
 
-export default function YouTubeConnectCard() {
+export interface YouTubeConnectCardProps {
+  /**
+   * Rendered inside the sync section rather than as a card of its own
+   * (MEAL-101).
+   *
+   * Two things change and they are the same thing twice. The card chrome and the
+   * "YouTube" eyebrow go, because the section already says which source this is
+   * — a heading inside a heading reads as a second, nested decision. And the
+   * `hasChannel` gate below is lifted: a creator who has just picked YouTube out
+   * of a dropdown headed "Where do you publish?" has answered that question, so
+   * hiding the connect button until a link exists would strand them on an empty
+   * panel with no way forward.
+   *
+   * The consent tick is untouched in both modes, including its default of off
+   * and the wording on the button. It is a permission over property that is not
+   * ours, and nothing about where the control is drawn changes that.
+   */
+  embedded?: boolean;
+  /**
+   * Told whether a channel is connected, every time this card learns it.
+   *
+   * The sync section around it decides what to offer on that answer — the
+   * catalogue checklist, and whether "sync from YouTube" is a thing the creator
+   * can pick at all — and it must not guess: the grant lives in a different
+   * table from the link, and a section that inferred one from the other would
+   * offer a checklist for a channel nobody had connected.
+   */
+  onConnectionChange?: (connected: boolean) => void;
+}
+
+export default function YouTubeConnectCard({ embedded = false, onConnectionChange }: YouTubeConnectCardProps = {}) {
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -76,6 +106,11 @@ export default function YouTubeConnectCard() {
       // connect form is a *current* permission, and showing a granted one as
       // off both misreports it and quietly withdraws it on the next reconnect.
       setAppendConsent(next.appendOptIn === true);
+      // A broken grant is not a connection as far as the section is concerned:
+      // nothing can be listed through it, so offering a catalogue would be a
+      // button that fails. The reconnect prompt is this card's to show, and it
+      // is already showing it.
+      onConnectionChange?.(next.connected && !next.brokenReason);
     } finally {
       setLoading(false);
     }
@@ -164,8 +199,13 @@ export default function YouTubeConnectCard() {
    * connection to exist: the Google screen asks for the write scope either way,
    * so a "Connect YouTube" button with no tick beside it would acquire
    * description-write access without ever naming it (MEAL-74).
+   *
+   * Not applied when embedded. There the creator has just picked YouTube from a
+   * dropdown, which is the same statement the link was standing in for, made
+   * more directly — and hiding the panel they navigated to would be a dead end
+   * with nothing on it.
    */
-  if (!status.hasChannel) return null;
+  if (!status.hasChannel && !embedded) return null;
 
   /**
    * A grant row exists — healthy or broken. Broken still needs reconnecting,
@@ -182,10 +222,12 @@ export default function YouTubeConnectCard() {
   const consentLocked = hasConnection && !status.canWriteDescriptions && !status.appendOptIn;
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+    <div className={embedded ? '' : 'bg-white rounded-2xl shadow-sm border border-gray-100 p-6'}>
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">YouTube</p>
+          {!embedded && (
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">YouTube</p>
+          )}
           <h2 className="text-base font-bold text-gray-900 leading-tight">
             {status.connected ? status.channel?.title || 'Connected channel' : 'Connect your channel'}
           </h2>

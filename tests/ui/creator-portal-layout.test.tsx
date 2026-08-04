@@ -145,12 +145,12 @@ describe('the portal separates meals from settings', () => {
 
     // The settings cards are mounted — they read their own state on load, as
     // they always have — but they are not on screen in front of the meals.
-    expect(screen.getByLabelText('Website')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /save links/i })).toBeNull();
+    expect(screen.getByLabelText('Where you publish')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
 
     fireEvent.click(tab(/^Settings/));
 
-    expect(screen.getByRole('button', { name: /save links/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
     expect(tab(/^Settings/).getAttribute('aria-selected')).toBe('true');
     // And the meals list is out of the way rather than gone.
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
@@ -164,12 +164,19 @@ describe('the portal separates meals from settings', () => {
     await screen.findByText('Weeknight Chilli');
     fireEvent.click(tab(/^Settings/));
 
-    // The profile, and the four links. Nothing that was on the old single
-    // column has been dropped on the way to a wider layout.
+    // The profile, and the one section that replaced the four source cards
+    // (MEAL-101). Nothing that was on the old single column has been dropped on
+    // the way to a wider layout — the four cards became one dropdown and a body
+    // that follows it, and all four sources are still named in it.
     expect(screen.getByRole('button', { name: /edit profile/i })).toBeTruthy();
-    for (const label of ['Website', 'YouTube', 'Instagram', 'TikTok']) {
-      expect(screen.getByLabelText(label)).toBeTruthy();
-    }
+    expect(screen.getByTestId('sync-source-section')).toBeTruthy();
+
+    const picker = screen.getByLabelText('Where you publish') as HTMLSelectElement;
+    const options = Array.from(picker.options).map(option => option.textContent ?? '');
+    expect(options.join(' | ')).toMatch(/Website/);
+    expect(options.join(' | ')).toMatch(/YouTube/);
+    expect(options.join(' | ')).toMatch(/Instagram/);
+    expect(options.join(' | ')).toMatch(/TikTok/);
   });
 });
 

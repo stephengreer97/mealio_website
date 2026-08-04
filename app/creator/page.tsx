@@ -6,10 +6,7 @@ import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import ImportLinkBar from '@/components/ImportLinkBar';
 import ImportFieldNotice, { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
-import YouTubeConnectCard from '@/components/YouTubeConnectCard';
-import PlatformLinksCard from '@/components/PlatformLinksCard';
-import PlatformConnectCard from '@/components/PlatformConnectCard';
-import { SOURCE_COLUMNS, type PlatformSource } from '@/lib/creator-sources';
+import SyncSourceSection from '@/components/SyncSourceSection';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import {
   appendIngredientState,
@@ -1470,16 +1467,16 @@ export default function CreatorPortal() {
     setMealSource(prev => prev.trim() ? prev : url);
   };
 
-  const handleLinksSaved = (links: Record<PlatformSource, string | null>) => {
-    setCreator(prev => {
-      if (!prev) return prev;
-      const next = { ...prev };
-      for (const [source, url] of Object.entries(links)) {
-        (next as Record<string, unknown>)[SOURCE_COLUMNS[source as PlatformSource]] = url;
-      }
-      return next;
-    });
-    setLinksVersion(v => v + 1);
+  /**
+   * Keeps the portal's copy of the row in step with what the sync section wrote.
+   *
+   * The section writes columns the rest of this page reads — `website_url` and
+   * `feed_url` when a site is saved, `primary_source` and `import_opt_in` when a
+   * source is chosen — and re-fetching the whole portal to learn them would
+   * blank a screen the creator is in the middle of using.
+   */
+  const handleSourceSaved = (changes: Record<string, unknown>) => {
+    setCreator(prev => (prev ? { ...prev, ...changes } : prev));
   };
 
   const handlePublish = async (e: React.SyntheticEvent, confirmDuplicate = false) => {
@@ -2202,16 +2199,13 @@ export default function CreatorPortal() {
                 )}
               </div>
 
-              {/* ── Where they publish (MEAL-94), and connecting it (MEAL-74 /
-                  MEAL-82 / MEAL-83) ──
-                  Every connect card is remounted when the links change: adding the
-                  link for a platform is what makes its card appear at all (MEAL-78),
-                  and a card that only read its status on first mount would not know.
-                  The same argument covers all three, so they share `linksVersion`. */}
-              {creator && <PlatformLinksCard creator={creator} onSaved={handleLinksSaved} />}
-              <YouTubeConnectCard key={linksVersion} />
-              <PlatformConnectCard platform="instagram" key={`ig-${linksVersion}`} />
-              <PlatformConnectCard platform="tiktok" key={`tt-${linksVersion}`} />
+              {/* ── Sync your content with Mealio (MEAL-101) ──
+                  One section in place of four cards: a link editor and three
+                  connect cards (MEAL-94 / 74 / 82 / 83), which between them never
+                  said what any of it was for. The dropdown picks the source and
+                  the body follows it; Instagram and TikTok are in the list,
+                  disabled, with the reason on the option. */}
+              {creator && <SyncSourceSection creator={creator} onSaved={handleSourceSaved} />}
 
             </div>
           </section>
