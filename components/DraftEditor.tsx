@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ALL_UNITS } from '@/lib/import/ingredients';
+import { ALL_UNITS, COUNT_UNIT } from '@/lib/import/ingredients';
 import { canonicalizeTags, MAX_MEAL_TAGS, MEAL_TAGS, tagCapError, toggleTag } from '@/lib/import/vocab';
 import type { ImportSummary } from '@/lib/import/draft-form';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
@@ -245,7 +245,12 @@ export default function DraftEditor({
                 the trap was one-way: touching the dropdown lost the unit and
                 there was no way to put it back.
               */}
-              <option value="qty">Qty</option>
+              {/* From the constant, not typed in. Written as a literal it
+                  said "Qty" while everything else — the value it submits, the
+                  publish form's own picker, the app — says "qty", so the one
+                  place a creator edits an imported recipe was the one place
+                  capitalising it. */}
+              <option value={COUNT_UNIT}>{COUNT_UNIT}</option>
               {ALL_UNITS.map(unit => <option key={unit} value={unit}>{unit}</option>)}
             </select>
             <button type="button" onClick={() => removeIngredient(i)} style={{ ...secondaryButton, padding: '6px 10px' }}>×</button>
