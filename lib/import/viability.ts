@@ -114,6 +114,21 @@ export interface ViabilityReport {
    */
   feed: { url: string; kind: DiscoveredFeed['kind']; via: DiscoveredFeed['via']; entries: FeedEntry[] } | null;
   unsupported: UnsupportedSource | null;
+  /**
+   * Which way it failed, when it failed before anything could be gated
+   * (MEAL-101).
+   *
+   * `summary` is the operator's paragraph and it reads well to an operator; it
+   * is not something a creator-facing screen can branch on, and matching prose
+   * to decide what to tell somebody is how a reworded sentence silently becomes
+   * the wrong error message. The probe already knows — `no-feed` and
+   * `blocked-by-robots` are different facts with different next moves — so the
+   * word is carried out rather than folded away.
+   *
+   * Null whenever items were actually read and gated: at that point the outcome
+   * itself is the answer.
+   */
+  reason: string | null;
   costUsd: number;
 }
 
@@ -155,7 +170,13 @@ export interface ProbeContext {
 
 export type ProbeResult =
   | { ok: true; items: ProbedItem[]; feed?: DiscoveredFeed }
-  | { ok: false; detail: string; unsupportedId?: string };
+  /**
+   * `reason` is the machine-readable half of `detail` — `no-feed`,
+   * `blocked-by-robots`, `unreachable`, `not-a-feed`, `no-entries`,
+   * `not-connected`. Optional so a probe that has nothing better to say than its
+   * sentence is not forced to invent a taxonomy.
+   */
+  | { ok: false; detail: string; reason?: string; unsupportedId?: string };
 
 /**
  * What a platform has to provide to be checkable.
@@ -209,12 +230,13 @@ export const websiteProbe: SourceProbe = {
     try {
       origin = new URL(link).origin;
     } catch {
-      return { ok: false, detail: `"${link}" is not a URL we can fetch.` };
+      return { ok: false, reason: 'unreachable', detail: `"${link}" is not a URL we can fetch.` };
     }
 
     if (context.feedUrl && !isOnSameSite(link, context.feedUrl)) {
       return {
         ok: false,
+        reason: 'feed-off-site',
         detail:
           `${context.feedUrl} is not on ${origin}. A feed on someone else's host would have us read ` +
           "and report a stranger's posts under this creator's name.",
@@ -239,13 +261,13 @@ export const websiteProbe: SourceProbe = {
       // it is on a medium.com host — worth saying so, because the operator's
       // next move is the same either way.
       return discovery.reason === 'blocked-by-site'
-        ? { ok: false, detail: discovery.detail, unsupportedId: 'medium' }
-        : { ok: false, detail: discovery.detail };
+        ? { ok: false, reason: discovery.reason, detail: discovery.detail, unsupportedId: 'medium' }
+        : { ok: false, reason: discovery.reason, detail: discovery.detail };
     }
 
     const entries = discovery.feed.entries.slice(0, context.maxItems);
     if (entries.length === 0) {
-      return { ok: false, detail: `${discovery.feed.url} is a valid feed but lists no entries.` };
+      return { ok: false, reason: 'no-entries', detail: `${discovery.feed.url} is a valid feed but lists no entries.` };
     }
 
     const items = await mapWithConcurrency(entries, FETCH_CONCURRENCY, async (entry): Promise<ProbedItem> => {
@@ -393,6 +415,7 @@ export const youtubeProbe: SourceProbe = {
 function notConnectedYet(source: PlatformSource): ProbeResult {
   return {
     ok: false,
+    reason: 'not-connected',
     detail:
       `Not measurable until connected. ${SOURCE_LABELS[source]} cannot be checked until this creator ` +
       `connects their account: there is nothing ${SOURCE_LABELS[source]} lets us read without a grant. ` +
@@ -512,6 +535,7 @@ function report(partial: Partial<ViabilityReport> & Pick<ViabilityReport, 'sourc
     items: [],
     feed: null,
     unsupported: null,
+    reason: null,
     costUsd: 0,
     ...partial,
   };
@@ -556,6 +580,7 @@ export async function runViabilityCheck(
         ? `${probed.detail}\n\nThis is the ${matched.label} failure mode. ${matched.detail}`
         : `${SOURCE_LABELS[source]} could not be checked: ${probed.detail}`,
       unsupported: matched,
+      reason: probed.reason ?? null,
     });
   }
 
@@ -612,6 +637,10 @@ export async function runViabilityCheck(
     return report({
       ...base,
       outcome: 'unavailable',
+      // Nothing was gated, so the reason still has to come from *how* it failed:
+      // an empty account, a classifier outage and ten unreadable pages are three
+      // different next moves.
+      reason: emptyAccount ? 'empty' : unavailableVerdicts > 0 ? 'classifier-unavailable' : 'unreadable-items',
       summary: emptyAccount
         ? `We reached this ${SOURCE_LABELS[source]} source and it has nothing posted, so there was nothing to ` +
           'measure. That is an answer rather than a failure — this is not a verdict on the creator, and it ' +

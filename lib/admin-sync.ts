@@ -37,11 +37,14 @@ import { createImportDraft, reviewDraft, type DraftReviewBy, type ImportDraft } 
 import { log } from '@/lib/logger';
 import {
   isConnectedPlatform,
+  isOnSameSite,
+  platformSourceForUrl,
   SOURCE_COLUMNS,
   SOURCE_LABELS,
   type ConnectedPlatform,
   type PlatformSource,
 } from '@/lib/creator-sources';
+import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
 import { loadConnection, usableAccessToken } from '@/lib/platform-tokens';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
 import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
@@ -809,6 +812,117 @@ async function buildTikTokCatalog(deps: SyncDeps, creator: SyncCreator): Promise
   );
 
   return { ok: true, source: 'tiktok', feed: null, entries, truncated: listed.truncated };
+}
+
+// ── Turning a ticked checklist into a run ────────────────────────────────────
+
+/**
+ * `normalizeUrl` insists on a scheme, and a checklist row (or an operator
+ * pasting `theirblog.com/x`) has given us a perfectly good link. Same leniency
+ * as the creator link fields.
+ */
+export function toSyncUrl(raw: unknown): string | null {
+  const input = typeof raw === 'string' ? raw.trim() : '';
+  if (!input) return null;
+  return normalizeUrl(/^[a-z][a-z0-9+.-]*:/i.test(input) ? input : `https://${input}`);
+}
+
+export function newSyncItem(input: {
+  itemId: string;
+  url: string;
+  title?: unknown;
+  publishedAt?: unknown;
+}): SyncItem {
+  return {
+    itemId: input.itemId,
+    url: input.url,
+    title: typeof input.title === 'string' ? input.title.slice(0, 300) : null,
+    publishedAt: typeof input.publishedAt === 'string' ? input.publishedAt : null,
+    status: 'pending',
+    detail: null,
+    draftId: null,
+    mealName: null,
+    needALook: null,
+    photoUrl: null,
+    ingredientCount: null,
+    costUsd: 0,
+  };
+}
+
+/**
+ * Validates a ticked selection into the items a run is made of.
+ *
+ * Lifted out of the admin route when MEAL-101 gave creators the same checklist.
+ * Every rule below is about **whose posts these are**, and a rule enforced on
+ * one of two routes that accept a selection is the rule not existing — the
+ * creator's own checklist is not more trustworthy than an operator's, because
+ * neither of them is what arrives: what arrives is a request body.
+ *
+ *   - Every URL has to be on the creator's own site. The client got these rows
+ *     from their own feed, so a cross-host entry means a hijacked feed or a
+ *     hand-edited request, and publishing a stranger's recipe under a creator's
+ *     name is what MEAL-77 exists to prevent.
+ *   - A YouTube row's URL has to be the watch page for the very video id being
+ *     recorded, or `creator_source_items` ends up describing one video with
+ *     another's link — which is what MEAL-79 later reads to decide which video a
+ *     published meal came from.
+ *   - Instagram and TikTok cannot get that treatment (a permalink carries a
+ *     shortcode, not the media id), so the host is what is insisted on.
+ *
+ * The three connected platforms are exempt from the *link* requirement, because
+ * the account comes from the OAuth grant: a creator who connected properly can
+ * be synced with no `youtube_url` on their row at all. They are not exempt from
+ * a check — the rules above are stricter, and the worker reads every item out of
+ * the creator's own account listing by id whatever the URL claims.
+ *
+ * The `feed_url` fallback is website-only. It is the confirmed feed for their
+ * *site*, so letting a YouTube selection fall back to it would host-check videos
+ * against a blog, refusing every one of them for a reason no error message could
+ * sensibly explain.
+ */
+export function buildSelectionItems(
+  creator: SyncCreator,
+  source: PlatformSource,
+  raw: unknown,
+  max: number,
+): { ok: true; items: SyncItem[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { ok: false, error: 'Select at least one item.' };
+  }
+  if (raw.length > max) {
+    return { ok: false, error: `That is ${raw.length} items. Sync at most ${max} at a time.` };
+  }
+
+  const site =
+    (creator[SOURCE_COLUMNS[source] as keyof SyncCreator] as string | null) ||
+    (source === 'website' ? creator.feed_url : null);
+  if (!site && !isConnectedPlatform(source)) {
+    return { ok: false, error: 'This creator has no link for that source.' };
+  }
+
+  const items: SyncItem[] = [];
+  for (const entry of raw as Array<Record<string, unknown>>) {
+    const url = toSyncUrl(entry?.url);
+    const itemId = typeof entry?.itemId === 'string' && entry.itemId ? entry.itemId : url && urlIdentity(url);
+    if (!url || !itemId) {
+      return { ok: false, error: 'Every selected item needs a URL.' };
+    }
+    if (site && !isOnSameSite(site, url)) {
+      return {
+        ok: false,
+        error: `${url} is not on this creator's own ${SOURCE_LABELS[source]}. Refusing the whole selection.`,
+      };
+    }
+    if (source === 'youtube' && url !== `https://www.youtube.com/watch?v=${itemId}`) {
+      return { ok: false, error: `${url} is not the watch page for video ${itemId}. Refusing the whole selection.` };
+    }
+    if ((source === 'instagram' || source === 'tiktok') && platformSourceForUrl(url) !== source) {
+      return { ok: false, error: `${url} is not a ${SOURCE_LABELS[source]} link. Refusing the whole selection.` };
+    }
+    items.push(newSyncItem({ itemId, url, title: entry?.title, publishedAt: entry?.publishedAt }));
+  }
+
+  return { ok: true, items };
 }
 
 // ── Running a selection ──────────────────────────────────────────────────────

@@ -2,17 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
-import {
-  isConnectedPlatform,
-  isOnSameSite,
-  platformSourceForUrl,
-  SOURCE_COLUMNS,
-  SOURCE_LABELS,
-  type PlatformSource,
-} from '@/lib/creator-sources';
+import { platformSourceForUrl, SOURCE_COLUMNS, type PlatformSource } from '@/lib/creator-sources';
 import { sourceItemId } from '@/lib/creator-meals';
-import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
-import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncItem } from '@/lib/admin-sync';
+import { urlIdentity } from '@/lib/import/ssrf';
+import {
+  buildSelectionItems,
+  CATALOG_MAX_ENTRIES,
+  newSyncItem,
+  retrySyncItem,
+  summariseRun,
+  toSyncRun,
+  toSyncUrl,
+  type SyncItem,
+} from '@/lib/admin-sync';
 
 /**
  * Admin sync runs (MEAL-90).
@@ -33,33 +35,6 @@ import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncI
 const MAX_SELECTION = CATALOG_MAX_ENTRIES;
 
 const CREATOR_FIELDS = 'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url';
-
-/**
- * `normalizeUrl` insists on a scheme, and an operator pasting `theirblog.com/x`
- * has given us a perfectly good link. Same leniency as the creator link fields.
- */
-function toUrl(raw: unknown): string | null {
-  const input = typeof raw === 'string' ? raw.trim() : '';
-  if (!input) return null;
-  return normalizeUrl(/^[a-z][a-z0-9+.-]*:/i.test(input) ? input : `https://${input}`);
-}
-
-function newItem(input: { itemId: string; url: string; title?: unknown; publishedAt?: unknown }): SyncItem {
-  return {
-    itemId: input.itemId,
-    url: input.url,
-    title: typeof input.title === 'string' ? input.title.slice(0, 300) : null,
-    publishedAt: typeof input.publishedAt === 'string' ? input.publishedAt : null,
-    status: 'pending',
-    detail: null,
-    draftId: null,
-    mealName: null,
-    needALook: null,
-    photoUrl: null,
-    ingredientCount: null,
-    costUsd: 0,
-  };
-}
 
 export async function POST(request: NextRequest) {
   const admin = await requireAdmin(request);
@@ -103,7 +78,7 @@ export async function POST(request: NextRequest) {
   let items: SyncItem[];
 
   if (mode === 'link') {
-    const url = toUrl(body.url);
+    const url = toSyncUrl(body.url);
     if (!url) {
       return NextResponse.json({ error: 'That does not look like an http or https link.' }, { status: 400 });
     }
@@ -120,91 +95,18 @@ export async function POST(request: NextRequest) {
     // key on the video id, because that is what the catalog, the uploads-feed
     // lookup that reads the video, and MEAL-79's relationship all use — keyed on
     // the URL the run cannot even find the video it was given.
-    items = [newItem({ itemId: sourceItemId(source, urlIdentity(url) ?? url), url })];
+    items = [newSyncItem({ itemId: sourceItemId(source, urlIdentity(url) ?? url), url })];
   } else {
     const requested = body.source;
     source = typeof requested === 'string' && requested in SOURCE_COLUMNS ? (requested as PlatformSource) : 'website';
-    if (!Array.isArray(body.items) || body.items.length === 0) {
-      return NextResponse.json({ error: 'Select at least one item.' }, { status: 400 });
+    // Every rule about whose posts these are lives in `buildSelectionItems`,
+    // shared with the creator's own checklist (MEAL-101). A guard enforced on
+    // one of two routes that accept a selection is the guard not existing.
+    const selection = buildSelectionItems(creator, source, body.items, MAX_SELECTION);
+    if (!selection.ok) {
+      return NextResponse.json({ error: selection.error }, { status: 400 });
     }
-    if (body.items.length > MAX_SELECTION) {
-      return NextResponse.json(
-        { error: `That is ${body.items.length} items. Sync at most ${MAX_SELECTION} at a time.` },
-        { status: 400 },
-      );
-    }
-
-    // Every URL has to be on the creator's own site. The client got these rows
-    // from their feed, so a cross-host entry means either a hijacked feed or a
-    // hand-edited request — and publishing a stranger's recipe under a creator's
-    // name is precisely the outcome MEAL-77 exists to prevent.
-    //
-    // All three connected platforms are exempt from the *link* requirement,
-    // because the account comes from the OAuth grant — a creator who connected
-    // properly can be synced with no `youtube_url` / `instagram_url` /
-    // `tiktok_url` on their row at all. They are not exempt from a check: the
-    // rules below are stricter, and the worker reads every item out of the
-    // creator's own account listing by id whatever the URL claims.
-    //
-    // The `feed_url` fallback is website-only. It is the confirmed feed for
-    // their *site*, so letting a YouTube or TikTok selection fall back to it
-    // would host-check videos against a blog — refusing every one of them, and
-    // for a reason no error message could sensibly explain.
-    const site =
-      (creator[SOURCE_COLUMNS[source] as keyof typeof creator] as string | null) ||
-      (source === 'website' ? creator.feed_url : null);
-    if (!site && !isConnectedPlatform(source)) {
-      return NextResponse.json({ error: 'This creator has no link for that source.' }, { status: 400 });
-    }
-
-    items = [];
-    for (const raw of body.items as Array<Record<string, unknown>>) {
-      const url = toUrl(raw?.url);
-      const itemId = typeof raw?.itemId === 'string' && raw.itemId ? raw.itemId : url && urlIdentity(url);
-      if (!url || !itemId) {
-        return NextResponse.json({ error: 'Every selected item needs a URL.' }, { status: 400 });
-      }
-      // Checked for every source that has a link to check against — not just
-      // `website`, because "only for one source" is the kind of exemption that
-      // is still there when the source that needed it arrives, and the guard's
-      // whole value is that it holds for a hand-written request.
-      //
-      // `site` can only be absent for YouTube: the `!site` guard above already
-      // refused every other source without a link, and YouTube is exempt from
-      // the *link* requirement because the channel comes from the OAuth grant.
-      // It is not exempt from a check — the watch-page rule immediately below
-      // is the stricter one, and the worker reads each video out of the
-      // creator's own uploads feed by id whatever the URL claims.
-      if (site && !isOnSameSite(site, url)) {
-        return NextResponse.json(
-          { error: `${url} is not on this creator's own ${SOURCE_LABELS[source]}. Refusing the whole selection.` },
-          { status: 400 },
-        );
-      }
-      // The recorded URL has to be the watch page for the very video id being
-      // recorded. Otherwise `creator_source_items` ends up describing one video
-      // with another's link, which is what MEAL-79 later reads to decide which
-      // video a published meal came from.
-      if (source === 'youtube' && url !== `https://www.youtube.com/watch?v=${itemId}`) {
-        return NextResponse.json(
-          { error: `${url} is not the watch page for video ${itemId}. Refusing the whole selection.` },
-          { status: 400 },
-        );
-      }
-      // Instagram and TikTok cannot get the same treatment: a permalink carries
-      // a shortcode, not the media id, and there is no way to derive one from
-      // the other. What can be insisted on is the host — a row claiming an
-      // Instagram post lives on somebody else's domain is either a hand-edited
-      // request or a bug, and either way it is not a URL to record under this
-      // creator's name.
-      if ((source === 'instagram' || source === 'tiktok') && platformSourceForUrl(url) !== source) {
-        return NextResponse.json(
-          { error: `${url} is not a ${SOURCE_LABELS[source]} link. Refusing the whole selection.` },
-          { status: 400 },
-        );
-      }
-      items.push(newItem({ itemId, url, title: raw?.title, publishedAt: raw?.publishedAt }));
-    }
+    items = selection.items;
   }
 
   const { data: run, error } = await supabase

@@ -154,31 +154,36 @@ describe('PATCH /api/creator/me — platform links', () => {
   });
 
   describe('adding a link never turns polling on', () => {
-    it('leaves primary_source and import_opt_in exactly as the operator set them', async () => {
+    it('leaves primary_source and import_opt_in alone', async () => {
       asUser();
       fakeDb.seed('creators', [creatorRow()]);
 
       await patch(token, { links: { youtube: 'youtube.com/@chefsarah', instagram: 'instagram.com/chefsarah' } });
 
+      // Since MEAL-101 the creator *may* choose their source — in the box that
+      // is about syncing, by name, in its own field. Saying "I have a channel"
+      // is still not saying "read it", and a link edit must never be read as an
+      // answer to a question nobody asked here.
       const row = fakeDb.row('creators', 'c1');
       expect(row?.primary_source).toBe('none');
       expect(row?.import_opt_in).toBe(false);
     });
 
-    it('ignores polling fields smuggled into the same request', async () => {
+    it('ignores the raw column names, and the opt-in on its own', async () => {
       asUser();
       fakeDb.seed('creators', [creatorRow()]);
 
       await patch(token, {
         links: { youtube: 'youtube.com/@chefsarah' },
-        primarySource: 'youtube',
+        // Neither of these is a field this route has. `import_opt_in` is not
+        // separately settable by a creator at all: consent to be read arrives
+        // with the source choice or not at all, so an opt-in with no source
+        // named is a request to poll nothing, which is not a state that exists.
         importOptIn: true,
         primary_source: 'youtube',
         import_opt_in: true,
       });
 
-      // A creator saying "I have a channel" is not a creator opting into having
-      // it polled. Only the admin route writes these.
       const row = fakeDb.row('creators', 'c1');
       expect(row?.primary_source).toBe('none');
       expect(row?.import_opt_in).toBe(false);

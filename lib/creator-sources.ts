@@ -486,6 +486,288 @@ export function describeHostMismatch(websiteUrl: string, feedUrl: string): strin
   return `That feed (${feed}) is not on the creator's own site (${site}). Refusing it: a feed on someone else's host would import their recipes under this creator's name.`;
 }
 
+// ── What a creator may choose for themselves (MEAL-101) ──────────────────────
+
+/**
+ * One entry in the creator's source picker.
+ *
+ * `blockedReason` travels *with* the option rather than being discovered after
+ * it is picked. Instagram and TikTok are real places creators publish and both
+ * are genuinely unavailable today, so leaving them out would read as "Mealio
+ * does not know about Instagram" and offering them live would be a dead end
+ * reached after a decision — which is the worst order to put those two things
+ * in (MEAL-101). They are listed, unselectable, and say why.
+ */
+export interface CreatorSourceOption {
+  source: PlatformSource;
+  /** The dropdown's own text, reason included. One string, because an `<option>` has one. */
+  label: string;
+  /** Null when a creator may choose it; otherwise why not, in their terms. */
+  blockedReason: string | null;
+}
+
+export const CREATOR_SOURCE_OPTIONS: readonly CreatorSourceOption[] = [
+  { source: 'website', label: 'Website or blog', blockedReason: null },
+  { source: 'youtube', label: 'YouTube', blockedReason: null },
+  {
+    source: 'instagram',
+    label: 'Instagram — not available yet',
+    blockedReason:
+      'Instagram is waiting on Meta’s app review. Until they approve Mealio, Instagram hands us nothing at ' +
+      'all from your account, so there would be nothing to sync.',
+  },
+  {
+    source: 'tiktok',
+    label: 'TikTok — not available yet',
+    blockedReason:
+      'TikTok is not available yet: Mealio has not been submitted to TikTok for review. Until it has, TikTok ' +
+      'gives apps no access to your videos, so there would be nothing to sync.',
+  },
+];
+
+/**
+ * How many of their own back-catalogue posts a creator may import in one run
+ * (MEAL-101).
+ *
+ * Every ticked item is a real extraction — a fetch, a gate call and a model call
+ * — so a hundred of them is roughly $1.60 of somebody else's money spent by
+ * somebody clicking a checkbox. The creator's screen does not name a price (the
+ * admin's does; a creator being shown the unit cost of their own recipes is a
+ * strange thing to do to them), but the cap is visible while they tick, because
+ * a limit discovered at the moment it refuses you is a limit that reads as a
+ * bug.
+ *
+ * Here rather than in `lib/admin-sync.ts` because the picker is a client
+ * component and that module reaches the import pipeline and undici — a client
+ * bundle must never follow that path, so it can only ever import types from it.
+ */
+export const CREATOR_SELECTION_MAX = 100;
+
+/** Why a creator cannot pick this source, or null when they can. */
+export function creatorSourceBlockedReason(source: PlatformSource): string | null {
+  return CREATOR_SOURCE_OPTIONS.find((option) => option.source === source)?.blockedReason ?? null;
+}
+
+/**
+ * Has this creator done the thing that makes a source readable?
+ *
+ * A website is ready once its link is saved **and** a feed on that same site has
+ * been found — which is what `POST /api/creator/website` writes after the
+ * viability check has actually read posts from it. The other three are ready
+ * only with an OAuth grant: they hand over nothing without one, so a link on the
+ * row says where a creator publishes and nothing about what we can read.
+ *
+ * The same-site clause is not belt-and-braces. A creator who moves their blog
+ * leaves `feed_url` pointing at the old host, and both columns are still
+ * populated — so "both present" would call that ready and start polling a feed
+ * that is no longer theirs.
+ */
+export function isCreatorSourceReady(
+  row: PollingRow,
+  source: PlatformSource,
+  grants: readonly string[] = [],
+): boolean {
+  if (source === 'website') {
+    const website = typeof row[SOURCE_COLUMNS.website] === 'string' ? String(row[SOURCE_COLUMNS.website]) : '';
+    const feed = typeof row.feed_url === 'string' ? row.feed_url : '';
+    return Boolean(website && feed) && isOnSameSite(website, feed);
+  }
+  return grants.includes(source);
+}
+
+/**
+ * The creator's own source choice, judged and turned into columns (MEAL-101).
+ *
+ * `primary_source` and `import_opt_in` were an operator decision (MEAL-81) and
+ * on this path they are the creator's: they pick where they publish and polling
+ * starts, with no operator in the loop. **The admin route still writes both** —
+ * it stopped being the only way in, it did not go away.
+ *
+ * Three refusals, each with its own sentence, and then the shared backstop:
+ *
+ *   1. Not one of the values the CHECK constraint allows. Validated against
+ *      `PRIMARY_SOURCES` rather than a list written out here, so the column and
+ *      this function cannot drift apart.
+ *   2. A source nobody can use yet — Instagram, TikTok. The dropdown disables
+ *      them, and a request is not a dropdown.
+ *   3. A source they have not connected. Picking YouTube without connecting a
+ *      channel would set a row the poller reads and finds nothing behind.
+ *
+ * `none` is always allowed and is the off switch: a creator may always stop us
+ * reading them, whatever state the row is in.
+ */
+export function chooseCreatorSource(
+  row: PollingRow,
+  requested: unknown,
+  grants: readonly string[] = [],
+): { ok: true; update: Record<string, unknown> } | { ok: false; error: string } {
+  if (!isPrimarySource(requested)) {
+    return {
+      ok: false,
+      error:
+        `"${String(requested)}" is not somewhere Mealio can sync from. Choose your website, YouTube, or ` +
+        'turn syncing off.',
+    };
+  }
+
+  // Off is always available. Nothing about a row can make a creator unable to
+  // withdraw, and a switch that only moves one way is not consent.
+  if (requested === 'none') {
+    return { ok: true, update: { primary_source: 'none', import_opt_in: false } };
+  }
+
+  const blocked = creatorSourceBlockedReason(requested);
+  if (blocked) return { ok: false, error: blocked };
+
+  if (!isCreatorSourceReady(row, requested, grants)) {
+    return {
+      ok: false,
+      error:
+        requested === 'website'
+          ? 'Save your website below first. Mealio reads your site and checks it can actually import recipes ' +
+            'from it before it will sync from there.'
+          : `Connect your ${SOURCE_LABELS[requested]} account first — ${SOURCE_LABELS[requested]} shows Mealio ` +
+            'nothing until you do, so there would be nothing to sync.',
+    };
+  }
+
+  // The backstop, on the row this choice would leave behind, through the same
+  // function the admin picker uses. Nothing a creator can reach through the UI
+  // should get here — the readiness check above covers the two cases they can
+  // produce — so its verdict is reported in one plain sentence rather than the
+  // operator wording, which names screens a creator cannot open.
+  const verdict = checkPollingInvariants(
+    { ...row, primary_source: requested, import_opt_in: true },
+    true,
+  );
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      error:
+        'Something about your import settings does not add up, so we have not started syncing — we would ' +
+        'rather stop than publish the wrong thing under your name. Get in touch and we will sort it out.',
+    };
+  }
+
+  return {
+    ok: true,
+    update: {
+      primary_source: requested,
+      import_opt_in: true,
+      // The creator has just answered whatever question the pause was waiting
+      // for. Left behind, the Sources tab would report a paused import beside a
+      // creator that is being polled, and the next operator would have to work
+      // out which of the two to believe.
+      import_paused_reason: null,
+      import_paused_at: null,
+    },
+  };
+}
+
+/**
+ * What went wrong with a creator's website, said to the creator (MEAL-101).
+ *
+ * Save runs the **full** viability check — find the feed, read real posts, ask
+ * whether recipes can actually be extracted — rather than a reachability ping,
+ * because "your site answered a request" is not the question anybody has. The
+ * price of asking the real question is that it can fail in six different ways,
+ * and a creator handed `Website could not be checked: 404 on /feed` has been
+ * told nothing they can act on.
+ *
+ * So each failure gets a sentence naming the thing they would change. No status
+ * codes, no `robots.txt` fetch traces, no talk of feeds until feeds are what
+ * went wrong.
+ *
+ * Returns null when the site *is* importable, which includes `partial` — a blog
+ * where three posts in ten are recipes works, it just syncs less often, and
+ * refusing it would be Mealio deciding a creator publishes the wrong things.
+ */
+export interface WebsiteCheckOutcome {
+  outcome: ViabilityOutcome;
+  /** `ViabilityReport.reason` — the machine-readable half. Null when items were gated. */
+  reason: string | null;
+  /** Items the gate actually judged. */
+  checked: number;
+  passed: number;
+}
+
+export function describeWebsiteImportFailure(site: string, result: WebsiteCheckOutcome): string | null {
+  if (result.outcome === 'viable' || result.outcome === 'partial') return null;
+
+  if (result.outcome === 'not-viable') {
+    return (
+      `We read the ${result.checked} most recent ${result.checked === 1 ? 'post' : 'posts'} on ${site} and none ` +
+      'of them looked like a recipe — no ingredients, no method. Mealio can only sync posts with the recipe ' +
+      'written out in them. If your recipes live somewhere else on your site, or on another site, point us ' +
+      'there instead.'
+    );
+  }
+
+  // Ruled out before anything was fetched — Medium today. Said as a fact about
+  // the platform rather than about them, because it is one, and said without a
+  // "try again" they would spend the afternoon on.
+  if (result.outcome === 'unsupported' && !result.reason) {
+    return (
+      `${site} is on a platform that blocks Mealio outright — we cannot read posts from it, and no setting on ` +
+      'your side changes that. If your recipes are also on your own site, point us there instead.'
+    );
+  }
+
+  switch (result.reason) {
+    case 'blocked-by-robots':
+      return (
+        `${site} has a robots.txt file telling automated readers to stay away, and Mealio respects it. Allow ` +
+        'Mealio (or automated readers generally) in that file and save this again — until then we will not ' +
+        'read your posts.'
+      );
+    case 'blocked-by-site':
+      return (
+        `${site} refused to let Mealio read it at all. Some hosts block anything that is not a person with a ` +
+        'browser, and there is nothing we can change from our end. If your recipes are also somewhere else — ' +
+        'your own domain, a different blog — point us there instead.'
+      );
+    case 'unreachable':
+      return (
+        `We could not reach ${site}. Check the address is right and that the site is up, then save it again. ` +
+        'If it is behind a login or a “coming soon” page, we cannot read it.'
+      );
+    case 'no-feed':
+      return (
+        `We could not find a feed on ${site}. Mealio follows your posts through an RSS or Atom feed — most ` +
+        'blogging platforms publish one automatically, often at /feed or /rss. If yours is somewhere unusual, ' +
+        'paste the feed address here instead of your homepage.'
+      );
+    case 'feed-off-site':
+      return (
+        `The feed we found is not on ${site}, so we cannot be sure it is yours — and importing somebody else's ` +
+        'posts under your name is the one thing we will not risk. Paste the feed address on your own site.'
+      );
+    case 'no-entries':
+    case 'not-a-feed':
+      return (
+        `We found a feed on ${site} but could not read any posts out of it. It may be empty, or in a format we ` +
+        'do not understand. If you have published posts recently, send us the address and we will look.'
+      );
+    case 'unreadable-items':
+      return (
+        `We found your posts on ${site} but could not open any of them — every one we tried refused us or timed ` +
+        'out. Try again in a few minutes; if it keeps happening, get in touch.'
+      );
+    case 'classifier-unavailable':
+      return (
+        'We could not finish checking your site just now — the part of Mealio that reads posts was unavailable. ' +
+        'This says nothing about your site. Try again in a few minutes.'
+      );
+    case 'empty':
+      return `We reached ${site} and found nothing posted yet. Publish a recipe and save this again.`;
+    default:
+      return (
+        `We could not read ${site}. Check the address is right and save it again — if it keeps failing, get in ` +
+        'touch and we will look at it with you.'
+      );
+  }
+}
+
 // ── Known-unsupported sources ────────────────────────────────────────────────
 
 export interface UnsupportedSource {

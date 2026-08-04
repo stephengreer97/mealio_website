@@ -7,6 +7,7 @@ import { adminNotifyEmails, sendCreatorSourceMovedEmail } from '@/lib/email';
 import { HANDLE_RE, RESERVED_HANDLES, normalizeHandle } from '@/lib/handles';
 import {
   checkPollingInvariants,
+  chooseCreatorSource,
   isConnectedPlatform,
   isPlatformSource,
   isPrimarySource,
@@ -85,11 +86,14 @@ function applyLinkEdits(
     if ((stored.ok ? stored.url : (creator[column] ?? null)) !== result.url) touched.push(key);
   }
 
-  // Adding a link tells us a place exists. It does not opt the creator into
-  // anything: which source is polled, and whether it is polled at all, stay an
-  // operator decision (MEAL-81), so nothing here writes `primary_source` or
-  // `import_opt_in`. The one edit that touches polling reports it back for the
-  // caller to act on — and only ever to turn it off.
+  // Adding a link tells us a place exists, and that is all it does. Choosing
+  // what Mealio syncs from is a separate decision made in a separate box: since
+  // MEAL-101 the creator makes it themselves, on the `primarySource` half of
+  // this route, and it is validated there against what they have actually
+  // connected. So *this* function writes neither `primary_source` nor
+  // `import_opt_in` — an edit to a link must never be read as an answer to a
+  // question nobody asked here. The one edit that touches polling reports it
+  // back for the caller to act on, and only ever to turn it off.
   const primarySource = isPrimarySource(creator.primary_source) ? creator.primary_source : 'none';
   let polledLink: PolledLinkChange | null = null;
   for (const source of touched) {
@@ -98,14 +102,26 @@ function applyLinkEdits(
     // Touching the polled link is allowed — moved, renamed or removed — and
     // clears the opt-in with it.
     //
-    // The risk a move carries is real and unchanged: for a source read straight
-    // off the link (`primary_source` of 'youtube' with no OAuth grant, where
-    // `channelIdForCreator` resolves the channel from `youtube_url`) a
-    // replacement *is* a change of what gets read, so this edit can point an
-    // actively-polled source at a stranger's channel and have their uploads
-    // published under this creator's name. Operator review of the drafts is
-    // mediation, not prevention: the videos really are from the channel the row
-    // now names.
+    // The risk a move carries is real, and it is narrower than this comment
+    // used to claim. It named `channelIdForCreator` resolving a channel from
+    // `youtube_url`; that function reads the channel id off the OAuth grant and
+    // nothing else, and has done since the link-derived fallback was deleted
+    // for exactly this reason — so repointing `youtube_url` changes what the row
+    // *says* and not one byte of what gets read. Instagram and TikTok are read
+    // through their grants too.
+    //
+    // **The website is the one source still read straight off the row.** A
+    // `primary_source` of 'website' polls `feed_url` on `website_url`, both
+    // creator-supplied, so replacing that link genuinely substitutes what gets
+    // read, and the substituted posts would be published under this creator's
+    // name. Operator review of the drafts is mediation, not prevention: the
+    // posts really are from the site the row now names.
+    //
+    // One rule for all four anyway. The three grant-backed sources cannot be
+    // substituted this way, but a creator repointing the link we are polling has
+    // told us the place we were reading is not the place any more, and carrying
+    // on reading the old one on the strength of a stale grant is not obviously
+    // better. The rule that is uniform is the rule that gets enforced.
     //
     // Refusing it was the first answer and it cost more than it bought. A
     // creator who moves their blog or renames their channel — not a rare event,
@@ -117,6 +133,12 @@ function applyLinkEdits(
     // an operator's decision with nobody told; that is answered by the alert the
     // route raises and the reason it records, not by this line, so the three
     // belong together.
+    //
+    // Since MEAL-101 the creator can start it again themselves, from the sync
+    // section, which is a re-choice made deliberately in the box that is about
+    // syncing rather than a side effect of editing a link. That is the point:
+    // the pause is not a punishment or a queue for an operator, it is the switch
+    // returning to off because the thing it pointed at moved.
     //
     // Removing it takes the same path, which it did not at first. The refusal
     // was defended on the grounds that clearing has no legitimate case — a
@@ -196,7 +218,7 @@ export async function PATCH(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const body = await request.json();
-  const { photoUrl, handle, bio, socialHandle, links } = body;
+  const { photoUrl, handle, bio, socialHandle, links, primarySource } = body;
 
   const updates: Record<string, unknown> = {};
   const notices: string[] = [];
@@ -205,10 +227,15 @@ export async function PATCH(request: NextRequest) {
   /** Creator identity for that alert, read with the link columns. */
   let creatorIdentity: { display_name?: unknown; handle?: unknown } = {};
 
-  if (links !== undefined) {
-    if (typeof links !== 'object' || links === null || Array.isArray(links)) {
-      return NextResponse.json({ error: 'links must be an object keyed by platform.' }, { status: 400 });
-    }
+  /**
+   * The row both source-touching branches judge against, read at most once.
+   *
+   * A request may carry links and a source choice together, and the choice has
+   * to be judged on the row the link edits would leave behind — otherwise
+   * "save my new website and sync from it" would be judged against the old one.
+   */
+  let sourceRow: Record<string, any> | null = null;
+  if (links !== undefined || primarySource !== undefined) {
     const { data: creator } = await supabase
       .from('creators')
       .select(LINK_FIELDS)
@@ -217,6 +244,14 @@ export async function PATCH(request: NextRequest) {
     if (!creator) {
       return NextResponse.json({ error: 'Only approved creators have links to edit.' }, { status: 403 });
     }
+    sourceRow = creator as Record<string, any>;
+  }
+
+  if (links !== undefined) {
+    if (typeof links !== 'object' || links === null || Array.isArray(links)) {
+      return NextResponse.json({ error: 'links must be an object keyed by platform.' }, { status: 400 });
+    }
+    const creator = sourceRow!;
 
     const edit = applyLinkEdits(creator as Record<string, any>, links as Record<string, unknown>);
     if (!edit.ok) {
@@ -271,12 +306,12 @@ export async function PATCH(request: NextRequest) {
         // they do not have to do: the pause is ours to lift, not theirs.
         notices.push(
           edit.polledLink.to
-            ? `Your ${SOURCE_LABELS[edit.polledLink.source]} link is saved. Mealio was importing your recipes from ` +
-              'it, so we have paused that import until someone here has checked the new link — nothing is read ' +
-              'from it in the meantime. Somebody has been told; there is nothing else for you to do.'
-            : `Your ${SOURCE_LABELS[edit.polledLink.source]} link is removed. Mealio was importing your recipes ` +
-              'from it, so that import has stopped — there is nothing left for us to read. Somebody has been told; ' +
-              'if you want importing to start again, send us the new link.',
+            ? `Your ${SOURCE_LABELS[edit.polledLink.source]} link is saved. Mealio was syncing your recipes from ` +
+              'it, so we have paused that import — nothing is read from the new link until you choose it in ' +
+              '“Sync your content with Mealio” again.'
+            : `Your ${SOURCE_LABELS[edit.polledLink.source]} link is removed. Mealio was syncing your recipes ` +
+              'from it, so that import has stopped — there is nothing left for us to read. Add the new link and ' +
+              'choose it again in “Sync your content with Mealio” to start it up.',
         );
       } else if (!verdict.ok) {
         notices.push(
@@ -289,6 +324,46 @@ export async function PATCH(request: NextRequest) {
 
     Object.assign(updates, edit.update);
     notices.push(...(await grantNotices(supabase, (creator as { id: string }).id, edit.cleared)));
+  }
+
+  /**
+   * The creator choosing what Mealio syncs from (MEAL-101).
+   *
+   * This used to be refused outright, on the grounds that which source is polled
+   * — and whether anything is polled at all — was an operator decision
+   * (MEAL-81). It is the creator's now. Both switches are written here, together
+   * and only together: `primary_source` names the place and `import_opt_in` is
+   * consent to read it, and a creator picking their source in a box headed "Sync
+   * your content with Mealio" has given both answers in one gesture. Splitting
+   * them would leave a creator who chose YouTube waiting on a switch nothing in
+   * their UI can reach.
+   *
+   * **The admin picker is untouched.** `PATCH /api/admin/creators` still writes
+   * the same two columns through the same `checkPollingInvariants`; it has
+   * stopped being the only way in, which is the whole of the change.
+   *
+   * `chooseCreatorSource` is the rule, and it lives in `lib/creator-sources.ts`
+   * next to the column's own CHECK-constrained value set — a creator must not be
+   * able to name a source they have not connected, or one no creator can use
+   * yet, and a second copy of that list here is how those two drift apart.
+   */
+  if (primarySource !== undefined) {
+    const creator = sourceRow!;
+    // The grants, because "connected" for YouTube means a grant and not a link.
+    // Read even when the requested source is `website`, so one query answers the
+    // question whichever way it is asked.
+    const { data: accounts } = await supabase
+      .from('creator_platform_accounts')
+      .select('platform')
+      .eq('creator_id', creator.id);
+    const grants = ((accounts ?? []) as Array<{ platform: string }>).map((row) => row.platform);
+
+    // On the row the link edits above would leave behind, not the one we read.
+    const choice = chooseCreatorSource({ ...creator, ...updates }, primarySource, grants);
+    if (!choice.ok) {
+      return NextResponse.json({ error: choice.error }, { status: 400 });
+    }
+    Object.assign(updates, choice.update);
   }
 
   if (photoUrl !== undefined) updates.photo_url = photoUrl ?? null;
@@ -341,7 +416,23 @@ export async function PATCH(request: NextRequest) {
   // notice saying the opposite.
   const importPaused = updates.import_opt_in === false;
 
-  if (Object.keys(updates).length === 0) return NextResponse.json({ ok: true, notices, importPaused: false });
+  /**
+   * Where the row stands on syncing once this write lands.
+   *
+   * Reported as columns rather than left for the client to re-derive: the sync
+   * section renders "Mealio is watching your YouTube" off exactly these two, and
+   * a screen that guessed them from the request it just sent would show the
+   * wrong thing the moment the server disagreed — which is precisely what the
+   * `chooseCreatorSource` refusals are for.
+   */
+  const source = {
+    primarySource: (updates.primary_source ?? sourceRow?.primary_source ?? 'none') as string,
+    importOptIn: (updates.import_opt_in ?? sourceRow?.import_opt_in ?? false) === true,
+  };
+
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json({ ok: true, notices, importPaused: false, source });
+  }
 
   const { error } = await supabase
     .from('creators')
@@ -380,7 +471,7 @@ export async function PATCH(request: NextRequest) {
     );
   }
 
-  return NextResponse.json({ ok: true, notices, importPaused });
+  return NextResponse.json({ ok: true, notices, importPaused, source });
 }
 
 // GET /api/creator/me — creator profile + their meals with save stats
@@ -403,7 +494,11 @@ export async function GET(request: NextRequest) {
     // The four links, and the polling settings that decide what the link editor
     // is allowed to say about them: a creator whose website is being polled has
     // to be told so *before* they try to clear it, not only when it is refused.
-    .select('id, display_name, bio, social_handle, photo_url, approved_at, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in')
+    // `feed_url` travels with them since MEAL-101: it is what says a website has
+    // been read and found importable, which is what the sync section shows as
+    // "connected" for that source. Without it the picker cannot tell a saved
+    // link from a verified one.
+    .select('id, display_name, bio, social_handle, photo_url, approved_at, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url')
     .eq('user_id', decoded.userId)
     .maybeSingle();
 

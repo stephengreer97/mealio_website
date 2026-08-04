@@ -60,6 +60,14 @@ export type EventType =
   // an operator was emailed about it (MEAL-94). Logged only when that email
   // fails — the email is the signal, this is the record that it did not arrive.
   | 'CREATOR:SOURCE_MOVED_ALERT'
+  // A creator saved a website and we ran the full viability check on it
+  // (MEAL-101). Logged either way: a refusal is the interesting one, because the
+  // creator is told a sentence and this is the only record of what produced it.
+  | 'CREATOR:SOURCE_CHECK'
+  // A creator importing their own back catalogue off the checklist (MEAL-101).
+  // The admin equivalent is `ADMIN:SYNC_RUN`; kept apart so "who started this"
+  // is answerable from the log line rather than from the run row.
+  | 'CREATOR:SYNC_RUN'
   // Consent to let Mealio edit the creator's own YouTube descriptions. Separate
   // from `import_opt_in` on purpose: reading and writing are different
   // permissions over different property (MEAL-77).
