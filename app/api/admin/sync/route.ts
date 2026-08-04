@@ -21,7 +21,8 @@ import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncI
  *         only; the work is done by `/api/admin/sync/worker`, because 200 items
  *         will not finish inside a Vercel function and a request that dies
  *         halfway is a batch nobody can account for.
- * GET   — a run's progress (`?runId=`), or a creator's recent runs (`?creatorId=`).
+ * GET   — a run's progress (`?runId=`), a creator's recent runs (`?creatorId=`),
+ *         or, with neither, the job queue: recent runs across every creator.
  * PATCH — put one failed item back in the queue.
  *
  * Nothing here publishes (MEAL-91). A run produces drafts in the admin review
@@ -33,6 +34,40 @@ import { CATALOG_MAX_ENTRIES, retrySyncItem, summariseRun, toSyncRun, type SyncI
 const MAX_SELECTION = CATALOG_MAX_ENTRIES;
 
 const CREATOR_FIELDS = 'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url';
+
+/**
+ * How many runs the job queue shows.
+ *
+ * A window, not the table. Every row here carries its whole `items` array, so
+ * "all of them" is a response that grows with the archive and a 500-item run is
+ * ~500× a row's worth of it — which is why the queue hands back the counts and
+ * leaves the items where they are. 25 is a screenful of recent history; a run
+ * older than that is reached by its creator (`?creatorId=`) or its id.
+ */
+const RECENT_RUNS = 25;
+
+/**
+ * Display names for a set of creator ids.
+ *
+ * A run stores `creator_id` and nothing else, and a uuid is not something an
+ * operator scanning a queue can act on. Fetched in one `.in()` and attached to
+ * the rows afterwards — the same shape as the connections join on
+ * `/api/admin/creators`, rather than a PostgREST embed, so a run whose creator
+ * row has since gone still appears in the queue instead of vanishing from it.
+ */
+async function creatorNames(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (unique.length === 0) return new Map();
+  const { data } = await supabase.from('creators').select('id, display_name').in('id', unique);
+  return new Map(
+    ((data ?? []) as Array<Record<string, any>>)
+      .filter((row) => typeof row.display_name === 'string')
+      .map((row) => [row.id as string, row.display_name as string]),
+  );
+}
 
 /**
  * `normalizeUrl` insists on a scheme, and an operator pasting `theirblog.com/x`
@@ -255,8 +290,35 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ run, totals: summariseRun(run) });
   }
 
+  // Neither parameter: the job queue. Recent runs across every creator, newest
+  // first, so an operator can see what is still moving without first having to
+  // guess whose run it was.
   if (!creatorId) {
-    return NextResponse.json({ error: 'runId or creatorId is required' }, { status: 400 });
+    const { data } = await supabase
+      .from('creator_sync_runs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(RECENT_RUNS);
+
+    const recent = ((data ?? []) as Array<Record<string, any>>).map(toSyncRun);
+    const names = await creatorNames(supabase, recent.map((run) => run.creatorId));
+
+    // Counts, not items. The queue is a list to scan and click; the run it is
+    // clicked into is fetched whole by `?runId=`, which is the one path that
+    // already knows how to display and drive it.
+    return NextResponse.json({
+      runs: recent.map((run) => ({
+        id: run.id,
+        creatorId: run.creatorId,
+        creatorName: names.get(run.creatorId) ?? null,
+        source: run.source,
+        mode: run.mode,
+        status: run.status,
+        createdAt: run.createdAt,
+        finishedAt: run.finishedAt,
+        totals: summariseRun(run),
+      })),
+    });
   }
 
   const { data } = await supabase
