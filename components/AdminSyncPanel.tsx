@@ -5,9 +5,7 @@ import { PLATFORM_SOURCES, SOURCE_COLUMNS, SOURCE_LABELS, type PlatformSource } 
 import { formatSelectionCost } from '@/lib/import/cost';
 // Type-only: `lib/admin-sync` reaches the import pipeline and undici, and must
 // never be bundled into the client. These imports are erased at compile time.
-import type {
-  CatalogEntry, CatalogResult, SyncItem, SyncRun, SyncRunStatus, SyncRunTotals,
-} from '@/lib/admin-sync';
+import type { CatalogEntry, CatalogResult, SyncItem, SyncRun, SyncRunTotals } from '@/lib/admin-sync';
 
 /**
  * Admin manual sync (MEAL-90) — one link, or a reviewed checklist.
@@ -37,16 +35,6 @@ import type {
  * can be changed mid-run without starting over — and step 4 never collapses,
  * because the cost of what is about to be spent must not be a step you scrolled
  * past. The run and the append offer follow the steps in the same card.
- *
- * ── The job queue ───────────────────────────────────────────────────────────
- * Above the card, and folded shut. A run outlives the tab that started it — the
- * work is in the database and the cron picks up whatever is left — so "is
- * anything still going, and whose?" was a question this screen could not answer
- * unless you happened to be the operator who started it. The queue is that
- * answer: collapsed it is one line, open it is the recent runs across every
- * creator, and a row clicked loads that run into the card below to be watched or
- * resumed. It is shut by default because on most days the honest one line is
- * "nothing running", and that does not deserve the top of the screen.
  *
  * The append section is the write half of MEAL-79: published meals that came
  * from one of this creator's videos, offered for the Mealio link to be appended
@@ -100,30 +88,6 @@ interface AppendableMeal {
   approvedAt: string | null;
 }
 
-/**
- * One row of the job queue, as `GET /api/admin/sync` with no parameters lists
- * it: a run's identity and its counts, without its items. The items are the
- * whole weight of a run and the queue never shows them — clicking a row fetches
- * the run itself by id.
- */
-interface QueuedRun {
-  id: string;
-  creatorId: string;
-  creatorName: string | null;
-  source: PlatformSource;
-  mode: 'link' | 'catalog';
-  status: SyncRunStatus;
-  createdAt: string | null;
-  finishedAt: string | null;
-  totals: SyncRunTotals;
-}
-
-const RUN_STATUS_STYLES: Record<SyncRunStatus, { fg: string; bg: string; label: string }> = {
-  queued:  { fg: '#6b7280', bg: '#f3f4f6', label: 'Queued' },
-  running: { fg: '#c40029', bg: '#fff0f2', label: 'Running' },
-  done:    { fg: '#1a7a3a', bg: '#e6f9ed', label: 'Done' },
-};
-
 const ITEM_STYLES: Record<SyncItem['status'], { fg: string; bg: string; label: string }> = {
   pending:  { fg: '#6b7280', bg: '#f3f4f6', label: 'Waiting' },
   drafted:  { fg: '#1a7a3a', bg: '#e6f9ed', label: 'For review' },
@@ -134,13 +98,6 @@ const ITEM_STYLES: Record<SyncItem['status'], { fg: string; bg: string; label: s
 
 /** How long between worker calls while a run is unfinished. */
 const POLL_DELAY_MS = 750;
-
-/**
- * How many runs the queue lists — the window `GET /api/admin/sync` returns, said
- * out loud on screen. A list that has silently stopped at a ceiling is a list an
- * operator will read as "there is nothing older".
- */
-const RECENT_RUNS_SHOWN = 25;
 
 /**
  * Chunks one press of Sync will drive. A 500-item run at two per chunk needs
@@ -288,27 +245,6 @@ function formatDate(value: string | null): string {
   return Number.isFinite(parsed) ? new Date(parsed).toLocaleDateString() : '—';
 }
 
-/**
- * When a run started, to the minute.
- *
- * The date alone is what a catalog entry needs and not what a queue does: three
- * runs for the same creator on the same afternoon are three identical lines
- * without the time on them.
- */
-function formatWhen(value: string | null): string {
-  if (!value) return '—';
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : '—';
-}
-
-/** A pill: the status of a run, the outcome of an item. */
-function pill(style: { fg: string; bg: string }): React.CSSProperties {
-  return {
-    fontSize: '11px', fontWeight: 700, borderRadius: '99px', padding: '2px 8px',
-    flexShrink: 0, background: style.bg, color: style.fg,
-  };
-}
-
 export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const [creatorId, setCreatorId] = useState('');
   const [mode, setMode] = useState<'link' | 'catalog'>('link');
@@ -353,15 +289,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const [totals, setTotals] = useState<SyncRunTotals | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // ── The job queue ──────────────────────────────────────────────────────────
-  /** Shut on arrival. Opening it is a click; it costs nothing either way. */
-  const [queueOpen, setQueueOpen] = useState(false);
-  const [queue, setQueue] = useState<QueuedRun[] | null>(null);
-  const [queueError, setQueueError] = useState('');
-  const [queueBusy, setQueueBusy] = useState(false);
-  /** Which queued run is the one showing in the card below. */
-  const [queuedRunId, setQueuedRunId] = useState('');
-
   // A run outlives a render, and the worker loop keeps calling after the panel
   // has gone. Without this a response landing post-unmount writes to dead state.
   const mountedRef = useRef(true);
@@ -383,65 +310,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     return { res, data };
   };
 
-  /**
-   * Reads the queue.
-   *
-   * On mount, and unlike everything else on this screen that fetches. A listing
-   * costs quota and an append costs quota and a run costs dollars, so all three
-   * wait to be asked for; this is one indexed admin read that spends nothing,
-   * and a collapsed card whose one line said "press to find out" would be a
-   * line not worth reading.
-   */
-  const loadQueue = async () => {
-    setQueueBusy(true);
-    setQueueError('');
-    const res = await fetch('/api/admin/sync', { headers: { Authorization: `Bearer ${token()}` } });
-    const data = await res.json().catch(() => ({}));
-    if (!mountedRef.current) return;
-    setQueueBusy(false);
-    if (!res.ok) {
-      setQueueError(data.error || 'Could not read the job queue.');
-      return;
-    }
-    setQueue((data.runs ?? []) as QueuedRun[]);
-  };
-
-  useEffect(() => { void loadQueue(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /**
-   * Loads a queued run into the card below.
-   *
-   * By id, through the same endpoint the panel already reads a run from, so what
-   * lands in `run`/`totals` is the same shape a run of this operator's own puts
-   * there — and Resume, Retry and the chunked drive loop work on it unchanged.
-   *
-   * Nothing else on the screen is touched. Clicking a queue row must not throw
-   * away a 137-item selection somebody spent ten minutes making, so the creator,
-   * the catalog and the checklist are left exactly as they were.
-   */
-  const openQueuedRun = async (queued: QueuedRun) => {
-    if (busy) return;
-    setQueueBusy(true);
-    setQueueError('');
-    const res = await fetch(`/api/admin/sync?runId=${encodeURIComponent(queued.id)}`, {
-      headers: { Authorization: `Bearer ${token()}` },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!mountedRef.current) return;
-    setQueueBusy(false);
-    if (!res.ok) {
-      setQueueError(data.error || 'Could not open that run.');
-      return;
-    }
-    setQueuedRunId(queued.id);
-    setRun(data.run as SyncRun);
-    setTotals(data.totals as SyncRunTotals);
-    setError('');
-    // The run is what the screen is now about; hand it back to the steps' own
-    // idea of where the work has got to.
-    setOpenStep(null);
-  };
-
   const chooseCreator = (id: string) => {
     setCreatorId(id);
     setCatalog(null);
@@ -452,7 +320,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     // spending on a fourth.
     setRun(null);
     setTotals(null);
-    setQueuedRunId('');
     setError('');
     // Nothing about the previous creator survives into the append section. A
     // stale list of somebody else's videos beside an Append button is the worst
@@ -635,7 +502,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setError('');
     setRun(null);
     setTotals(null);
-    setQueuedRunId('');
     // Pressing Sync is the answer to step 4. Hand the screen to the run rather
     // than leaving it parked on whichever step was last clicked open.
     setOpenStep(null);
@@ -661,7 +527,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     const created = data.run as SyncRun;
     setRun(created);
     await drive(created.id);
-    if (mountedRef.current) { setBusy(false); void loadQueue(); }
+    if (mountedRef.current) setBusy(false);
   };
 
   const resume = async () => {
@@ -669,9 +535,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     setBusy(true);
     setError('');
     await drive(run.id);
-    // The queue's counts are now a chunk out of date, whichever way the drive
-    // ended. A read, not a write — nothing about the run itself is touched.
-    if (mountedRef.current) { setBusy(false); void loadQueue(); }
+    if (mountedRef.current) setBusy(false);
   };
 
   const retryItem = async (itemId: string) => {
@@ -712,23 +576,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
   const currentStep = openStep ?? naturalStep;
   const toggleStep = (n: number) => setOpenStep(current => (current === n ? null : n));
 
-  /**
-   * The one line the folded card has to earn its place with: what is still
-   * moving, and how much of it. "Nothing running" is a useful answer too — it is
-   * the difference between a quiet queue and a queue nobody has looked at.
-   */
-  const unfinished = (queue ?? []).filter(queued => queued.status !== 'done');
-  const outstanding = unfinished.reduce((total, queued) => total + queued.totals.pending, 0);
-  const queueSummary = queueError
-    ? queueError
-    : !queue
-      ? 'Reading…'
-      : queue.length === 0
-        ? 'No sync runs yet'
-        : unfinished.length === 0
-          ? `Nothing running · ${queue.length} recent ${queue.length === 1 ? 'run' : 'runs'}`
-          : `${unfinished.length} unfinished · ${outstanding} item${outstanding === 1 ? '' : 's'} still to go`;
-
   const sourceLabel = SOURCE_LABELS[source];
   const stepTwoSummary = mode === 'link'
     ? undefined
@@ -742,105 +589,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
     : `${selected.length} of ${entries.length} selected`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-
-    {/* ── The job queue ────────────────────────────────────────────────────
-           Its own card, above this one, folded shut. Recent runs across every
-           creator — a run outlives the tab that started it, so this is the only
-           place "is anything still going?" has an answer. */}
-    <div style={card} data-testid="job-queue">
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-        <button
-          type="button"
-          onClick={() => setQueueOpen(open => !open)}
-          aria-expanded={queueOpen}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: '1 1 260px',
-            background: 'none', border: 'none', padding: 0, textAlign: 'left', cursor: 'pointer',
-          }}
-        >
-          {/* Accent when something is unfinished, grey when nothing is. The
-              number is the same one the summary opens with, so a glance at the
-              card's left edge is the same glance. */}
-          <span style={stepBadge(false, unfinished.length > 0)} aria-hidden="true">
-            {unfinished.length > 0 ? unfinished.length : '✓'}
-          </span>
-          <span style={{ fontSize: '16px', fontWeight: 700, color: '#222', whiteSpace: 'nowrap' }}>Job queue</span>
-          <span style={stepSummary} data-testid="queue-summary">{queueSummary}</span>
-          <span style={{ fontSize: '11px', color: '#9ca3af', flexShrink: 0 }}>{queueOpen ? 'Hide' : 'Show'}</span>
-        </button>
-        {queueOpen && (
-          <button onClick={loadQueue} disabled={queueBusy} style={{ ...secondaryButton, cursor: queueBusy ? 'wait' : 'pointer' }}>
-            {queueBusy ? 'Reading…' : 'Refresh'}
-          </button>
-        )}
-      </div>
-
-      {queueOpen && (
-        <>
-          <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
-            The {RECENT_RUNS_SHOWN} most recent runs, whoever started them. Click one to load it below, where it can
-            be watched or resumed — a run lives in the database, so closing the tab that started it only delays it.
-          </p>
-
-          {queueError && (
-            <p style={{ margin: '12px 0 0', fontSize: '12px', color: '#c40029', background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '10px 12px', lineHeight: 1.6 }} data-testid="queue-error">
-              {queueError}
-            </p>
-          )}
-
-          {queue && queue.length === 0 && (
-            <p style={{ margin: '12px 0 0', fontSize: '12px', color: '#888' }}>
-              No sync runs yet. The first one you start below will appear here.
-            </p>
-          )}
-
-          {queue && queue.length > 0 && (
-            <div style={{ marginTop: '12px', maxHeight: '340px', overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: '8px' }}>
-              {queue.map((queued, i) => {
-                const style = RUN_STATUS_STYLES[queued.status] ?? RUN_STATUS_STYLES.queued;
-                const loaded = queuedRunId === queued.id;
-                return (
-                  <button
-                    key={queued.id}
-                    type="button"
-                    onClick={() => openQueuedRun(queued)}
-                    disabled={busy}
-                    aria-current={loaded ? 'true' : undefined}
-                    data-testid={`queue-run-${queued.id}`}
-                    style={{
-                      display: 'flex', width: '100%', gap: '10px', alignItems: 'flex-start', flexWrap: 'wrap',
-                      padding: '10px 12px', textAlign: 'left', border: 'none',
-                      borderTop: i === 0 ? 'none' : '1px solid #f7f7f7',
-                      background: loaded ? '#fff5f6' : 'white',
-                      cursor: busy ? 'default' : 'pointer',
-                    }}
-                  >
-                    <span style={pill(style)}>{style.label}</span>
-                    <span style={{ flex: '1 1 180px', minWidth: 0 }}>
-                      <span style={{ fontSize: '13px', color: '#222', fontWeight: 500 }}>
-                        {queued.creatorName ?? 'Creator since removed'}
-                      </span>
-                      <span style={{ display: 'block', fontSize: '11px', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {SOURCE_LABELS[queued.source] ?? queued.source} · {formatWhen(queued.createdAt)}
-                      </span>
-                    </span>
-                    {/* The four numbers that say what a run did without opening
-                        it: what it queued for review, what the gate dropped,
-                        what broke, and what is left. */}
-                    <span style={{ fontSize: '11px', color: '#6b7280', flexShrink: 0, lineHeight: 1.6 }}>
-                      {queued.totals.drafted} drafted · {queued.totals.rejected} rejected
-                      {' · '}{queued.totals.failed} failed · {queued.totals.pending} pending
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-
     <div style={card} data-testid="admin-sync-panel">
 
       {/* ── The card's own header: what this screen does, and the one number
@@ -1274,7 +1022,6 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
           )}
         </div>
       )}
-    </div>
     </div>
   );
 }

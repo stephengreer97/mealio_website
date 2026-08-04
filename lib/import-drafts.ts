@@ -31,6 +31,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { publishCreatorMeal, type PublishedMeal, type PublishingCreator } from '@/lib/creator-meals';
 import { sendCreatorSyncPublishedEmail } from '@/lib/email';
+import { appendMealioLink } from '@/lib/youtube-append';
 import { log } from '@/lib/logger';
 import {
   fieldStatesFor,
@@ -112,6 +113,14 @@ export interface DraftDeps {
   supabase: SupabaseClient;
   publisher?: typeof publishCreatorMeal;
   notifier?: typeof sendCreatorSyncPublishedEmail;
+  /**
+   * Writes the Mealio link into the creator's own video description (MEAL-78).
+   *
+   * Injected rather than imported at the call site so a test can approve a
+   * draft without reaching YouTube, and so the one place that edits somebody
+   * else's property stays visible in this file's dependencies.
+   */
+  appender?: typeof appendMealioLink;
   now?: () => number;
   /**
    * Which queue the decision is being made **for**.
@@ -143,8 +152,14 @@ export interface DraftDeps {
 /** Log event names for a decision, by who made it. See `DraftDeps.role`. */
 function events(role: DraftReviewBy | undefined) {
   return role === 'creator'
-    ? { approve: 'CREATOR:DRAFT_DECIDE', cancel: 'CREATOR:DRAFT_DECIDE', edit: 'CREATOR:DRAFT_EDIT' } as const
-    : { approve: 'ADMIN:DRAFT_APPROVE', cancel: 'ADMIN:DRAFT_CANCEL', edit: 'ADMIN:DRAFT_EDIT' } as const;
+    ? {
+        approve: 'CREATOR:DRAFT_DECIDE', cancel: 'CREATOR:DRAFT_DECIDE',
+        edit: 'CREATOR:DRAFT_EDIT', append: 'CREATOR:YOUTUBE_APPEND',
+      } as const
+    : {
+        approve: 'ADMIN:DRAFT_APPROVE', cancel: 'ADMIN:DRAFT_CANCEL',
+        edit: 'ADMIN:DRAFT_EDIT', append: 'ADMIN:YOUTUBE_APPEND',
+      } as const;
 }
 
 // ── Presentation ─────────────────────────────────────────────────────────────
@@ -542,6 +557,51 @@ export async function approveDraft(
     .from('creator_import_drafts')
     .update({ published_meal_id: meal.id, updated_at: nowIso })
     .eq('id', id);
+
+  // The link back to the recipe, on the video it came from (MEAL-78).
+  //
+  // After `published_meal_id` is written, because the append reads the draft to
+  // find the meal it is linking to — and only ever after a publish that
+  // actually happened.
+  //
+  // Every gate lives in `appendMealioLink`: the creator's opt-in (off unless
+  // they turned it on), a live YouTube grant with the write scope, and the
+  // video belonging to the channel that grant is for. None of it is repeated
+  // here, because a second copy of a consent rule is a second copy to keep true.
+  //
+  // **A failure here never fails the approval.** The meal is live; the link is
+  // a courtesy on top. Rolling back a publish because we could not edit a
+  // description would be the tail wagging the dog, and refusing to publish
+  // because YouTube is down would be worse. It is logged either way, so a
+  // creator asking "why is there no link on my video" has an answer.
+  // Only for a draft that came from a video. `appendMealioLink` would refuse a
+  // website draft anyway, but refusing costs a read and a log line on every
+  // approval in the system to say something we already knew from the row.
+  if (draft.source === 'youtube') try {
+    const appended = await (deps.appender ?? appendMealioLink)(
+      { supabase: deps.supabase },
+      creator.id,
+      id,
+      adminUserId,
+    );
+    if (!appended.ok) {
+      log({
+        event: events(deps.role).append,
+        status: 'failed',
+        userId: adminUserId,
+        detail: `draft=${id} creator=${creator.id} not appended: ${appended.error}`,
+      });
+    }
+  } catch (err) {
+    log({
+      event: events(deps.role).append,
+      status: 'error',
+      userId: adminUserId,
+      detail: `draft=${id} creator=${creator.id} append threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    });
+  }
 
   // Nothing is written to `creator_source_items` here. It already says
   // `imported` and already points at this draft — `recordItem` wrote both at

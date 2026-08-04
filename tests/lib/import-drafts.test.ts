@@ -412,6 +412,69 @@ describe('approveDraft — the only path to Discover', () => {
    *
    * So these two run the real publisher against the real fake database.
    */
+  describe('the link back onto the creator\'s video (MEAL-78)', () => {
+    it('appends after a YouTube draft publishes, whoever approved it', async () => {
+      // Approving used to publish and stop. The description edit existed but had
+      // exactly one caller — an admin pressing a button on the sync screen — so a
+      // creator who had turned the setting on approved their own recipe and
+      // nothing was written to their video.
+      fakeDb.seed('creator_import_drafts', [draftRow({ source: 'youtube' })]);
+      const appender: DraftDeps['appender'] = vi.fn(async () => ({
+        ok: true as const, written: true, mealUrl: 'https://mealio.co/meal/p/meal-1',
+        videoId: 'ZW9XmKyi4lI', quotaUnits: 51, detail: 'appended',
+      }));
+
+      const result = await approveDraft(deps({ appender }), 'd1', 'admin-1');
+
+      expect(result.ok).toBe(true);
+      expect(appender).toHaveBeenCalledTimes(1);
+      // Called with the draft, so it can find the meal that was just published,
+      // and with the actor, because this edits somebody else's property.
+      expect(vi.mocked(appender!).mock.calls[0].slice(1)).toEqual(['c1', 'd1', 'admin-1']);
+    });
+
+    it('does not reach YouTube for a draft that did not come from it', async () => {
+      // A website draft has no video to write to. Calling anyway would refuse,
+      // but it would cost a read and a log line on every approval in the system
+      // to say what the row already said.
+      fakeDb.seed('creator_import_drafts', [draftRow({ source: 'website' })]);
+      const appender: DraftDeps['appender'] = vi.fn();
+
+      await approveDraft(deps({ appender }), 'd1', 'admin-1');
+
+      expect(appender).not.toHaveBeenCalled();
+    });
+
+    it('publishes anyway when the append fails', async () => {
+      // The meal is live and the link is a courtesy on top. Rolling a publish
+      // back because a description could not be edited would be the tail wagging
+      // the dog; refusing to publish because YouTube is down would be worse.
+      fakeDb.seed('creator_import_drafts', [draftRow({ source: 'youtube' })]);
+      const appender: DraftDeps['appender'] = vi.fn(async () => { throw new Error('YouTube said 503'); });
+
+      const result = await approveDraft(deps({ appender }), 'd1', 'admin-1');
+
+      expect(result.ok).toBe(true);
+      expect(fakeDb.row('creator_import_drafts', 'd1')?.published_meal_id).toBe('meal-1');
+    });
+
+    it('leaves the consent gate to the appender rather than copying it', async () => {
+      // The opt-in, the grant, the write scope and whose channel the video is on
+      // are all decided in `appendMealioLink`. A refusal is a normal outcome
+      // here — the setting is off unless a creator turned it on — and it must
+      // not read as the approval having failed.
+      fakeDb.seed('creator_import_drafts', [draftRow({ source: 'youtube' })]);
+      const appender: DraftDeps['appender'] = vi.fn(async () => ({
+        ok: false as const, status: 403, error: 'The creator has not turned this on.',
+      }));
+
+      const result = await approveDraft(deps({ appender }), 'd1', 'admin-1');
+
+      expect(result.ok).toBe(true);
+      expect(appender).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('with the real publisher behind it', () => {
     /** No `publisher` override: `approveDraft` falls back to `publishCreatorMeal`. */
     function realDeps() {

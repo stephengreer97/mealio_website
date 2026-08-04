@@ -106,6 +106,11 @@ export type EventType =
   // property, so it carries the actor, the creator, the video and whether
   // anything was actually written.
   | 'ADMIN:YOUTUBE_APPEND'
+  // The same edit, made because a CREATOR approved their own recipe rather than
+  // because an operator pressed a button. Separate name for the reason the
+  // decide events are separate: MEAL-77's consent story turns on who acted, and
+  // this is the one event in the file that records editing somebody's property.
+  | 'CREATOR:YOUTUBE_APPEND'
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'

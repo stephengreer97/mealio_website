@@ -47,8 +47,6 @@ const CATALOG = {
   ],
 };
 
-const EMPTY_TOTALS = { selected: 0, pending: 0, drafted: 0, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 };
-
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -60,10 +58,6 @@ interface Harness {
   /** `GET /append`: either the list or the refusal, with its status. */
   appendList?: { status?: number; body: unknown };
   appendWrite?: { status?: number; body: unknown };
-  /** `GET /api/admin/sync` with no parameters: the job queue. */
-  queue?: { status?: number; body: unknown };
-  /** `GET /api/admin/sync?runId=`: one run, as a queue row opens it. */
-  queuedRun?: { status?: number; body: unknown };
   /** Defaults to the website creator the older tests are written against. */
   creators?: SyncPanelCreator[];
 }
@@ -87,16 +81,7 @@ function harness(overrides: Harness = {}) {
     }
     if (url.includes('/api/admin/sync/catalog')) return json({ catalog: catalogs.length ? catalogs.shift() : CATALOG });
     if (url.includes('/api/admin/sync/worker')) {
-      return json({ run: overrides.run ?? { id: 'r1', status: 'done', items: [] }, totals: overrides.totals ?? EMPTY_TOTALS });
-    }
-    // The two reads on the bare endpoint. A GET is how the panel asks for both:
-    // no query is the job queue, `?runId=` is one run in full.
-    if (url.includes('/api/admin/sync') && (init?.method ?? 'GET') === 'GET') {
-      const runId = new URL(url, 'http://localhost').searchParams.get('runId');
-      const route = runId
-        ? overrides.queuedRun ?? { body: { run: { id: runId, status: 'done', items: [] }, totals: EMPTY_TOTALS } }
-        : overrides.queue ?? { body: { runs: [] } };
-      return json(route.body, route.status ?? 200);
+      return json({ run: overrides.run ?? { id: 'r1', status: 'done', items: [] }, totals: overrides.totals ?? { selected: 0, pending: 0, drafted: 0, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 } });
     }
     if (url.includes('/api/admin/sync')) {
       const body = JSON.parse(String(init?.body ?? '{}'));
@@ -165,10 +150,8 @@ describe('AdminSyncPanel — the checklist', () => {
     const { calls } = harness();
     await loadCatalog();
     // The panel talks to one endpoint to draw the list, and that endpoint is the
-    // one that reads feed metadata. The bare `/api/admin/sync` ahead of it is the
-    // job queue reading itself once on mount — one indexed admin query, which is
-    // what lets the folded card say something true without being opened.
-    expect(calls).toEqual(['/api/admin/sync', '/api/admin/sync/catalog']);
+    // one that reads feed metadata.
+    expect(calls).toEqual(['/api/admin/sync/catalog']);
   });
 });
 
@@ -307,127 +290,6 @@ describe('AdminSyncPanel — a finished run', () => {
   });
 });
 
-
-// ── The job queue ────────────────────────────────────────────────────────────
-
-/** Totals as the queue endpoint reports them, with only the counts that matter set. */
-const totals = (over: Partial<typeof EMPTY_TOTALS>) => ({ ...EMPTY_TOTALS, ...over });
-
-const QUEUE = {
-  runs: [
-    {
-      id: 'run-live', creatorId: 'c1', creatorName: 'Chef Sarah', source: 'website', mode: 'catalog',
-      status: 'running', createdAt: '2026-08-02T10:00:00.000Z', finishedAt: null,
-      totals: totals({ selected: 5, drafted: 2, pending: 3 }),
-    },
-    {
-      id: 'run-old', creatorId: 'c2', creatorName: 'Chef Ben', source: 'youtube', mode: 'link',
-      status: 'done', createdAt: '2026-08-01T09:00:00.000Z', finishedAt: '2026-08-01T09:04:00.000Z',
-      totals: totals({ selected: 1, drafted: 1 }),
-    },
-  ],
-};
-
-/** The run `run-live` opens into, one item of which is still to go. */
-const LIVE_RUN = {
-  run: {
-    id: 'run-live', status: 'running',
-    items: [
-      { itemId: 'a', url: 'https://chefsarah.test/a', title: 'Guacamole', publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'Guacamole', needALook: 0, costUsd: 0.067 },
-      { itemId: 'b', url: 'https://chefsarah.test/b', title: 'Soup', publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null, costUsd: 0 },
-    ],
-  },
-  totals: totals({ selected: 2, drafted: 1, pending: 1, costUsd: 0.067 }),
-};
-
-const openQueue = () => fireEvent.click(screen.getByRole('button', { name: /Job queue/ }));
-
-describe('AdminSyncPanel — the job queue', () => {
-  it('arrives folded shut, and still says what is unfinished', async () => {
-    harness({ queue: { body: QUEUE } });
-
-    // The one line the folded card is there for: what is still moving, and how
-    // much of it is left. A card that had to be opened to say anything would be
-    // a card nobody opens.
-    await waitFor(() =>
-      expect(screen.getByTestId('queue-summary').textContent).toBe('1 unfinished · 3 items still to go'),
-    );
-    // And no rows until it is asked for.
-    expect(screen.queryByTestId('queue-run-run-live')).toBeNull();
-    expect(screen.queryByText('Chef Ben')).toBeNull();
-  });
-
-  it('says so when nothing is running', async () => {
-    harness({ queue: { body: { runs: [QUEUE.runs[1]] } } });
-
-    // "Nothing running" is an answer worth having: it is the difference between
-    // a quiet queue and a queue nobody has looked at.
-    await waitFor(() =>
-      expect(screen.getByTestId('queue-summary').textContent).toBe('Nothing running · 1 recent run'),
-    );
-  });
-
-  it('opens to the recent runs across every creator', async () => {
-    harness({ queue: { body: QUEUE } });
-    await screen.findByText(/1 unfinished/);
-    openQueue();
-
-    // Whose run it is, not which uuid — a queue keyed on creator_id is a queue
-    // an operator has to go and look something up to read. And the source, the
-    // status, the start time, and the four item counts that say what a run did
-    // without opening it.
-    const live = screen.getByTestId('queue-run-run-live');
-    expect(live.textContent).toMatch(/Running/);
-    expect(live.textContent).toMatch(/Chef Sarah/);
-    expect(live.textContent).toMatch(/Website/);
-    expect(live.textContent).toMatch(/2 drafted · 0 rejected · 0 failed · 3 pending/);
-    expect(live.textContent).toMatch(/2026/);
-
-    // Every creator, not just the one the card below is set to.
-    const old = screen.getByTestId('queue-run-run-old');
-    expect(old.textContent).toMatch(/Done/);
-    expect(old.textContent).toMatch(/Chef Ben/);
-    expect(old.textContent).toMatch(/YouTube/);
-  });
-
-  it('loads a clicked run into the sync card below, without disturbing the selection', async () => {
-    const { calls } = harness({ queue: { body: QUEUE }, queuedRun: { body: LIVE_RUN } });
-    await screen.findByText(/1 unfinished/);
-    openQueue();
-    fireEvent.click(screen.getByTestId('queue-run-run-live'));
-
-    // The run is fetched whole by id — the same path the panel already reads a
-    // run from, so Resume and Retry work on it unchanged.
-    const summary = await screen.findByTestId('run-summary');
-    expect(calls.some(url => url.includes('runId=run-live'))).toBe(true);
-    expect(summary.textContent).toMatch(/Selected 2/);
-    expect(summary.textContent).toMatch(/1 still to go/);
-    // An unfinished run can be picked up from here, which is the point of
-    // loading it at all.
-    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
-
-    // And nothing else on the screen moved. Clicking a queue row must not throw
-    // away a selection somebody spent ten minutes making.
-    expect(screen.getByText('Nobody chosen yet')).toBeTruthy();
-  });
-
-  it('shows why the queue is empty rather than an empty list', async () => {
-    harness({ queue: { body: { runs: [] } } });
-    await waitFor(() => expect(screen.getByTestId('queue-summary').textContent).toBe('No sync runs yet'));
-    openQueue();
-    expect(screen.getByText(/The first one you start below will appear here/)).toBeTruthy();
-  });
-
-  it('reports a refused read instead of claiming the queue is empty', async () => {
-    harness({ queue: { status: 403, body: { error: 'Forbidden' } } });
-
-    // An empty queue and a queue we were not allowed to read are the same
-    // picture and opposite facts.
-    await waitFor(() => expect(screen.getByTestId('queue-summary').textContent).toBe('Forbidden'));
-    openQueue();
-    expect(screen.getByTestId('queue-error').textContent).toBe('Forbidden');
-  });
-});
 
 // ── The back catalogue, paged (MEAL-79) ──────────────────────────────────────
 
