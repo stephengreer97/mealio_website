@@ -136,6 +136,15 @@ describe('the source picker', () => {
     expect(options.map(o => o.value)).toEqual(['website', 'youtube', 'instagram', 'tiktok']);
   });
 
+  it('opens on TikTok for a creator whose source is TikTok', () => {
+    // It opened on the empty prompt while TikTok was blocked, and stayed there
+    // after TikTok became selectable — so a TikTok creator saw no source, and no
+    // catalogue either, since the checklist keys off the selection.
+    harness({ creator: { ...CREATOR, primary_source: 'tiktok', import_opt_in: true } });
+
+    expect(picker().value).toBe('tiktok');
+  });
+
   it('sits on an unselectable prompt when no source has been chosen', () => {
     // The state a row an operator left on Instagram opens in, and the one
     // Disconnect returns to. It needs somewhere to rest in the control without
@@ -389,6 +398,29 @@ describe('choosing a source', () => {
 
     await waitFor(() => expect(screen.getByTestId('sync-disconnect')).toBeTruthy());
     expect(screen.getAllByText(/^Disconnect YouTube$/)).toHaveLength(1);
+  });
+
+  it('does not announce a disconnection during an ordinary source write', async () => {
+    // One flag used to cover both, and the section writes the creator's choice
+    // as the page settles — so refreshing the portal showed a button saying
+    // "Disconnecting…" at somebody who had pressed nothing.
+    harness({ creator: SYNCING });
+
+    fireEvent.change(picker(), { target: { value: 'website' } });
+
+    await waitFor(() => expect(screen.getByTestId('sync-disconnect')).toBeTruthy());
+    expect(screen.getByTestId('sync-disconnect').textContent).toMatch(/^Disconnect /);
+  });
+
+  it('starts reading the catalogue without waiting on the connect card', async () => {
+    // The catalogue call is the slow one — TikTok pages twenty at a time, so up
+    // to five round trips — and it used to sit behind the connect card's status
+    // read rather than beside it. The row already says this source is being
+    // synced, which is enough to start.
+    const { calls } = harness({ creator: { ...CREATOR, primary_source: 'tiktok', import_opt_in: true } });
+
+    await waitFor(() =>
+      expect(calls.some(c => c.url.includes('/api/creator/sync/catalog'))).toBe(true));
   });
 
   it('revokes the grant before it says a connected account is disconnected', async () => {

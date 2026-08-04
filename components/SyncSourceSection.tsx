@@ -118,8 +118,12 @@ function formatDate(value: string | null): string {
  */
 function storedSource(creator: SyncSectionCreator): PrimarySource {
   const stored = creator.primary_source;
-  if (stored === 'website' || stored === 'youtube') return stored;
-  if (stored === 'instagram' || stored === 'tiktok') return 'none';
+  // Anything the dropdown can offer, it can also open on. TikTok was in the
+  // line below while it was blocked, which meant a creator syncing from TikTok
+  // opened their portal on an empty prompt with no sign of the source they had
+  // chosen — and, because the catalogue keys off the selection, no checklist.
+  if (stored === 'website' || stored === 'youtube' || stored === 'tiktok') return stored;
+  if (stored === 'instagram') return 'none';
   return 'website';
 }
 
@@ -196,6 +200,14 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [switching, setSwitching] = useState(false);
+  /**
+   * Separate from `switching`, which every source write sets.
+   *
+   * Sharing one flag put "Disconnecting…" on the button during an ordinary page
+   * load — the section writes the creator's choice as it settles — so a creator
+   * refreshing their portal watched it announce it was disconnecting them.
+   */
+  const [disconnecting, setDisconnecting] = useState(false);
 
   // A run outlives a render and the worker loop keeps calling after the section
   // has gone. Without this a response landing post-unmount writes to dead state.
@@ -285,7 +297,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    */
   const disconnect = async () => {
     if (source === 'none') return;
-    setSwitching(true);
+    setDisconnecting(true);
     setError('');
 
     if (source !== 'website') {
@@ -295,7 +307,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       });
       if (!mounted.current) return;
       if (!res.ok) {
-        setSwitching(false);
+        setDisconnecting(false);
         const data = await res.json().catch(() => null);
         setError(data?.error || `We could not disconnect your ${label}. It is still connected — please try again.`);
         return;
@@ -311,7 +323,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       : { primarySource: 'none' };
     const { res, data } = await authed('/api/creator/me', body, 'PATCH');
     if (!mounted.current) return;
-    setSwitching(false);
+    setDisconnecting(false);
     if (!res.ok) {
       setError(data.error || 'We stopped reading your account, but could not save the change. Please try again.');
       return;
@@ -410,7 +422,21 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   // over a free answer, and the answer is the reason the section is worth
   // scrolling to.
   useEffect(() => {
-    if (ready && !catalog && !loadingCatalog) loadCatalog();
+    // `ready` for a platform waits on the connect card's own round trip, so the
+    // catalogue used to start only after it came back — two requests end to end
+    // for a creator who is just reopening their portal. When the row already
+    // says this is the source being synced, a grant existed a moment ago, and
+    // the catalogue call is the slow one: TikTok pages twenty at a time, so it
+    // is up to five round trips to TikTok on its own. Starting it alongside the
+    // status read rather than behind it is the whole of the difference.
+    //
+    // Nothing is claimed by being wrong: a grant revoked at the provider comes
+    // back as a not-connected catalogue, which is what the panel would have
+    // shown anyway.
+    const believedConnected = source !== 'none'
+      && row.primary_source === source
+      && row.import_opt_in === true;
+    if ((ready || believedConnected) && !catalog && !loadingCatalog) loadCatalog();
     // `feed_url` is in here so saving a *different* website re-draws the list:
     // the checklist is of one site's posts, and leaving the old one up beside a
     // new address is the wrong list under the right heading.
@@ -705,11 +731,11 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           <button
             type="button"
             onClick={disconnect}
-            disabled={switching || busy}
+            disabled={switching || disconnecting || busy}
             data-testid="sync-disconnect"
             className="mt-3 text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-60 transition-colors"
           >
-            {switching ? 'Disconnecting…' : `Disconnect ${label}`}
+            {disconnecting ? 'Disconnecting…' : `Disconnect ${label}`}
           </button>
           <p className="text-xs text-gray-400 mt-2 leading-relaxed">
             Mealio stops reading your {label} and forgets the connection. Recipes you have already published stay
