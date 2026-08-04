@@ -41,7 +41,7 @@ export const COUNT_UNIT = 'qty';
  * Plural because that is how a line reads in the common case ("3 cloves"), and
  * the singular spellings alias onto it below.
  */
-export const COOK_UNITS = ['cloves', 'cans', 'bunches', 'sprigs', 'pinches', 'handfuls', 'grinds', 'slices'] as const;
+export const COOK_UNITS = ['cloves', 'cans', 'bunches', 'sprigs', 'pinches', 'handfuls', 'grinds', 'slices', 'thumbs'] as const;
 
 /** Everything the picker offers, in the order it offers it. */
 export const ALL_UNITS = [...UNITS, ...COOK_UNITS] as const;
@@ -71,6 +71,7 @@ const UNIT_ALIASES: Record<string, string> = {
   handful: 'handfuls', handfuls: 'handfuls',
   grind: 'grinds', grinds: 'grinds',
   slice: 'slices', slices: 'slices',
+  thumb: 'thumbs', thumbs: 'thumbs',
 };
 
 /**
@@ -93,6 +94,7 @@ const SINGULAR_UNITS: Record<string, string> = {
   handfuls: 'handful',
   grinds: 'grind',
   slices: 'slice',
+  thumbs: 'thumb',
 };
 
 /**
@@ -231,7 +233,19 @@ export function canonicalizeIngredient(input: ExtractedIngredient): DraftIngredi
   const count = rawCount != null && rawCount >= 1 ? Math.round(rawCount) : 1;
   const qty = Math.min(count, 99);
 
-  return { ingredientName, qty, productQty: qty, unit: COUNT_UNIT, measure: null, searchTerm: null };
+  // The count goes in `measure` as well as `qty`, and the two mean different
+  // things: `qty` is how many products to buy, `measure` is what the recipe
+  // said. Null when it said nothing — every unquantified line ("salt to taste")
+  // lands here as a countable 1, and writing "1" would invent an amount nobody
+  // wrote, which is exactly what the card uses `measure` to tell apart.
+  return {
+    ingredientName,
+    qty,
+    productQty: qty,
+    unit: COUNT_UNIT,
+    measure: amount != null ? formatAmount(amount) : null,
+    searchTerm: null,
+  };
 }
 
 // ── Reading amounts back out of a written line ───────────────────────────────

@@ -209,7 +209,10 @@ describe('import/ingredients — canonicalizeIngredient', () => {
       qty: 3,
       productQty: 3,
       unit: 'qty',
-      measure: null,
+      // `qty` is how many products to buy; `measure` is what the recipe said.
+      // Both, now that the card reads the second — without it a stated "1 onion"
+      // rendered as a bare "onion", indistinguishable from "salt to taste".
+      measure: '3',
     });
   });
 

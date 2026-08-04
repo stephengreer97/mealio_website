@@ -95,7 +95,7 @@ describe('import/pipeline — the JSON-LD fast path', () => {
       qty: 4,
       productQty: 4,
       unit: 'qty',
-      measure: null,
+      measure: '4',
       searchTerm: null,
     });
     expect(result.meta.path).toBe('json-ld');
