@@ -799,6 +799,11 @@ describe('creator portal — a recipe longer than three lines', () => {
     // The note is about what the *import* did, and no edit can change that.
     // Gating it on the field's state meant touching one tag made it vanish.
     const success = await importedBlackBeanSoup();
+    // Extraction now caps its own proposal at `MAX_MEAL_TAGS`, so a fresh import
+    // has nothing to trim. The note is still reachable — and still has to
+    // survive an edit — for a draft stored before that cap existed, which is
+    // what this fixture now stands for.
+    success.draft.tags = ['Soup', 'Vegetarian', 'Mexican', 'Comfort Food'];
     stubApi({ import: () => json(success, 200) });
     await openPublishForm();
     await importFrom('https://minimalistbaker.com/easy-1-pot-black-bean-soup');

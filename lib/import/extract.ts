@@ -30,7 +30,7 @@ import {
   type StructuredUsage,
 } from './anthropic';
 import { canonicalizeIngredients } from './ingredients';
-import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, MEAL_TAGS } from './vocab';
+import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, MAX_MEAL_TAGS, MEAL_TAGS } from './vocab';
 import { nullPhotoResolver, type PhotoResolution, type PhotoResolver } from './photo';
 import type {
   CreatorMealDraft,
@@ -102,7 +102,7 @@ const ExtractionSchema = z.object({
     derivation: DerivationEnum,
   }),
   tags: z.object({
-    value: z.array(z.string()).describe('Up to 8 tags, chosen only from the supplied list.'),
+    value: z.array(z.string()).describe('At most 3 tags, chosen only from the supplied list.'),
     evidence: z.string().nullable().describe(EVIDENCE_DESCRIPTION),
     derivation: DerivationEnum,
   }),
@@ -352,7 +352,13 @@ export async function extractDraft(
     story: raw.story,
     photoUrl,
     difficulty: { ...raw.difficulty, value: canonicalizeDifficulty(raw.difficulty.value) },
-    tags: { ...raw.tags, value: canonicalizeTags(raw.tags.value) },
+    // Capped here rather than inside `canonicalizeTags`, which is also what a
+    // creator's own edit goes through — and there an over-cap list must be
+    // REFUSED, not silently trimmed to the first three. This is the model's
+    // proposal, so trimming is the right answer: it asked for at most three and
+    // sometimes returns more, and a review card offering six of a three-tag
+    // limit makes the creator do arithmetic the extraction should have done.
+    tags: { ...raw.tags, value: canonicalizeTags(raw.tags.value).slice(0, MAX_MEAL_TAGS) },
     // A rejected serves keeps its span so the reason can explain what we saw,
     // but carries no value — which reads red, as it should.
     serves: { ...raw.serves, value: serves ?? '' },
