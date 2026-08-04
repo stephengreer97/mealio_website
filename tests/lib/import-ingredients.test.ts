@@ -129,6 +129,24 @@ describe('import/ingredients — canonicalUnit', () => {
     expect(canonicalUnit(input)).toBe(expected);
   });
 
+  it.each([
+    ['lb.', 'lb'],
+    ['lbs.', 'lb'],
+    ['oz.', 'oz'],
+    ['fl oz.', 'fl oz'],
+    ['tbsp.', 'tbsp'],
+    ['g.', 'g'],
+  ])('reads the abbreviating period in %s', (input, expected) => {
+    // Recipe writers abbreviate with a period and a few of these had an explicit
+    // alias while the rest did not — so "1 lb. ground Italian sausage" from
+    // Budget Bytes came through as "1 qty of ground Italian sausage".
+    //
+    // The failure is quiet by construction: an unrecognised unit does not raise,
+    // it falls back to `qty`, and the amount goes with it. The draft then looks
+    // deliberate rather than wrong, which is why this sat unnoticed.
+    expect(canonicalUnit(input)).toBe(expected);
+  });
+
   it('treats an empty or count-like unit as qty', () => {
     for (const input of ['', 'qty', 'each', 'count']) {
       expect(canonicalUnit(input)).toBe('qty');

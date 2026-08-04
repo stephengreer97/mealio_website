@@ -179,7 +179,12 @@ export function parseAmount(input: string | null | undefined): number | null {
 /** Maps a written unit onto the picker's vocabulary, or null if it isn't one. */
 export function canonicalUnit(input: string | null | undefined): string | null {
   if (input == null) return null;
-  const key = String(input).trim().toLowerCase().replace(/\s+/g, ' ');
+  // Trailing periods go first. Recipe writers abbreviate with them — "1 lb.
+  // ground Italian sausage", "8 oz. cream cheese" — and an unrecognised unit
+  // does not fail loudly: it falls through to `qty` below and takes the amount
+  // with it, so a pound of sausage became "1 qty of ground Italian sausage" on
+  // a draft that looked otherwise correct.
+  const key = String(input).trim().toLowerCase().replace(/\s+/g, ' ').replace(/\.+$/, '').trim();
   if (!key) return COUNT_UNIT;
   if (UNIT_ALIASES[key]) return UNIT_ALIASES[key];
   // Singular/plural fallback: "cupss" won't match, "cup" already did.
