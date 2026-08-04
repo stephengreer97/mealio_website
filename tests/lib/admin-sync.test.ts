@@ -24,6 +24,7 @@ vi.mock('@/lib/creator-meals', () => ({
 import {
   advanceRun,
   buildCatalog,
+  FEED_MAX_PAGES,
   createSourceDocumentResolver,
   processSyncItem,
   resumeStalledSyncRuns,
@@ -312,6 +313,60 @@ describe('buildCatalog — drawing the list is free', () => {
     // which is what makes this screen safe to open on an archive.
     expect(calls).toEqual(['https://chefsarah.test/robots.txt', 'https://chefsarah.test/feed']);
     expect(calls.some((url) => url.includes('/post-'))).toBe(false);
+  });
+
+  it('walks back through a paged feed rather than stopping at the window', async () => {
+    // A feed is a window, not an archive: WordPress publishes ten posts and
+    // nothing older, so a creator connecting their blog could reach their ten
+    // most recent recipes and no further. Budget Bytes' feed does paginate —
+    // `?paged=2` is a different ten — and the catalogue now follows it.
+    const { impl, calls } = stubFetch({
+      'https://chefsarah.test/robots.txt': { body: 'User-agent: *\nAllow: /' },
+      'https://chefsarah.test/feed': { body: feedWith(10), headers: { 'content-type': 'application/rss+xml' } },
+      'https://chefsarah.test/feed?paged=2': { body: feedWith(10), headers: { 'content-type': 'application/rss+xml' } },
+    });
+
+    const first = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'website',
+    );
+    expect(first.ok && first.nextPageToken).toBe('2');
+
+    const second = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'website',
+      { pageToken: '2' },
+    );
+
+    expect(second.ok && second.entries).toHaveLength(10);
+    expect(calls).toContain('https://chefsarah.test/feed?paged=2');
+  });
+
+  it('stops walking back at the page ceiling', async () => {
+    // A feed that ignores `?paged=` answers every page with its first one, so
+    // "keep going while pages have posts in them" is a loop without a ceiling.
+    // The client notices sooner — a window that adds nothing it already had is
+    // the end — but the bound is what makes that a safeguard rather than the
+    // only thing standing between a creator and an endless list.
+    const { impl } = stubFetch({
+      'https://chefsarah.test/robots.txt': { body: 'User-agent: *\nAllow: /' },
+      [`https://chefsarah.test/feed?paged=${FEED_MAX_PAGES}`]: {
+        body: feedWith(10),
+        headers: { 'content-type': 'application/rss+xml' },
+      },
+    });
+
+    const result = await buildCatalog(
+      { supabase, fetchOptions: { fetchImpl: impl, lookup: publicLookup } },
+      CREATOR,
+      'website',
+      { pageToken: String(FEED_MAX_PAGES) },
+    );
+
+    expect(result.ok && result.entries).toHaveLength(10);
+    expect(result.ok && result.nextPageToken).toBeNull();
   });
 
   it('marks what is already imported, from the record and not from a fetch', async () => {

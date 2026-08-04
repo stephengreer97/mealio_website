@@ -346,6 +346,16 @@ function platformFetch(deps: SyncDeps): typeof fetch | undefined {
  */
 export const CATALOG_MAX_ENTRIES = 500;
 
+/**
+ * How far back through a paged feed the catalogue will walk.
+ *
+ * A bound rather than a preference: a feed that ignores `?paged=` answers every
+ * page with its first one, and without a ceiling the list would offer "more"
+ * forever. Fifty pages is five hundred posts on a WordPress default, which is
+ * `CATALOG_MAX_ENTRIES` and further back than any creator has asked to go.
+ */
+export const FEED_MAX_PAGES = 50;
+
 export interface CatalogEntry {
   itemId: string;
   url: string;
@@ -506,8 +516,27 @@ export async function buildCatalog(
   // addresses it has never fetched, so it has no validators to replay — which is
   // also why a creator with no `feed_url` costs the full ladder on every poll,
   // and why confirming one at onboarding is worth the operator's minute.
+  // Page two and beyond of a blog's archive.
+  //
+  // A feed is a window, not an archive: WordPress publishes ten posts and
+  // nothing older, so a creator connecting a blog could reach their ten most
+  // recent recipes and no further. `?paged=N` is how WordPress — which is most
+  // of the food blogs we will ever see — offers the rest, and it is ignored
+  // harmlessly by feeds that do not implement it.
+  //
+  // Only ever a page *number*, never a URL from the request. The address is
+  // built here from the stored `feed_url`; taking one from the client would make
+  // this endpoint fetch whatever it was handed.
+  const page = catalogOptions.pageToken ? Math.max(1, Math.min(Number(catalogOptions.pageToken) || 1, FEED_MAX_PAGES)) : 1;
+  const pagedFeedUrl = (base: string): string => {
+    if (page === 1) return base;
+    const url = new URL(base);
+    url.searchParams.set('paged', String(page));
+    return url.toString();
+  };
+
   const discovery: FeedDiscoveryResult = creator.feed_url
-    ? await readFeed(creator.feed_url, options)
+    ? await readFeed(pagedFeedUrl(creator.feed_url), options)
     : await discoverFeed(link, options);
 
   if (!discovery.ok) {
@@ -535,6 +564,10 @@ export async function buildCatalog(
     feed: { url: discovery.feed.url, kind: discovery.feed.kind, via: discovery.feed.via },
     entries,
     truncated: entries.length >= CATALOG_MAX_ENTRIES,
+    // Offered while a page still had something in it. An empty page is the end
+    // of the archive; a feed that ignores `paged` repeats itself instead, which
+    // the list notices when a window adds nothing it did not already have.
+    nextPageToken: entries.length > 0 && page < FEED_MAX_PAGES ? String(page + 1) : null,
     validators: discovery.feed.validators,
     ttlSeconds: discovery.feed.ttlSeconds,
   };

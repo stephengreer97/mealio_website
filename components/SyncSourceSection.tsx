@@ -469,7 +469,13 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       // scrolling shifts TikTok's window, and the same video arriving twice
       // would render twice and be importable twice.
       const seen = new Set(current.entries.map(entry => entry.itemId));
-      return { ...next, entries: [...current.entries, ...next.entries.filter(e => !seen.has(e.itemId))] };
+      const fresh = next.entries.filter(e => !seen.has(e.itemId));
+      // A window that adds nothing is the end of the list, whatever the source
+      // says. Blog feeds that do not implement `?paged=` answer every page with
+      // their first one, and without this the list would offer "more" forever
+      // and never grow by a single post.
+      if (fresh.length === 0) return { ...current, nextPageToken: null };
+      return { ...next, entries: [...current.entries, ...fresh] };
     });
   };
 

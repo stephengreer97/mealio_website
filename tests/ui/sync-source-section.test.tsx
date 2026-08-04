@@ -737,6 +737,40 @@ describe('the back-catalogue checklist', () => {
     await waitFor(() => expect(screen.queryByTestId('catalogue-more')).toBeNull());
   });
 
+  it('stops asking when a window adds nothing it did not already have', async () => {
+    // Blog feeds that do not implement `?paged=` answer every page with their
+    // first one. The server cannot tell — each page looks full — so the list is
+    // where it has to be noticed, or a creator scrolls forever past the same ten
+    // posts while we re-fetch them.
+    stubIntersectionObserver();
+    const { calls } = harness({
+      creator: SYNCING,
+      routes: {
+        '/api/creator/sync/catalog': () =>
+          json({
+            catalog: {
+              ok: true,
+              source: 'website',
+              feed: null,
+              entries: [entry(1), entry(2)],
+              truncated: false,
+              nextPageToken: '2',
+            },
+          }),
+      },
+    });
+
+    await screen.findByTestId('catalogue-more');
+    scrollToBottom();
+
+    await waitFor(() =>
+      expect(calls.filter(c => c.url.includes('/api/creator/sync/catalog')).length).toBeGreaterThan(1));
+    // Same two posts back, so this is the end of the archive whatever the token
+    // claims — the invitation to scroll for more goes away.
+    await waitFor(() => expect(screen.queryByTestId('catalogue-more')).toBeNull());
+    expect(screen.getAllByText(/^Post /)).toHaveLength(2);
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });

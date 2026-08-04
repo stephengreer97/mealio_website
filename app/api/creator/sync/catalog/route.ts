@@ -54,17 +54,16 @@ export async function POST(request: NextRequest) {
   const blocked = creatorSourceBlockedReason(body.source);
   if (blocked) return NextResponse.json({ error: blocked }, { status: 400 });
 
-  // Shape-checked before it is interpolated into an outbound URL. The cursor
-  // cannot point the listing at another channel — the playlist is resolved
-  // server-side from the grant — but an unbounded string from a request body
-  // still has no business reaching Google.
+  // Shape-checked before it reaches an outbound URL. None of these can point the
+  // listing somewhere else — the playlist, the grant and the feed address are all
+  // resolved server-side from the row — but an unbounded string out of a request
+  // body still has no business being appended to one.
   //
-  // Two sources page and their cursors are different animals: YouTube's is an
-  // opaque token, TikTok's is a creation time in milliseconds that goes into a
-  // JSON body as a number. Each is checked against its own shape rather than one
-  // rule loose enough to admit both.
+  // Three shapes, checked separately rather than under one rule loose enough to
+  // admit all of them: YouTube's is an opaque token, TikTok's is a creation time
+  // in milliseconds, and a website's is a page number.
   if (body.pageToken != null) {
-    const valid = body.source === 'tiktok'
+    const valid = body.source === 'tiktok' || body.source === 'website'
       ? typeof body.pageToken === 'string' && /^\d{1,19}$/.test(body.pageToken)
       : isUploadsPageToken(body.pageToken);
     if (!valid) {
