@@ -1784,10 +1784,27 @@ export default function CreatorPortal() {
                             onClick={() => setViewingMeal(meal)}
                             className="flex items-center gap-4 flex-1 min-w-0 text-left bg-none border-none p-0 cursor-pointer"
                           >
+                            {/* 40:21, the shape Discover crops to (a fixed
+                                240x126 there). This was a 56px square, so the
+                                same photo was cropped two different ways in the
+                                two places a creator looks at their own meal.
+                                Height is fixed and the width follows, so the row
+                                keeps its rhythm. The placeholder matches, or the
+                                list would step in and out as photos load. */}
                             {meal.photo_url ? (
-                              <img src={meal.photo_url} alt={meal.name} className="w-14 h-14 rounded-xl object-cover flex-shrink-0" />
+                              <img
+                                src={meal.photo_url}
+                                alt={meal.name}
+                                className="h-14 rounded-xl object-cover flex-shrink-0"
+                                style={{ aspectRatio: '40 / 21' }}
+                              />
                             ) : (
-                              <div className="w-14 h-14 rounded-xl bg-gray-100 flex-shrink-0 flex items-center justify-center text-2xl select-none">🍽️</div>
+                              <div
+                                className="h-14 rounded-xl bg-gray-100 flex-shrink-0 flex items-center justify-center text-2xl select-none"
+                                style={{ aspectRatio: '40 / 21' }}
+                              >
+                                🍽️
+                              </div>
                             )}
                             <div className="flex-1 min-w-0">
                               <div className="font-semibold text-gray-900 text-sm leading-snug truncate">{meal.name}</div>

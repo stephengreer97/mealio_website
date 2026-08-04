@@ -175,8 +175,12 @@ export default function AppHeader() {
             style={{ fontFamily: 'var(--font-pacifico), cursive', background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1 }}
             aria-label="Mealio home"
           >
+            {/* One colour across both spans. The capital used to be #fff and the
+                rest rgba(255,255,255,0.92), which reads as a slightly dimmer
+                "ealio" beside a brighter "M" — most visible at the larger cap
+                size, where there is more of it to compare. */}
             <span style={{ fontSize: '36px', lineHeight: '1', display: 'inline-block', verticalAlign: 'middle', color: '#fff' }}>M</span>
-            <span style={{ fontSize: '26px', color: 'rgba(255,255,255,0.92)' }}>ealio</span>
+            <span style={{ fontSize: '26px', color: '#fff' }}>ealio</span>
           </button>
         </div>
 
