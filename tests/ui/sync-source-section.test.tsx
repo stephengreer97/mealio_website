@@ -323,6 +323,34 @@ describe('choosing a source', () => {
     await waitFor(() => expect(saved.at(-1)).toMatchObject({ primary_source: 'website', import_opt_in: true }));
   });
 
+  it('says what a switch gives up, naming the source being left', async () => {
+    // Mealio reads one place, so switching is also stopping — and that half is
+    // silent: the old account stays connected and nothing else on the screen
+    // mentions it again. Without this a creator moves to TikTok, keeps posting
+    // recipes to YouTube, and finds out months later from the missing drafts.
+    harness({ creator: SYNCING });
+
+    fireEvent.change(picker(), { target: { value: 'youtube' } });
+
+    const warning = await screen.findByTestId('switch-warning');
+    expect(warning.textContent).toMatch(/new you post to Website will not be imported/i);
+    // And that the connection survives, because the warning would otherwise read
+    // as "we have disconnected it".
+    expect(warning.textContent).toMatch(/stays connected/i);
+  });
+
+  it('does not warn a creator who is only correcting an unanswered choice', async () => {
+    // Nothing was being synced, so nothing is being given up. A warning here
+    // teaches creators that this box cries wolf, and the one that matters is the
+    // next one.
+    harness();
+
+    fireEvent.change(picker(), { target: { value: 'youtube' } });
+
+    await waitFor(() => expect(picker().value).toBe('youtube'));
+    expect(screen.queryByTestId('switch-warning')).toBeNull();
+  });
+
   it('lets a creator stop being read at all', async () => {
     const { calls } = harness({ creator: SYNCING });
 

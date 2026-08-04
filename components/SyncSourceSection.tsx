@@ -12,6 +12,7 @@ import {
   normalizePlatformUrl,
   SOURCE_LABELS,
   type ConnectedPlatform,
+  type PlatformSource,
   type PrimarySource,
 } from '@/lib/creator-sources';
 // Type-only: `lib/admin-sync` reaches the import pipeline and undici, and must
@@ -52,6 +53,12 @@ import type { CatalogEntry, CatalogResult, SyncRun, SyncRunTotals } from '@/lib/
  * surprising, and the items table exists precisely so that what has already been
  * handled is not handled again — the new source baselines on its first poll like
  * any other.
+ *
+ * But it is said out loud. Mealio reads one place, so a switch is also a
+ * stopping, and that half is otherwise invisible: the old account stays
+ * connected and nothing on the screen would mention it again. A creator who
+ * moved to TikTok and kept posting recipes to YouTube would find out months
+ * later, from the absence of drafts.
  */
 
 export interface SyncSectionCreator {
@@ -168,6 +175,17 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const [connected, setConnected] = useState<Partial<Record<ConnectedPlatform, boolean>>>({});
   const noteConnection = (platform: ConnectedPlatform) => (is: boolean) =>
     setConnected(current => (current[platform] === is ? current : { ...current, [platform]: is }));
+
+  /**
+   * The source they were being synced from before this switch, if any.
+   *
+   * Mealio reads one place. Switching is therefore also a *stopping*, and that
+   * half is invisible: the old account stays connected, so nothing on screen
+   * changes to say posts from it will no longer arrive. A creator who moves to
+   * TikTok and keeps posting recipes to YouTube would find out months later,
+   * from the absence of drafts.
+   */
+  const [left, setLeft] = useState<PlatformSource | null>(null);
 
   const [catalog, setCatalog] = useState<CatalogResult | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -311,6 +329,9 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
     // goes with it.
     chose.current = false;
     setSource('none');
+    // Not a switch, so nothing to warn about giving up — the sync-off copy below
+    // already says Mealio is reading nothing.
+    setLeft(null);
     setWebsiteInput('');
     setCatalog(null);
     setSelected([]);
@@ -321,6 +342,15 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const pickSource = (next: PrimarySource) => {
     if (next === source) return;
     chose.current = true;
+    // What they are leaving, captured before the write lands — a moment later
+    // the row says the new source and the old one is unrecoverable from state.
+    //
+    // Only when it was actually being synced. Correcting an answer nobody had
+    // acted on yet is not a switch and does not deserve a warning; a creator who
+    // gets one for changing their mind mid-decision learns to ignore the next.
+    if (row.import_opt_in === true && row.primary_source !== 'none' && row.primary_source !== next) {
+      setLeft(row.primary_source as PlatformSource);
+    }
     setSource(next);
     // Nothing about the old source survives the switch. A checklist of somebody
     // else's blog posts sitting under a YouTube heading is the worst thing this
@@ -567,6 +597,24 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       </select>
       {error && (
         <p className="text-sm text-red-600 mt-4 leading-relaxed" role="alert">{error}</p>
+      )}
+
+      {/* ── What switching costs ────────────────────────────────────────────
+          Mealio reads one place, so choosing a new source is also giving up the
+          old one — and that half happens silently: the old account stays
+          connected, and nothing else on this screen would ever mention it
+          again. Said at the moment of the switch, which is the only moment a
+          creator is in a position to change their mind. */}
+      {left && left !== source && (
+        <p
+          className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 mt-4 leading-relaxed"
+          data-testid="switch-warning"
+        >
+          Mealio now syncs from {source === 'none' ? 'nowhere' : SOURCE_LABELS[source]} only.{' '}
+          <strong className="font-semibold">Anything new you post to {SOURCE_LABELS[left]} will not be
+          imported.</strong> Your {SOURCE_LABELS[left]} account stays connected, and recipes already published on
+          Mealio stay exactly where they are.
+        </p>
       )}
 
       {/* ── The body, which is whatever the dropdown says ─────────────────── */}
