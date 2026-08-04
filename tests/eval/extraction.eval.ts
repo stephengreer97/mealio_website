@@ -56,6 +56,16 @@ interface EvalItem {
     ingredients: ExpectedIngredient[];
     ingredientCountRange?: [number, number];
     mustNotContain?: string[];
+    /**
+     * Fields the source states in prose rather than in a labelled block.
+     *
+     * A model attributing evidence spans tends to divide the source between
+     * fields, so an intro sentence spent on `tags` left `story` and `difficulty`
+     * empty — every draft, silently, and nothing here could see it because the
+     * set only ever asserted ingredients and serves.
+     */
+    storyMustBeFilled?: boolean;
+    difficultyMustBeFilled?: boolean;
   };
 }
 
@@ -174,6 +184,12 @@ describe.skipIf(!hasKey)(`extraction eval — ${model}`, () => {
         }
         for (const forbidden of item.expected.servesMustNotBe ?? []) {
           expect(result.draft.serves).not.toBe(forbidden);
+        }
+        if (item.expected.storyMustBeFilled) {
+          expect(result.draft.story?.trim() || '').not.toBe('');
+        }
+        if (item.expected.difficultyMustBeFilled) {
+          expect(result.draft.difficulty).not.toBeNull();
         }
         if (item.expected.ingredientCountRange) {
           const [lo, hi] = item.expected.ingredientCountRange;

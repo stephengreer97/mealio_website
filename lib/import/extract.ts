@@ -92,7 +92,11 @@ const ExtractionSchema = z.object({
     derivation: DerivationEnum,
   }),
   story: z.object({
-    value: z.string().describe("One or two sentences of the creator's own framing. Empty string if absent."),
+    value: z.string().describe(
+      "One or two sentences of the creator's own framing — usually the line before the ingredients. "
+      + 'Fill it even when the same sentence also supported tags or difficulty. Empty string only if the '
+      + 'source really has no framing of its own.',
+    ),
     evidence: z.string().nullable().describe(EVIDENCE_DESCRIPTION),
     derivation: DerivationEnum,
   }),
@@ -144,6 +148,33 @@ derivation values:
 
 Never invent a value to fill a field. "absent" is a correct, expected answer, and an empty field
 the creator fills in themselves costs far less than a plausible wrong one they don't notice.
+
+### One span can answer several fields — reuse it
+
+Fields do not divide the source between them. The sentence or two a creator writes before the
+ingredients usually carries three things at once: how they'd describe the dish (story), what kind
+of dish it is (tags), and how hard it is (difficulty). Using the same span as evidence for all
+three is correct and expected. Do not leave a field "absent" because you already pointed another
+field at that line.
+
+Worked example. Given:
+
+    Sheet Pan Harissa Chicken & Chickpeas — one tray, no fuss, and the chickpeas go crisp at
+    the edges while the chicken finishes. Weeknight food that looks like you tried.
+
+    Serves 3
+
+- story      -> "one tray, no fuss, and the chickpeas go crisp at the edges while the chicken
+                finishes. Weeknight food that looks like you tried." (page-text)
+- tags       -> Sheet Pan, Chicken, Under 45 Min, judged from the same sentence (inferred)
+- difficulty -> 1, "no fuss" and one tray (inferred)
+
+All three point at the same text. That is right, not double-counting.
+
+**The exception, and it is absolute: this never reaches ingredients.** "One tray" is not a tray of
+anything, "done in half an hour" is not a measurement, and "mostly tins" is not a can of something.
+Framing describes the dish; it never becomes a line in the shopping list. Ingredients come only
+from the ingredient list itself — see below.
 
 ## Ingredients
 

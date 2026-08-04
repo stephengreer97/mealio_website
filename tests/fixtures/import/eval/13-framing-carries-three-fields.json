@@ -1,0 +1,27 @@
+{
+  "id": "13-framing-carries-three-fields",
+  "url": "https://chefsarah.example/sheet-pan-harissa-chicken",
+  "note": "The intro sentence answers story, tags AND difficulty at once. Fields do not divide the source between them — but framing must never reach the ingredients: 'one tray' is not a tray of anything.",
+  "source": {
+    "title": "Sheet Pan Harissa Chicken & Chickpeas",
+    "text": "Sheet Pan Harissa Chicken & Chickpeas — one tray, no fuss, and the chickpeas go crisp at the edges while the chicken finishes. Weeknight food that looks like you tried.\n\nServes 3\n\nIngredients\n6 bone-in chicken thighs\n2 cans chickpeas, drained and patted dry\n1 red onion, cut into wedges\n3 tbsp harissa paste\n2 tbsp olive oil\n1 tsp ground cumin\n3/4 tsp flaky sea salt\na handful of coriander, roughly chopped\n\nMethod\n1. Heat the oven to 220C fan.\n2. Toss the chickpeas and onion with the oil, harissa and cumin.\n3. Roast 35 minutes, until the skin is dark.",
+    "jsonLd": null
+  },
+  "expected": {
+    "name": "Sheet Pan Harissa Chicken & Chickpeas",
+    "serves": "3",
+    "storyMustBeFilled": true,
+    "difficultyMustBeFilled": true,
+    "mustNotContain": ["one tray", "tray", "half an hour", "sheet pan"],
+    "ingredients": [
+      { "ingredientName": "chicken thighs", "qty": 6, "unit": "qty", "measure": null },
+      { "ingredientName": "chickpeas", "qty": 1, "unit": "cans", "measure": "2" },
+      { "ingredientName": "red onion", "qty": 1, "unit": "qty", "measure": null },
+      { "ingredientName": "harissa paste", "qty": 1, "unit": "tbsp", "measure": "3" },
+      { "ingredientName": "olive oil", "qty": 1, "unit": "tbsp", "measure": "2" },
+      { "ingredientName": "ground cumin", "qty": 1, "unit": "tsp", "measure": "1" },
+      { "ingredientName": "flaky sea salt", "qty": 1, "unit": "tsp", "measure": "0.75" },
+      { "ingredientName": "coriander", "unit": "handfuls", "measure": null }
+    ]
+  }
+}
