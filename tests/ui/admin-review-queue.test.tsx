@@ -155,7 +155,10 @@ describe('AdminReviewQueue — the meal card', () => {
     // The measurements and the method a saver would read, rendered by the same
     // component Discover renders.
     expect(within(card).getByText('Measurements')).toBeTruthy();
-    expect(within(card).getByText(/avocados, 4/)).toBeTruthy();
+    // Amount first, the way a recipe writes a line. It used to render
+    // "avocados, 4" — the order the row is stored in, printed directly under the
+    // source line we quoted, which was plainly the easier of the two to read.
+    expect(within(card).getByText(/4 avocados/)).toBeTruthy();
     expect(within(card).getByText('Recipe')).toBeTruthy();
     expect(within(card).getByText(/Scoop the avocados into a bowl/)).toBeTruthy();
     // And whose name it would go out under.

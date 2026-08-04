@@ -200,10 +200,10 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
       <ImportFieldNotice notice={notices?.photoUrl ?? null} fieldLabel="Photo" />
 
       {/* Tags sit on the photo when there is one — that is the design, and a
-          second labelled copy underneath would be the same three words twice.
-          Without a photo they need the label like anything else, and a note
-          about them needs the slot whether or not there are any. */}
-      {(!meal.photo_url || notices?.tags) && show(tags.length, notices?.tags) && (
+          second labelled copy underneath is the same three words twice. Without
+          a photo they need the label like anything else, and a note about them
+          needs the slot whether or not there are any. */}
+      {!meal.photo_url && show(tags.length, notices?.tags) && (
         <div>
           <FieldLabel>Tags</FieldLabel>
           {tags.length > 0 ? (
@@ -216,9 +216,11 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
               ))}
             </div>
           ) : <NotFilledIn />}
-          <ImportFieldNotice notice={notices?.tags ?? null} fieldLabel="Tags" />
         </div>
       )}
+      {/* Outside the slot above, because the chips may be on the photo instead.
+          The note names its own field, so it does not need one drawn for it. */}
+      <ImportFieldNotice notice={notices?.tags ?? null} fieldLabel="Tags" />
 
       {/* ── What it is like ──
           A definition list, because that is what these are: three short values

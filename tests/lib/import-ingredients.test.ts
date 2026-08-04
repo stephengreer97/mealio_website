@@ -7,6 +7,7 @@ import {
   parseAmount,
   statedAmounts,
   statedUnits,
+  unitLabel,
 } from '@/lib/import/ingredients';
 import { canonicalizeDifficulty, canonicalizeServes, canonicalizeTags, SERVES_PATTERN } from '@/lib/import/vocab';
 import type { ExtractedIngredient } from '@/lib/import/types';
@@ -143,6 +144,26 @@ describe('import/ingredients — canonicalUnit', () => {
     expect(canonicalUnit('tin')).toBe('cans');
     expect(canonicalUnit('pinch')).toBe('pinches');
     expect(canonicalUnit('grind')).toBe('grinds');
+  });
+
+  it('spells a unit for the number beside it, and only for a bare one', () => {
+    // Storing the plural is right — one token per unit — but it had leaked into
+    // the render as "cannellini beans, 1 cans" and "parsley, 1 bunches".
+    expect(unitLabel('cans', '1')).toBe('can');
+    expect(unitLabel('bunches', '1')).toBe('bunch');
+    expect(unitLabel('cups', 1)).toBe('cup');
+    expect(unitLabel('cans', '2')).toBe('cans');
+
+    // "1 1/2" starts with a 1 and is one and a half cups. `parseAmount` reads it
+    // as 1 — it answers "how many packages" — so this deliberately does not use
+    // it, and anything that is not the bare character "1" keeps the plural.
+    expect(unitLabel('cups', '1 1/2')).toBe('cups');
+    expect(unitLabel('cups', '1-2')).toBe('cups');
+
+    // Abbreviations do not inflect and must not be trimmed to 'tbs' or ''.
+    expect(unitLabel('tbsp', '1')).toBe('tbsp');
+    expect(unitLabel('g', '1')).toBe('g');
+    expect(unitLabel('fl oz', '1')).toBe('fl oz');
   });
 
   it('returns null for units the editor still cannot display', () => {

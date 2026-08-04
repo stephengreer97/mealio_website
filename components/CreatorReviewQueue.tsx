@@ -437,12 +437,11 @@ export default function CreatorReviewQueue() {
               invisible: the flagged ones came first and nothing on screen
               admitted it. Counted over the rows below rather than over `total`,
               because past the 200-row read we have not seen the rest. */}
-          {flaggedPending > 0 && (
+          {flaggedPending > 0 && pending.length > 1 && (
             <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#b45309', fontWeight: 600 }} data-testid="queue-flagged-count">
               {flaggedPending === 1
-                ? 'One of the ones below has something worth checking'
-                : `${flaggedPending} of the ones below have something worth checking`}
-              , and {flaggedPending === 1 ? 'it is' : 'they are'} first.
+                ? 'One of the ones below has something worth checking, and it is first.'
+                : `${flaggedPending} of the ones below have something worth checking, and they are first.`}
             </p>
           )}
           {/* Only ever seen past the 200-row read, and better said than left as

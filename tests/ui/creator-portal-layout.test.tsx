@@ -121,6 +121,10 @@ const tab = (name: RegExp) => screen.getByRole('tab', { name });
 beforeEach(async () => {
   localStorage.clear();
   localStorage.setItem('accessToken', 'test-token');
+  // The portal writes the tab into the hash, and jsdom's location outlives a
+  // test. Without this, a test that ended on Settings decides which tab the
+  // next one opens on.
+  window.history.replaceState(null, '', window.location.pathname);
   guacamole = await importedGuacamole();
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -198,6 +202,8 @@ describe('a creator with drafts waiting can find them', () => {
     fireEvent.click(screen.getByRole('button', { name: /review drafts/i }));
 
     // The queue, with the decision on it — the thing the owner could not find.
+    // One waiting draft opens itself: there is nothing to choose between, and a
+    // collapsed row would be a click charged for no decision.
     const queueCard = await screen.findByTestId('creator-review-queue');
     expect(within(queueCard).getByRole('button', { name: /approve & publish/i })).toBeTruthy();
     expect(within(queueCard).getByRole('button', { name: /edit first/i })).toBeTruthy();
@@ -213,6 +219,54 @@ describe('a creator with drafts waiting can find them', () => {
 
     expect(within(await screen.findByTestId('creator-review-queue'))
       .getByRole('button', { name: /approve & publish/i })).toBeTruthy();
+  });
+});
+
+// ── Landing on the right tab ─────────────────────────────────────────────────
+
+describe('the drafts-ready email lands on the drafts', () => {
+  it('opens the Drafts tab for /creator#drafts', async () => {
+    // The mail's only button says "Review and publish" and used to land on
+    // /creator, which is the Meals tab: the creator arrived at a page about
+    // publishing new meals having been asked to review the ones we already read.
+    window.history.replaceState(null, '', '#drafts');
+    portal({ drafts: [draft('d1')] });
+
+    await waitFor(() => expect(tab(/^Drafts/).getAttribute('aria-selected')).toBe('true'));
+    expect(await screen.findByTestId('creator-review-queue')).toBeTruthy();
+  });
+
+  it('follows the hash when the same link is clicked with the portal already open', async () => {
+    portal({ drafts: [draft('d1')] });
+    await screen.findByText('Weeknight Chilli');
+    expect(tab(/^Meals/).getAttribute('aria-selected')).toBe('true');
+
+    window.history.replaceState(null, '', '#drafts');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    await waitFor(() => expect(tab(/^Drafts/).getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('writes the hash when a creator switches tabs, without stacking history', async () => {
+    // Assigning `location.hash` would push an entry per tab click, so Back walks
+    // a creator through every tab they touched instead of leaving the portal.
+    portal();
+    await screen.findByText('Weeknight Chilli');
+    const before = window.history.length;
+
+    fireEvent.click(tab(/^Settings/));
+
+    expect(window.location.hash).toBe('#settings');
+    expect(window.history.length).toBe(before);
+  });
+
+  it('keeps today’s default for a hash that names no tab', async () => {
+    // `#anything` from anywhere must not be able to blank the page.
+    window.history.replaceState(null, '', '#nonsense');
+    portal();
+
+    expect(await screen.findByText('Weeknight Chilli')).toBeTruthy();
+    expect(tab(/^Meals/).getAttribute('aria-selected')).toBe('true');
   });
 });
 

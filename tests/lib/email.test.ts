@@ -55,6 +55,20 @@ describe('the drafts-ready email (MEAL-76)', () => {
     expect(sent.html).toContain('Best Guacamole');
   });
 
+  it('points its only button at the drafts, not at the portal’s default tab', async () => {
+    // "Review and publish" landed on /creator, which opens on Meals: a creator
+    // asked to review the recipes we had just read arrived at the page for
+    // publishing new ones and had to go and find the tab.
+    send.mockResolvedValue({ data: { id: 'msg-1' }, error: null });
+
+    await sendCreatorDraftsReadyEmail('sarah@chefsarah.test', 'Chef Sarah', [DRAFT]);
+
+    const { html } = send.mock.calls[0][0] as { html: string };
+    expect(html).toMatch(/href="[^"]*\/creator#drafts"[^>]*>Review and publish</);
+    // The footer's "Creator Portal" is a general way in and stays one.
+    expect(html).toMatch(/href="[^"]*\/creator"[^>]*>Creator Portal</);
+  });
+
   it('sends nothing at all for an empty batch', async () => {
     await sendCreatorDraftsReadyEmail('sarah@chefsarah.test', 'Chef Sarah', []);
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
 import {
@@ -106,6 +106,20 @@ const measures = () =>
 const units = () =>
   screen.getAllByLabelText(/^Ingredient \d+.* unit$/) as HTMLSelectElement[];
 const notices = () => screen.queryAllByTestId('import-notice');
+
+/**
+ * A notice's text with the span we read revealed.
+ *
+ * The quotation sits behind a per-field toggle rather than printing under every
+ * flagged row — see the note at the top of `ImportFieldNotice` for why that
+ * reversed. The reason is still plain text; only the quote needs the tap, and a
+ * test wanting to check the quote takes the same tap a creator would.
+ */
+function withEvidence(notice: HTMLElement): string {
+  const toggle = within(notice).queryByTestId('evidence-toggle');
+  if (toggle) fireEvent.click(toggle);
+  return notice.textContent ?? '';
+}
 const unverified = () => notices().filter(n => n.dataset.kind === 'unverified');
 const photoInput = () => document.querySelector('input[type="file"]') as HTMLInputElement;
 
@@ -207,7 +221,9 @@ describe('creator portal — only the exceptions are marked', () => {
     expect(adjusted.length).toBeGreaterThan(0);
     // The creator reads the evidence directly instead of decoding a symbol.
     const limeRow = adjusted.find(n => n.textContent?.includes('lime'));
-    expect(limeRow!.textContent).toContain('we read:');
+    // The field it is about, said on screen rather than only to a screen reader.
+    expect(limeRow!.textContent).toContain('lime juice —');
+    expect(withEvidence(limeRow!)).toContain('We read:');
     expect(limeRow!.textContent).toContain('3 tablespoons lime juice');
   });
 
@@ -220,7 +236,7 @@ describe('creator portal — only the exceptions are marked', () => {
     const unverified = notices().filter(n => n.dataset.kind === 'unverified');
     expect(unverified).toHaveLength(1);
     expect(unverified[0].textContent).toMatch(/couldn’t find this in the source/);
-    expect(unverified[0].textContent).toContain('1 teaspoon smoked paprika');
+    expect(withEvidence(unverified[0])).toContain('1 teaspoon smoked paprika');
 
     // Red does not mean deleted — the row is still there and still editable.
     expect(rows()[2].value).toBe('smoked paprika');
@@ -240,7 +256,10 @@ describe('creator portal — only the exceptions are marked', () => {
     expect(storyBox().value).toBe('');
     const story = absent.find(n => n.id === 'import-notice-story')!;
     expect(story.textContent).toContain('Not found in the source — add this');
-    expect(story.textContent).not.toContain('we read');
+    // Nothing to quote, so nothing to offer: no toggle, and no dangling
+    // invitation to read a span that does not exist.
+    expect(within(story).queryByTestId('evidence-toggle')).toBeNull();
+    expect(story.textContent).not.toContain('We read');
 
     // Serves is the other kind of empty, and it must not read the same. This
     // page publishes a volume yield and no head count, so the pipeline emits
@@ -249,8 +268,9 @@ describe('creator portal — only the exceptions are marked', () => {
     // box. Saying "not found in the source" here is simply untrue.
     expect(servesBox().value).toBe('');
     const serves = absent.find(n => n.id === 'import-notice-serves')!;
+    expect(serves.textContent).toContain('Serves —');
     expect(serves.textContent).toContain('We found this but couldn’t use it');
-    expect(serves.textContent).toContain('2 1/2 cups guacamole');
+    expect(withEvidence(serves)).toContain('2 1/2 cups guacamole');
     expect(servesBox().getAttribute('aria-describedby')).toBe('import-notice-serves');
   });
 
@@ -284,7 +304,7 @@ describe('creator portal — only the exceptions are marked', () => {
 
     fireEvent.change(measures()[2], { target: { value: '2' } });
     expect(unverified()).toHaveLength(1);
-    expect(unverified()[0].textContent).toContain('1 teaspoon smoked paprika');
+    expect(withEvidence(unverified()[0])).toContain('1 teaspoon smoked paprika');
 
     fireEvent.change(units()[2], { target: { value: 'tbsp' } });
     expect(unverified()).toHaveLength(1);
@@ -791,7 +811,7 @@ describe('creator portal — a recipe longer than three lines', () => {
     // creator the span we rejected so they can type the number themselves.
     expect(servesBox().value).toBe('');
     const servesNotice = notices().find(n => n.id === 'import-notice-serves');
-    expect(servesNotice?.textContent).toContain('4 (Large bowls)');
+    expect(withEvidence(servesNotice!)).toContain('4 (Large bowls)');
     expect(summary.textContent).toMatch(/of 15 fields verified/);
   });
 
@@ -839,11 +859,11 @@ describe('creator portal — the callouts exist for a screen reader too', () => 
     const described = (el: Element) =>
       document.getElementById(el.getAttribute('aria-describedby') ?? '');
 
-    expect(described(servesBox())!.textContent).toContain('2 1/2 cups guacamole');
+    expect(withEvidence(described(servesBox())! as HTMLElement)).toContain('2 1/2 cups guacamole');
     expect(servesBox().getAttribute('aria-invalid')).toBe('true');
 
     const paprika = rows()[2];
-    expect(described(paprika)!.textContent).toContain('1 teaspoon smoked paprika');
+    expect(withEvidence(described(paprika)! as HTMLElement)).toContain('1 teaspoon smoked paprika');
     expect(paprika.getAttribute('aria-invalid')).toBe('true');
 
     // The verified row says nothing, and claims nothing.
