@@ -137,6 +137,42 @@ function NotFilledIn() {
   return <span className="text-sm" style={{ color: 'var(--text-3)' }}>Not filled in</span>;
 }
 
+// ── Pointing at a field from outside the card ────────────────────────────────
+
+/**
+ * The names a caller can point at. One per slot this component draws, plus
+ * `ingredient-<row>` for a measurement line.
+ *
+ * Stringly typed on purpose: the ingredient rows are open-ended and a template
+ * union that has to be built at every call site buys nothing a typo in a
+ * `data-field` would not also survive.
+ */
+export type MealField = 'photo' | 'tags' | 'serves' | 'difficulty' | 'story' | 'recipe' | string;
+
+/** The anchor name for one measurement row. One spelling, both ends. */
+export function ingredientField(index: number): MealField {
+  return `ingredient-${index}`;
+}
+
+/**
+ * The ring drawn on the field a reader has just asked to be shown.
+ *
+ * `outline` rather than `border`, because it is drawn outside the box and so
+ * moves nothing — a highlight that reflows the recipe under the reader's eye is
+ * worse than no highlight. The brand red is the same red the link that sent
+ * them here is drawn in, which is what makes the two ends read as one gesture.
+ */
+const FOCUS_RING: React.CSSProperties = {
+  outline: '2px solid #dd0031',
+  outlineOffset: '4px',
+  borderRadius: '6px',
+};
+
+interface AnchorProps extends React.HTMLAttributes<HTMLElement> {
+  'data-field'?: string;
+  'data-focused'?: 'true';
+}
+
 /**
  * Everything inside the detail modal below the title: photo, tags, serves,
  * difficulty, source, story, measurements and recipe.
@@ -167,10 +203,39 @@ function NotFilledIn() {
  * source — add this" three times over, floating between other fields, names
  * nothing at all.
  */
-export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: MealNotices | null }) {
+export function MealDetailBody({ meal, notices, fieldAnchorId, focusedField }: {
+  meal: PresetMeal;
+  notices?: MealNotices | null;
+  /**
+   * Gives each field slot a DOM id, so something outside this card can point at
+   * one. The creator review queue's comment pane is the caller: its notes sit in
+   * a second column and have to be able to say *which* line they are about.
+   *
+   * Optional, and absent everywhere else. Without it not one attribute changes
+   * — Discover and the admin queue render exactly the markup they always have.
+   */
+  fieldAnchorId?: (field: MealField) => string;
+  /** The field a reader has just asked to be shown. Drawn with a ring, nothing else. */
+  focusedField?: MealField | null;
+}) {
   const sourceHost = meal.source ? (() => {
     try { return new URL(meal.source!).hostname.replace('www.', ''); } catch { return meal.source; }
   })() : null;
+
+  /**
+   * The id, the marker and the ring for one field, merged onto whatever the slot
+   * already carries. Nothing at all when no caller asked for anchors.
+   */
+  const anchor = (field: MealField, style?: React.CSSProperties): AnchorProps => {
+    if (!fieldAnchorId) return style ? { style } : {};
+    const focused = focusedField === field;
+    return {
+      id: fieldAnchorId(field),
+      'data-field': field,
+      ...(focused ? { 'data-focused': 'true' as const } : {}),
+      style: focused ? { ...style, ...FOCUS_RING } : style,
+    };
+  };
 
   const tags = (meal.tags ?? []).slice(0, MAX_MEAL_TAGS);
   /** Draw the slot if there is a value in it, or anything to say about it. */
@@ -183,10 +248,10 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
     <>
       {/* ── What it is ── */}
       {meal.photo_url ? (
-        <div style={{ position: 'relative' }}>
+        <div {...anchor('photo', { position: 'relative' })}>
           <img src={meal.photo_url} alt={meal.name} className="w-full rounded-xl object-cover" style={{ maxHeight: '220px' }} />
           {tags.length > 0 && (
-            <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div {...anchor('tags', { position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' })}>
               {tags.map(tag => (
                 <span key={tag} className="text-xs px-2.5 py-1 rounded-full font-medium"
                   style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', color: '#fff', border: 'none' }}>
@@ -204,7 +269,7 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
           a photo they need the label like anything else, and a note about them
           needs the slot whether or not there are any. */}
       {!meal.photo_url && show(tags.length, notices?.tags) && (
-        <div>
+        <div {...anchor('tags')}>
           <FieldLabel>Tags</FieldLabel>
           {tags.length > 0 ? (
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -230,7 +295,7 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
       {(show(meal.serves, notices?.serves) || show(meal.difficulty != null, notices?.difficulty) || sourceHost) && (
         <dl className="flex flex-wrap" style={{ columnGap: '28px', rowGap: '12px' }}>
           {show(meal.serves, notices?.serves) && (
-            <div style={{ minWidth: 0 }}>
+            <div {...anchor('serves', { minWidth: 0 })}>
               <dt className={labelClass} style={labelStyle}>Serves</dt>
               <dd className="text-sm mt-1" style={{ color: 'var(--text-1)' }}>
                 {meal.serves || <NotFilledIn />}
@@ -239,7 +304,7 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
             </div>
           )}
           {show(meal.difficulty != null, notices?.difficulty) && (
-            <div style={{ minWidth: 0 }}>
+            <div {...anchor('difficulty', { minWidth: 0 })}>
               <dt className={labelClass} style={labelStyle}>Difficulty</dt>
               <dd className="text-sm mt-1" style={{ color: 'var(--text-1)' }}>
                 {meal.difficulty != null
@@ -264,7 +329,7 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
       )}
 
       {show(meal.story, notices?.story) && (
-        <div>
+        <div {...anchor('story')}>
           <FieldLabel>Story</FieldLabel>
           {meal.story
             ? <p className="text-sm italic whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.story}</p>
@@ -281,7 +346,11 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
           <p className={`${labelClass} mb-3`} style={labelStyle}>Measurements</p>
           <ul className="space-y-1.5">
             {ingredients.map((ing, i) => (
-              <li key={i} className="py-2 text-sm" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-1)' }}>
+              <li
+                key={i}
+                className="py-2 text-sm"
+                {...anchor(ingredientField(i), { borderBottom: '1px solid var(--border)', color: 'var(--text-1)' })}
+              >
                 {fmtMeasurement(normIng(ing))}
                 <ImportFieldNotice notice={ingredientNotices[i] ?? null} fieldLabel={normIng(ing).ingredientName} />
               </li>
@@ -292,7 +361,7 @@ export function MealDetailBody({ meal, notices }: { meal: PresetMeal; notices?: 
 
       {/* ── How to make it ── */}
       {show(meal.recipe, notices?.recipe) && (
-        <div>
+        <div {...anchor('recipe')}>
           <p className={`${labelClass} mb-3`} style={labelStyle}>Recipe</p>
           {meal.recipe
             ? <p className="text-sm whitespace-pre-wrap leading-relaxed" style={{ color: 'var(--text-2)' }}>{meal.recipe}</p>

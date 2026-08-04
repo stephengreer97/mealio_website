@@ -34,7 +34,7 @@
  * flow. Recorded on MEAL-73 rather than fixed here.
  */
 
-import { MAX_MEAL_TAGS } from './vocab';
+import { canonicalizeTags, MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, tagCapError } from './vocab';
 import type {
   DraftIngredient,
   FieldConfidence,
@@ -108,6 +108,64 @@ export const FIELD_LABELS: Record<ImportField, string> = {
   serves: 'Serves',
   ingredients: 'Measurements',
 };
+
+// ── What would stop this publishing ──────────────────────────────────────────
+
+/** One reason a draft cannot be published, and the field it is about. */
+export interface PublishBlocker {
+  field: ImportField;
+  /** The server's own sentence, so the preview and the refusal say the same thing. */
+  message: string;
+}
+
+/**
+ * Everything that would make `publishCreatorMeal` refuse this draft.
+ *
+ * The rules were only discoverable by pressing Approve and losing: a draft
+ * written before the tag cap shipped carries eight tags, `publishCreatorMeal`
+ * throws, and `approveDraft` correctly rolls the row back to `pending_review` —
+ * so the creator's only signal was a failure on the one button that is supposed
+ * to be the end of the job. Every one of these is knowable while they are still
+ * looking at the recipe.
+ *
+ * **The rules are imported, never restated.** `tagCapError`, `canonicalizeTags`,
+ * `SERVES_PATTERN` and `SERVES_ERROR` are the same four `publishCreatorMeal`
+ * enforces, applied in the same order and against the same canonicalised list —
+ * a second copy of the cap is a second place for it to be `3` in one file and
+ * `4` in another, and a preview that lies about publishability is worse than no
+ * preview because it is trusted. `tests/lib/publish-blockers.test.ts` runs a
+ * blocked draft through the real publish path and asserts the sentences match.
+ *
+ * The two `editableDraft` refuses that `publishCreatorMeal` does not reach —
+ * an empty name, no ingredients — are here too. They are the same wording, and
+ * a nameless meal on Discover is not a thing to let through on the technicality
+ * that the insert would have accepted it.
+ *
+ * Order is the card's order, so a list of blockers reads down the preview.
+ */
+export function publishBlockers(draft: {
+  name?: string | null;
+  serves?: string | null;
+  tags?: string[] | null;
+  ingredients?: unknown[] | null;
+}): PublishBlocker[] {
+  const blockers: PublishBlocker[] = [];
+
+  if (!draft.name?.trim()) blockers.push({ field: 'name', message: 'A meal name is required.' });
+
+  const tags = Array.isArray(draft.tags) ? canonicalizeTags(draft.tags.map(String)) : [];
+  const tooManyTags = tagCapError(tags);
+  if (tooManyTags) blockers.push({ field: 'tags', message: tooManyTags });
+
+  const serves = draft.serves?.trim();
+  if (serves && !SERVES_PATTERN.test(serves)) blockers.push({ field: 'serves', message: SERVES_ERROR });
+
+  if (!Array.isArray(draft.ingredients) || draft.ingredients.length === 0) {
+    blockers.push({ field: 'ingredients', message: 'At least one ingredient is required.' });
+  }
+
+  return blockers;
+}
 
 /** Shown on the Tags marker when the import found more than the form accepts. */
 export function tagsTrimmedNote(found: number, kept: number): string | null {

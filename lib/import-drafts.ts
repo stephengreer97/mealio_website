@@ -307,6 +307,50 @@ export async function countPendingDrafts(supabase: SupabaseClient, creatorId: st
 }
 
 /**
+ * Which of `ids` are still waiting on this creator, after a decision was tried.
+ *
+ * A decision that comes back refused has two completely different meanings and
+ * one wording, and the client cannot tell them apart from the sentence:
+ *
+ *  - **It is decided, and not by this tab.** "That draft was already approved."
+ *    The conditional write did its job, exactly one publish happened, and the
+ *    row is gone from the queue.
+ *  - **Nothing happened and it is still yours to fix.** `publishCreatorMeal`
+ *    threw — an eight-tag draft written before the cap shipped is the real case
+ *    — and `approveDraft` rolled the row back to `pending_review`. The database
+ *    is correct and the draft is exactly where it was.
+ *
+ * The creator queue marked both as decided, so a draft that could not publish
+ * locked its own row: no Approve, no Edit, no way to reach the tag picker that
+ * would have fixed it, and recovery meant editing the database by hand.
+ *
+ * Matching on the message text is not an option — it is prose, it is written for
+ * a creator, and it is meant to be rewritten. So the server answers the question
+ * the client is actually asking. One `in` query, only on the path that already
+ * failed, and it is the row's own status rather than an inference from it.
+ *
+ * Fails **open**: an unreadable answer reports everything asked about as still
+ * pending, which leaves a decided row on screen until the next load. The
+ * opposite failure locks a draft the creator can still fix, which is the bug.
+ */
+export async function pendingAmong(
+  supabase: SupabaseClient,
+  ids: string[],
+  creatorId: string,
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const { data, error } = await supabase
+    .from('creator_import_drafts')
+    .select('id')
+    .in('id', ids)
+    .eq('creator_id', creatorId)
+    .eq('status', 'pending_review')
+    .eq('review_by', 'creator');
+  if (error) return [...ids];
+  return ((data ?? []) as Array<{ id: string }>).map((row) => row.id);
+}
+
+/**
  * Whether `id` is a draft `creatorId` is allowed to decide (MEAL-89).
  *
  * Every decision below takes an actor and none of them takes an owner: on the

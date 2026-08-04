@@ -302,6 +302,76 @@ describe('POST approve — the only path from this queue to Discover', () => {
 
     expect(body.waiting).toBe(1);
   });
+
+  /**
+   * Two refusals, one wording, opposite meanings — and the client cannot tell
+   * them apart from the sentence.
+   *
+   * A draft written before the tag cap shipped fails to publish,
+   * `approveDraft` rolls it back to `pending_review`, and the row is still the
+   * creator's to fix. A draft approved in another tab is gone. Both come back
+   * 200 with `done: 0` and a populated `errors[]`, and the creator queue
+   * resolved the row for either — so a publish that failed locked its own row
+   * and took Approve, Edit and Decline with it.
+   *
+   * `stillPending` is the row's own status, asked for only when something was
+   * refused. Nothing decides differently because of it.
+   */
+  it('says a rolled-back publish is still waiting on the creator', async () => {
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow(), draftRow({ id: 'd2' })]);
+    // What an eight-tag draft does: `publishCreatorMeal` refuses it.
+    publishCreatorMeal.mockRejectedValueOnce(new Error('That is 8 tags. A meal takes at most 3.'));
+
+    const body = await (await POST(jsonRequest('/api/creator/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }))).json();
+
+    expect(body.done).toBe(0);
+    expect(body.errors[0]).toMatch(/Publishing failed: That is 8 tags/);
+    // The database is right — `approveDraft` put it back — and the response
+    // says so, so the client can leave the row alone.
+    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
+      status: 'pending_review',
+      decided_at: null,
+      published_meal_id: null,
+    });
+    expect(body.stillPending).toEqual(['d1']);
+  });
+
+  it('says a draft decided in another tab is not waiting on anyone', async () => {
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+
+    await POST(jsonRequest('/api/creator/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }));
+    asCreator();
+    const retry = await (await POST(jsonRequest('/api/creator/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }))).json();
+
+    expect(retry.errors[0]).toMatch(/already approved/i);
+    expect(retry.stillPending).toEqual([]);
+  });
+
+  it('asks nothing extra when nothing was refused', async () => {
+    // One `in` query, only on the path that already failed.
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+
+    const body = await (await POST(jsonRequest('/api/creator/import-drafts', { token, body: { action: 'approve', ids: ['d1'] } }))).json();
+
+    expect(body.errors).toEqual([]);
+    expect(body.stillPending).toEqual([]);
+  });
+
+  it('does not report another creator’s draft as waiting on this one', async () => {
+    // `pendingAmong` is scoped to the caller for the same reason every other
+    // read here is: an id is a uuid, and answering about somebody else's row
+    // would make this a way to probe for them.
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow({ id: 'd9', creator_id: 'c2' })]);
+
+    const body = await (await POST(jsonRequest('/api/creator/import-drafts', { token, body: { action: 'cancel', ids: ['d9'] } }))).json();
+
+    expect(body.errors[0]).toMatch(/not one of yours/i);
+    expect(body.stillPending).toEqual([]);
+  });
 });
 
 describe('POST cancel — declining is a state, not a deletion', () => {

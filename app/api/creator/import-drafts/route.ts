@@ -12,6 +12,7 @@ import {
   editDraft,
   editableDraft,
   listDraftQueue,
+  pendingAmong,
   reviewDraft,
 } from '@/lib/import-drafts';
 
@@ -253,6 +254,13 @@ export async function POST(request: NextRequest) {
     done,
     published,
     errors,
+    // Which of the drafts we were asked about are *still waiting on this
+    // creator*. Only asked when something was refused, because that is the only
+    // case it answers: a refusal can mean "already decided elsewhere" or
+    // "nothing happened, this is still yours to fix", the sentences are prose
+    // and identical in shape, and a client that guesses locks a fixable draft.
+    // See `pendingAmong`. Additive: nothing decides differently because of it.
+    stillPending: errors.length > 0 ? await pendingAmong(supabase, targets, creator.id) : [],
     // So the badge and the "3 of 10" can settle without a second round trip,
     // and so a decision made in another tab is reflected on this one.
     waiting: await countPendingDrafts(supabase, creator.id),

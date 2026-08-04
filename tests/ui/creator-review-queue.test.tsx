@@ -14,6 +14,7 @@ vi.mock('@/lib/creator-meals', () => ({ publishCreatorMeal: vi.fn() }));
 
 import CreatorReviewQueue from '@/components/CreatorReviewQueue';
 import { reviewDraft, type ImportDraft } from '@/lib/import-drafts';
+import { MEAL_TAGS } from '@/lib/import/vocab';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 
 /**
@@ -36,6 +37,14 @@ import { importedGuacamole } from '../helpers/import-ui-fixtures';
  *   5. **Exceptions only.** A verified field says nothing; a flagged one carries
  *      its reason, and the span we read is one tap behind it.
  *   6. **No "approve all".** Deciding is per draft.
+ *   7. **Two panes.** The meal on the left with none of our working in it, and
+ *      what we read on the right — named for its field, in the card's order, and
+ *      able to point at the line it is about.
+ *   8. **A completed request is not a successful one.** A publish that failed
+ *      and rolled back leaves the draft exactly where it was, so the row must
+ *      not resolve — and the reason is something the editor fixes.
+ *   9. **What would stop a publish is shown before Approve is pressed**, in the
+ *      server's own words.
  */
 
 let guacamole: ImportSuccess;
@@ -112,6 +121,26 @@ const toggleOf = (name: string) => within(rowFor(name)).getAllByRole('button')[0
 function open(name: string) {
   fireEvent.click(toggleOf(name));
   return screen.findByTestId('draft-card');
+}
+
+/** Every note in the right-hand pane, in the order it draws them. */
+const comments = () => screen.queryAllByTestId('draft-comment');
+
+/** The field a comment names — the bold lead before the em dash. */
+const commentField = (comment: HTMLElement) =>
+  (within(comment).getByTestId('import-notice').textContent ?? '').split(' — ')[0];
+
+/** The comment about a named field. */
+const commentFor = (field: string) =>
+  comments().find((comment) => commentField(comment) === field) as HTMLElement;
+
+/** A draft carrying more tags than a meal can be published with. */
+function overTagged(id = 'd1'): ImportDraft {
+  // Eight real tags, which is what the extractor was asked for before the cap
+  // shipped and what the row in production actually holds.
+  const tags = ['Mexican', 'No Cook', 'Appetizer', 'Snack', 'Vegan', 'Healthy', 'Party', 'Dinner']
+    .filter((tag) => (MEAL_TAGS as readonly string[]).includes(tag));
+  return draft({ id, draft: { ...guacamole.draft, tags } });
 }
 
 /** Routes the one endpoint the screen talks to, recording what it was asked. */
@@ -352,12 +381,28 @@ describe('the card is the card a saver would read', () => {
     const card = await screen.findByTestId('draft-card');
 
     const labelled = Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent);
-    expect(labelled).toEqual(expect.arrayContaining(['Serves', 'Difficulty', 'Source']));
+    expect(labelled).toEqual(expect.arrayContaining(['Difficulty', 'Source']));
     expect(within(card).getByText('Measurements')).toBeTruthy();
     expect(within(card).getByText('Recipe')).toBeTruthy();
-    // Story is empty on this fixture and still gets its labelled slot, because
-    // that is what gives the note under it a field to belong to.
-    expect(within(card).getAllByText('Story').length).toBeGreaterThan(0);
+  });
+
+  it('draws no slot for a field a published card would not have', async () => {
+    // This changed with the two panes, and the change is the point. An empty
+    // field used to keep a labelled slot on the card so the note under it had
+    // something to belong to. The notes are not on the card any more, so the
+    // reason is gone with them — and a preview that shows "Story: not filled in"
+    // is not a preview of anything a saver will see. Serves and Story are both
+    // empty on this fixture; what we could not fill in is said on the right.
+    harness();
+    const card = await screen.findByTestId('draft-card');
+
+    expect(Array.from(card.querySelectorAll('dt')).map((dt) => dt.textContent)).not.toContain('Serves');
+    expect(within(card).queryByText('Story')).toBeNull();
+    expect(card.textContent).not.toContain('Not filled in');
+
+    const named = comments().map(commentField);
+    expect(named).toContain('Serves');
+    expect(named).toContain('Story');
   });
 
   it('calls out only the flagged fields', async () => {
@@ -448,6 +493,284 @@ describe('the card is the card a saver would read', () => {
 
     expect(screen.queryAllByTestId('import-notice')).toHaveLength(0);
     expect(within(rowFor('Black bean soup')).getByTestId('flag-badge').textContent).toBe('all verified');
+  });
+});
+
+// ── The two panes ────────────────────────────────────────────────────────────
+
+describe('the meal on one side, what we read on the other', () => {
+  it('keeps every bit of the import apparatus out of the preview', async () => {
+    // The question the preview is there to answer is "is this the recipe I want
+    // on Discover under my name", and it was being asked about a card no saver
+    // will ever see: a field notice under the photo, a reason under Serves, "we
+    // read: …" under most of the ingredient rows.
+    harness();
+    const card = await screen.findByTestId('draft-card');
+
+    expect(within(card).queryAllByTestId('import-notice')).toHaveLength(0);
+    expect(within(card).queryAllByTestId('evidence-toggle')).toHaveLength(0);
+    expect(within(card).queryAllByTestId('evidence')).toHaveLength(0);
+    expect(card.textContent).not.toMatch(/we read/i);
+    expect(card.textContent).not.toMatch(/could not confirm|couldn’t find/i);
+    // And it is still the meal: the same component Discover renders.
+    expect(card.textContent).toMatch(/avocado/i);
+  });
+
+  it('moves every notice to the pane beside it, and loses none of them', async () => {
+    harness();
+    await screen.findByTestId('draft-card');
+
+    const pane = screen.getByTestId('draft-comments');
+    const notices = screen.getAllByTestId('import-notice');
+    // Every one of them, and all of them in the one place.
+    expect(notices.length).toBeGreaterThan(0);
+    for (const notice of notices) expect(pane.contains(notice)).toBe(true);
+    // One comment per flagged field, which is what the row's badge counts.
+    const badge = within(rowFor('Best Guacamole')).getByTestId('flag-badge').textContent ?? '';
+    expect(comments()).toHaveLength(Number(/(\d+) to check/.exec(badge)?.[1] ?? 0));
+  });
+
+  it('names the field every comment is about, and names an ingredient for itself', async () => {
+    // The reader is matching two columns by eye. A comment that does not say
+    // what it is about is a sentence about the recipe in general.
+    harness();
+    await screen.findByTestId('draft-card');
+
+    const named = comments().map(commentField);
+    expect(named.every((field) => field.length > 0)).toBe(true);
+    // Named in the words the card labels the field with, not in ours.
+    expect(named).toContain('Recipe instructions');
+    // An ingredient comment is named for its ingredient — "Measurements" twelve
+    // times over would name nothing.
+    expect(named).toContain('smoked paprika');
+  });
+
+  it('draws the comments in the order the card draws the fields', async () => {
+    // The cheapest of the three ties, and the one that works while the reader is
+    // scrolling rather than clicking.
+    harness();
+    await screen.findByTestId('draft-card');
+
+    const named = comments().map(commentField);
+    const recipe = named.indexOf('Recipe instructions');
+    const paprika = named.indexOf('smoked paprika');
+    expect(paprika).toBeGreaterThan(-1);
+    // Measurements come before the recipe on the card, so they do here.
+    expect(recipe).toBeGreaterThan(paprika);
+  });
+
+  it('lets a comment point at the line it is about', async () => {
+    // Naming and ordering stop working at exactly the point this screen gets
+    // hard: a long recipe where "smoked paprika" is one of twelve lines and
+    // counting is the reader's job.
+    harness();
+    const card = await screen.findByTestId('draft-card');
+    const comment = commentFor('smoked paprika');
+
+    const jump = within(comment).getByTestId('comment-jump');
+    const targetId = jump.getAttribute('aria-controls')!;
+    const target = document.getElementById(targetId) as HTMLElement;
+
+    // It points at something real, on the card, and at the right something.
+    expect(target).toBeTruthy();
+    expect(card.contains(target)).toBe(true);
+    expect(target.textContent).toMatch(/smoked paprika/i);
+
+    // Nothing is ringed until it is asked for.
+    expect(card.querySelectorAll('[data-focused="true"]')).toHaveLength(0);
+    fireEvent.click(jump);
+
+    expect(target.getAttribute('data-focused')).toBe('true');
+    // And the comment says it is the one doing the pointing, so the pairing
+    // reads from either end.
+    expect(comment.getAttribute('data-active')).toBe('true');
+    // Only ever one at a time.
+    expect(card.querySelectorAll('[data-focused="true"]')).toHaveLength(1);
+
+    fireEvent.click(within(comment).getByTestId('comment-jump'));
+    expect(card.querySelectorAll('[data-focused="true"]')).toHaveLength(0);
+  });
+
+  it('offers nothing to point at when the card has no such field', async () => {
+    // Serves is empty on this fixture — the page's only yield is a volume — so
+    // the published card will not have it. A link to an empty slot is a link to
+    // nothing, and the comment already says why the field is missing.
+    harness();
+    await screen.findByTestId('draft-card');
+
+    const serves = commentFor('Serves');
+    expect(within(serves).queryByTestId('comment-jump')).toBeNull();
+    expect(within(serves).getByTestId('comment-absent').textContent).toMatch(/not on the card/i);
+  });
+
+  it('says the pane is empty rather than drawing an empty pane', async () => {
+    harness([cleanDraft('d1')]);
+    await screen.findByTestId('draft-card');
+
+    expect(comments()).toHaveLength(0);
+    expect(screen.getByTestId('comments-summary').textContent).toMatch(/matched the page we read/i);
+  });
+});
+
+// ── What would stop it publishing ────────────────────────────────────────────
+
+describe('a draft that cannot be published says so before Approve is pressed', () => {
+  it('names what would stop it, in the words the server would use', async () => {
+    // The real row: eight tags, written before the cap shipped. The only way to
+    // find out used to be pressing Approve and having it fail.
+    harness([overTagged()]);
+    await screen.findByTestId('draft-card');
+
+    const blockers = screen.getAllByTestId('publish-blocker');
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0].getAttribute('data-field')).toBe('tags');
+    // `tagCapError`'s own sentence, not a paraphrase of it.
+    expect(blockers[0].textContent).toContain('A meal takes at most 3.');
+  });
+
+  it('turns Approve off rather than letting it fail', async () => {
+    const { bodies } = harness([overTagged()]);
+    await screen.findByTestId('draft-card');
+
+    const approve = screen.getByRole('button', { name: /Approve & publish/ }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+
+    expect(bodies.some((b) => b.method === 'POST')).toBe(false);
+    expect(screen.getByTestId('approve-blocked-note').textContent).toMatch(/until the thing above is fixed/i);
+  });
+
+  it('offers the one screen that can fix it', async () => {
+    harness([overTagged()]);
+    await screen.findByTestId('draft-card');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix it now' }));
+    expect(await screen.findByTestId('draft-editor')).toBeTruthy();
+  });
+
+  it('says nothing at all about a draft that would publish', async () => {
+    harness();
+    await screen.findByTestId('draft-card');
+
+    expect(screen.queryByTestId('publish-blockers')).toBeNull();
+    expect((screen.getByRole('button', { name: /Approve & publish/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('catches a Serves that is not a head count', async () => {
+    // The other rule `publishCreatorMeal` throws on, and the one the guacamole
+    // page is the standing example of.
+    harness([draft({ draft: { ...guacamole.draft, serves: '2 1/2 cups' } })]);
+    await screen.findByTestId('draft-card');
+
+    expect(screen.getByTestId('publish-blocker').getAttribute('data-field')).toBe('serves');
+    expect(screen.getByTestId('publish-blocker').textContent).toContain('Serves must be a number or a range');
+  });
+});
+
+// ── A decision that did not happen ───────────────────────────────────────────
+
+describe('a refused decision is not a decision', () => {
+  /** What the route returns when publishing threw and `approveDraft` rolled it back. */
+  const rolledBack = {
+    done: 0,
+    published: [],
+    errors: ['Publishing failed: That is 8 tags. A meal takes at most 3.'],
+    stillPending: ['d1'],
+    waiting: 1,
+  };
+
+  it('leaves the row undecided when the publish failed', async () => {
+    // The bug, exactly: the row went to "Already decided" and locked. Approve,
+    // Edit and Decline all went with it, and the only way back was a database
+    // edit — while the row in the database was still `pending_review`, which is
+    // correct. It is only this screen that believed a completed request.
+    harness([draft()], { post: rolledBack });
+    await screen.findByTestId('draft-card');
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+
+    await waitFor(() => expect(screen.getByTestId('draft-failed')).toBeTruthy());
+    expect(screen.getByTestId('draft-row').getAttribute('data-decided')).toBeNull();
+    expect(screen.queryByTestId('draft-resolved')).toBeNull();
+    // Still one row, still waiting on them.
+    expect(screen.getByText('A recipe is waiting for you')).toBeTruthy();
+  });
+
+  it('says why, where they are looking', async () => {
+    harness([draft(), cleanDraft()], { post: rolledBack });
+    await screen.findAllByTestId('draft-row');
+    await open('Best Guacamole');
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+
+    // On the row it is about, not in a banner at the top of a list of ten.
+    const failed = await within(rowFor('Best Guacamole')).findByTestId('draft-failed');
+    expect(failed.textContent).toContain('That is 8 tags. A meal takes at most 3.');
+    expect(failed.textContent).toMatch(/nothing has changed/i);
+  });
+
+  it('opens the editor on it, because that is what fixes every one of these', async () => {
+    harness([draft()], { post: rolledBack });
+    await screen.findByTestId('draft-card');
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+
+    expect(await screen.findByTestId('draft-editor')).toBeTruthy();
+  });
+
+  it('gives the buttons back, so a fixed draft can be approved again', async () => {
+    const { bodies } = harness([draft()], { post: rolledBack });
+    await screen.findByTestId('draft-card');
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+    await screen.findByTestId('draft-editor');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // Everything it had before the failure, on the same row.
+    await screen.findByTestId('draft-card');
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+    await waitFor(() => expect(bodies.filter((b) => b.method === 'POST')).toHaveLength(2));
+  });
+
+  it('does not resolve a refused decline either', async () => {
+    harness([draft()], {
+      post: { done: 0, published: [], errors: ['That draft no longer exists.'], stillPending: ['d1'], waiting: 1 },
+    });
+    await screen.findByTestId('draft-card');
+
+    fireEvent.click(screen.getByRole('button', { name: /Not this one/ }));
+
+    await waitFor(() => expect(screen.getByTestId('draft-failed')).toBeTruthy());
+    expect(screen.getByTestId('draft-row').getAttribute('data-decided')).toBeNull();
+  });
+
+  it('drops the reason once the edit that fixes it is saved', async () => {
+    // Otherwise "that is 8 tags" sits beside a draft carrying three.
+    harness([draft()], { post: rolledBack });
+    await screen.findByTestId('draft-card');
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+    await screen.findByTestId('draft-editor');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save edits' }));
+
+    await waitFor(() => expect(screen.queryByTestId('draft-failed')).toBeNull());
+  });
+
+  it('still resolves a draft that really was decided in another tab', async () => {
+    // The distinction, from the other side. `stillPending` is empty because the
+    // row is not pending any more: the conditional write did its job and exactly
+    // one publish happened. This one *is* decided, and pretending otherwise
+    // would offer an editor for a draft that is already on Discover.
+    harness([draft()], {
+      post: { done: 0, published: [], errors: ['That draft was already approved.'], stillPending: [], waiting: 0 },
+    });
+    await screen.findByTestId('draft-card');
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve & publish/ }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('draft-row').getAttribute('data-decided')).toBe('declined'));
+    expect(screen.queryByTestId('draft-editor')).toBeNull();
   });
 });
 

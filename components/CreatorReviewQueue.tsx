@@ -2,9 +2,23 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ImportFieldNotice from '@/components/ImportFieldNotice';
-import DraftEditor, { FlagBadge, hostOf, primaryButton, secondaryButton } from '@/components/DraftEditor';
-import { MealDetailBody, type MealNotices, type PresetMeal } from '@/components/MealCard';
-import { noticesFor } from '@/lib/import/draft-form';
+import DraftEditor, { FlagBadge, hostOf, label as fieldLabelStyle, primaryButton, secondaryButton } from '@/components/DraftEditor';
+import {
+  ingredientField,
+  MealDetailBody,
+  normIng,
+  type MealField,
+  type MealNotices,
+  type PresetMeal,
+} from '@/components/MealCard';
+import {
+  FIELD_LABELS,
+  noticesFor,
+  publishBlockers,
+  summaryLine,
+  type FieldNotice,
+  type PublishBlocker,
+} from '@/lib/import/draft-form';
 import type { CreatorMealDraft } from '@/lib/import/types';
 // Type-only: `lib/import-drafts` reaches Supabase, Resend and the photo copier,
 // and must never be bundled into the client. Erased at compile time.
@@ -37,9 +51,10 @@ import type { DraftReview, QueuedDraft } from '@/lib/import-drafts';
  *  - **Flagged first, and said out loud.** The server already sorts by
  *    `needALook` (see `listDraftQueue`); that order was invisible, so the same
  *    fact is now a heading and a badge per row.
- *  - **A row opens in place.** The full meal card and Approve / Edit / Decline
- *    appear under the row, exactly as they were. One at a time, so the decision
- *    on screen is unambiguous.
+ *  - **A row opens in place**, onto two panes: the meal as it will actually be
+ *    published, and — beside it — everything we have to say about how we read
+ *    it. See "Two panes" below. One row at a time, so the decision on screen is
+ *    unambiguous.
  *  - **A decided row resolves where it sits.** It does not vanish. Approving
  *    the last draft used to make the whole card disappear mid-tap and "your
  *    recipe is live" was never shown; that was fixed for the last row only, and
@@ -49,6 +64,61 @@ import type { DraftReview, QueuedDraft } from '@/lib/import-drafts';
  *  - **Nothing here blocks.** No modal, no redirect, no interstitial. It is a
  *    card on the portal a creator can scroll past on their way to something
  *    else, and it renders nothing at all when the queue is empty.
+ *
+ * ## Two panes: the meal, and what we read
+ *
+ * An open draft used to be one card with our working threaded through it — a
+ * field notice under the photo, a reason under Serves, "we read: …" under eight
+ * of twelve ingredient rows. The question a creator is answering is "is this the
+ * recipe I want on Discover under my name", and they were being asked it about a
+ * card that no saver will ever see, because half of what was on it was ours.
+ *
+ * So the two things are two columns:
+ *
+ *  - **Left, the meal.** `MealDetailBody` with `notices` deliberately *not*
+ *    passed — the same component and the same arguments Discover renders, so the
+ *    preview is the published card rather than an imitation of it that can
+ *    drift. Nothing of the import apparatus is in it.
+ *  - **Right, our commentary.** Every notice, its reason, and the span we read,
+ *    presented as notes *about* the recipe rather than as part of it.
+ *
+ * The reader is matching two things side by side, so the two ends are tied
+ * together three ways, and the third is the one that does the work:
+ *
+ *  1. Every comment names its field, in the same words the card labels it with
+ *     (`FIELD_LABELS`) — an ingredient comment is named for its ingredient.
+ *  2. The comments are in the card's own order, top to bottom.
+ *  3. **A comment can point at its field.** "Show me on the card" scrolls the
+ *     line into view and rings it, in the same red the link is drawn in.
+ *     Naming and ordering alone stop working at exactly the point this screen
+ *     gets hard — a twelve-ingredient import with eight flagged rows, where
+ *     "lime juice" is the fourth of twelve lines and counting is the reader's
+ *     job. The anchors are an optional prop on `MealDetailBody`; without a
+ *     caller passing one, not a single attribute of Discover's markup changes.
+ *
+ * A comment about a field the card does not draw — a missing Story, a Serves we
+ * could not read — has nothing to point at and says so by having no link. That
+ * is the honest answer: the field is not on the card, which is what the comment
+ * is telling them.
+ *
+ * ## What would stop this publishing, before they press Approve
+ *
+ * The rules `publishCreatorMeal` enforces were only discoverable by pressing
+ * Approve and losing — an eight-tag draft written before the cap shipped fails,
+ * `approveDraft` rolls it back, and the creator was left holding a row they
+ * could not publish and could not see why. `publishBlockers` reads the same
+ * helpers the server does and says so on the preview, and Approve is off while
+ * one stands. See `lib/import/draft-form.ts`.
+ *
+ * ## A completed request is not a successful one
+ *
+ * A refusal comes back 200 with `errors[]` populated, and this screen used to
+ * resolve the row for any of them — so a publish that failed and rolled back
+ * read as "Already decided", the row locked, and the editor that would have
+ * fixed it was behind the row it had just locked. `stillPending` from the POST
+ * is the server answering which drafts are still waiting on this creator; a row
+ * in it did not get decided, keeps its buttons, shows the reason, and opens the
+ * editor, because every reason a publish fails is something the editor fixes.
  *
  * ## No "approve all"
  *
@@ -167,6 +237,15 @@ export default function CreatorReviewQueue() {
   /** The one row expanded into its full card, if any. */
   const [openId, setOpenId] = useState<string | null>(null);
   const [decided, setDecided] = useState<Record<string, Outcome>>({});
+  /**
+   * Why a decision on this row did not happen, per row.
+   *
+   * Beside the row rather than in the banner at the top of the card: the banner
+   * is one line for a list of ten, and "Publishing failed: that is 8 tags" above
+   * a screen of recipes says nothing about which recipe. This is the sentence
+   * that has to be next to the button that did not work.
+   */
+  const [failures, setFailures] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -286,14 +365,45 @@ export default function CreatorReviewQueue() {
     // and the creator can press the same button again.
     if (!res.ok) { setError(data.error || 'That did not work. Nothing has been published.'); return; }
 
+    const errors: string[] = Array.isArray(data.errors) ? data.errors : [];
+    const stillPending: string[] = Array.isArray(data.stillPending) ? data.stillPending : [];
+
+    /**
+     * Refused, and the draft is still sitting in the queue waiting on them.
+     *
+     * The real case is a draft written before the tag cap shipped: publishing
+     * throws, `approveDraft` puts the row back to `pending_review`, and the
+     * database is correct. Only this screen was wrong — it read a 200 with an
+     * `errors[]` as a decision and resolved the row, which took away Approve,
+     * Edit and Decline in one go and left no way back but a database edit.
+     *
+     * So: no outcome, no resolve, the row keeps every button it had, the reason
+     * goes on the row, and the editor opens — every reason a publish is refused
+     * (too many tags, a Serves that is not a head count, a missing name) is
+     * something the nine fields below can fix, and making them find it
+     * themselves is making them do our work.
+     */
+    if (errors.length > 0 && stillPending.includes(id)) {
+      const text = errors.join(' ');
+      setFailures(prev => ({ ...prev, [id]: text }));
+      setOpenId(id);
+      writeCursor(id);
+      setEditing(true);
+      // Deliberately no `setError`: the sentence belongs beside the draft it is
+      // about, and the same words twice on one screen reads as two problems.
+      if (typeof data.waiting === 'number') { setWaiting(data.waiting); announce(data.waiting); }
+      return;
+    }
+
     let outcome: Outcome;
-    if (Array.isArray(data.errors) && data.errors.length > 0) {
+    if (errors.length > 0) {
       // The common one is "already decided in another tab", which is a decision
       // landing twice rather than a failure — the conditional write did its job
       // and exactly one publish happened. Say so and move on. The row still
       // resolves, because it *is* decided; it is only this tab that did not do
-      // the deciding.
-      const text = data.errors.join(' ');
+      // the deciding. Told apart from the case above by `stillPending`, which is
+      // the row's own status rather than a guess made from the wording.
+      const text = errors.join(' ');
       setError(text);
       outcome = { tone: 'bad', badge: 'Already decided', text };
     } else if (action === 'approve') {
@@ -343,6 +453,15 @@ export default function CreatorReviewQueue() {
     // group the row is sitting in.
     setRows(prev => (prev ?? []).map(row => (row.id === id ? { ...row, ...(data.draft as ReviewRow) } : row)));
     setEditing(false);
+    // The saved draft is what the blockers are recomputed from, so the reason a
+    // publish was refused is answered by the row itself now. Keeping the old
+    // sentence would leave "that is 8 tags" beside a draft carrying three.
+    setFailures(prev => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setNotice('Saved. It is still waiting on you — editing does not publish it.');
   };
 
@@ -399,6 +518,7 @@ export default function CreatorReviewQueue() {
       editing={editing && openId === row.id}
       busy={busy}
       outcome={decided[row.id] ?? null}
+      failure={failures[row.id] ?? null}
       onToggle={() => openRow(openId === row.id ? null : row.id)}
       onEdit={() => setEditing(true)}
       onCancelEdit={() => setEditing(false)}
@@ -472,7 +592,7 @@ export default function CreatorReviewQueue() {
       */}
       {group(
         'Worth a look first',
-        'Something in these did not match the page we read. The row says how many fields, and the card says which.',
+        'Something in these did not match the page we read. The row says how many fields, and the notes beside the card say which.',
         needsALook,
         'group-flagged',
       )}
@@ -544,13 +664,15 @@ function RowIdentity({ row }: { row: ReviewRow }) {
 }
 
 function QueueRow({
-  row, open, editing, busy, outcome, onToggle, onEdit, onCancelEdit, onSaveEdit, onDecide,
+  row, open, editing, busy, outcome, failure, onToggle, onEdit, onCancelEdit, onSaveEdit, onDecide,
 }: {
   row: ReviewRow;
   open: boolean;
   editing: boolean;
   busy: boolean;
   outcome: Outcome | null;
+  /** Why the last decision on this row did not happen. Null when none has failed. */
+  failure: string | null;
   onToggle: () => void;
   onEdit: () => void;
   onCancelEdit: () => void;
@@ -611,58 +733,314 @@ function QueueRow({
       </button>
 
       <div id={panelId} hidden={!open}>
-        {open && (editing ? (
+        {open && (
           <div style={{ marginTop: '12px' }}>
-            <DraftEditor draft={row.draft} busy={busy} onCancel={onCancelEdit} onSave={onSaveEdit} />
-          </div>
-        ) : (
-          <div style={{ marginTop: '12px' }}>
-            {/*
-              The saver's view, not a review view — the same component Discover
-              renders, so what a creator approves and what a saver reads cannot
-              drift apart.
-            */}
-            <div
-              className="space-y-4"
-              style={{ background: 'var(--surface-raised, #fff)', border: '1px solid #eee', borderRadius: '12px', padding: '16px' }}
-              data-testid="draft-card"
-            >
-              {/* The title the modal would draw in its own header, so a flagged
-                  name has somewhere to be called out. */}
-              <div>
-                <h4 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#18181B' }}>{row.draft.name}</h4>
-                <ImportFieldNotice notice={notices.name} fieldLabel="Meal name" />
+            {/* The refusal, beside the draft it is about and above whatever the
+                creator is looking at — the editor if we opened it for them, the
+                panes if they closed it again. */}
+            {failure && (
+              <div
+                style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '10px 12px', marginBottom: '12px' }}
+                data-testid="draft-failed"
+                role="status"
+              >
+                <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#c40029' }}>
+                  That did not publish, and nothing has changed
+                </p>
+                <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#c40029', lineHeight: 1.6 }}>{failure}</p>
+                <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#6b7280', lineHeight: 1.6 }}>
+                  It is still waiting on you. Fix it below and approve it again.
+                </p>
               </div>
-              <MealDetailBody meal={asPresetMeal(row)} notices={notices} />
-            </div>
+            )}
 
-            {/*
-              Approve / Edit / Decline, unchanged and still one recipe at a time.
-            */}
-            <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
-              <button onClick={() => onDecide('approve')} disabled={busy} style={primaryButton}>
-                Approve &amp; publish
-              </button>
-              <button onClick={onEdit} disabled={busy} style={secondaryButton}>Edit first</button>
-              <button
-                onClick={() => onDecide('cancel')}
-                disabled={busy}
-                style={{ ...secondaryButton, color: '#c40029', borderColor: '#ffcccc' }}
-              >
-                Not this one
-              </button>
-              <a
-                href={row.sourceUrl}
-                target="_blank"
-                rel="noopener noreferrer nofollow"
-                style={{ ...secondaryButton, textDecoration: 'none', display: 'inline-block' }}
-              >
-                Open my post
-              </a>
-            </div>
+            {editing ? (
+              <DraftEditor draft={row.draft} busy={busy} onCancel={onCancelEdit} onSave={onSaveEdit} />
+            ) : (
+              <DraftPanes
+                row={row}
+                notices={notices}
+                busy={busy}
+                onEdit={onEdit}
+                onDecide={onDecide}
+              />
+            )}
           </div>
-        ))}
+        )}
       </div>
     </div>
+  );
+}
+
+// ── The two panes ────────────────────────────────────────────────────────────
+
+/**
+ * One note in the right-hand pane: what we have to say, about which field, and
+ * where that field is drawn on the left.
+ */
+interface Comment {
+  /** The anchor to point at, or null when the card draws nothing for this field. */
+  field: MealField | null;
+  /** Names the field, in the words the card labels it with. */
+  label: string;
+  notice: FieldNotice;
+}
+
+/**
+ * Every notice, in the order the card draws the fields it is about.
+ *
+ * Order is one of the three things tying the two panes together, and it is the
+ * cheapest: a reader going down the comments is going down the recipe. It is
+ * therefore this list, and not `noticesFor`'s key order, that decides what the
+ * pane looks like — they agree today and the card is the one that gets to be
+ * right.
+ */
+function commentsFor(row: ReviewRow, notices: MealNotices): Comment[] {
+  const draft = row.draft;
+  const ingredients = draft.ingredients ?? [];
+  const entries: Array<{ field: MealField | null; label: string; notice: FieldNotice | null }> = [
+    { field: draft.name ? 'name' : null, label: FIELD_LABELS.name, notice: notices.name },
+    { field: draft.photoUrl ? 'photo' : null, label: FIELD_LABELS.photoUrl, notice: notices.photoUrl },
+    { field: (draft.tags ?? []).length > 0 ? 'tags' : null, label: FIELD_LABELS.tags, notice: notices.tags },
+    { field: draft.serves ? 'serves' : null, label: FIELD_LABELS.serves, notice: notices.serves },
+    { field: draft.difficulty != null ? 'difficulty' : null, label: FIELD_LABELS.difficulty, notice: notices.difficulty },
+    { field: draft.story ? 'story' : null, label: FIELD_LABELS.story, notice: notices.story },
+    // Named for the ingredient rather than for "Measurements", because there are
+    // twelve of them and eleven would otherwise carry the same name.
+    ...ingredients.map((ing, i) => ({
+      field: ingredientField(i),
+      label: normIng(ing).ingredientName || `Measurement ${i + 1}`,
+      notice: notices.ingredients[i] ?? null,
+    })),
+    { field: draft.recipe ? 'recipe' : null, label: FIELD_LABELS.recipe, notice: notices.recipe },
+  ];
+  return entries.filter((entry): entry is Comment => Boolean(entry.notice));
+}
+
+/** The small uppercase heading over each pane. The type the editor already uses. */
+const paneHeading: React.CSSProperties = { ...fieldLabelStyle, margin: '0 0 6px' };
+
+function DraftPanes({
+  row, notices, busy, onEdit, onDecide,
+}: {
+  row: ReviewRow;
+  notices: MealNotices;
+  busy: boolean;
+  onEdit: () => void;
+  onDecide: (action: 'approve' | 'cancel') => void;
+}) {
+  /**
+   * The field a comment has asked to be shown, if any.
+   *
+   * Held here rather than in `QueueRow` so it clears itself: closing the row
+   * unmounts this, and a ring left on a field from the last time they looked at
+   * a recipe points at nothing they asked about.
+   */
+  const [focused, setFocused] = useState<MealField | null>(null);
+  const comments = commentsFor(row, notices);
+  const blockers = publishBlockers(row.draft);
+
+  const anchorId = (field: MealField) => `draft-${row.id}-field-${field}`;
+
+  const pointAt = (field: MealField) => {
+    const next = focused === field ? null : field;
+    setFocused(next);
+    if (!next) return;
+    const target = typeof document !== 'undefined' ? document.getElementById(anchorId(field)) : null;
+    // Guarded because jsdom has no layout and therefore no `scrollIntoView`, and
+    // a test that has to stub a browser API to render a card is a test about the
+    // stub. `nearest` so a field already on screen does not jump under them.
+    if (target && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'nearest' });
+    }
+  };
+
+  return (
+    <>
+      {/*
+        Two panes, and no media query anywhere near them. `flex-wrap` with a
+        basis on each pane is the same rule at every width: side by side when
+        both fit, the preview alone on the first line when they do not. That is
+        what makes this right inside a 900px column on a 1440px screen — a
+        viewport breakpoint would have been measuring the wrong box. `minWidth:
+        0` on both is what stops a long ingredient line from pushing the page
+        sideways at 390px.
+      */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'flex-start' }} data-testid="draft-panes">
+        <section style={{ flex: '3 1 320px', minWidth: 0 }} data-testid="draft-preview">
+          <p style={paneHeading}>How it will look on Discover</p>
+
+          {/*
+            What would stop this publishing, before they press the button that
+            would find out. On the preview because it is a fact about the meal,
+            not about the request that failed. `publishBlockers` reads the same
+            helpers `publishCreatorMeal` enforces — see `draft-form.ts`.
+          */}
+          {blockers.length > 0 && (
+            <div
+              style={{ background: '#fff0f0', border: '1px solid #ffcccc', borderRadius: '8px', padding: '10px 12px', marginBottom: '10px' }}
+              data-testid="publish-blockers"
+            >
+              <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#c40029' }}>
+                {blockers.length === 1
+                  ? 'One thing has to change before this can be published'
+                  : `${blockers.length} things have to change before this can be published`}
+              </p>
+              <ul style={{ margin: '6px 0 0', padding: 0, listStyle: 'none' }}>
+                {blockers.map(blocker => (
+                  <li
+                    key={blocker.field}
+                    style={{ fontSize: '12px', color: '#c40029', lineHeight: 1.6 }}
+                    data-testid="publish-blocker"
+                    data-field={blocker.field}
+                  >
+                    <span style={{ fontWeight: 700 }}>{FIELD_LABELS[blocker.field]}</span>
+                    {' — '}
+                    {blocker.message}
+                  </li>
+                ))}
+              </ul>
+              <button onClick={onEdit} disabled={busy} style={{ ...secondaryButton, marginTop: '8px' }}>
+                Fix it now
+              </button>
+            </div>
+          )}
+
+          {/*
+            The meal, and only the meal. `notices` is deliberately not passed:
+            this is the same component with the same arguments Discover renders
+            it with, so the preview is the published card rather than a second
+            rendering of it that can drift. Everything we have to say about it is
+            in the pane beside this one.
+          */}
+          <div
+            className="space-y-4"
+            style={{ background: 'var(--surface-raised, #fff)', border: '1px solid #eee', borderRadius: '12px', padding: '16px' }}
+            data-testid="draft-card"
+          >
+            {/* The header the modal draws in its own chrome: the name, and the
+                name it goes out under. "Would I put my name on this" is easier
+                to answer with the name on the card. */}
+            <div
+              id={anchorId('name')}
+              data-field="name"
+              {...(focused === 'name' ? { 'data-focused': 'true' } : {})}
+              style={focused === 'name' ? { outline: '2px solid #dd0031', outlineOffset: '4px', borderRadius: '6px' } : undefined}
+            >
+              <h4 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#18181B' }}>{row.draft.name}</h4>
+              {row.creatorName && (
+                <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#dd0031', fontWeight: 500 }}>by {row.creatorName}</p>
+              )}
+            </div>
+            <MealDetailBody meal={asPresetMeal(row)} fieldAnchorId={anchorId} focusedField={focused} />
+          </div>
+        </section>
+
+        {/*
+          Ours, and said to look like ours: the same card shape and the same
+          hairline, on the page background rather than on card white, so it
+          reads as a note pinned beside the recipe instead of part of it.
+        */}
+        <aside
+          style={{ flex: '2 1 260px', minWidth: 0, background: '#fafaf9', border: '1px solid #e8e6e2', borderRadius: '12px', padding: '14px 16px' }}
+          data-testid="draft-comments"
+        >
+          <p style={paneHeading}>What we read</p>
+          <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#6b7280', lineHeight: 1.6 }} data-testid="comments-summary">
+            {row.summary.needALook === 0
+              ? 'Every field we filled matched the page we read. Nothing here needs checking — it is still yours to read before it goes out.'
+              : `${summaryLine(row.summary)} Each one below says which field it is about.`}
+          </p>
+
+          {comments.length > 0 && (
+            <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {comments.map(comment => (
+                <li
+                  key={comment.field ?? comment.label}
+                  data-testid="draft-comment"
+                  data-field={comment.field ?? ''}
+                  {...(focused && comment.field === focused ? { 'data-active': 'true' } : {})}
+                  style={{
+                    borderLeft: `2px solid ${focused && comment.field === focused ? '#dd0031' : '#e8e6e2'}`,
+                    paddingLeft: '10px',
+                  }}
+                >
+                  {/* The same notice component the import form and the admin
+                      queue draw, so a reason is worded once. It already names
+                      its own field and already keeps the span we read one tap
+                      behind "See what we read". */}
+                  <ImportFieldNotice notice={comment.notice} fieldLabel={comment.label} />
+                  {comment.field ? (
+                    <button
+                      type="button"
+                      onClick={() => pointAt(comment.field!)}
+                      aria-controls={anchorId(comment.field)}
+                      aria-pressed={focused === comment.field}
+                      data-testid="comment-jump"
+                      style={{
+                        background: 'none', border: 'none', padding: '2px 0 0', font: 'inherit',
+                        fontSize: '11px', color: '#dd0031', cursor: 'pointer', textDecoration: 'underline',
+                        textDecorationStyle: 'dotted',
+                      }}
+                    >
+                      {focused === comment.field ? 'Stop showing me' : 'Show me on the card'}
+                    </button>
+                  ) : (
+                    /* Nothing to point at, and that is the comment's own point:
+                       the field is not on the card because we could not fill it.
+                       A link to an empty slot would be a link to nothing. */
+                    <span style={{ display: 'block', fontSize: '11px', color: '#9ca3af', paddingTop: '2px' }} data-testid="comment-absent">
+                      Not on the card — nothing was filled in.
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </aside>
+      </div>
+
+      {/*
+        Approve / Edit / Decline: unchanged in what they do, and under both panes
+        because they decide the draft rather than either column. Reading order on
+        a phone is the meal, then our notes, then the decision.
+      */}
+      <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          onClick={() => onDecide('approve')}
+          disabled={busy || blockers.length > 0}
+          // Off rather than merely failing: pressing it would roll back
+          // server-side and come back as a refusal, which is a worse way to be
+          // told something we already know.
+          title={blockers.length > 0 ? blockers.map(blocker => blocker.message).join(' ') : undefined}
+          style={blockers.length > 0
+            ? { ...primaryButton, background: '#f3f4f6', color: '#9ca3af', cursor: 'not-allowed' }
+            : primaryButton}
+        >
+          Approve &amp; publish
+        </button>
+        <button onClick={onEdit} disabled={busy} style={secondaryButton}>Edit first</button>
+        <button
+          onClick={() => onDecide('cancel')}
+          disabled={busy}
+          style={{ ...secondaryButton, color: '#c40029', borderColor: '#ffcccc' }}
+        >
+          Not this one
+        </button>
+        <a
+          href={row.sourceUrl}
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+          style={{ ...secondaryButton, textDecoration: 'none', display: 'inline-block' }}
+        >
+          Open my post
+        </a>
+        {blockers.length > 0 && (
+          <span style={{ fontSize: '11px', color: '#c40029', lineHeight: 1.6 }} data-testid="approve-blocked-note">
+            Approving is off until the {blockers.length === 1 ? 'thing' : 'things'} above {blockers.length === 1 ? 'is' : 'are'} fixed.
+          </span>
+        )}
+      </div>
+    </>
   );
 }
