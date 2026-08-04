@@ -167,6 +167,25 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const [source, setSource] = useState<PrimarySource>(() => storedSource(creator));
 
   const [websiteInput, setWebsiteInput] = useState(creator.website_url ?? '');
+
+  /**
+   * Show the address already on the row.
+   *
+   * The initial state above runs once, at mount, against whatever the prop held
+   * then — and the portal reloads its creator after a publish or a delete, so
+   * the box could sit empty beside a `website_url` the row plainly had. A
+   * creator reading that concludes their site was forgotten and pastes it again.
+   *
+   * Only into an empty box, so it can never overwrite something being typed.
+   */
+  useEffect(() => {
+    // The prop as well as the row. `row` is seeded from `creator` once, so a
+    // portal that finishes loading — or reloads after a publish — hands down a
+    // new `creator` that nothing here was watching.
+    const known = creator.website_url || row.website_url;
+    if (known && !websiteInput) setWebsiteInput(known);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creator.website_url, row.website_url]);
   const [websiteBusy, setWebsiteBusy] = useState(false);
   const [websiteError, setWebsiteError] = useState('');
   const [websiteDetail, setWebsiteDetail] = useState('');

@@ -78,6 +78,8 @@ interface HarnessOptions {
   routes?: Record<string, (init?: RequestInit) => Response>;
 }
 
+let rerender: (ui: React.ReactElement) => void = () => {};
+
 function harness({ creator = CREATOR, entries = [], routes = {} }: HarnessOptions = {}) {
   const calls: Array<{ url: string; method: string; body: any }> = [];
   const saved: Array<Record<string, unknown>> = [];
@@ -110,7 +112,8 @@ function harness({ creator = CREATOR, entries = [], routes = {} }: HarnessOption
     return json({ ok: true });
   }) as typeof fetch);
 
-  render(<SyncSourceSection creator={creator} onSaved={changes => { saved.push(changes); }} />);
+  const view = render(<SyncSourceSection creator={creator} onSaved={changes => { saved.push(changes); }} />);
+  rerender = view.rerender;
   return { calls, saved };
 }
 
@@ -852,6 +855,25 @@ describe('the back-catalogue checklist', () => {
     await waitFor(() =>
       expect(calls.some(c => c.url.includes('/api/creator/sync/catalog') && c.body?.source === 'tiktok')).toBe(true));
     window.history.replaceState(null, '', '/creator');
+  });
+
+  it('shows the address already on the row', async () => {
+    // The field was seeded once at mount from whatever the prop held then, and
+    // the portal reloads its creator after a publish or a delete — so the box
+    // sat empty beside a website_url the row plainly had, and a creator reading
+    // that concludes we forgot their site.
+    // Mounted before the address was known, which is the shape that broke it:
+    // the initial state runs once, and the portal reloads its creator after a
+    // publish or a delete.
+    harness({ creator: { ...CREATOR, primary_source: 'website' } });
+    const field = () => screen.getByLabelText(/website or blog/i) as HTMLInputElement;
+    expect(field().value).toBe('');
+
+    rerender(
+      <SyncSourceSection creator={SYNCING} onSaved={() => {}} />,
+    );
+
+    await waitFor(() => expect(field().value).toBe('https://chefsarah.test/'));
   });
 
   it('marks what is already in, and leaves it out of select-all', async () => {
