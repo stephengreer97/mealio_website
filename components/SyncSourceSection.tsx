@@ -573,7 +573,8 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       {syncingFromThis && (
         <p className="text-sm text-gray-700 mt-5 pt-5 border-t border-gray-100 leading-relaxed" data-testid="sync-live">
           Mealio is watching your {label} now. New posts arrive in your review queue as drafts — nothing is
-          published until you approve it, and you can stop this any time by choosing another source.
+          published until you approve it, and you can stop it any time by choosing another source above, or
+          &ldquo;Nothing&rdquo;.
         </p>
       )}
 
