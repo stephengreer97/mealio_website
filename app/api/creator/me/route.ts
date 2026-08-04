@@ -282,8 +282,20 @@ export async function PATCH(request: NextRequest) {
     // right host — so no invariant catches it, and pausing is a decision about
     // *who* changed it rather than about the row. It still may only ever write
     // `false`: nothing a creator sends can start polling.
+    // The grants, for the same reason the source picker below reads them:
+    // "connected" for YouTube, TikTok and Instagram means a row in
+    // `creator_platform_accounts`, not a link column. Without them the invariant
+    // sees a grant-backed source as having nothing to poll, and since its verdict
+    // writes `import_opt_in = false`, a creator editing an unrelated link would
+    // silently pause their own working import and be told they broke it.
+    const { data: linkEditAccounts } = await supabase
+      .from('creator_platform_accounts')
+      .select('platform')
+      .eq('creator_id', creator.id);
+    const linkEditGrants = ((linkEditAccounts ?? []) as Array<{ platform: string }>).map((row) => row.platform);
+
     const resulting = { ...(creator as Record<string, unknown>), ...edit.update };
-    const verdict = checkPollingInvariants(resulting);
+    const verdict = checkPollingInvariants(resulting, false, linkEditGrants);
     const importOptIn = verdict.ok && !edit.polledLink ? verdict.importOptIn : false;
     if (importOptIn !== (resulting.import_opt_in === true)) {
       updates.import_opt_in = importOptIn;

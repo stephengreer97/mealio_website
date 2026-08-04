@@ -214,6 +214,29 @@ describe('PATCH /api/creator/me — platform links', () => {
       expect(row?.primary_source).toBe('website');
     });
 
+    it('leaves a grant-backed source polling when an unrelated link is edited', async () => {
+      asUser();
+      // The state MEAL-101 made ordinary: YouTube is the source, and it is
+      // connected by a grant rather than by `youtube_url`. Nothing here is
+      // broken, so nothing about editing an unrelated link should stop it.
+      fakeDb.seed('creators', [
+        creatorRow({ primary_source: 'youtube', import_opt_in: true, youtube_url: null }),
+      ]);
+      fakeDb.seed('creator_platform_accounts', [{ creator_id: 'c1', platform: 'youtube' }]);
+
+      const res = await patch(token, { links: { instagram: 'https://instagram.com/chefsarah' } });
+
+      expect(res.status).toBe(200);
+      const row = fakeDb.row('creators', 'c1');
+      expect(row?.instagram_url).toBe('https://instagram.com/chefsarah');
+      // The regression: read without the grants, the invariant sees a YouTube
+      // source with no YouTube link, calls the row unpollable, and switches off
+      // an import the creator never touched — then writes a pause reason
+      // blaming them for it.
+      expect(row?.import_opt_in).toBe(true);
+      expect(row?.import_paused_reason ?? null).toBeNull();
+    });
+
     it('tells the creator, and the operator, that a removal stopped the import', async () => {
       asUser();
       fakeDb.seed('user_profiles', [{ id: 'admin-1', email: 'admin@mealio.co', is_admin: true }]);
