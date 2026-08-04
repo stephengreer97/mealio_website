@@ -44,6 +44,12 @@ import {
   type ImportSummary,
 } from '@/lib/import/draft-form';
 import { canonicalizeIngredient } from '@/lib/import/ingredients';
+import {
+  duplicateCandidates,
+  findDuplicates,
+  type DuplicateCandidate,
+  type DuplicateMatch,
+} from '@/lib/import/duplicates';
 import { canonicalizeDifficulty, canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
 import type { CreatorMealDraft, FieldConfidence, ImportConfidence } from '@/lib/import/types';
 
@@ -225,6 +231,18 @@ export function reviewDraft(draft: ImportDraft): DraftReview {
 /** One queue row: the draft plus how much of it needs attention. */
 export interface QueuedDraft extends ImportDraft {
   summary: ImportSummary;
+  /**
+   * What this draft looks like a repeat of, worst overlap first (MEAL-98).
+   *
+   * Empty for almost every draft. Present when a creator has posted the same
+   * dish twice — the long video and its Short — which `creator_source_items`
+   * cannot catch, because those are two posts with two ids.
+   *
+   * A warning and never a refusal: two similar recipes from one creator are
+   * sometimes a variation or a scaled version, and the reviewer is the one who
+   * knows which. `duplicateNotice` turns this into the sentence they read.
+   */
+  duplicates: DuplicateMatch[];
 }
 
 export interface QueueScope {
@@ -272,8 +290,27 @@ export async function listDraftQueue(
     .limit(scope.limit ?? 200);
 
   const drafts = ((data ?? []) as Array<Record<string, any>>).map(toImportDraft);
+
+  // Duplicate candidates, once per creator rather than once per draft. The admin
+  // queue spans creators, so this is a handful of queries at worst — and a
+  // per-draft version would be one pair of queries per row on a screen whose
+  // whole point is showing many rows.
+  const candidatesByCreator = new Map<string, DuplicateCandidate[]>();
+  for (const creatorId of new Set(drafts.map((d) => d.creatorId).filter(Boolean))) {
+    candidatesByCreator.set(creatorId, await duplicateCandidates(supabase, creatorId));
+  }
+
   return drafts
-    .map((draft) => ({ ...draft, summary: reviewDraft(draft).summary }))
+    .map((draft) => ({
+      ...draft,
+      summary: reviewDraft(draft).summary,
+      // Compared against everything of this creator's except itself. A draft
+      // matches itself perfectly, which would flag every row in the queue.
+      duplicates: findDuplicates(
+        draft.draft?.ingredients ?? [],
+        (candidatesByCreator.get(draft.creatorId) ?? []).filter((c) => c.id !== draft.id),
+      ),
+    }))
     .sort((a, b) => {
       // Most-flagged first, so the ones nobody needs to squint at fall to the
       // bottom. Oldest first within a tier — a draft should not be able to sit
@@ -809,9 +846,25 @@ export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200
     .order('created_at', { ascending: true })
     .limit(limit);
 
-  return ((data ?? []) as Array<Record<string, any>>)
-    .map(toImportDraft)
-    .map((draft) => ({ ...draft, summary: reviewDraft(draft).summary }));
+  const drafts = ((data ?? []) as Array<Record<string, any>>).map(toImportDraft);
+
+  // The same duplicate check the queue does, because this list is what the
+  // drafts-ready email renders — and the email is where a creator decides which
+  // draft to open first. A flag that existed only on the screen would be missing
+  // from the one surface that gets read without being visited.
+  const candidatesByCreator = new Map<string, DuplicateCandidate[]>();
+  for (const creatorId of new Set(drafts.map((d) => d.creatorId).filter(Boolean))) {
+    candidatesByCreator.set(creatorId, await duplicateCandidates(supabase, creatorId));
+  }
+
+  return drafts.map((draft) => ({
+    ...draft,
+    summary: reviewDraft(draft).summary,
+    duplicates: findDuplicates(
+      draft.draft?.ingredients ?? [],
+      (candidatesByCreator.get(draft.creatorId) ?? []).filter((c) => c.id !== draft.id),
+    ),
+  }));
 }
 
 /**

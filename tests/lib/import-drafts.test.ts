@@ -217,8 +217,12 @@ describe('listDraftQueue', () => {
     expect(rows[0].summary.needALook).toBeGreaterThan(0);
     expect(rows[1].summary.needALook).toBe(0);
 
+    // The queue's own filters, which are the first two on this table. The
+    // duplicate check (MEAL-98) queries it again afterwards — for this creator's
+    // other pending drafts — so asserting the whole list would be asserting that
+    // feature's shape from here.
     const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
-    expect(filters.map((c) => c.args)).toEqual([['status', 'pending_review'], ['review_by', 'admin']]);
+    expect(filters.slice(0, 2).map((c) => c.args)).toEqual([['status', 'pending_review'], ['review_by', 'admin']]);
   });
 
   it('reads the creator queue with the same code, keyed the other way', async () => {
