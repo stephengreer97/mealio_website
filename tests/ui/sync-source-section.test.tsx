@@ -570,6 +570,41 @@ describe('the back-catalogue checklist', () => {
     });
   });
 
+  it('re-reads the catalogue and tells the queue once the run is done', async () => {
+    // Both were stale until a manual refresh. The summary said "2 waiting in
+    // your review queue" while the list underneath still showed both posts as
+    // never imported, and the Drafts tab — a sibling component with its own
+    // fetch — showed the queue as it was before the import. A creator reads that
+    // pair as the import having silently failed.
+    const imported = vi.fn();
+    window.addEventListener('mealio:drafts-imported', imported);
+
+    const { calls } = harness({
+      creator: SYNCING,
+      entries: [entry(1), entry(2)],
+      routes: {
+        '/api/creator/sync/worker': () =>
+          json({
+            run: { id: 'r1', status: 'done', items: [] },
+            totals: { selected: 2, pending: 0, drafted: 2, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 },
+          }),
+        '/api/creator/sync': () => json({ run: { id: 'r1', status: 'queued', items: [] } }, 201),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    const before = calls.filter(c => c.url.includes('/api/creator/sync/catalog')).length;
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 2 posts/ }));
+
+    await screen.findByTestId('run-summary');
+    await waitFor(() =>
+      expect(calls.filter(c => c.url.includes('/api/creator/sync/catalog')).length).toBeGreaterThan(before));
+    await waitFor(() => expect(imported).toHaveBeenCalled());
+
+    window.removeEventListener('mealio:drafts-imported', imported);
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });

@@ -328,6 +328,20 @@ export default function CreatorReviewQueue() {
 
   useEffect(() => { void load(); }, [load]);
 
+  /**
+   * Reload when an import has just put drafts in this queue.
+   *
+   * The sync section is a sibling on the same page and it finishes long after
+   * this card last read. Without this the creator watches "9 waiting in your
+   * review queue" appear, opens Drafts, and finds the queue as it was before the
+   * import — which reads as the import having failed.
+   */
+  useEffect(() => {
+    const onImported = () => { void load(); };
+    window.addEventListener('mealio:drafts-imported', onImported);
+    return () => window.removeEventListener('mealio:drafts-imported', onImported);
+  }, [load]);
+
   const openRow = (id: string | null) => {
     setEditing(false);
     setOpenId(id);

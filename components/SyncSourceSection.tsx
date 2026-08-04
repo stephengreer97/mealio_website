@@ -462,7 +462,19 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       const next = data.run as SyncRun;
       setRun(next);
       setTotals(data.totals as SyncRunTotals);
-      if (next.status === 'done') return;
+      if (next.status === 'done') {
+        // Everything on the page that the run just made wrong.
+        //
+        // The catalogue is the visible one: an imported post keeps its old
+        // "not imported" look until something re-reads it, so a creator presses
+        // Import, sees the summary say it worked, and sees the list still
+        // saying it did not. The queue is the same staleness one tab across —
+        // it is a sibling component with its own fetch, and it last read before
+        // any of this existed.
+        void loadCatalog();
+        window.dispatchEvent(new CustomEvent('mealio:drafts-imported'));
+        return;
+      }
       if (next.status === 'running') {
         setError('This import is already running somewhere else — another tab, or Mealio finishing it off.');
         return;
