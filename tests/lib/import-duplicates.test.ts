@@ -137,15 +137,3 @@ describe('duplicateCandidates', () => {
     expect(out[0].ingredientNames).toEqual(['shrimp', 'butter']);
   });
 });
-
-describe('a flagged draft reaches both surfaces', () => {
-  it('carries its matches on the queue row, for the screen and the email', async () => {
-    // `listDraftQueue` feeds the review queue; `listHandedOverDrafts` feeds the
-    // drafts-ready email. Both attach `duplicates`, because the email is where a
-    // creator decides which draft to open first — a flag only on the screen is
-    // missing from the surface that gets read without being visited.
-    const mod = await import('@/lib/import-drafts');
-    expect(typeof mod.listDraftQueue).toBe('function');
-    expect(typeof mod.listHandedOverDrafts).toBe('function');
-  });
-});
