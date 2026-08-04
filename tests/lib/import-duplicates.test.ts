@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DUPLICATE_THRESHOLD,
+  duplicateCandidates,
   duplicateNotice,
   findDuplicates,
   jaccard,
@@ -89,5 +90,50 @@ describe('the comparison itself', () => {
     expect(jaccard(new Set(['a', 'b']), new Set(['a', 'b']))).toBe(1);
     expect(jaccard(new Set(['a']), new Set(['b']))).toBe(0);
     expect(jaccard(new Set(), new Set(['a']))).toBe(0);
+  });
+});
+
+describe('duplicateCandidates', () => {
+  const db = (published: any[], drafts: any[]) => ({
+    from: (table: string) => {
+      const data = table === 'preset_meals' ? published : drafts;
+      const chain: any = { select: () => chain, eq: () => chain, then: undefined, data };
+      // `.eq()` is chained twice on drafts and once on meals, so the object has
+      // to answer both and still be awaitable at the end.
+      chain.select = () => chain;
+      chain.eq = () => chain;
+      return Object.assign(Promise.resolve({ data }), chain);
+    },
+  });
+
+  it('reads both published meals and drafts still in the queue', async () => {
+    const out = await duplicateCandidates(
+      db(
+        [{ id: 'm1', name: 'Shrimp', ingredients: [{ ingredientName: 'shrimp' }] }],
+        [{ id: 'd1', draft: { name: 'Shrimp Short', ingredients: [{ ingredientName: 'shrimp' }] } }],
+      ),
+      'c1',
+    );
+
+    expect(out.map(c => c.kind)).toEqual(['published', 'draft']);
+    expect(out[1].name).toBe('Shrimp Short');
+  });
+
+  it('never offers a draft itself as its own duplicate', async () => {
+    // It would match perfectly, which is the most confident wrong answer
+    // available to this feature.
+    const out = await duplicateCandidates(db([], [{ id: 'd1', draft: { name: 'Me' } }]), 'c1', 'd1');
+    expect(out).toEqual([]);
+  });
+
+  it('reads an ingredient list however the row spells the name', async () => {
+    // product_name / productName / name all appear in stored meals. Read under
+    // the wrong key the list is empty, which scores zero and silently never
+    // matches — a duplicate check that quietly always passes.
+    const out = await duplicateCandidates(
+      db([{ id: 'm1', name: 'Old', ingredients: [{ product_name: 'shrimp' }, { name: 'butter' }] }], []),
+      'c1',
+    );
+    expect(out[0].ingredientNames).toEqual(['shrimp', 'butter']);
   });
 });

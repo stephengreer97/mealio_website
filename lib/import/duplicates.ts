@@ -30,15 +30,17 @@ import type { DraftIngredient } from './types';
 /**
  * How much overlap counts as "probably the same dish".
  *
- * **A guess, and deliberately a high one.** Picked against the shape of the two
- * populations rather than measured data:
+ * Chosen as a guess and then measured, which moved it from a hopeful number to
+ * a safe one — the two populations sit further apart than expected:
  *
- *  - A long-form video and its own Short share nearly the whole list — the same
- *    dish written twice — so they land around 0.85 and up.
- *  - Two genuinely different recipes from one creator overlap on pantry staples
- *    — oil, salt, garlic, onion, butter — which puts them nearer 0.2 to 0.5.
+ *  - A long-form video and its own Short: **0.83**. The same dish plus a herb:
+ *    **0.86**. It is one recipe written twice, so almost the whole list agrees.
+ *  - Two different chicken dinners from one creator: **0.33**. A curry against a
+ *    carbonara: **0.27**. What they share is a kitchen — oil, garlic, onion.
  *
- * 0.7 sits in the empty ground between, with room either side. Erring high is
+ * Nothing observed lands between 0.33 and 0.83, so 0.7 sits in a gap half the
+ * scale wide and is not finely balanced. Numbers from `tests/lib/import-
+ * duplicates.test.ts`, which is where to re-measure if this ever seems wrong. Erring high is
  * the right way to be wrong: a missed duplicate costs one extra row on Discover,
  * while a false positive teaches reviewers that the flag is noise, and a flag
  * nobody trusts is worse than no flag. One line to change once there is real
@@ -158,4 +160,57 @@ export function duplicateNotice(matches: readonly DuplicateMatch[]): string | nu
     : '';
   return `Shares ${Math.round(first.overlap * 100)}% of its ingredients with “${first.name}”, ${where}${others}. `
     + 'If that is the same dish posted twice, decline this one; if it is a different recipe, carry on.';
+}
+
+/**
+ * What this creator has already published, and what is already in their queue.
+ *
+ * Both, because they are different mistakes with the same cause: approving a
+ * repeat of something live puts two copies on Discover, and approving two
+ * drafts of one dish in a single sitting does the same thing without either
+ * ever having been live. The second is the more likely one — a long video and
+ * its Short arrive on the same poll.
+ *
+ * Two queries, scoped to the one creator. `excludeDraftId` keeps a draft from
+ * matching itself, which it would do perfectly.
+ */
+export async function duplicateCandidates(
+  supabase: { from: (table: string) => any },
+  creatorId: string,
+  excludeDraftId?: string | null,
+): Promise<DuplicateCandidate[]> {
+  const [publishedRes, draftRes] = await Promise.all([
+    supabase.from('preset_meals').select('id, name, ingredients').eq('creator_id', creatorId),
+    supabase.from('creator_import_drafts').select('id, draft').eq('creator_id', creatorId).eq('status', 'pending_review'),
+  ]);
+
+  const out: DuplicateCandidate[] = [];
+
+  for (const row of ((publishedRes?.data ?? []) as Array<Record<string, any>>)) {
+    const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
+    out.push({
+      id: String(row.id),
+      name: String(row.name ?? 'a published meal'),
+      kind: 'published',
+      // The same three spellings the rest of the product tolerates — see
+      // `normalizeIngredients`. A list read under the wrong key is an empty set,
+      // which scores zero and silently never matches.
+      ingredientNames: ingredients.map((i: any) =>
+        String(i?.ingredientName ?? i?.productName ?? i?.product_name ?? i?.name ?? '')),
+    });
+  }
+
+  for (const row of ((draftRes?.data ?? []) as Array<Record<string, any>>)) {
+    if (excludeDraftId && String(row.id) === excludeDraftId) continue;
+    const ingredients = Array.isArray(row.draft?.ingredients) ? row.draft.ingredients : [];
+    out.push({
+      id: String(row.id),
+      name: String(row.draft?.name ?? 'another draft'),
+      kind: 'draft',
+      ingredientNames: ingredients.map((i: any) =>
+        String(i?.ingredientName ?? i?.productName ?? i?.product_name ?? i?.name ?? '')),
+    });
+  }
+
+  return out;
 }
