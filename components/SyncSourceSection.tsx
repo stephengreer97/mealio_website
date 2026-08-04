@@ -99,11 +99,11 @@ function formatDate(value: string | null): string {
  *     dropdown cannot display a value it will not let you select, and showing
  *     `website` instead would be a straightforward lie about what is being
  *     polled.
- *   - **Nothing chosen yet** opens on `website`, not on the off switch. This is
- *     the state every newly approved creator is in, and landing them on
- *     "Nothing — don't sync anything" with a paragraph about not reading them
- *     makes the off position the default answer to a question the section exists
- *     to ask. Website is where an unaided creator can get themselves working.
+ *   - **Nothing chosen yet** opens on `website`, not on `none`. This is the
+ *     state every newly approved creator is in, and landing them on an empty
+ *     prompt with a paragraph about not reading them makes "no" the default
+ *     answer to a question the section exists to ask. Website is where an
+ *     unaided creator can get themselves working.
  *
  * Nothing is claimed by opening there: the "Mealio is watching your Website"
  * line renders off the row, not off the dropdown, and no write happens until the
@@ -143,12 +143,12 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const [row, setRow] = useState(creator);
   /**
    * The dropdown's value, which is a `PrimarySource` and not a `PlatformSource`
-   * — `none` is a position on it.
+   * — `none` is a position on it, but not a selectable one.
    *
-   * Consent that cannot be withdrawn is not consent. A creator who wants Mealio
-   * to stop reading them needs to be able to say so in the same control they
-   * said yes in, rather than by picking a different source they do not publish
-   * to, or by emailing somebody.
+   * Consent that cannot be withdrawn is not consent, and withdrawing it is
+   * Disconnect rather than an option in this list. A dropdown position could only
+   * ever clear the row; the grant behind it lives in another table and would
+   * have survived, which is not what a creator who said "stop" means.
    */
   const [source, setSource] = useState<PrimarySource>(() => storedSource(creator));
 
@@ -251,6 +251,73 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
     onSaved?.(changes);
   };
 
+  /**
+   * Stop syncing, and forget the connection it was reading.
+   *
+   * Both halves, in that order, because either one alone leaves a state nobody
+   * asked for. Revoking the grant on its own leaves the row saying "sync from
+   * YouTube, opted in" with nothing behind it — pollable according to the
+   * column and unreadable in fact. Clearing the row on its own leaves Mealio
+   * holding a live token for an account it has been told to stop reading, which
+   * is not what a creator who pressed Disconnect believes they did.
+   *
+   * The revocation goes first and a failure stops everything. Telling somebody
+   * their account is disconnected while the token is still live at the provider
+   * is the one error here they would never think to check.
+   */
+  const disconnect = async () => {
+    if (source === 'none') return;
+    setSwitching(true);
+    setError('');
+
+    if (source !== 'website') {
+      const res = await fetch(`/api/creator/${source}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (!mounted.current) return;
+      if (!res.ok) {
+        setSwitching(false);
+        const data = await res.json().catch(() => null);
+        setError(data?.error || `We could not disconnect your ${label}. It is still connected — please try again.`);
+        return;
+      }
+      setConnected(current => ({ ...current, [source]: false }));
+    }
+
+    // Clearing the website link is the website's equivalent of revoking a grant:
+    // it is the whole of what Mealio was given, and leaving it behind would make
+    // Disconnect mean something different depending on which source was chosen.
+    const body = source === 'website'
+      ? { primarySource: 'none', links: { website: '' } }
+      : { primarySource: 'none' };
+    const { res, data } = await authed('/api/creator/me', body, 'PATCH');
+    if (!mounted.current) return;
+    setSwitching(false);
+    if (!res.ok) {
+      setError(data.error || 'We stopped reading your account, but could not save the change. Please try again.');
+      return;
+    }
+
+    const changes = {
+      primary_source: 'none' as PrimarySource,
+      import_opt_in: false,
+      ...(source === 'website' ? { website_url: null, feed_url: null } : {}),
+    };
+    setRow(current => ({ ...current, ...changes }));
+    onSaved?.(changes);
+
+    // Back to the unanswered state, and everything the old source put on screen
+    // goes with it.
+    chose.current = false;
+    setSource('none');
+    setWebsiteInput('');
+    setCatalog(null);
+    setSelected([]);
+    setRun(null);
+    setTotals(null);
+  };
+
   const pickSource = (next: PrimarySource) => {
     if (next === source) return;
     chose.current = true;
@@ -276,7 +343,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    *
    * Only ever after the creator has touched something. `chose` is what keeps a
    * page load from writing anything: without it a row an operator had set to
-   * Instagram — which this dropdown cannot show, so it opens on "Nothing" —
+   * Instagram — which this dropdown cannot show, so it opens unanswered —
    * would have that decision silently reversed by somebody opening the portal.
    */
   useEffect(() => {
@@ -470,15 +537,22 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
         disabled={switching || busy}
         className="w-full sm:max-w-xs border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 disabled:opacity-60 transition-colors"
       >
+        {/* Not a choice, a starting point. `none` is the state of a row nobody
+            has answered for yet — and the one Disconnect returns to — so it needs
+            somewhere to sit in the control, but picking "nothing" is not how a
+            creator stops: that is the Disconnect button, which also revokes the
+            grant this dropdown cannot see. Disabled so it can be left but never
+            selected. */}
+        {source === 'none' && (
+          <option value="none" disabled>
+            Choose where you publish&hellip;
+          </option>
+        )}
         {CREATOR_SOURCE_OPTIONS.map(option => (
           <option key={option.source} value={option.source} disabled={Boolean(option.blockedReason)}>
             {option.label}
           </option>
         ))}
-        {/* The off position. A creator who wants Mealio to stop reading them has
-            to be able to say so in the control they said yes in — anything else
-            is consent that can only be given. */}
-        <option value="none">Nothing — don&rsquo;t sync anything</option>
       </select>
       <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
         One at a time. If you post the same recipe to two places, syncing both would send it to you twice.
@@ -571,11 +645,29 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           "we will watch this" and "we are watching this" are different claims
           and only one of them is checkable. */}
       {syncingFromThis && (
-        <p className="text-sm text-gray-700 mt-5 pt-5 border-t border-gray-100 leading-relaxed" data-testid="sync-live">
-          Mealio is watching your {label} now. New posts arrive in your review queue as drafts — nothing is
-          published until you approve it, and you can stop it any time by choosing another source above, or
-          &ldquo;Nothing&rdquo;.
-        </p>
+        <div className="mt-5 pt-5 border-t border-gray-100" data-testid="sync-live">
+          <p className="text-sm text-gray-700 leading-relaxed">
+            Mealio is watching your {label} now. New posts arrive in your review queue as drafts — nothing is
+            published until you approve it.
+          </p>
+          {/* The off switch, and only shown once there is something to switch
+              off. It says what it will do to the connection as well as to the
+              syncing, because "Disconnect" alone does not tell a creator they
+              will have to authorise Mealio again to undo it. */}
+          <button
+            type="button"
+            onClick={disconnect}
+            disabled={switching || busy}
+            data-testid="sync-disconnect"
+            className="mt-3 text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-60 transition-colors"
+          >
+            {switching ? 'Disconnecting…' : `Disconnect ${label}`}
+          </button>
+          <p className="text-xs text-gray-400 mt-2 leading-relaxed">
+            Mealio stops reading your {label} and forgets the connection. Recipes you have already published stay
+            exactly where they are.
+          </p>
+        </div>
       )}
 
       {/* ── The back catalogue ──────────────────────────────────────────────

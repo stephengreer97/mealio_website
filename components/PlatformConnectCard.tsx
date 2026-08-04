@@ -326,13 +326,19 @@ export default function PlatformConnectCard({
             </p>
           )}
 
-          <button
-            onClick={disconnect}
-            disabled={busy}
-            className="text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-60 transition-colors"
-          >
-            Disconnect {copy.label}
-          </button>
+          {/* Embedded, the sync section owns disconnection: revoking the grant
+              is only half of stopping, and the half that leaves the row pointing
+              at a source with nothing behind it. Two buttons that both say
+              "Disconnect" and do different amounts of it is worse than one. */}
+          {!embedded && (
+            <button
+              onClick={disconnect}
+              disabled={busy}
+              className="text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-60 transition-colors"
+            >
+              Disconnect {copy.label}
+            </button>
+          )}
         </>
       )}
 

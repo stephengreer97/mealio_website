@@ -67,8 +67,15 @@ function entry(i: number): Entry {
 interface HarnessOptions {
   creator?: SyncSectionCreator;
   entries?: Entry[];
-  /** Overrides for individual endpoints, matched on the URL. */
-  routes?: Record<string, () => Response>;
+  /**
+   * Overrides for individual endpoints, matched on the URL.
+   *
+   * Given the request, because one path now answers differently by method:
+   * `/api/creator/youtube` reports the connection on GET and revokes it on
+   * DELETE, and a disconnect test needs the second to fail while the first
+   * keeps working.
+   */
+  routes?: Record<string, (init?: RequestInit) => Response>;
 }
 
 function harness({ creator = CREATOR, entries = [], routes = {} }: HarnessOptions = {}) {
@@ -88,7 +95,7 @@ function harness({ creator = CREATOR, entries = [], routes = {} }: HarnessOption
     // passes for the wrong reason.
     const path = new URL(url, 'http://localhost').pathname;
     const override = routes[path];
-    if (override) return override();
+    if (override) return override(init);
 
     if (path === '/api/creator/youtube') {
       return json({ hasChannel: false, connected: false, channel: null, brokenReason: null, canWriteDescriptions: false, appendOptIn: false });
@@ -115,14 +122,29 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 // ── The dropdown ─────────────────────────────────────────────────────────────
 
 describe('the source picker', () => {
-  it('offers exactly the four places, plus an off position', () => {
+  it('offers exactly the four places, and no off position', () => {
     harness();
     const options = Array.from(picker().options);
 
     // Not a subset and not a superset. A source missing from here is a creator
     // who cannot be synced; one that should not be here is a promise we cannot
     // keep.
-    expect(options.map(o => o.value)).toEqual(['website', 'youtube', 'instagram', 'tiktok', 'none']);
+    //
+    // Stopping is not among them. It was an option once, and it could only clear
+    // the row — the grant behind it lives in another table and survived, which is
+    // not what a creator who picked "nothing" meant. Disconnect does both.
+    expect(options.map(o => o.value)).toEqual(['website', 'youtube', 'instagram', 'tiktok']);
+  });
+
+  it('sits on an unselectable prompt when no source has been chosen', () => {
+    // The state a row an operator left on Instagram opens in, and the one
+    // Disconnect returns to. It needs somewhere to rest in the control without
+    // being an answer a creator can give.
+    harness({ creator: { ...CREATOR, primary_source: 'instagram', import_opt_in: true } });
+
+    expect(picker().value).toBe('none');
+    const placeholder = Array.from(picker().options).find(o => o.value === 'none');
+    expect(placeholder?.disabled).toBe(true);
   });
 
   it('disables Instagram alone, and leaves the rest selectable', () => {
@@ -313,13 +335,54 @@ describe('choosing a source', () => {
   it('lets a creator stop being read at all', async () => {
     const { calls } = harness({ creator: SYNCING });
 
-    fireEvent.change(picker(), { target: { value: 'none' } });
+    fireEvent.click(screen.getByTestId('sync-disconnect'));
 
-    // Consent that can only be given is not consent. The off position is not in
-    // the ticket's list of options and it is not optional.
+    // Consent that can only be given is not consent. Disconnect is not optional,
+    // and for a website it clears the link as well as the row — that link is the
+    // whole of what Mealio was given, so leaving it would make Disconnect mean
+    // less here than it does for an account whose grant is revoked.
+    await waitFor(() =>
+      expect(calls.some(c =>
+        c.method === 'PATCH' && c.body?.primarySource === 'none' && c.body?.links?.website === '')).toBe(true));
+    expect(screen.getByTestId('sync-off').textContent).toMatch(/not reading anything you publish/i);
+  });
+
+  it('revokes the grant before it says a connected account is disconnected', async () => {
+    const { calls } = harness({ creator: { ...CREATOR, primary_source: 'youtube', import_opt_in: true } });
+
+    await waitFor(() => expect(screen.getByTestId('sync-disconnect')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('sync-disconnect'));
+
     await waitFor(() =>
       expect(calls.some(c => c.method === 'PATCH' && c.body?.primarySource === 'none')).toBe(true));
-    expect(screen.getByTestId('sync-off').textContent).toMatch(/not reading anything you publish/i);
+
+    // Order matters and is the point. Clearing the row first would leave Mealio
+    // holding a live token for an account it has been told to stop reading.
+    const revoke = calls.findIndex(c => c.method === 'DELETE' && c.url.includes('/api/creator/youtube'));
+    const clear = calls.findIndex(c => c.method === 'PATCH' && c.body?.primarySource === 'none');
+    expect(revoke).toBeGreaterThanOrEqual(0);
+    expect(revoke).toBeLessThan(clear);
+  });
+
+  it('keeps syncing, and says so, when the revocation fails', async () => {
+    const { calls } = harness({
+      creator: { ...CREATOR, primary_source: 'youtube', import_opt_in: true },
+      routes: {
+        '/api/creator/youtube': (init) =>
+          init?.method === 'DELETE'
+            ? json({ error: 'We could not disconnect that account. It is still connected — please try again.' }, 500)
+            : json({ connected: true }),
+      },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('sync-disconnect')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('sync-disconnect'));
+
+    // The row must not be cleared behind a token that is still live at Google.
+    // A creator told "disconnected" while Mealio can still read them is the one
+    // error in this flow nobody would think to check.
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/still connected/i));
+    expect(calls.some(c => c.method === 'PATCH' && c.body?.primarySource === 'none')).toBe(false);
   });
 
   it('writes nothing merely because the portal was opened', async () => {
