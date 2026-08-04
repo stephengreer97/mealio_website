@@ -462,18 +462,30 @@ export class FakeSupabase {
         }
         case 'update': {
           for (const row of matched) Object.assign(row, payload);
-          // PostgREST applies the filters to the RETURNED REPRESENTATION after
-          // the write, not only when choosing rows. So an update that changes a
-          // column it also filtered on lands, and hands back nothing — which is
-          // how a compare-and-swap on `lease_until` claimed a sync run and then
-          // reported that it had failed. Modelling Postgres' `RETURNING` here
-          // instead is what let that ship: the fake returned the updated rows,
-          // every test agreed, and production disagreed.
-          const stillMatches = matched.filter((row) => filters.every((f) => matchesFilter(row, f)));
+          // Returns the rows it changed, like Postgres `RETURNING`, and that is
+          // right for `.eq()` — verified against the live API: an UPDATE that
+          // filters `.eq('status','queued')` and writes `status:'running'` hands
+          // the row back.
+          //
+          // `.or()` does NOT behave that way. The same shape with an `.or()`
+          // predicate over the written column applies the write and returns an
+          // EMPTY array, because the updated row no longer satisfies the
+          // predicate that chose it. That is how `claimRun` claimed a sync run
+          // and reported failure — admin sync was dead in production while every
+          // test here passed.
+          //
+          // So the re-filter is applied to `or` terms only. Doing it for every
+          // filter fails 47 tests that describe what PostgREST genuinely does,
+          // and doing it for none is what let the outage ship. Both halves are
+          // pinned against the real API in `tests/contract/`.
+          const orFilters = filters.filter((f) => f.op === 'or');
+          const returned = orFilters.length === 0
+            ? matched
+            : matched.filter((row) => orFilters.every((f) => matchesFilter(row, f)));
           return {
-            data: returning ? matched.map((r) => project(r, columns)) : null,
+            data: returning ? returned.map((r) => project(r, columns)) : null,
             error: null,
-            count: writeCounting ? matched.length : null,
+            count: writeCounting ? returned.length : null,
           };
         }
         case 'delete': {

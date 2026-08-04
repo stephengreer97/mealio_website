@@ -54,6 +54,30 @@ function options(overrides: Record<string, unknown> = {}) {
 }
 
 describe('import/pipeline — the JSON-LD fast path', () => {
+  it('keeps at most three tags however many the model proposes', async () => {
+    // The schema asks for at most three; models sometimes return more, and the
+    // old prompt asked for up to eight. Whatever arrives, a draft must not carry
+    // more than a meal can hold — an admin review card offering six of a
+    // three-tag limit makes a human do the arithmetic the extraction should
+    // have done. Out-of-vocabulary tags are dropped first, so the cap applies to
+    // what actually survives.
+    const call = stubCaller(() =>
+      extractionFixture({
+        tags: {
+          value: ['Mexican', 'No Cook', 'Vegetarian', 'Not A Real Tag', 'Healthy', 'Under 30 Min'],
+          evidence: 'guacamole',
+          derivation: 'inferred',
+        },
+      }),
+    );
+
+    const result: any = await runImport(GUAC_URL, options({ call }));
+
+    expect(result.status).toBe('ok');
+    expect(result.draft.tags).toHaveLength(3);
+    expect(result.draft.tags).not.toContain('Not A Real Tag');
+  });
+
   it('produces a draft with the nine fields POST /api/creator/meals accepts', async () => {
     const call = stubCaller(() => extractionFixture());
     const result = await runImport(GUAC_URL, options({ call }));

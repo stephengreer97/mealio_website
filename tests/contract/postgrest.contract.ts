@@ -502,6 +502,22 @@ const WRITES: Scenario[] = [
     run: (c: ContractClient) => c.from(DRAFTS).update({ state: 'live' }).eq('state', 'draft').select('id, state'),
   },
   {
+    // The one that took admin sync down. `.eq()` on a written column hands the
+    // row back; `.or()` on a written column applies the write and returns an
+    // EMPTY array, because the row no longer satisfies the predicate that chose
+    // it. Every compare-and-swap in this codebase is written as
+    // "filter on the column, then write it", so which operator it uses decides
+    // whether it works — and nothing said so anywhere until a run wedged in
+    // production with a lease nobody held.
+    name: 'update().or() on a written column applies the write and returns NOTHING',
+    operation: `.update({ state: 'live' }).or('state.eq.draft,state.is.null').select('id, state')`,
+    mutates: true,
+    unordered: true,
+    finalState: DRAFTS,
+    run: (c: ContractClient) =>
+      c.from(DRAFTS).update({ state: 'live' }).or('state.eq.draft,state.is.null').select('id, state'),
+  },
+  {
     name: 'update() whose predicate matches nothing returns an empty array, not null',
     operation: `.update({ state: 'x' }).eq('state', 'nothing').select('id')`,
     mutates: true,
