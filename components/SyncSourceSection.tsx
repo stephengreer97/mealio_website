@@ -519,8 +519,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           does and it was nowhere on the creator's screen before MEAL-101. */}
       <p className="text-sm text-gray-600 leading-relaxed mb-5">
         Tell Mealio where you publish and we will keep watching it. <strong className="font-semibold text-gray-800">
-        Whatever you post from then on syncs automatically and comes back to you as a draft to review</strong> — you
-        read it, change anything you like, and nothing goes live under your name until you say so.
+        Whatever you post from then on syncs automatically and comes back to you as a draft to review</strong>.
       </p>
 
       {/* ── The picker ──────────────────────────────────────────────────────
@@ -554,22 +553,6 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           </option>
         ))}
       </select>
-      <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
-        One at a time. If you post the same recipe to two places, syncing both would send it to you twice.
-      </p>
-
-      {/* Why the greyed-out two are greyed out, spelled out under the control
-          rather than only on an option a creator cannot select and may never
-          manage to read. */}
-      <div className="mt-3 flex flex-col gap-1">
-        {CREATOR_SOURCE_OPTIONS.filter(option => option.blockedReason).map(option => (
-          <p key={option.source} className="text-xs text-gray-400 leading-relaxed" data-testid={`blocked-${option.source}`}>
-            <span className="font-semibold text-gray-500">{SOURCE_LABELS[option.source]}:</span>{' '}
-            {option.blockedReason}
-          </p>
-        ))}
-      </div>
-
       {error && (
         <p className="text-sm text-red-600 mt-4 leading-relaxed" role="alert">{error}</p>
       )}
@@ -588,8 +571,7 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
             </label>
             <p className="text-sm text-gray-600 leading-relaxed mb-3">
               Paste the address and press Save. Mealio reads a few of your recent posts to check it can actually
-              pull recipes out of them — that takes a few seconds, and it is better to find out now than after
-              months of nothing arriving.
+              pull recipes out of them. This can take up to 30 seconds.
             </p>
             <div className="flex flex-col sm:flex-row gap-2.5 sm:items-center">
               <input

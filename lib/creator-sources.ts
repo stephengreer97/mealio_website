@@ -553,20 +553,13 @@ export const CREATOR_SOURCE_OPTIONS: readonly CreatorSourceOption[] = [
     label: 'TikTok',
     blockedReason: null,
     /**
-     * The app's credentials are TikTok *sandbox* credentials. The integration
-     * itself is finished and the code path is identical to the approved one —
-     * what is provisional is TikTok's approval, and a sandbox app only
-     * authorises accounts registered with it as testers. So a creator who is not
-     * one is refused by TikTok rather than by us, on TikTok's own screen, with
-     * nothing on it that mentions Mealio.
-     *
-     * Said before they press, because it changes what pressing means. The
-     * callback says it again, and better, when it actually happens.
+     * No note before the press. The app's credentials are TikTok *sandbox*
+     * credentials, so a creator TikTok has not registered as a tester is refused
+     * on TikTok's own screen — but that is said by the callback, when it
+     * actually happens and to the creator it actually happened to, rather than
+     * as a caveat every creator reads and most will never hit.
      */
-    note:
-      'TikTok is in limited release while our app is under review, so it only works for accounts we have ' +
-      'registered with TikTok for testing. If yours is not one yet, TikTok will turn the connection down on ' +
-      'its own screen — tell us and we will add you.',
+    note: null,
   },
 ];
 

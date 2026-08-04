@@ -158,24 +158,18 @@ describe('the source picker', () => {
     expect(disabled).toEqual(['instagram']);
   });
 
-  it('says why the disabled one is disabled', () => {
+  it('marks the disabled one unavailable on the option itself', () => {
     harness();
 
-    // On the option itself, so the reason arrives with the choice rather than
-    // after it — and again underneath, because an `<option>` a creator cannot
-    // select is one many of them will never manage to read.
+    // On the option, which is where a creator meets it. The paragraph that
+    // repeated each reason under the dropdown is gone: it restated a label
+    // nobody can select, and the section reads as instructions rather than a
+    // list of excuses without it.
     for (const option of CREATOR_SOURCE_OPTIONS.filter(o => o.blockedReason)) {
       const el = Array.from(picker().options).find(o => o.value === option.source);
       expect(el?.textContent).toMatch(/not available yet/i);
-      expect(screen.getByTestId(`blocked-${option.source}`).textContent).toContain(option.blockedReason);
+      expect(screen.queryByTestId(`blocked-${option.source}`)).toBeNull();
     }
-
-    // And the reason is the real one, not "coming soon".
-    expect(screen.getByTestId('blocked-instagram').textContent).toMatch(/Meta’s app review/i);
-    // TikTok is not in that list at all any more: its caveat is about what to
-    // expect from connecting, which is only worth reading once Connect is what
-    // they are looking at.
-    expect(screen.queryByTestId('blocked-tiktok')).toBeNull();
   });
 
   it('sends nothing for a source that cannot be chosen', async () => {
@@ -212,19 +206,17 @@ describe('the source picker', () => {
 // ── TikTok, which is real but provisional ────────────────────────────────────
 
 describe('TikTok’s limited release', () => {
-  it('says what to expect before they press Connect, not on the option', async () => {
+  it('warns nobody in advance about a refusal most will never hit', async () => {
     harness();
     fireEvent.change(picker(), { target: { value: 'tiktok' } });
 
-    // The app's credentials are sandbox credentials: TikTok only authorises
-    // accounts registered with it as testers, and everyone else is refused on
-    // TikTok's own screen with nothing on it that mentions Mealio. A creator
-    // deserves to know that before pressing rather than after.
-    const note = await screen.findByTestId('note-tiktok');
-    expect(note.textContent).toMatch(/limited release/i);
-    expect(note.textContent).toMatch(/registered with TikTok for testing/i);
-    // But the option itself stays a plain choice. A warning on it reads as a
-    // soft version of disabled.
+    // The credentials are sandbox credentials, so TikTok refuses accounts it has
+    // not registered as testers. That used to be said up front to every creator;
+    // it is said by the callback instead, to the one creator it happened to. A
+    // caveat above a button is read by everyone and true for almost none of them.
+    await waitFor(() => expect(picker().value).toBe('tiktok'));
+    expect(screen.queryByTestId('note-tiktok')).toBeNull();
+    // And the option stays a plain choice, as it was.
     expect(Array.from(picker().options).find(o => o.value === 'tiktok')?.textContent).toBe('TikTok');
   });
 
@@ -277,7 +269,6 @@ describe('the promise the whole feature rests on', () => {
     // is worth much without the other.
     expect(section.textContent).toMatch(/syncs automatically/i);
     expect(section.textContent).toMatch(/comes back to you as a draft to review/i);
-    expect(section.textContent).toMatch(/nothing goes live under your name until you say so/i);
   });
 
   it('says it before any control, not after a creator has committed', () => {

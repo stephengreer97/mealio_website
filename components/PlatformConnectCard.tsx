@@ -239,25 +239,31 @@ export default function PlatformConnectCard({
 
   return (
     <div className={embedded ? '' : 'bg-white rounded-2xl shadow-sm border border-gray-100 p-6'}>
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0">
-          {!embedded && (
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">{copy.label}</p>
+      {/* Nothing above the button until there is something only a heading could
+          say. Embedded, "Connect your account" over a button that says Connect
+          is the same sentence twice; once connected the account's own name is
+          the thing a creator came to check. */}
+      {(status.connected || !embedded) && (
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            {!embedded && (
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">{copy.label}</p>
+            )}
+            <h2 className="text-base font-bold text-gray-900 leading-tight">
+              {status.connected
+                ? status.account?.name
+                  ? `@${status.account.name}`
+                  : 'Connected account'
+                : 'Connect your account'}
+            </h2>
+          </div>
+          {status.connected && !status.brokenReason && (
+            <span className="flex-shrink-0 text-[11px] font-semibold text-green-700 bg-green-50 border border-green-100 rounded-md px-2 py-0.5">
+              Connected
+            </span>
           )}
-          <h2 className="text-base font-bold text-gray-900 leading-tight">
-            {status.connected
-              ? status.account?.name
-                ? `@${status.account.name}`
-                : 'Connected account'
-              : 'Connect your account'}
-          </h2>
         </div>
-        {status.connected && !status.brokenReason && (
-          <span className="flex-shrink-0 text-[11px] font-semibold text-green-700 bg-green-50 border border-green-100 rounded-md px-2 py-0.5">
-            Connected
-          </span>
-        )}
-      </div>
+      )}
 
       {callback?.outcome === 'failed' && (
         <p className="text-sm text-red-600 mb-3">
@@ -277,7 +283,10 @@ export default function PlatformConnectCard({
 
       {!status.connected || status.brokenReason ? (
         <>
-          <p className="text-sm text-gray-600 leading-relaxed mb-4">{copy.pitch}</p>
+          {/* The pitch belongs to the standalone card. Inside the sync section
+              the promise is already made once, at the top, and repeating it per
+              platform is the same paragraph a third time. */}
+          {!embedded && <p className="text-sm text-gray-600 leading-relaxed mb-4">{copy.pitch}</p>}
 
           {/* What to expect from the press, said before it. TikTok's app is in
               sandbox, so the account has to be one we registered — a creator

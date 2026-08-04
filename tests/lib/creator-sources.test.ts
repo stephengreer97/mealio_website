@@ -440,13 +440,14 @@ describe('creator-sources — chooseCreatorSource', () => {
     expect(chooseCreatorSource({}, 'tiktok', [])).toMatchObject({ ok: false });
   });
 
-  it('carries TikTok’s limited-release caveat as a note, not as a block', () => {
+  it('offers TikTok plainly, with nothing hedged in front of it', () => {
     const tiktok = CREATOR_SOURCE_OPTIONS.find(option => option.source === 'tiktok');
-    // The distinction is the point: a caveat on the option reads as a soft
-    // disabled, and this one is about what to expect from pressing Connect.
+    // Neither blocked nor caveated. The sandbox refusal is real but rare, and it
+    // is the callback's to explain — to the creator it happened to, at the
+    // moment it happened, rather than to everyone in advance.
     expect(tiktok?.blockedReason).toBeNull();
     expect(tiktok?.label).toBe('TikTok');
-    expect(tiktok?.note).toMatch(/limited release/i);
+    expect(tiktok?.note).toBeNull();
   });
 
   it('refuses a value the CHECK constraint would refuse too', () => {
