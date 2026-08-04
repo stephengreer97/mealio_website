@@ -90,6 +90,45 @@ export default function AboutPage() {
         </div>
 
         <div style={section}>
+          <h2 style={h2}>What we ask for, and why</h2>
+          <p style={p}>
+            Mealio asks for the least it needs to do each job, and nothing is requested until you take the
+            action that needs it.
+          </p>
+          <ul style={{ paddingLeft: '22px', margin: '0 0 14px', maxWidth: '68ch' }}>
+            <li style={{ marginBottom: '10px' }}>
+              <strong>Your email address</strong> &mdash; so that you can sign in, recover your account, and be
+              told about your own recipes. It is not sold or shared for advertising.
+            </li>
+            <li style={{ marginBottom: '10px' }}>
+              <strong>Access to your grocery store, granted by you at the store</strong> &mdash; so that Mealio
+              can search that store&rsquo;s products and add the ingredients to your cart. Mealio never
+              receives your store password, never places an order, and does not read pages unrelated to
+              filling that cart.
+            </li>
+            <li style={{ marginBottom: '10px' }}>
+              <strong>Read access to a creator&rsquo;s own YouTube channel, if they connect one</strong> &mdash;
+              so that Mealio can find recipes they have already published and turn them into something their
+              audience can cook and shop from. We read the video list, titles and descriptions of the channel
+              that was connected, and nothing else. Every recipe found this way is shown to the creator to
+              approve, edit or decline before it appears anywhere.
+            </li>
+            <li>
+              <strong>Permission to edit that channel&rsquo;s video descriptions</strong> &mdash; so that a
+              creator can have Mealio add a link to their recipe at the end of the description of the video it
+              came from. This is off unless the creator turns it on, it only ever adds our link and changes
+              nothing else, and it applies only to videos on the channel they connected. A creator can turn it
+              off, disconnect the channel in Mealio, or revoke access from their Google account at any time.
+            </li>
+          </ul>
+          <p style={p}>
+            Mealio does not use information obtained from Google APIs for advertising, does not sell or
+            transfer it, and does not use it to train machine-learning models. The{' '}
+            <a href="https://mealio.co/privacy" style={link}>privacy policy</a> sets out all of it in full.
+          </p>
+        </div>
+
+        <div style={section}>
           <h2 style={h2}>What it costs</h2>
           <p style={p}>
             Free to use for up to three saved meals. Full access is a paid subscription — see{' '}
@@ -105,9 +144,9 @@ export default function AboutPage() {
             browsing or read pages unrelated to filling that cart.
           </p>
           <p style={p}>
-            The <Link href="/privacy" style={link}>privacy policy</Link> covers all of it, including exactly
-            what a connected YouTube channel allows and how to disconnect it. The{' '}
-            <Link href="/terms" style={link}>terms of service</Link> set out the rest.
+            The <a href="https://mealio.co/privacy" style={link}>privacy policy</a> covers all of it,
+            including exactly what a connected YouTube channel allows and how to disconnect it. The{' '}
+            <a href="https://mealio.co/terms" style={link}>terms of service</a> set out the rest.
           </p>
         </div>
 
@@ -116,7 +155,8 @@ export default function AboutPage() {
             <Link href="/discover" style={{ ...link, fontWeight: 600 }}>Browse meals &rarr;</Link>
           </p>
           <p style={{ ...p, fontSize: '13px', color: '#888' }}>
-            Questions: <a href="mailto:contact@mealio.co" style={link}>contact@mealio.co</a>
+            Mealio is operated by <strong>Mealio LLC</strong>. Questions:{' '}
+            <a href="mailto:contact@mealio.co" style={link}>contact@mealio.co</a>
           </p>
         </div>
       </div>
