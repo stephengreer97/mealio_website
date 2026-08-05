@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pollConcern, type CreatorPollHealth } from '@/lib/poll-health';
+import { pollConcern, pollStatus, type CreatorPollHealth } from '@/lib/poll-health';
 
 const health = (over: Partial<CreatorPollHealth> = {}): CreatorPollHealth => ({
   creatorId: 'c1', source: 'website', lastPolledAt: null, pollAfter: null,
@@ -29,5 +29,32 @@ describe('pollConcern — who is broken, not how is everyone', () => {
   it('does not call a creator broken for never setting polling up', () => {
     // Nothing is wrong here, and floating them to the top buries what is.
     expect(pollConcern(health({ source: null, lastNewItemAt: daysAgo(400) }), NOW)).toBe(0);
+  });
+});
+
+describe('pollStatus — what the row is called', () => {
+  it('calls a source with no failures and a recent post ok', () => {
+    expect(pollStatus(health({ lastPolledAt: daysAgo(0), lastNewItemAt: daysAgo(2) }), NOW)).toBe('ok');
+  });
+
+  it('separates a failure or two from a source nobody has looked at', () => {
+    expect(pollStatus(health({ consecutiveFailures: 1, lastNewItemAt: daysAgo(1) }), NOW)).toBe('wobbling');
+    expect(pollStatus(health({ consecutiveFailures: 6, lastNewItemAt: daysAgo(1) }), NOW)).toBe('failing');
+  });
+
+  it('names the source that polls cleanly and produces nothing', () => {
+    // Recent poll, no failures, next poll scheduled — healthy on every column
+    // except the one this screen exists for.
+    expect(pollStatus(health({ lastPolledAt: daysAgo(0), lastNewItemAt: daysAgo(60) }), NOW)).toBe('silent');
+  });
+
+  it('does not call a source silent before it has produced anything', () => {
+    // A source configured this morning has no items and no way to tell "new" from
+    // "never produced"; calling it silent puts every new creator at the top.
+    expect(pollStatus(health({ lastPolledAt: daysAgo(0), lastNewItemAt: null }), NOW)).toBe('ok');
+  });
+
+  it('has a state for a creator with no source that is not a failure state', () => {
+    expect(pollStatus(health({ source: null, lastNewItemAt: daysAgo(400) }), NOW)).toBe('unconfigured');
   });
 });

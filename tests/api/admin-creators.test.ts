@@ -101,6 +101,57 @@ describe('/api/admin/creators', () => {
     expect(select?.args[0]).not.toContain('access_token');
   });
 
+  it('reports poll health on every creator, in a fixed number of queries', async () => {
+    // Seeded rather than queued: poll health reads three more tables and a FIFO
+    // queue per table cannot tell one of those reads from another.
+    asAdmin();
+    fakeDb.queue('creators', { data: [READY, { ...READY, id: 'c2', display_name: 'Chef Ben' }] });
+    fakeDb.seed('creator_source_state', [
+      {
+        creator_id: 'c1', source: 'website',
+        last_polled_at: '2026-08-04T00:00:00.000Z', poll_after: '2026-08-04T06:00:00.000Z',
+        consecutive_failures: 4, last_failed_at: '2026-08-04T05:00:00.000Z',
+        last_error: 'Not Found', last_status: 404,
+      },
+    ]);
+    fakeDb.seed('creator_source_items', [
+      { creator_id: 'c1', created_at: '2026-06-01T00:00:00.000Z' },
+      { creator_id: 'c1', created_at: '2026-07-02T00:00:00.000Z' },
+      // Another creator's post, which must not be counted as c1's.
+      { creator_id: 'c2', created_at: '2026-08-01T00:00:00.000Z' },
+    ]);
+    fakeDb.seed('creator_import_drafts', [
+      { creator_id: 'c1', published_meal_id: 'm1' },
+      { creator_id: 'c1', published_meal_id: null },
+    ]);
+
+    const body = await (await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }))).json();
+
+    expect(body.creators[0].pollHealth).toMatchObject({
+      creatorId: 'c1',
+      lastPolledAt: '2026-08-04T00:00:00.000Z',
+      pollAfter: '2026-08-04T06:00:00.000Z',
+      consecutiveFailures: 4,
+      lastFailedAt: '2026-08-04T05:00:00.000Z',
+      lastError: 'Not Found',
+      lastStatus: 404,
+      lastNewItemAt: '2026-07-02T00:00:00.000Z',
+      draftedCount: 2,
+      publishedCount: 1,
+    });
+    // A creator with no source state is reported as having none, not omitted —
+    // the Sources tab renders a row for them either way.
+    expect(body.creators[1].pollHealth).toMatchObject({ creatorId: 'c2', source: null, consecutiveFailures: 0 });
+
+    // The whole point of the shared helper: this page is a fixed handful of
+    // queries, not one per creator. Two creators must cost what one does.
+    const reads = fakeDb.calls.filter(
+      (c) => c.method === 'select'
+        && ['creator_source_state', 'creator_source_items', 'creator_import_drafts'].includes(c.table),
+    );
+    expect(reads).toHaveLength(3);
+  });
+
   it('sets the primary source', async () => {
     asAdmin();
     fakeDb.queue('creators', { data: { ...READY, primary_source: 'none' } });

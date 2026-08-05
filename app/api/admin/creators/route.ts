@@ -8,6 +8,7 @@ import {
   isPrimarySource,
   normalizePlatformUrl,
 } from '@/lib/creator-sources';
+import { pollHealthByCreator } from '@/lib/poll-health';
 
 /**
  * Creator sources: which of a creator's four links we poll (MEAL-81).
@@ -50,6 +51,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  const creatorIds = ((data ?? []) as Array<{ id: string }>).map((row) => row.id);
+
   // Which platforms each creator has connected, and which of those connections
   // have stopped working (MEAL-74). Two reasons this belongs on the list an
   // operator already reads: a connected channel can be synced with no link on
@@ -58,9 +61,16 @@ export async function GET(request: NextRequest) {
   //
   // Deliberately selected column by column: `select *` on this table would
   // carry refresh tokens into an admin response.
-  const { data: accounts } = await supabase
-    .from('creator_platform_accounts')
-    .select('creator_id, platform, external_id, external_name, broken_reason, broken_at');
+  //
+  // Poll health alongside it (MEAL-96): a fixed handful of queries for the whole
+  // page, so the Sources tab stays one request no matter how many creators it
+  // lists. Both reads are independent of each other, hence in parallel.
+  const [{ data: accounts }, health] = await Promise.all([
+    supabase
+      .from('creator_platform_accounts')
+      .select('creator_id, platform, external_id, external_name, broken_reason, broken_at'),
+    pollHealthByCreator(supabase, creatorIds),
+  ]);
 
   const byCreator = new Map<string, Array<Record<string, unknown>>>();
   for (const row of (accounts ?? []) as Array<Record<string, any>>) {
@@ -78,6 +88,7 @@ export async function GET(request: NextRequest) {
   const creators = ((data ?? []) as Array<Record<string, any>>).map((creator) => ({
     ...creator,
     connections: byCreator.get(creator.id) ?? [],
+    pollHealth: health.get(creator.id) ?? null,
   }));
 
   return NextResponse.json({ creators });

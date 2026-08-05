@@ -15,6 +15,8 @@ import {
 // Type-only: `lib/import/viability` reaches undici and must never be bundled
 // into the client. The import is erased at compile time.
 import type { ViabilityReport } from '@/lib/import/viability';
+import { pollConcern, pollStatus, type CreatorPollHealth, type PollStatusKind } from '@/lib/poll-health';
+import { daysSince, relativeTime } from '@/lib/relative-time';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 
@@ -144,6 +146,8 @@ interface CreatorSource {
   import_paused_at?: string | null;
   /** OAuth grants, with `brokenReason` set when one has stopped working (MEAL-74). */
   connections?: Array<{ platform: string; externalName: string | null; brokenReason: string | null }>;
+  /** Is polling working for this creator, and producing anything (MEAL-96). */
+  pollHealth?: CreatorPollHealth | null;
 }
 
 const OUTCOME_STYLES: Record<ViabilityOutcome, { bg: string; fg: string; label: string }> = {
@@ -157,6 +161,264 @@ const OUTCOME_STYLES: Record<ViabilityOutcome, { bg: string; fg: string; label: 
 const VERDICT_COLORS: Record<string, string> = {
   yes: '#16a34a', no: '#c40029', unsure: '#b45309', error: '#6b7280',
 };
+
+// ── Poll health on the Sources tab (MEAL-96) ─────────────────────────────────
+
+const POLL_STATUS_STYLES: Record<PollStatusKind, { label: string; fg: string; bg: string; accent: string }> = {
+  failing:      { label: 'Source failing',    fg: '#c40029', bg: '#fdeaee', accent: '#dc2626' },
+  silent:       { label: 'Producing nothing', fg: '#92400e', bg: '#fff8e1', accent: '#f59e0b' },
+  wobbling:     { label: 'Recent failure',    fg: '#92400e', bg: '#fffbeb', accent: '#fcd34d' },
+  ok:           { label: 'Polling healthily', fg: '#1a7a3a', bg: '#e6f9ed', accent: '#34d399' },
+  unconfigured: { label: 'No source',         fg: '#6b7280', bg: '#f3f4f6', accent: '#e5e7eb' },
+};
+
+/**
+ * The badge, beside the connection badges an operator is already scanning.
+ *
+ * Silent gets a number of days rather than "Producing nothing": a month and a
+ * year both read as "producing nothing" and only one of them is an emergency.
+ */
+function PollStatusBadge({ health, now }: { health: CreatorPollHealth; now: number }) {
+  const kind = pollStatus(health, now);
+  // A creator nobody has set polling up for is not a state worth a badge — the
+  // "Not polled" pill beside it already says everything true about them.
+  if (kind === 'unconfigured') return null;
+
+  const style = POLL_STATUS_STYLES[kind];
+  const quiet = daysSince(health.lastNewItemAt, now);
+  const label =
+    kind === 'failing' ? `${style.label} · ${health.consecutiveFailures} in a row`
+    : kind === 'silent' && quiet !== null ? `Producing nothing for ${quiet} days`
+    : style.label;
+
+  return (
+    <span
+      data-testid={`poll-status-${health.creatorId}`}
+      data-poll-status={kind}
+      style={{ fontSize: '12px', fontWeight: 600, borderRadius: '99px', padding: '2px 10px', color: style.fg, background: style.bg }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Who is broken, above the list, so it is answered before anyone scrolls.
+ *
+ * The counts a creator asking "why has nothing appeared?" would otherwise be the
+ * first notification of.
+ */
+function PollHealthSummary({ creators, now }: { creators: CreatorSource[]; now: number }) {
+  const tally: Record<PollStatusKind, number> = { failing: 0, silent: 0, wobbling: 0, ok: 0, unconfigured: 0 };
+  for (const creator of creators) {
+    tally[creator.pollHealth ? pollStatus(creator.pollHealth, now) : 'unconfigured'] += 1;
+  }
+
+  const parts: Array<[PollStatusKind, string]> = [
+    ['failing', `${tally.failing} failing`],
+    ['silent', `${tally.silent} producing nothing`],
+    ['wobbling', `${tally.wobbling} with a recent failure`],
+    ['ok', `${tally.ok} polling healthily`],
+    ['unconfigured', `${tally.unconfigured} with no source`],
+  ];
+
+  return (
+    <div
+      data-testid="poll-health-summary"
+      style={{
+        background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        padding: '14px 20px', display: 'flex', alignItems: 'center', gap: '10px 18px', flexWrap: 'wrap',
+      }}
+    >
+      <strong style={{ fontSize: '13px', color: '#333' }}>Poll health</strong>
+      {parts.filter(([kind]) => tally[kind] > 0).map(([kind, text]) => (
+        <span key={kind} style={{ fontSize: '12px', fontWeight: 600, borderRadius: '99px', padding: '3px 12px', color: POLL_STATUS_STYLES[kind].fg, background: POLL_STATUS_STYLES[kind].bg }}>
+          {text}
+        </span>
+      ))}
+      <span style={{ fontSize: '11px', color: '#aaa', marginLeft: 'auto' }}>Least healthy first</span>
+    </div>
+  );
+}
+
+/** The exact instant, for the `title` under a "4 days ago". */
+function exactly(at: string | null): string | undefined {
+  if (!at) return undefined;
+  const t = Date.parse(at);
+  return Number.isFinite(t) ? new Date(t).toLocaleString() : undefined;
+}
+
+/**
+ * How much of a remote server's prose ends up in the DOM.
+ *
+ * `last_error` is not written by us — it is whatever the source said, and an
+ * HTML error page or a stack trace arrives as a single unbroken paragraph.
+ * Rendered as text (never as HTML) and cut here, with the rest available on
+ * hover, so one bad source cannot push the rest of the card off the screen.
+ */
+const ERROR_CHARS = 320;
+
+function PollHealthPanel({ health, now }: { health: CreatorPollHealth; now: number }) {
+  const kind = pollStatus(health, now);
+  const style = POLL_STATUS_STYLES[kind];
+
+  // Nothing is broken about a creator nobody has set polling up for, so they get
+  // a grey sentence rather than a panel of empty columns and a "never polled"
+  // that reads like a failure.
+  if (kind === 'unconfigured' && !health.lastPolledAt && health.draftedCount === 0) {
+    return (
+      <p data-testid={`poll-health-${health.creatorId}`} style={{ margin: '4px 0 16px', fontSize: '12px', color: '#aaa' }}>
+        No source is being polled for this creator — nothing here is broken, there is just nothing to report yet.
+      </p>
+    );
+  }
+
+  const lastNew = relativeTime(health.lastNewItemAt, now);
+  const failed = health.consecutiveFailures;
+
+  return (
+    <div
+      data-testid={`poll-health-${health.creatorId}`}
+      style={{
+        margin: '4px 0 16px', borderRadius: '10px', border: '1px solid #f0f0f0',
+        borderLeft: `4px solid ${style.accent}`, padding: '14px 16px', background: '#fcfcfc',
+      }}
+    >
+      {/* The one that matters, given the size of a headline rather than a slot
+          in a row of timestamps: a source can poll successfully forever and
+          yield nothing, and that reads as healthy on every other column. */}
+      <div
+        data-testid={`poll-last-new-${health.creatorId}`}
+        style={{
+          borderRadius: '8px', padding: '10px 12px', marginBottom: '12px',
+          background: kind === 'silent' ? '#fff8e1' : '#f6f8fa',
+        }}
+      >
+        <div style={{ fontSize: '11px', fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          Last poll that found a new post
+        </div>
+        <div
+          title={exactly(health.lastNewItemAt)}
+          style={{ fontSize: '19px', fontWeight: 700, color: kind === 'silent' ? '#92400e' : '#333', marginTop: '2px' }}
+        >
+          {lastNew ?? 'Nothing seen yet'}
+        </div>
+        <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
+          {health.lastNewItemAt
+            ? kind === 'silent'
+              ? 'Polling is fine and this source is producing nothing — the failure no other column shows.'
+              : `First seen ${exactly(health.lastNewItemAt)}`
+            : 'Polling has never met a post here. Normal for a source only just set up.'}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px 28px' }}>
+        {/* Deliberately named "successful": this column does not advance on a
+            failure, and an operator reading it as "last time the queue reached
+            them" would take a broken source for a quiet one. */}
+        <Figure
+          label="Last successful poll"
+          value={relativeTime(health.lastPolledAt, now) ?? 'Never'}
+          title={exactly(health.lastPolledAt)}
+          note="unchanged by a failed poll"
+        />
+        <Figure
+          label="Next poll due"
+          value={relativeTime(health.pollAfter, now) ?? 'As soon as the queue reaches it'}
+          title={exactly(health.pollAfter)}
+        />
+        <div>
+          <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Failures in a row</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '3px' }}>
+            <FailureDots count={failed} />
+            <span style={{ fontSize: '15px', fontWeight: 700, color: failed === 0 ? '#1a7a3a' : failed >= 3 ? '#c40029' : '#b45309' }}>
+              {failed === 0 ? 'None' : failed}
+            </span>
+          </div>
+        </div>
+        <Figure label="Drafted by polling" value={String(health.draftedCount)} note="lifetime" />
+        <Figure label="Published from those" value={String(health.publishedCount)} note="lifetime" />
+      </div>
+
+      {(health.lastFailedAt || health.lastError) && (
+        <div
+          data-testid={`poll-last-failure-${health.creatorId}`}
+          style={{
+            marginTop: '12px', borderRadius: '8px', padding: '10px 12px',
+            background: failed > 0 ? '#fff5f6' : '#fafafa',
+          }}
+        >
+          <div style={{ fontSize: '12px', fontWeight: 600, color: failed > 0 ? '#c40029' : '#888' }}>
+            Last failed poll {relativeTime(health.lastFailedAt, now) ?? 'at an unrecorded time'}
+            {health.lastStatus ? ` · HTTP ${health.lastStatus}` : ''}
+            {/* Kept visible after it recovers, greyed: "it failed on Tuesday and
+                has been fine since" is a different story from "it is failing". */}
+            {failed === 0 ? ' · polling has recovered since' : ''}
+          </div>
+          {health.lastError && (
+            <p
+              title={health.lastError}
+              style={{
+                margin: '4px 0 0', fontSize: '12px', lineHeight: 1.5, color: '#555',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                // The source's own words, and they arrive as one unbroken line
+                // as often as not. Wrapped mid-word and capped in height so a
+                // remote stack trace cannot take the card over.
+                whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '5.5em', overflow: 'hidden',
+              }}
+            >
+              {health.lastError.length > ERROR_CHARS ? `${health.lastError.slice(0, ERROR_CHARS)}…` : health.lastError}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Figure({ label, value, title, note }: { label: string; value: string; title?: string; note?: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div title={title} style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '3px' }}>{value}</div>
+      {note && <div style={{ fontSize: '10px', color: '#bbb' }}>{note}</div>}
+    </div>
+  );
+}
+
+/**
+ * Consecutive failures as a shape before it is a number.
+ *
+ * One failure is weather and six is a broken source nobody has looked at, and
+ * that difference should survive a glance down a column — a row of filled red
+ * dots is legible at a distance a "6" is not.
+ */
+function FailureDots({ count }: { count: number }) {
+  const filled = Math.min(count, 6);
+  return (
+    <span aria-hidden style={{ display: 'inline-flex', gap: '3px' }}>
+      {Array.from({ length: 6 }, (_, i) => (
+        <span
+          key={i}
+          style={{
+            width: '7px', height: '7px', borderRadius: '99px',
+            background: i < filled ? (count >= 3 ? '#dc2626' : '#f59e0b') : '#e8e8e8',
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/**
+ * Least healthy first — the operator's question is "who is broken", not "how is
+ * everyone doing", and the API's order (newest creator first) answers neither.
+ * Ties break on name so the list does not reshuffle between renders.
+ */
+function byConcernFirst(creators: CreatorSource[], now: number): CreatorSource[] {
+  const concern = (c: CreatorSource) => (c.pollHealth ? pollConcern(c.pollHealth, now) : 0);
+  return [...creators].sort((a, b) => concern(b) - concern(a) || a.display_name.localeCompare(b.display_name));
+}
 
 interface Meal {
   id: string;
@@ -586,6 +848,11 @@ export default function AdminPage() {
     fontSize: '14px',
   });
 
+  // One instant for the whole Sources tab, so the order and every "4 days ago"
+  // on it are answers to the same "now".
+  const pollNow = Date.now();
+  const sourcesByConcern = byConcernFirst(creators, pollNow);
+
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
       {/* Header */}
@@ -703,7 +970,9 @@ export default function AdminPage() {
               <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '32px', textAlign: 'center', color: '#888' }}>
                 No creators yet.
               </div>
-            ) : creators.map(creator => {
+            ) : <PollHealthSummary creators={creators} now={pollNow} />}
+
+            {sourcesByConcern.map(creator => {
               const reports = viability[creator.id] ?? {};
               const links: Partial<Record<PlatformSource, string | null>> = Object.fromEntries(
                 PLATFORM_SOURCES.map(s => [s, creator[SOURCE_COLUMNS[s] as keyof CreatorSource] as string | null]),
@@ -732,6 +1001,7 @@ export default function AdminPage() {
                         Not polled
                       </span>
                     )}
+                    {creator.pollHealth && <PollStatusBadge health={creator.pollHealth} now={pollNow} />}
                     {/* A grant that has stopped working looks exactly like a
                         creator who published nothing, so it is shown here rather
                         than left in a log for whoever thinks to look (MEAL-74). */}
@@ -781,17 +1051,26 @@ export default function AdminPage() {
                       }}
                     >
                       {notice.detail}
-                      {notice.at && <span style={{ color: '#aaa' }}> · {new Date(notice.at).toLocaleString()}</span>}
+                      {notice.at && (
+                        <span style={{ color: '#aaa' }}>
+                          {' · '}{relativeTime(notice.at, pollNow) ?? ''} ({new Date(notice.at).toLocaleString()})
+                        </span>
+                      )}
                     </p>
                   ))}
 
                   {/* Creator-level answer: importable, not importable, or not yet known. */}
                   <p style={{
-                    margin: '8px 0 16px', fontSize: '12px', lineHeight: 1.6,
+                    margin: '8px 0 8px', fontSize: '12px', lineHeight: 1.6,
                     color: verdict.importable === false ? '#c40029' : verdict.importable ? '#1a7a3a' : '#888',
                   }}>
                     {verdict.summary}
                   </p>
+
+                  {/* Is polling working, and is it producing anything (MEAL-96).
+                      Above the link rows because it is what the operator came to
+                      the tab to find out; the links are what they change after. */}
+                  {creator.pollHealth && <PollHealthPanel health={creator.pollHealth} now={pollNow} />}
 
                   {/* One row per link: check it, then choose it. */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

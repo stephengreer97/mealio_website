@@ -192,3 +192,42 @@ export function pollConcern(health: CreatorPollHealth, now: number = Date.now())
     + days(health.lastNewItemAt)
     + days(health.lastPolledAt) * 0.5;
 }
+
+/**
+ * The one word for a creator's polling, for the badge an operator scans.
+ *
+ *  - `unconfigured` — no source. Not a failure and must not be styled as one.
+ *  - `failing` — erroring often enough that nobody has looked at it.
+ *  - `silent` — polling cleanly and producing nothing, which is the failure this
+ *    screen exists to catch and reads as healthy on every other column.
+ *  - `wobbling` — a failure or two. Weather, worth showing, not worth alarm.
+ *  - `ok` — polling and producing.
+ *
+ * Separate from `pollConcern` because the two answer different questions: the
+ * number orders the list, the kind decides what colour a row is and what it is
+ * called. Deriving the badge from the score instead would mean picking score
+ * thresholds, and a fortnight of silence and a single failure land on the same
+ * number without meaning remotely the same thing.
+ */
+export type PollStatusKind = 'unconfigured' | 'failing' | 'silent' | 'wobbling' | 'ok';
+
+/** Failures in a row before this stops being weather. */
+export const FAILING_AFTER = 3;
+
+/** Days without a new post before a source counts as producing nothing. */
+export const SILENT_AFTER_DAYS = 30;
+
+export function pollStatus(health: CreatorPollHealth, now: number = Date.now()): PollStatusKind {
+  if (!health.source) return 'unconfigured';
+  if (health.consecutiveFailures >= FAILING_AFTER) return 'failing';
+
+  // Only when there is a post to be older than. A source with no items yet is
+  // either newly configured or has never produced, and this cannot tell those
+  // apart — calling it silent would put every new creator at the top of the list
+  // on their first day. `pollConcern` scores a null the same way, at zero.
+  const seen = health.lastNewItemAt ? Date.parse(health.lastNewItemAt) : NaN;
+  if (Number.isFinite(seen) && now - seen > SILENT_AFTER_DAYS * 86_400_000) return 'silent';
+
+  if (health.consecutiveFailures > 0) return 'wobbling';
+  return 'ok';
+}
