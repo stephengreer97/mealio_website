@@ -74,6 +74,16 @@ export interface SyncSectionCreator {
 
 interface Props {
   creator: SyncSectionCreator;
+  /**
+   * Rendered above the picker, in the left column.
+   *
+   * The creator portal passes its profile card here rather than placing it
+   * beside this section, because the two columns are two different questions —
+   * "who you are and where you publish" on the left, "what you have already
+   * posted" on the right — and only this component knows whether the right one
+   * exists, since it depends on a connection it is the one holding.
+   */
+  children?: React.ReactNode;
   /** Handed the columns that changed, so the portal's own copy stays in step. */
   onSaved?: (changes: Partial<SyncSectionCreator>) => void;
 }
@@ -145,7 +155,7 @@ function returnedFromConnect(): ConnectedPlatform | null {
   return CONNECTED_PLATFORMS.find(platform => params.get(platform)) ?? null;
 }
 
-export default function SyncSourceSection({ creator, onSaved }: Props) {
+export default function SyncSourceSection({ creator, onSaved, children }: Props) {
   /**
    * The section's own copy of the four columns a source decision reads.
    *
@@ -785,15 +795,33 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   // name, and the copy that would have named it says something else entirely.
   const label = source === 'none' ? '' : SOURCE_LABELS[source];
 
+  /**
+   * Is there a right-hand column at all?
+   *
+   * Only once a source is connected and its checklist has loaded. Until then
+   * the left column has the panel to itself rather than sitting in half of it
+   * beside an empty space — and the run card cannot appear before the checklist
+   * that produced it, so this one test covers the whole column.
+   */
+  const hasCatalogue = (ready && catalogFor === source) || Boolean(run);
+
   return (
-    // One column of cards, and one item as far as the settings grid is
-    // concerned. They were three siblings in a balanced multi-column layout, so
-    // pressing Import inserted a fourth and the browser redistributed
-    // everything to even the columns out — the queue landed under the checklist
-    // or beside it depending on which arrangement happened to balance, and the
-    // profile card moved with it. A layout that rearranges itself on an action
-    // is one nobody can learn.
+    // Two columns, each a stack, and the arrangement never changes under the
+    // creator: left is "who you are and where you publish", right is "what you
+    // have already posted". Explicit rather than balanced — a layout that
+    // redistributes when a card appears is one nobody can learn, and the import
+    // queue appears exactly when they are watching for it.
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: hasCatalogue ? 'repeat(auto-fit, minmax(min(440px, 100%), 1fr))' : '1fr',
+        gap: '16px',
+        alignItems: 'start',
+        maxWidth: '1560px',
+      }}
+    >
     <div className="flex flex-col gap-4">
+    {children}
     <div className={CARD} data-testid="sync-source-section">
       <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Your recipes</p>
       <h2 className="text-base font-bold text-gray-900 leading-tight mb-2">Sync your content with Mealio</h2>
@@ -954,7 +982,10 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
       )}
 
     </div>
+    </div>
 
+    {hasCatalogue && (
+    <div className="flex flex-col gap-4">
       {/* ── The back catalogue, on a card of its own ────────────────────────
           A different decision from "where do you publish", and one that only
           exists once an account is connected — so it gets its own card rather
@@ -1245,6 +1276,8 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           </ul>
         </div>
       )}
+    </div>
+    )}
     </div>
   );
 }

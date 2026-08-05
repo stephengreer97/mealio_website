@@ -1615,6 +1615,203 @@ export default function CreatorPortal() {
     window.dispatchEvent(new CustomEvent('mealio:meals-changed'));
   };
 
+  /**
+   * Who the creator is, as a card.
+   *
+   * A variable rather than JSX in place, because the settings panel now
+   * renders it in two arrangements: inside the sync section, which owns the
+   * two-column layout and stacks this above its own picker, and on its own
+   * when there is no creator row yet for the section to render at all.
+   */
+  const profileCard = (
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                  {!editingProfile ? (
+                    <div className="p-6">
+                      <div className="flex items-start gap-5">
+                        {/* Avatar */}
+                        <div className="flex-shrink-0">
+                          {creator?.photo_url ? (
+                            <img src={creator.photo_url} alt={creator.display_name} className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
+                          ) : (
+                            <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+                          )}
+                        </div>
+  
+                        {/* Info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              {/* "Creator Portal" and the page's one <h1> moved to
+                                  the header band above the tabs when this card
+                                  did — this is the profile, not the page. */}
+                              <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Your profile</p>
+                              <h2 className="text-base font-bold text-gray-900 leading-tight">{creator?.display_name}</h2>
+                              {creator?.social_handle && (
+                                <p className="text-sm text-gray-500 mt-0.5">{creator.social_handle}</p>
+                              )}
+                              {creator?.bio && (
+                                <p className="text-sm text-gray-600 mt-2 leading-relaxed">{creator.bio}</p>
+                              )}
+                              {creator?.handle && (
+                                <div className="mt-2">
+                                  <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Your referral link</p>
+                                  <div className="inline-flex items-center gap-2">
+                                    <a
+                                      href={`/${creator.handle}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-medium"
+                                    >
+                                      mealio.co/{creator.handle}
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                    </a>
+                                    <button
+                                      onClick={copyReferralLink}
+                                      className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2 py-0.5 hover:bg-gray-50 transition-colors"
+                                    >
+                                      {linkCopied ? 'Copied!' : 'Copy'}
+                                    </button>
+                                  </div>
+                                  <p className="text-[11px] text-gray-400 mt-1">Share this link — new signups from it are credited to you.</p>
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              onClick={openEditProfile}
+                              className="flex-shrink-0 text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors whitespace-nowrap"
+                            >
+                              Edit Profile
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+  
+                      {/* Placeholder nudge if profile is sparse */}
+                      {!creator?.bio && !creator?.handle && (
+                        <p className="mt-4 text-xs text-gray-400 border-t border-gray-50 pt-4">
+                          Add a bio, website, and profile link to make your creator page shine.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-6">
+                      <div className="flex items-center justify-between mb-5">
+                        <h2 className="text-base font-bold text-gray-900">Edit Profile</h2>
+                        <button onClick={cancelEditProfile} className="text-gray-400 hover:text-gray-600 transition-colors">
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+  
+                      {/* Profile photo */}
+                      <div className="flex items-center gap-4 mb-5">
+                        <button
+                          type="button"
+                          onClick={() => profilePhotoInputRef.current?.click()}
+                          className="relative group flex-shrink-0 rounded-full focus:outline-none"
+                        >
+                          {profilePhotoPreview ? (
+                            <img src={profilePhotoPreview} alt="" className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
+                          ) : (
+                            <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+                          )}
+                          <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                          </div>
+                        </button>
+                        <div>
+                          <p className="text-sm font-semibold text-gray-700">Profile photo</p>
+                          <p className="text-xs text-gray-400 mt-0.5">Click avatar to change</p>
+                        </div>
+                        <input
+                          ref={profilePhotoInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={e => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            setProfilePhotoFile(file);
+                            setProfilePhotoPreview(URL.createObjectURL(file));
+                          }}
+                        />
+                      </div>
+  
+                      {/* Bio */}
+                      <div className="mb-4">
+                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Bio</label>
+                        <textarea
+                          value={profileBio}
+                          onChange={e => setProfileBio(e.target.value)}
+                          rows={3}
+                          placeholder="Tell people about yourself and your cooking style…"
+                          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 resize-none transition-colors"
+                        />
+                      </div>
+  
+                      {/* Website / Social */}
+                      <div className="mb-4">
+                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Website / Social</label>
+                        <input
+                          type="text"
+                          value={profileWebsite}
+                          onChange={e => setProfileWebsite(e.target.value)}
+                          placeholder="@yourhandle or https://yoursite.com"
+                          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors"
+                        />
+                      </div>
+  
+                      {/* Profile / referral link — permanent once set */}
+                      <div className="mb-5">
+                        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Referral link</label>
+                        {creator?.handle ? (
+                          <>
+                            <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
+                              <span className="px-3 py-2.5 text-sm text-gray-400 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
+                              <span className="flex-1 px-3 py-2.5 text-sm text-gray-500">{creator.handle}</span>
+                            </div>
+                            <p className="text-xs text-gray-400 mt-1">Your referral link is permanent and can&apos;t be changed.</p>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-400 transition-colors">
+                              <span className="px-3 py-2.5 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
+                              <input
+                                value={handleInput}
+                                onChange={e => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                                placeholder="yourhandle"
+                                maxLength={30}
+                                className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
+                              />
+                            </div>
+                            <p className="text-xs text-red-600 font-semibold mt-1">⚠ Permanent once saved — choose carefully. 3–30 characters: letters, numbers, hyphens, underscores.</p>
+                          </>
+                        )}
+                      </div>
+  
+                      {profileError && (
+                        <p className="text-sm text-red-600 mb-4">{profileError}</p>
+                      )}
+  
+                      <div className="flex gap-3">
+                        <button
+                          onClick={saveProfile}
+                          disabled={profileSaving}
+                          className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-2.5 text-sm transition-colors"
+                        >
+                          {profileSaving ? 'Saving…' : 'Save Profile'}
+                        </button>
+                        <button
+                          onClick={cancelEditProfile}
+                          className="px-5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+  );
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -2042,212 +2239,19 @@ export default function CreatorPortal() {
                 so a grid is enough: an item growing pushes nothing sideways, and
                 `align-items: start` keeps a short column short instead of
                 stretching it to match its neighbour. */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(min(440px, 100%), 1fr))',
-                gap: '16px',
-                alignItems: 'start',
-                maxWidth: '1560px',
-              }}
-            >
-
-              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                {!editingProfile ? (
-                  <div className="p-6">
-                    <div className="flex items-start gap-5">
-                      {/* Avatar */}
-                      <div className="flex-shrink-0">
-                        {creator?.photo_url ? (
-                          <img src={creator.photo_url} alt={creator.display_name} className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
-                        ) : (
-                          <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-gray-200 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
-                        )}
-                      </div>
-
-                      {/* Info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            {/* "Creator Portal" and the page's one <h1> moved to
-                                the header band above the tabs when this card
-                                did — this is the profile, not the page. */}
-                            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Your profile</p>
-                            <h2 className="text-base font-bold text-gray-900 leading-tight">{creator?.display_name}</h2>
-                            {creator?.social_handle && (
-                              <p className="text-sm text-gray-500 mt-0.5">{creator.social_handle}</p>
-                            )}
-                            {creator?.bio && (
-                              <p className="text-sm text-gray-600 mt-2 leading-relaxed">{creator.bio}</p>
-                            )}
-                            {creator?.handle && (
-                              <div className="mt-2">
-                                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Your referral link</p>
-                                <div className="inline-flex items-center gap-2">
-                                  <a
-                                    href={`/${creator.handle}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-medium"
-                                  >
-                                    mealio.co/{creator.handle}
-                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                                  </a>
-                                  <button
-                                    onClick={copyReferralLink}
-                                    className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-md px-2 py-0.5 hover:bg-gray-50 transition-colors"
-                                  >
-                                    {linkCopied ? 'Copied!' : 'Copy'}
-                                  </button>
-                                </div>
-                                <p className="text-[11px] text-gray-400 mt-1">Share this link — new signups from it are credited to you.</p>
-                              </div>
-                            )}
-                          </div>
-                          <button
-                            onClick={openEditProfile}
-                            className="flex-shrink-0 text-xs font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors whitespace-nowrap"
-                          >
-                            Edit Profile
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Placeholder nudge if profile is sparse */}
-                    {!creator?.bio && !creator?.handle && (
-                      <p className="mt-4 text-xs text-gray-400 border-t border-gray-50 pt-4">
-                        Add a bio, website, and profile link to make your creator page shine.
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="p-6">
-                    <div className="flex items-center justify-between mb-5">
-                      <h2 className="text-base font-bold text-gray-900">Edit Profile</h2>
-                      <button onClick={cancelEditProfile} className="text-gray-400 hover:text-gray-600 transition-colors">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      </button>
-                    </div>
-
-                    {/* Profile photo */}
-                    <div className="flex items-center gap-4 mb-5">
-                      <button
-                        type="button"
-                        onClick={() => profilePhotoInputRef.current?.click()}
-                        className="relative group flex-shrink-0 rounded-full focus:outline-none"
-                      >
-                        {profilePhotoPreview ? (
-                          <img src={profilePhotoPreview} alt="" className="w-20 h-20 rounded-full object-cover border-2 border-gray-100" />
-                        ) : (
-                          <div className="w-20 h-20 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center select-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
-                        )}
-                        <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                        </div>
-                      </button>
-                      <div>
-                        <p className="text-sm font-semibold text-gray-700">Profile photo</p>
-                        <p className="text-xs text-gray-400 mt-0.5">Click avatar to change</p>
-                      </div>
-                      <input
-                        ref={profilePhotoInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={e => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          setProfilePhotoFile(file);
-                          setProfilePhotoPreview(URL.createObjectURL(file));
-                        }}
-                      />
-                    </div>
-
-                    {/* Bio */}
-                    <div className="mb-4">
-                      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Bio</label>
-                      <textarea
-                        value={profileBio}
-                        onChange={e => setProfileBio(e.target.value)}
-                        rows={3}
-                        placeholder="Tell people about yourself and your cooking style…"
-                        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 resize-none transition-colors"
-                      />
-                    </div>
-
-                    {/* Website / Social */}
-                    <div className="mb-4">
-                      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Website / Social</label>
-                      <input
-                        type="text"
-                        value={profileWebsite}
-                        onChange={e => setProfileWebsite(e.target.value)}
-                        placeholder="@yourhandle or https://yoursite.com"
-                        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-200 focus:border-red-400 transition-colors"
-                      />
-                    </div>
-
-                    {/* Profile / referral link — permanent once set */}
-                    <div className="mb-5">
-                      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Referral link</label>
-                      {creator?.handle ? (
-                        <>
-                          <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
-                            <span className="px-3 py-2.5 text-sm text-gray-400 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
-                            <span className="flex-1 px-3 py-2.5 text-sm text-gray-500">{creator.handle}</span>
-                          </div>
-                          <p className="text-xs text-gray-400 mt-1">Your referral link is permanent and can&apos;t be changed.</p>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-red-200 focus-within:border-red-400 transition-colors">
-                            <span className="px-3 py-2.5 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 select-none whitespace-nowrap">mealio.co/</span>
-                            <input
-                              value={handleInput}
-                              onChange={e => setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
-                              placeholder="yourhandle"
-                              maxLength={30}
-                              className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
-                            />
-                          </div>
-                          <p className="text-xs text-red-600 font-semibold mt-1">⚠ Permanent once saved — choose carefully. 3–30 characters: letters, numbers, hyphens, underscores.</p>
-                        </>
-                      )}
-                    </div>
-
-                    {profileError && (
-                      <p className="text-sm text-red-600 mb-4">{profileError}</p>
-                    )}
-
-                    <div className="flex gap-3">
-                      <button
-                        onClick={saveProfile}
-                        disabled={profileSaving}
-                        className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-2.5 text-sm transition-colors"
-                      >
-                        {profileSaving ? 'Saving…' : 'Save Profile'}
-                      </button>
-                      <button
-                        onClick={cancelEditProfile}
-                        className="px-5 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* ── Sync your content with Mealio (MEAL-101) ──
-                  One section in place of four cards: a link editor and three
-                  connect cards (MEAL-94 / 74 / 82 / 83), which between them never
-                  said what any of it was for. The dropdown picks the source and
-                  the body follows it; Instagram and TikTok are in the list,
-                  disabled, with the reason on the option. */}
-              {creator && <SyncSourceSection creator={creator} onSaved={handleSourceSaved} />}
-
-            </div>
+            {/* The profile card is handed to the sync section rather than
+                placed beside it. The left column is "who you are and where
+                you publish"; the checklist of posts you already have is a
+                different question, and belongs beside both. Only the section
+                can know whether that checklist exists at all, because it
+                depends on a connection the section is the one holding. */}
+            {creator ? (
+              <SyncSourceSection creator={creator} onSaved={handleSourceSaved}>
+                {profileCard}
+              </SyncSourceSection>
+            ) : (
+              <div style={{ maxWidth: '440px' }}>{profileCard}</div>
+            )}
           </section>
 
           {/* ── Share-your-link prompt, shown once right after publishing ── */}
