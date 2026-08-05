@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import type { DuplicateMatch } from '@/lib/import/duplicates';
 import type { CreatorMealDraft, ImportConfidence, ImportSuccess } from '@/lib/import/types';
 
 // `lib/import-drafts` is imported for `reviewDraft` alone, so the queue payload
@@ -92,10 +93,14 @@ function cleanDraft(id = 'd2'): ImportDraft {
  * `waiting` is a separate argument from the list because the server counts it
  * separately — the list is capped at 200 rows and the count is not.
  */
-function payload(drafts: ImportDraft[], waiting = drafts.length) {
+function payload(
+  drafts: ImportDraft[],
+  waiting = drafts.length,
+  duplicates: Record<string, DuplicateMatch[]> = {},
+) {
   const rows = drafts.map((row) => {
     const review = reviewDraft(row);
-    return { ...row, summary: review.summary, review };
+    return { ...row, summary: review.summary, review, duplicates: duplicates[row.id] ?? [] };
   });
   return {
     waiting,
@@ -144,12 +149,15 @@ function overTagged(id = 'd1'): ImportDraft {
 }
 
 /** Routes the one endpoint the screen talks to, recording what it was asked. */
-function harness(drafts: ImportDraft[] = [draft()], overrides: { post?: unknown; postStatus?: number } = {}) {
+function harness(
+  drafts: ImportDraft[] = [draft()],
+  overrides: { post?: unknown; postStatus?: number; duplicates?: Record<string, DuplicateMatch[]> } = {},
+) {
   const bodies: Array<{ method: string; body: any }> = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (init?.body) bodies.push({ method, body: JSON.parse(String(init.body)) });
-    if (method === 'GET') return json(payload(drafts));
+    if (method === 'GET') return json(payload(drafts, drafts.length, overrides.duplicates));
     if (method === 'PATCH') return json({ draft: payload(drafts).drafts[0] });
     return json(
       overrides.post ?? { done: 1, published: [{ id: 'meal-1', name: 'Best Guacamole' }], errors: [], waiting: drafts.length - 1 },
@@ -1025,5 +1033,40 @@ describe('telling the header what the count is', () => {
     await screen.findAllByTestId('draft-row');
     expect(screen.getByText('2 recipes are waiting for you')).toBeTruthy();
     expect(screen.queryByTestId('queue-truncated')).toBeNull();
+  });
+});
+
+describe('a draft that repeats one already published', () => {
+  const repeat: Record<string, DuplicateMatch[]> = {
+    d1: [{ id: 'live-1', name: 'Best Guacamole', kind: 'published', overlap: 0.91, sameTitle: false }],
+  };
+
+  it('says so on the collapsed row, before anything is opened', async () => {
+    // A different kind of problem from the field flags beside it: those say
+    // "check this value", this says "you may already have this recipe", and the
+    // second is answered by looking somewhere else entirely.
+    harness([draft()], { duplicates: repeat });
+
+    expect(await screen.findByTestId('duplicate-badge')).toBeTruthy();
+  });
+
+  it('names what it collides with once opened', async () => {
+    // One waiting draft opens itself — there is nothing to choose between — so
+    // this reads the open pane rather than clicking, which would close it.
+    harness([draft()], { duplicates: repeat });
+    await screen.findByTestId('draft-card');
+
+    const notice = screen.getByTestId('duplicate-notice');
+    expect(notice.textContent).toMatch(/Best Guacamole/);
+    expect(notice.textContent).toMatch(/already published/);
+  });
+
+  it('shows nothing at all for the ordinary draft', async () => {
+    // Almost every draft. A badge on all of them would be furniture.
+    harness();
+    // Wait for the queue to draw before asserting an absence.
+    await screen.findAllByTestId('draft-row');
+
+    expect(screen.queryByTestId('duplicate-badge')).toBeNull();
   });
 });

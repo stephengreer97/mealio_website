@@ -19,6 +19,7 @@ import {
   type FieldNotice,
   type PublishBlocker,
 } from '@/lib/import/draft-form';
+import { duplicateNotice } from '@/lib/import/duplicates';
 import type { CreatorMealDraft } from '@/lib/import/types';
 // Type-only: `lib/import-drafts` reaches Supabase, Resend and the photo copier,
 // and must never be bundled into the client. Erased at compile time.
@@ -742,6 +743,21 @@ function QueueRow({
         style={{ ...rowIdentity, background: 'none', border: 'none', padding: 0, cursor: busy ? 'default' : 'pointer' }}
       >
         <RowIdentity row={row} />
+        {/* Before the field flags, because it is a different kind of problem.
+            Those say "check this value"; this says "you may already have this
+            recipe", which is answered by looking somewhere else entirely. */}
+        {(row.duplicates ?? []).length > 0 && (
+          <span
+            data-testid="duplicate-badge"
+            title={duplicateNotice(row.duplicates ?? []) ?? undefined}
+            style={{
+              flexShrink: 0, fontSize: '11px', fontWeight: 600, color: '#92400e',
+              background: '#fef3c7', border: '1px solid #fde68a', borderRadius: '6px', padding: '1px 6px',
+            }}
+          >
+            Possible repeat
+          </span>
+        )}
         <FlagBadge summary={row.summary} />
         {/* Which way the row is about to move. A caret rather than the word
             "Open", because the word competes with Approve for the eye and this
@@ -964,6 +980,17 @@ function DraftPanes({
           <p style={paneHeading}>What we read</p>
           <div style={{ background: '#f4f3f1', border: '1px solid #e8e6e2', borderRadius: '12px', padding: '14px 16px' }}>
           <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#52525B', lineHeight: 1.6 }} data-testid="comments-summary">
+            {(row.duplicates ?? []).length > 0 && (
+              <span
+                data-testid="duplicate-notice"
+                style={{
+                  display: 'block', marginBottom: '10px', padding: '8px 10px', borderRadius: '8px',
+                  background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', lineHeight: 1.5,
+                }}
+              >
+                {duplicateNotice(row.duplicates ?? [])}
+              </span>
+            )}
             {row.summary.needALook === 0
               ? 'Every field we filled matched the page we read. Nothing here needs checking — it is still yours to read before it goes out.'
               : `${summaryLine(row.summary)} Each one below says which field it is about.`}
