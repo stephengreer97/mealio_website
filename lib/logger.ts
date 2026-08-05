@@ -154,6 +154,11 @@ export type EventType =
   // refusing us, and more new items in one poll than a creator could publish.
   | 'POLL:SOURCE'
   | 'POLL:NOTIFY'             // the "these drafts are waiting" email (MEAL-76)
+  // The operator digest about sources that have gone unhealthy (MEAL-109).
+  // Logged only when it does not happen — a send that failed, an alert with
+  // nobody to address it, or a mark that did not stick. The email is the signal;
+  // the counts a successful sweep produces ride out on CRON:DAILY.
+  | 'POLL:HEALTH_ALERT'
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'

@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { relativeTime } from '@/lib/relative-time';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -269,6 +270,155 @@ export async function sendCreatorSourceMovedEmail(opts: {
     `,
   });
   throwIfRefused(sent, 'import paused alert');
+}
+
+/**
+ * One line of the poll health digest: a source that has just gone unhealthy.
+ *
+ * Everything here is read off `CreatorPollHealth` by the sweep. It is passed as
+ * plain values rather than the health object so this module keeps knowing
+ * nothing about `lib/poll-health.ts` — the *judgement* lives there and must have
+ * exactly one definition; the wording lives here.
+ */
+export interface UnhealthySourceLine {
+  creatorName: string;
+  handle: string | null;
+  sourceLabel: string;
+  /** As `pollStatus` decided it. The two kinds read very differently. */
+  status: 'failing' | 'silent';
+  /** Whole days since the source last produced a post; null if it never has. */
+  quietDays: number | null;
+  /** When polling last saw a post it had not seen before, ISO. */
+  lastNewItemAt: string | null;
+  /** Last poll that came back without an error, ISO. */
+  lastPolledAt: string | null;
+  consecutiveFailures: number;
+  /** When it started erroring, ISO. Absent on a source that has never failed. */
+  lastFailedAt: string | null;
+  /** The source's own words. Remote prose, so escaped and cut. */
+  lastError: string | null;
+}
+
+/** How many sources the digest lists before deferring to the Sources tab. */
+export const DIGEST_ROWS = 25;
+
+/** As much of a remote server's prose as belongs in an inbox. */
+const DIGEST_ERROR_CHARS = 240;
+
+/**
+ * "These creator sources have gone unhealthy" (MEAL-109).
+ *
+ * MEAL-96 made poll health visible; visible still means somebody has to open the
+ * Sources tab and look, so a creator whose source quietly stopped producing was
+ * discovered by the creator asking. This is the same judgement — `pollStatus`,
+ * not a second definition of unhealthy — arriving without being asked for.
+ *
+ * **A digest, and only of escalations.** The sweep sends this at most once a day
+ * and only about sources that have got *worse* than what it last said about
+ * them; a standing problem is not re-sent, and neither is one that has bounced
+ * back to a milder complaint. An operator who gets the same message every
+ * morning stops reading it, at which point the alert is worse than nothing
+ * because everyone believes it is working.
+ *
+ * `silent` is the reason this exists. A failing source at least shows up as
+ * failures on the screen; a source that is producing nothing can be polling on
+ * schedule with no failures at all, and then every column on the Sources tab but
+ * one reads as healthy — so the digest leads with how long it has been quiet
+ * rather than with a status word.
+ *
+ * Only the sources this NAMES are recorded as reported. The overflow line is a
+ * count, not a report, and the sweep leaves those sources unmarked so the next
+ * digest names them properly rather than suppressing them forever.
+ *
+ * The mail is the prompt, not the record — `creator_source_state` holds the
+ * status and the timestamps, and still answers "what happened to this source?"
+ * long after this has been deleted.
+ */
+export async function sendPollHealthAlertEmail(opts: {
+  adminEmails: string[];
+  sources: UnhealthySourceLine[];
+  now?: number;
+}) {
+  if (opts.adminEmails.length === 0 || opts.sources.length === 0) return;
+  const now = opts.now ?? Date.now();
+  const listed = opts.sources.slice(0, DIGEST_ROWS);
+  const overflow = opts.sources.length - listed.length;
+
+  const first = listed[0];
+  const subject = opts.sources.length === 1
+    ? `Poll health: ${first.creatorName}'s ${first.sourceLabel} ${first.status === 'silent' ? 'is producing nothing' : 'has stopped working'}`
+    : `Poll health: ${opts.sources.length} creator sources need a look`;
+
+  const cards = listed.map((source) => {
+    // Every value below is either a creator's own text or a remote server's, on
+    // its way into an inbox that renders HTML.
+    const name = escapeHtml(source.creatorName);
+    const handle = source.handle ? escapeHtml(source.handle) : '—';
+    const label = escapeHtml(source.sourceLabel);
+    const silent = source.status === 'silent';
+
+    // The headline is the fact the operator cannot get anywhere else. For a
+    // silent source that is the length of the silence; for a failing one it is
+    // that it is erroring at all.
+    const headline = silent
+      ? source.quietDays === null
+        ? 'Has never produced a post'
+        : `Nothing new for ${source.quietDays} ${source.quietDays === 1 ? 'day' : 'days'}`
+      : `Failing — ${source.consecutiveFailures} ${source.consecutiveFailures === 1 ? 'poll' : 'polls'} in a row`;
+
+    const rows: Array<[string, string]> = [
+      ['Creator', `<strong>${name}</strong>`],
+      ['Handle', handle],
+      ['Source', label],
+      // Kept on a silent source too: "polled an hour ago and still nothing" is
+      // the sentence that separates a dead feed from a poller that has stopped.
+      ['Last polled', escapeHtml(relativeTime(source.lastPolledAt, now) ?? 'never')],
+    ];
+    if (silent) {
+      rows.push(['Last new post', escapeHtml(relativeTime(source.lastNewItemAt, now) ?? 'never')]);
+    } else {
+      rows.push(['Failing since', escapeHtml(relativeTime(source.lastFailedAt, now) ?? 'unknown')]);
+      if (source.lastError) {
+        const cut = source.lastError.length > DIGEST_ERROR_CHARS;
+        rows.push(['Reason', escapeHtml(source.lastError.slice(0, DIGEST_ERROR_CHARS)) + (cut ? '…' : '')]);
+      }
+    }
+
+    return `
+      <div style="border: 1px solid #f0f0f0; border-left: 4px solid ${silent ? '#f59e0b' : '#dc2626'}; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; background: #fcfcfc;">
+        <p style="margin: 0 0 10px; font-size: 15px; font-weight: 700; color: ${silent ? '#92400e' : '#c40029'};">${escapeHtml(headline)}</p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          ${rows.map(([k, v]) => `<tr><td style="padding: 4px 0; color: #999; width: 110px;">${k}</td><td style="padding: 4px 0; color: #222; word-break: break-word;">${v}</td></tr>`).join('')}
+        </table>
+      </div>
+    `;
+  }).join('');
+
+  const sent = await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to: opts.adminEmails,
+    subject,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">${opts.sources.length === 1 ? 'A creator source has gone unhealthy' : `${opts.sources.length} creator sources have gone unhealthy`}</h2>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
+          These got worse since the last check. A source that is <strong>producing nothing</strong> may still be
+          polling on schedule with nothing worse than the odd failure to show for itself, so on the Sources tab
+          the only column that gives it away is when it last produced a post.
+        </p>
+        ${cards}
+        ${overflow > 0 ? `<p style="color: #666; font-size: 13px; margin: 0 0 20px;">…and ${overflow} more, the least urgent by the same order as above. They have not been recorded as reported, so the next digest names them. The Sources tab lists every creator, least healthy first.</p>` : ''}
+        <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Open the Sources tab</a>
+        <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 20px 0 0;">
+          You get at most two of these per source: one when it first goes unhealthy, and one more if a quiet
+          source starts erroring outright. Nothing further is sent while it stays that way — only a source that
+          is polling and producing again re-arms the alert.
+        </p>
+      </div>
+    `,
+  });
+  throwIfRefused(sent, 'poll health alert');
 }
 
 function escapeHtml(s: string): string {

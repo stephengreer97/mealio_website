@@ -5,6 +5,7 @@ import { resumeStalledSyncRuns } from '@/lib/admin-sync';
 import { refreshExpiringTokens } from '@/lib/platform-tokens';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { checkPushReceipts } from '@/lib/push';
+import { runPollHealthAlerts } from '@/lib/poll-health-alerts';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,6 +62,9 @@ export async function GET(request: NextRequest) {
     tokensRefreshed: 0,
     tokensBroken: 0,
     tokensDeferred: 0,
+    pollHealthAlerted: 0,
+    pollHealthDeferred: 0,
+    pollHealthRecovered: 0,
   };
 
   // Isolate the passes so one failing doesn't drop the other.
@@ -109,6 +113,27 @@ export async function GET(request: NextRequest) {
     results.tokensDeferred = sweep.deferred ?? 0;
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'tokenRefresh', reason: err.message });
+  }
+
+  // Poll health, told rather than displayed (MEAL-109). Here rather than in the
+  // fifteen-minute poll cron because this is a digest: once a day is one message
+  // about everything that changed, and the transition check means a standing
+  // problem is not repeated either way. It reuses `pollStatus`, so it and the
+  // Sources tab can never disagree about who is broken.
+  try {
+    const sweep = await runPollHealthAlerts({ supabase: createServerSupabaseClient() });
+    results.pollHealthAlerted = sweep.alerted;
+    // Transitions the digest could only fit as a count. They are deliberately
+    // left unmarked so tomorrow names them, which means a run of non-zero days
+    // here is a backlog draining rather than anything going wrong — and a number
+    // that never falls is the one to look at.
+    results.pollHealthDeferred = sweep.deferred;
+    // Reported beside it because the pair is the story: recoveries are what
+    // re-arm the alert, and a day with recoveries and no alerts is sources
+    // getting fixed rather than a sweep that did nothing.
+    results.pollHealthRecovered = sweep.recovered;
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'pollHealthAlerts', reason: err.message });
   }
 
   log({ event: 'CRON:DAILY', status: 'success', detail: JSON.stringify(results) });

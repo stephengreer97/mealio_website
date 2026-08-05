@@ -18,6 +18,9 @@ vi.mock('@/lib/admin-sync', () => ({ resumeStalledSyncRuns: () => resumeStalledS
 const refreshExpiringTokens = vi.fn();
 vi.mock('@/lib/platform-tokens', () => ({ refreshExpiringTokens: () => refreshExpiringTokens() }));
 
+const runPollHealthAlerts = vi.fn();
+vi.mock('@/lib/poll-health-alerts', () => ({ runPollHealthAlerts: () => runPollHealthAlerts() }));
+
 import { GET } from '@/app/api/cron/daily/route';
 
 /**
@@ -36,6 +39,10 @@ beforeEach(() => {
   process.env.CRON_SECRET = 'cron-secret';
   refreshExpiringTokens.mockReset();
   refreshExpiringTokens.mockResolvedValue({ checked: 3, refreshed: 2, broken: 1, skipped: 0, deferred: 1 });
+  runPollHealthAlerts.mockReset();
+  runPollHealthAlerts.mockResolvedValue({
+    examined: 4, unhealthy: 2, alerted: 1, suppressed: 1, recovered: 1, emailsSent: 1,
+  });
 });
 
 describe('/api/cron/daily', () => {
@@ -63,5 +70,33 @@ describe('/api/cron/daily', () => {
 
     expect(res.status).toBe(200);
     expect(resumeStalledSyncRuns).toHaveBeenCalled();
+  });
+
+  /**
+   * The poll health digest (MEAL-109) rides here rather than on the poll cron:
+   * once a day is one message about everything that changed, where the poller's
+   * fifteen-minute cadence would give ninety-six chances to fragment it.
+   */
+  it('sweeps poll health and reports what it raised', async () => {
+    const body = await (await GET(cronRequest())).json();
+
+    expect(runPollHealthAlerts).toHaveBeenCalledTimes(1);
+    // Recoveries are reported beside alerts because the pair is the story: a
+    // recovery is what re-arms the alert for the next break.
+    expect(body).toMatchObject({ pollHealthAlerted: 1, pollHealthRecovered: 1 });
+  });
+
+  it('does not sweep poll health unauthenticated', async () => {
+    expect((await GET(cronRequest('wrong'))).status).toBe(401);
+    expect(runPollHealthAlerts).not.toHaveBeenCalled();
+  });
+
+  it('keeps the other passes when the poll health sweep throws', async () => {
+    runPollHealthAlerts.mockRejectedValue(new Error('supabase unreachable'));
+
+    const res = await GET(cronRequest());
+
+    expect(res.status).toBe(200);
+    expect(refreshExpiringTokens).toHaveBeenCalled();
   });
 });

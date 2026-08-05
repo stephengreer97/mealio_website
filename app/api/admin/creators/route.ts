@@ -51,7 +51,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const creatorIds = ((data ?? []) as Array<{ id: string }>).map((row) => row.id);
+  const creatorRows = (data ?? []) as Array<{ id: string; primary_source?: string | null }>;
+  const creatorIds = creatorRows.map((row) => row.id);
+  // Which source each creator is actually polled on. `creator_source_state` is
+  // keyed `(creator_id, source)` and the PATCH below never deletes the row for a
+  // source it moves a creator off, so without this the row rendered is whichever
+  // of the leftovers came back last — and the tab would report a creator on
+  // YouTube as a Website that stopped working months ago.
+  const primarySource = new Map(creatorRows.map((row) => [row.id, row.primary_source ?? null]));
 
   // Which platforms each creator has connected, and which of those connections
   // have stopped working (MEAL-74). Two reasons this belongs on the list an
@@ -69,7 +76,7 @@ export async function GET(request: NextRequest) {
     supabase
       .from('creator_platform_accounts')
       .select('creator_id, platform, external_id, external_name, broken_reason, broken_at'),
-    pollHealthByCreator(supabase, creatorIds),
+    pollHealthByCreator(supabase, creatorIds, primarySource),
   ]);
 
   const byCreator = new Map<string, Array<Record<string, unknown>>>();

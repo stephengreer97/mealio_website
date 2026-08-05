@@ -23,6 +23,7 @@ import {
   sendCreatorDraftsReadyEmail,
   sendCreatorSourceMovedEmail,
   sendOtpEmail,
+  sendPollHealthAlertEmail,
 } from '@/lib/email';
 
 /**
@@ -79,6 +80,29 @@ const senders: Array<{ name: string; call: () => Promise<unknown> }> = [
         sourceLabel: 'website',
         previousUrl: 'https://chefsarah.test/feed',
         newUrl: 'https://sarahcooks.test/feed',
+      }),
+  },
+  {
+    // The one where a swallowed refusal is durable rather than momentary: the
+    // sweep marks the source as reported only once this returns, and the mark is
+    // cleared by nothing but a recovery. A refusal read as a send would retire
+    // that source from the alert permanently.
+    name: 'sendPollHealthAlertEmail',
+    call: () =>
+      sendPollHealthAlertEmail({
+        adminEmails: ['admin@mealio.co'],
+        sources: [{
+          creatorName: 'Chef Sarah',
+          handle: '@sarah',
+          sourceLabel: 'Website',
+          status: 'silent',
+          quietDays: 45,
+          lastNewItemAt: '2026-01-15T00:00:00.000Z',
+          lastPolledAt: '2026-03-01T00:00:00.000Z',
+          consecutiveFailures: 0,
+          lastFailedAt: null,
+          lastError: null,
+        }],
       }),
   },
 ];

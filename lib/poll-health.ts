@@ -79,63 +79,101 @@ export interface CreatorPollHealth {
 /** How many creators one call will report on. A page, not the world. */
 export const POLL_HEALTH_LIMIT = 500;
 
+/**
+ * Rows one read asks for, and how many of those reads it is allowed.
+ *
+ * PostgREST answers a select with at most `db-max-rows` — 1000 on Supabase —
+ * and **says nothing about having truncated**. No error, no flag, nothing in the
+ * body. Code that folds the result in memory therefore keeps working on every
+ * test-sized table and quietly stops being correct for exactly the rows that
+ * grew.
+ *
+ * That is not theoretical here. `creator_source_items` is append-only, so an
+ * unordered read comes back oldest-first, which means the page ceiling cuts
+ * precisely the newest rows — the only ones `lastNewItemAt` is looking for. One
+ * alert chunk is 100 creators; 100 creators averaging ten seen posts is past the
+ * ceiling, and every one of them then reads as having last produced something
+ * months ago. So both reads below are ORDERED and PAGED explicitly: an unordered
+ * page is not a page, it is a random sample that changes between calls.
+ *
+ * The page ceiling is a bound on one screen draw, not a limit on a creator —
+ * 20k rows is two orders of magnitude past the largest catalog we will list.
+ */
+const PAGE_ROWS = 1000;
+const MAX_PAGES = 20;
+
 function iso(value: unknown): string | null {
   return typeof value === 'string' && value ? value : null;
+}
+
+function blank(id: string): CreatorPollHealth {
+  return {
+    creatorId: id,
+    source: null,
+    lastPolledAt: null,
+    pollAfter: null,
+    consecutiveFailures: 0,
+    lastFailedAt: null,
+    lastError: null,
+    lastStatus: null,
+    lastNewItemAt: null,
+    draftedCount: 0,
+    publishedCount: 0,
+  };
 }
 
 /**
  * Poll health for every creator named, keyed by creator id.
  *
- * Four queries rather than one per creator: this screen lists everybody, and a
- * query per row is how an admin page that was fine with twelve creators becomes
- * a timeout at two hundred.
+ * A handful of queries rather than one per creator: this screen lists everybody,
+ * and a query per row is how an admin page that was fine with twelve creators
+ * becomes a timeout at two hundred.
+ *
+ * `primarySource` says which source each creator is actually polled on, and
+ * exists because `creator_source_state` is keyed `(creator_id, source)` and
+ * nothing deletes the old row when an operator moves a creator from their blog
+ * to their channel. Without it, "the creator's health" is whichever of the two
+ * rows PostgREST happened to return last — so a creator on YouTube could be
+ * judged, displayed and alerted on as a Website, and the source that is really
+ * being polled never looked at. Left out, the fallback is the first row in
+ * `source` order: still arbitrary, but at least the same arbitrary answer twice.
  */
 export async function pollHealthByCreator(
   supabase: SupabaseClient,
   creatorIds: string[],
+  primarySource?: ReadonlyMap<string, string | null>,
 ): Promise<Map<string, CreatorPollHealth>> {
   const out = new Map<string, CreatorPollHealth>();
   if (creatorIds.length === 0) return out;
 
   const ids = creatorIds.slice(0, POLL_HEALTH_LIMIT);
+  for (const id of ids) out.set(id, blank(id));
 
-  const [stateRes, itemRes, draftRes] = await Promise.all([
+  const [stateRes] = await Promise.all([
     supabase
       .from('creator_source_state')
       .select('creator_id, source, last_polled_at, poll_after, consecutive_failures, last_failed_at, last_error, last_status')
-      .in('creator_id', ids),
-    // Every item this creator's polling has ever seen, newest first seen. The
-    // max per creator is the answer; done in one pass below rather than one
-    // query per creator.
-    supabase
-      .from('creator_source_items')
-      .select('creator_id, created_at')
-      .in('creator_id', ids),
-    supabase
-      .from('creator_import_drafts')
-      .select('creator_id, published_meal_id')
-      .in('creator_id', ids),
+      .in('creator_id', ids)
+      // One row per source, so a creator can have several. Ordered so that the
+      // fallback below picks the same one every time.
+      .order('source', { ascending: true }),
+    foldDrafts(supabase, ids, out),
   ]);
 
-  for (const id of ids) {
-    out.set(id, {
-      creatorId: id,
-      source: null,
-      lastPolledAt: null,
-      pollAfter: null,
-      consecutiveFailures: 0,
-      lastFailedAt: null,
-      lastError: null,
-      lastStatus: null,
-      lastNewItemAt: null,
-      draftedCount: 0,
-      publishedCount: 0,
-    });
+  const chosen = new Map<string, Record<string, any>>();
+  for (const row of (stateRes.data ?? []) as Array<Record<string, any>>) {
+    if (!out.has(row.creator_id)) continue;
+    const wanted = primarySource?.get(row.creator_id) ?? null;
+    // A state row for a source this creator is no longer polled on is history,
+    // not health. Judging it would report on a source nobody is watching and,
+    // worse, write the alert mark onto a row the live source never reads.
+    if (wanted !== null && row.source !== wanted) continue;
+    if (chosen.has(row.creator_id)) continue;
+    chosen.set(row.creator_id, row);
   }
 
-  for (const row of (stateRes.data ?? []) as Array<Record<string, any>>) {
-    const entry = out.get(row.creator_id);
-    if (!entry) continue;
+  for (const [creatorId, row] of chosen) {
+    const entry = out.get(creatorId)!;
     entry.source = iso(row.source);
     entry.lastPolledAt = iso(row.last_polled_at);
     entry.pollAfter = iso(row.poll_after);
@@ -145,21 +183,85 @@ export async function pollHealthByCreator(
     entry.lastStatus = Number.isFinite(row.last_status) ? Number(row.last_status) : null;
   }
 
-  for (const row of (itemRes.data ?? []) as Array<Record<string, any>>) {
-    const entry = out.get(row.creator_id);
-    const seen = iso(row.created_at);
-    if (!entry || !seen) continue;
-    if (!entry.lastNewItemAt || seen > entry.lastNewItemAt) entry.lastNewItemAt = seen;
-  }
-
-  for (const row of (draftRes.data ?? []) as Array<Record<string, any>>) {
-    const entry = out.get(row.creator_id);
-    if (!entry) continue;
-    entry.draftedCount += 1;
-    if (row.published_meal_id) entry.publishedCount += 1;
-  }
-
+  await foldLastNewItem(supabase, ids, out);
   return out;
+}
+
+/**
+ * `lastNewItemAt` for each creator: the newest row they have, and nothing else.
+ *
+ * Newest-first and paged, for the reason in `PAGE_ROWS` — an unordered read of
+ * this table hands back the oldest rows and drops the ones being asked for, with
+ * no way to tell that it did. Ordered the other way the first row seen for a
+ * creator IS their answer, so each page only has to ask about the creators still
+ * without one; that both shrinks every subsequent request and is what makes the
+ * loop finish, since a full page whose rows all belong to unanswered creators
+ * answers at least one of them.
+ *
+ * Only rows from the source the creator is polled on count. A creator moved from
+ * their blog to their channel still has every blog post in this table, and
+ * counting those would report the dead channel as having produced something last
+ * week — the one number this whole screen exists to get right.
+ */
+async function foldLastNewItem(
+  supabase: SupabaseClient,
+  ids: string[],
+  out: Map<string, CreatorPollHealth>,
+): Promise<void> {
+  let pending = ids;
+  for (let page = 0; page < MAX_PAGES && pending.length > 0; page++) {
+    const { data } = await supabase
+      .from('creator_source_items')
+      .select('creator_id, source, created_at')
+      .in('creator_id', pending)
+      .order('created_at', { ascending: false })
+      .limit(PAGE_ROWS);
+
+    const rows = (data ?? []) as Array<Record<string, any>>;
+    for (const row of rows) {
+      const entry = out.get(row.creator_id);
+      if (!entry || entry.lastNewItemAt) continue;
+      if (entry.source !== null && row.source !== entry.source) continue;
+      const seen = iso(row.created_at);
+      if (seen) entry.lastNewItemAt = seen;
+    }
+    // Short page: every row this creator set has was in it, so whoever is still
+    // unanswered genuinely has nothing to answer with.
+    if (rows.length < PAGE_ROWS) return;
+    pending = pending.filter((id) => !out.get(id)?.lastNewItemAt);
+  }
+}
+
+/**
+ * Lifetime draft and published counts, paged for the same reason.
+ *
+ * Ordered on the primary key rather than left to chance: an unordered OFFSET may
+ * repeat one row and skip another, which for a pair of counters means a number
+ * that is wrong in both directions at once.
+ */
+async function foldDrafts(
+  supabase: SupabaseClient,
+  ids: string[],
+  out: Map<string, CreatorPollHealth>,
+): Promise<void> {
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_ROWS;
+    const { data } = await supabase
+      .from('creator_import_drafts')
+      .select('creator_id, published_meal_id')
+      .in('creator_id', ids)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_ROWS - 1);
+
+    const rows = (data ?? []) as Array<Record<string, any>>;
+    for (const row of rows) {
+      const entry = out.get(row.creator_id);
+      if (!entry) continue;
+      entry.draftedCount += 1;
+      if (row.published_meal_id) entry.publishedCount += 1;
+    }
+    if (rows.length < PAGE_ROWS) return;
+  }
 }
 
 /**
