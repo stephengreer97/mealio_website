@@ -119,11 +119,13 @@ CREATE TABLE IF NOT EXISTS creator_source_items (
   -- 'seen'      marked at first connect WITHOUT importing, so connecting a blog
   --             with 200 archived posts does not fire 200 extractions
   -- 'imported'  produced a draft or a published meal
-  -- 'rejected'  no meal came of it and no sync will try again on its own: the
-  --             gate said it is not a recipe, or it became a draft that a human
-  --             then declined (MEAL-99). `draft_id` tells the two apart. Never
-  --             retried automatically, never notified — but offered back in the
-  --             catalogue, because a decline is a mind that can change
+  -- 'rejected'  the gate read the page and said it is not a recipe
+  -- 'declined'  it became a draft and a person said no (MEAL-99). Its own value
+  --             rather than a `rejected` told apart by `draft_id`, which made a
+  --             foreign key carry a meaning the schema never mentioned
+  --             Neither is retried automatically or notified about, and both are
+  --             offered back in the catalogue: a gate can be wrong and a mind
+  --             can change
   -- 'failed'    extraction failed; retryable
   status        text NOT NULL DEFAULT 'seen',
   detail        text,
@@ -144,8 +146,14 @@ CREATE TABLE IF NOT EXISTS creator_source_items (
 --
 --   seen       Polling has met this post. Nothing was imported from it.
 --   imported   A draft was made, and may since have been published.
---   rejected   The gate read it and it is not a recipe. Permanent, because it
---              is an answer about the post rather than about our afternoon.
+--   rejected   The gate read it and it is not a recipe. A machine's reading of
+--              the page, made before any draft existed.
+--   declined   A draft was made and a person said no (MEAL-99). Distinct from
+--              `rejected` because they are different nos: one is a verdict about
+--              the page, the other a decision about the recipe, and only the
+--              second had a human behind it. Both are offered back — a mind can
+--              change and a gate can be wrong — but a creator reading their own
+--              list deserves to know which happened.
 --   failed     Something broke on our side. Worth trying again.
 --   skipped    Not attempted this run: already imported, or another run held it.
 --   withdrawn  Imported once, and the meal made from it has since been deleted
@@ -157,7 +165,7 @@ ALTER TABLE creator_source_items
   DROP CONSTRAINT IF EXISTS creator_source_items_status_check;
 ALTER TABLE creator_source_items
   ADD CONSTRAINT creator_source_items_status_check
-  CHECK (status IN ('seen', 'imported', 'rejected', 'failed', 'skipped', 'withdrawn'));
+  CHECK (status IN ('seen', 'imported', 'rejected', 'declined', 'failed', 'skipped', 'withdrawn'));
 
 -- No (creator_id, source) index: the UNIQUE above already builds a btree whose
 -- leading columns are exactly those, so the planner serves every such lookup

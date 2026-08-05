@@ -633,9 +633,19 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    * reading and a decline is a mind that can change, and the only way to act on
    * either used to be a DELETE in the SQL editor.
    */
-  const isRejected = (entry: CatalogEntry) => entry.record?.status === 'rejected';
-  /** Declined in review rather than refused by the gate — a draft existed. */
-  const wasDeclined = (entry: CatalogEntry) => isRejected(entry) && Boolean(entry.record?.draftId);
+  const isRejected = (entry: CatalogEntry) =>
+    entry.record?.status === 'rejected' || entry.record?.status === 'declined';
+  /**
+   * Declined in review rather than refused by the gate.
+   *
+   * Its own status. This used to be inferred from `draft_id` being set — a
+   * draft existed, so a person declined it; no draft, so the gate refused it
+   * before one was made. That was sound in every path, and it made a foreign
+   * key carry a meaning nothing in the schema mentioned: the next person to
+   * touch `draft_id` had to reconstruct the argument to know they could not
+   * clear it. A value that says `declined` needs no argument.
+   */
+  const wasDeclined = (entry: CatalogEntry) => entry.record?.status === 'declined';
   /**
    * Imported once, and the meal made from it has since been deleted.
    *

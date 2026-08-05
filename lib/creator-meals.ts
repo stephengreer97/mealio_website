@@ -336,7 +336,7 @@ export interface SourceItemKey {
 export async function releaseImportedItem(
   supabase: SupabaseClient,
   key: SourceItemKey,
-  next: { status: 'withdrawn' | 'rejected'; detail?: string },
+  next: { status: 'withdrawn' | 'rejected' | 'declined'; detail?: string },
   event: { name: EventType; detail: string },
 ): Promise<void> {
   const patch: Record<string, unknown> = { status: next.status, updated_at: new Date().toISOString() };
@@ -388,7 +388,7 @@ export async function releaseImportedItem(
  * sync stays away, a deliberate re-import is one click.
  *
  * The declined-draft half of the same problem is `cancelDraft`'s (MEAL-99),
- * which writes `rejected` through the same guarded update.
+ * which writes `declined` through the same guarded update.
  */
 export async function withdrawImportedItem(
   supabase: SupabaseClient,

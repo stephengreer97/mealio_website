@@ -816,7 +816,9 @@ describe('the back-catalogue checklist', () => {
     const declined = {
       ...entry(1),
       record: {
-        status: 'rejected',
+        // Its own status, rather than a `rejected` identified by having a draft
+        // behind it — that inference was sound but lived nowhere in the schema.
+        status: 'declined',
         detail: 'This was turned into a draft and then declined in review, so nothing was published.',
         at: null,
         firstSeenAt: null,

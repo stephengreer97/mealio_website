@@ -370,12 +370,13 @@ export interface CatalogEntry {
    * because the poller's retry sweep is bounded from the first meeting and leased
    * from the last one, and one timestamp cannot say both (MEAL-75).
    *
-   * `draftId` is what tells the two kinds of `rejected` apart, and they are
-   * different answers: a row with no draft behind it was refused by the gate
-   * without a human ever seeing it, and a row with one produced a draft that a
-   * person then declined (MEAL-99). Same status, because both mean "no meal came
-   * of this and no sync should try again on its own" — but a creator reading
-   * their own catalogue is owed the difference.
+   * `rejected` and `declined` are different answers and now different statuses:
+   * the gate refused the page without a human ever seeing it, or it produced a
+   * draft that a person then declined (MEAL-99). They behave the same — no meal
+   * came of either and no sync should try again on its own — but a creator
+   * reading their own catalogue is owed the difference, and it used to be
+   * inferred from whether `draftId` was set, which made a foreign key carry a
+   * meaning nothing in the schema mentioned.
    */
   record: {
     status: string;
