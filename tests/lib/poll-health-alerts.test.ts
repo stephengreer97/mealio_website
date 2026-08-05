@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { FakeSupabase } from '../helpers/supabase-mock';
+import { DEFAULT_PAGE_ROWS, FakeSupabase } from '../helpers/supabase-mock';
 import { runPollHealthAlerts } from '@/lib/poll-health-alerts';
 import { SILENT_AFTER_DAYS } from '@/lib/poll-health';
+import { DIGEST_ROWS } from '@/lib/email';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
@@ -57,9 +58,15 @@ function state(creatorId: string, extra: Record<string, any> = {}) {
   };
 }
 
-/** The last post polling saw for them. This is what silence is measured from. */
-function item(creatorId: string, seenDaysAgo: number) {
-  return { creator_id: creatorId, created_at: daysAgo(seenDaysAgo) };
+/**
+ * The last post polling saw for them. This is what silence is measured from.
+ *
+ * `source` is carried because the column exists and is NOT NULL: an item belongs
+ * to the source it came off, and a creator moved from one to another still has
+ * every one of the old source's posts in this table.
+ */
+function item(creatorId: string, seenDaysAgo: number, source = 'website') {
+  return { creator_id: creatorId, source, created_at: daysAgo(seenDaysAgo) };
 }
 
 function sweep() {
@@ -71,8 +78,8 @@ function digest() {
   return notifier.mock.calls[0]?.[0]?.sources ?? [];
 }
 
-function stored(creatorId: string) {
-  return db.rows('creator_source_state').find((row) => row.creator_id === creatorId);
+function stored(creatorId: string, source = 'website') {
+  return db.rows('creator_source_state').find((row) => row.creator_id === creatorId && row.source === source);
 }
 
 beforeEach(() => {
@@ -275,5 +282,229 @@ describe('the digest', () => {
     expect(digest().map((row: { creatorName: string }) => row.creatorName)).toEqual([
       'Chef mei', 'Chef luis', 'Chef sarah',
     ]);
+  });
+
+  /**
+   * The overflow line is a count, not a report.
+   *
+   * A digest lists `DIGEST_ROWS` cards and summarises the rest. Marking all of
+   * them as reported meant the summarised ones were never NAMED in any email —
+   * the mark suppresses every later sweep, and the only thing that would ever
+   * bring them back was recovering and breaking again. Worst on the first sweep
+   * after a deploy, which is exactly when the backlog is largest.
+   */
+  it('names the sources it defers instead of burying them, on the next day', async () => {
+    // Silent for longer the higher the number, so `pollConcern` orders them
+    // predictably and "the tail of the list" is a set this test can name.
+    const many = Array.from({ length: DIGEST_ROWS + 5 }, (_, i) => `c${String(i).padStart(2, '0')}`);
+    db.seed('creators', many.map((id) => creator(id)));
+    db.seed('creator_source_state', many.map((id) => state(id)));
+    db.seed('creator_source_items', many.map((id, i) => item(id, SILENT_AFTER_DAYS + 10 + i)));
+
+    const first = await sweep();
+
+    // Every one of them is in the email — the count and the subject are honest.
+    expect(digest()).toHaveLength(DIGEST_ROWS + 5);
+    // But only the ones with a card of their own are recorded as reported.
+    expect(first).toMatchObject({ unhealthy: DIGEST_ROWS + 5, alerted: DIGEST_ROWS, deferred: 5, emailsSent: 1 });
+    const marked = many.filter((id) => stored(id)?.health_alerted_status === 'silent');
+    expect(marked).toHaveLength(DIGEST_ROWS);
+
+    const second = await sweep();
+
+    // The five nobody was told about by name are the whole of the next digest,
+    // rather than sources that are unhealthy forever and never mentioned again.
+    expect(second).toMatchObject({ alerted: 5, deferred: 0, emailsSent: 1 });
+    const namedNow = notifier.mock.calls[1][0].sources.map((row: { creatorName: string }) => row.creatorName);
+    expect(namedNow).toHaveLength(5);
+    expect(new Set(namedNow)).toEqual(new Set(many.slice(0, 5).map((id) => `Chef ${id}`)));
+  });
+});
+
+/**
+ * The read that judges everybody at once, at a size where PostgREST truncates.
+ *
+ * `creator_source_items` is append-only, so an unordered select comes back
+ * oldest-first and the 1000-row page ceiling cuts the newest rows — the only
+ * ones `lastNewItemAt` is asking about — with no error and nothing saying the
+ * answer was short. The failure mode is not a missing alert, it is the loudest
+ * possible false one: every creator reads as having last produced something
+ * months ago, so every creator is `silent`, all of them are emailed about at
+ * once, and all of them are marked so the wrong verdict sticks.
+ */
+describe('at a scale where one page is not the whole table', () => {
+  const CREATORS = 100;
+  const OLD_PER_CREATOR = 10;
+  const RECENT_PER_CREATOR = 2;
+  const ids = Array.from({ length: CREATORS }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+
+  it('does not call a hundred creators who posted yesterday silent', async () => {
+    db.seed('creators', ids.map((id) => creator(id)));
+    db.seed('creator_source_state', ids.map((id) => state(id)));
+
+    // Seeded in the order an append-only table holds them: oldest first, all
+    // creators interleaved. The ten old rows each come to exactly one page, so
+    // an unordered read returns those and nothing else — and the two rows per
+    // creator that say they posted this week are precisely what falls off.
+    const rows: Array<Record<string, any>> = [];
+    for (let age = 200; age > 200 - OLD_PER_CREATOR; age--) {
+      for (const id of ids) rows.push(item(id, age));
+    }
+    for (const age of [2, 1]) {
+      for (const id of ids) rows.push(item(id, age));
+    }
+    expect(rows).toHaveLength(CREATORS * (OLD_PER_CREATOR + RECENT_PER_CREATOR));
+    expect(CREATORS * OLD_PER_CREATOR).toBe(DEFAULT_PAGE_ROWS);
+    db.seed('creator_source_items', rows);
+
+    const pass = await sweep();
+
+    // All hundred are looked at, and not one of them is a problem.
+    expect(pass).toMatchObject({ examined: CREATORS, unhealthy: 0, alerted: 0, emailsSent: 0 });
+    expect(notifier).not.toHaveBeenCalled();
+    // And nothing was written, so tomorrow is not suppressed by today's mistake.
+    expect(db.rows('creator_source_state').some((row) => row.health_alerted_status !== null)).toBe(false);
+  });
+
+  it('examines every eligible creator, not the first arbitrary five hundred', async () => {
+    // The sweep used to read creators with a bare `.limit(500)`: past that,
+    // an unstable arbitrary five hundred were judged and the rest were never
+    // alerted on, with nothing anywhere saying a limit had been reached.
+    const many = Array.from({ length: 600 }, (_, i) => `c${String(i).padStart(3, '0')}`);
+    db.seed('creators', many.map((id) => creator(id)));
+    db.seed('creator_source_state', many.map((id) => state(id)));
+    db.seed('creator_source_items', many.map((id) => item(id, 90)));
+
+    const pass = await sweep();
+
+    expect(pass.examined).toBe(600);
+    expect(pass.unhealthy).toBe(600);
+  });
+});
+
+/**
+ * One creator, two `creator_source_state` rows.
+ *
+ * The primary key is `(creator_id, source)` and the admin PATCH that moves a
+ * creator from their blog to their channel never deletes the row it moved them
+ * off. Folding every row for a creator into one entry means last-row-wins in an
+ * order PostgREST does not define — so the source that is actually polled is
+ * never judged, the email names the wrong platform, and the mark that suppresses
+ * tomorrow's repeat lands on a row nothing reads.
+ */
+describe('a creator whose source was changed', () => {
+  beforeEach(() => {
+    db.seed('creators', [creator('maya', { primary_source: 'youtube' })]);
+    db.seed('creator_source_state', [
+      // The leftover. Its numbers are stale and healthy-looking, and it is first
+      // in every order a database might hand these back in.
+      state('maya', { source: 'website' }),
+      state('maya', { source: 'youtube' }),
+    ]);
+    db.seed('creator_source_items', [
+      item('maya', 1, 'website'),
+      item('maya', 90, 'youtube'),
+    ]);
+  });
+
+  it('judges the source the creator is actually polled on', async () => {
+    const pass = await sweep();
+
+    expect(pass).toMatchObject({ examined: 1, unhealthy: 1, alerted: 1, emailsSent: 1 });
+    // The live source, by name, and its own silence — not the blog's recent post.
+    expect(digest()).toHaveLength(1);
+    expect(digest()[0]).toMatchObject({ sourceLabel: 'YouTube', status: 'silent', quietDays: 90 });
+  });
+
+  it('marks the row it judged, not the one it did not', async () => {
+    await sweep();
+
+    expect(stored('maya', 'youtube')?.health_alerted_status).toBe('silent');
+    // A mark on the leftover would suppress nothing and confuse the next reader.
+    expect(stored('maya', 'website')?.health_alerted_status).toBeNull();
+
+    // And the suppression works, which it cannot if the mark is on the wrong row.
+    const second = await sweep();
+    expect(second).toMatchObject({ suppressed: 1, alerted: 0, emailsSent: 0 });
+  });
+});
+
+/**
+ * Hysteresis: one unfixed source is one conversation, not one a day.
+ *
+ * Both sequences below are a single source nobody has touched, and under a plain
+ * "has the word changed?" test both produced a fresh email every time the word
+ * moved. An operator who is mailed daily about something they already know about
+ * filters the alert to a folder, and from then on it is worse than not having
+ * one, because everybody believes it is working.
+ */
+describe('a source that flaps', () => {
+  function setState(creatorId: string, values: Record<string, any>) {
+    Object.assign(stored(creatorId)!, values);
+  }
+
+  it('does not treat a dip to a failure or two as the source coming back', async () => {
+    db.seed('creators', [creator('sarah')]);
+    db.seed('creator_source_state', [state('sarah', { consecutive_failures: 6, last_failed_at: daysAgo(1) })]);
+    db.seed('creator_source_items', [item('sarah', 2)]);
+
+    await sweep();
+    expect(stored('sarah')?.health_alerted_status).toBe('failing');
+
+    // The backoff does its job for a day and the count falls back to `wobbling`.
+    // That is weather, not a fix — and it used to clear the mark, which re-armed
+    // the alert for the very next poll that failed.
+    setState('sarah', { consecutive_failures: 1 });
+    const dip = await sweep();
+    expect(dip).toMatchObject({ recovered: 0, emailsSent: 0 });
+    expect(stored('sarah')?.health_alerted_status).toBe('failing');
+
+    // Back to failing, same unfixed source, same day-old news.
+    setState('sarah', { consecutive_failures: 6 });
+    const again = await sweep();
+    expect(again).toMatchObject({ suppressed: 1, alerted: 0, emailsSent: 0 });
+    expect(notifier).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the escalation once and does not say it again when it drops back', async () => {
+    // A chronically silent source that errors intermittently: the count crosses
+    // three and resets, so the status flips silent → failing → silent → failing.
+    // Five days of one dead blog used to be five emails.
+    db.seed('creators', [creator('sarah')]);
+    db.seed('creator_source_state', [state('sarah')]);
+    db.seed('creator_source_items', [item('sarah', 120)]);
+
+    await sweep();
+    expect(stored('sarah')?.health_alerted_status).toBe('silent');
+
+    // Worth saying out loud once: a quiet source that has started erroring is a
+    // different problem with a different fix.
+    setState('sarah', { consecutive_failures: 4, last_failed_at: daysAgo(0) });
+    const escalation = await sweep();
+    expect(escalation).toMatchObject({ alerted: 1, emailsSent: 1 });
+    expect(stored('sarah')?.health_alerted_status).toBe('failing');
+
+    // And then nothing more, either way it flips.
+    setState('sarah', { consecutive_failures: 0 });
+    expect(await sweep()).toMatchObject({ suppressed: 1, alerted: 0, emailsSent: 0 });
+    setState('sarah', { consecutive_failures: 5 });
+    expect(await sweep()).toMatchObject({ suppressed: 1, alerted: 0, emailsSent: 0 });
+
+    // Two emails about two genuinely different things, over four days.
+    expect(notifier).toHaveBeenCalledTimes(2);
+    // The mark stays at the worse of the two, so the drop back cannot re-arm it.
+    expect(stored('sarah')?.health_alerted_status).toBe('failing');
+  });
+
+  it('still re-arms when the source is genuinely polling and producing again', async () => {
+    db.seed('creators', [creator('sarah')]);
+    db.seed('creator_source_state', [state('sarah', { health_alerted_status: 'failing', consecutive_failures: 6 })]);
+    db.seed('creator_source_items', [item('sarah', 1)]);
+
+    setState('sarah', { consecutive_failures: 0 });
+    const pass = await sweep();
+
+    expect(pass).toMatchObject({ recovered: 1, emailsSent: 0 });
+    expect(stored('sarah')?.health_alerted_status).toBeNull();
   });
 });

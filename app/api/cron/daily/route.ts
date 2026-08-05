@@ -63,6 +63,7 @@ export async function GET(request: NextRequest) {
     tokensBroken: 0,
     tokensDeferred: 0,
     pollHealthAlerted: 0,
+    pollHealthDeferred: 0,
     pollHealthRecovered: 0,
   };
 
@@ -122,6 +123,11 @@ export async function GET(request: NextRequest) {
   try {
     const sweep = await runPollHealthAlerts({ supabase: createServerSupabaseClient() });
     results.pollHealthAlerted = sweep.alerted;
+    // Transitions the digest could only fit as a count. They are deliberately
+    // left unmarked so tomorrow names them, which means a run of non-zero days
+    // here is a backlog draining rather than anything going wrong — and a number
+    // that never falls is the one to look at.
+    results.pollHealthDeferred = sweep.deferred;
     // Reported beside it because the pair is the story: recoveries are what
     // re-arm the alert, and a day with recoveries and no alerts is sources
     // getting fixed rather than a sweep that did nothing.

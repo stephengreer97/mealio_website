@@ -1,6 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  POLL_HEALTH_LIMIT,
   pollConcern,
   pollHealthByCreator,
   pollStatus,
@@ -8,7 +7,7 @@ import {
   type PollStatusKind,
 } from '@/lib/poll-health';
 import { isPlatformSource, SOURCE_LABELS } from '@/lib/creator-sources';
-import { adminNotifyEmails, sendPollHealthAlertEmail, type UnhealthySourceLine } from '@/lib/email';
+import { adminNotifyEmails, DIGEST_ROWS, sendPollHealthAlertEmail, type UnhealthySourceLine } from '@/lib/email';
 import { daysSince } from '@/lib/relative-time';
 import { log } from '@/lib/logger';
 
@@ -49,6 +48,38 @@ export function isAlerting(kind: PollStatusKind): kind is AlertingStatus {
 }
 
 /**
+ * How bad each alerting status is, and the whole of the hysteresis.
+ *
+ * **Only an escalation earns a second email, and only `ok` re-arms.** Both
+ * halves are needed, and each fixes a way the plain "did the word change?" test
+ * spammed an operator about one unfixed source:
+ *
+ *  - A chronically silent source that errors now and then flips between `silent`
+ *    and `failing` as its consecutive-failure count crosses three and resets.
+ *    Every flip was a changed word, so five days of one dead blog was five
+ *    emails. Ranking them means the escalation `silent` → `failing` is still
+ *    said out loud once — it is a genuinely different problem with a different
+ *    fix — while the drop back to `silent` is not, because the operator already
+ *    knows and the mark stays at the worse of the two.
+ *  - `failing` → `wobbling` → `failing` did the same thing through the recovery
+ *    branch: `wobbling` is not an alerting status, so it cleared the mark and
+ *    re-armed the alert, and the next poll that failed raised it again. A
+ *    failure or two is exactly what the poller's backoff is for — it is not the
+ *    source coming back. Only `ok` is the source coming back.
+ *
+ * The cost is real and is the right way round: a source that recovers to
+ * `wobbling` and stays there is never re-armed until it reaches `ok`. That
+ * suppresses an email about a source an operator has already been told about.
+ * The alternative suppresses nothing and gets filtered to a folder, at which
+ * point every alert is suppressed and everyone believes otherwise.
+ */
+const SEVERITY: Record<AlertingStatus, number> = { silent: 1, failing: 2 };
+
+function severityOf(status: string | null): number {
+  return status !== null && isAlerting(status as PollStatusKind) ? SEVERITY[status as AlertingStatus] : 0;
+}
+
+/**
  * How many creators one sweep reads health for at a time.
  *
  * The same ceiling `loadStates` chunks against, for the same reason: an `.in()`
@@ -60,12 +91,31 @@ export function isAlerting(kind: PollStatusKind): kind is AlertingStatus {
  */
 const HEALTH_CHUNK = 100;
 
+/**
+ * How the eligible creators are read: a page at a time, all of them.
+ *
+ * This used to be one `.limit(500)` with no `.order()`, which is two bugs
+ * wearing one coat. Past 500 eligible creators the rest were never judged and
+ * never alerted on — silently, since nothing anywhere says a limit was reached —
+ * and *which* 500 was down to whatever order PostgREST felt like, so the set
+ * being watched could differ from one morning to the next. Ordered on the
+ * primary key and paged to exhaustion instead: everybody, and the same
+ * everybody twice.
+ */
+const CREATOR_PAGE = 500;
+const MAX_CREATOR_PAGES = 20;
+
 /** One creator's source, as the sweep decided about it. */
 interface Judged {
   creatorId: string;
   creatorName: string;
   handle: string | null;
-  /** `creator_source_state.source` — the row key, not the creator's preference. */
+  /**
+   * The source this creator is polled on, and the `creator_source_state` row
+   * key it shares. The same value on both sides is the point: it is what the
+   * email names and what `mark` writes to, and a creator with a leftover row
+   * from a source they were moved off has two candidates for it.
+   */
   source: string;
   status: PollStatusKind;
   /** What we last emailed about this source, or null if nothing. */
@@ -87,10 +137,17 @@ export interface PollHealthAlertPass {
   examined: number;
   /** How many of them are `failing` or `silent` right now. */
   unhealthy: number;
-  /** Of those, the ones that had changed and were emailed about. */
+  /** Of those, the ones the email NAMED and that are now recorded as reported. */
   alerted: number;
-  /** And the ones already reported, deliberately left alone. */
+  /**
+   * And the ones already reported at this severity or worse, left alone.
+   */
   suppressed: number;
+  /**
+   * Transitions past `DIGEST_ROWS`: named as a count in today's email and left
+   * unmarked, so tomorrow's names them properly. Normally 0.
+   */
+  deferred: number;
   /** Sources that came back and had their alert re-armed. */
   recovered: number;
   /** 0 or 1 — the digest, if there was anything to put in it. */
@@ -114,7 +171,7 @@ export async function runPollHealthAlerts(deps: PollHealthAlertDeps): Promise<Po
   const atIso = new Date(at).toISOString();
 
   const result: PollHealthAlertPass = {
-    examined: 0, unhealthy: 0, alerted: 0, suppressed: 0, recovered: 0, emailsSent: 0,
+    examined: 0, unhealthy: 0, alerted: 0, suppressed: 0, deferred: 0, recovered: 0, emailsSent: 0,
   };
 
   // The same population the Sources tab reads, narrowed by the same two switches
@@ -122,22 +179,34 @@ export async function runPollHealthAlerts(deps: PollHealthAlertDeps): Promise<Po
   // will go silent by construction — that is the pause working, not a source
   // that broke — and alerting on it would mean every deliberate pause produces a
   // false alarm a month later.
-  const { data: creatorRows } = await deps.supabase
-    .from('creators')
-    .select('id, display_name, handle')
-    .eq('import_opt_in', true)
-    .neq('primary_source', 'none')
-    .limit(POLL_HEALTH_LIMIT);
-
-  const creators = (creatorRows ?? []) as Array<Record<string, any>>;
+  const creators: Array<Record<string, any>> = [];
+  for (let page = 0; page < MAX_CREATOR_PAGES; page++) {
+    const from = page * CREATOR_PAGE;
+    const { data } = await deps.supabase
+      .from('creators')
+      .select('id, display_name, handle, primary_source')
+      .eq('import_opt_in', true)
+      .neq('primary_source', 'none')
+      .order('id', { ascending: true })
+      .range(from, from + CREATOR_PAGE - 1);
+    const rows = (data ?? []) as Array<Record<string, any>>;
+    creators.push(...rows);
+    if (rows.length < CREATOR_PAGE) break;
+  }
   if (creators.length === 0) return result;
 
   const judged: Judged[] = [];
   for (let from = 0; from < creators.length; from += HEALTH_CHUNK) {
     const chunk = creators.slice(from, from + HEALTH_CHUNK);
     const ids = chunk.map((row) => row.id as string);
+    // Which source each creator is actually polled on. Without it, a creator
+    // moved from their blog to their channel is judged on whichever of the two
+    // leftover `creator_source_state` rows came back last — so the live source
+    // is never looked at, the email names the wrong platform, and the mark that
+    // suppresses tomorrow's repeat lands on a row nothing reads.
+    const primarySource = new Map(chunk.map((row) => [row.id as string, (row.primary_source ?? null) as string | null]));
     const [health, alerted] = await Promise.all([
-      pollHealthByCreator(deps.supabase, ids),
+      pollHealthByCreator(deps.supabase, ids, primarySource),
       lastAlerted(deps.supabase, ids),
     ]);
 
@@ -163,31 +232,48 @@ export async function runPollHealthAlerts(deps: PollHealthAlertDeps): Promise<Po
   /**
    * The transition, which is the whole design.
    *
-   * A source is emailed about when it is unhealthy AND that is not what we last
-   * said about it. Comparing the stored *status* rather than a flag is what
-   * makes `silent` → `failing` a second email: a source that was quietly
+   * A source is emailed about when it is unhealthy AND that is WORSE than what
+   * we last said about it. Comparing the stored *status* rather than a flag is
+   * what makes `silent` → `failing` a second email: a source that was quietly
    * producing nothing and has now started erroring is a different problem with a
    * different fix, and an operator who was told about the first one has not been
-   * told about this.
+   * told about this. Comparing them by SEVERITY rather than by equality is what
+   * stops the same fact bouncing back the other way from being a third — see
+   * `SEVERITY`.
    */
   const transitions: Judged[] = [];
   const recovered: Judged[] = [];
   for (const entry of judged) {
     if (isAlerting(entry.status)) {
       result.unhealthy += 1;
-      if (entry.alerted === entry.status) result.suppressed += 1;
-      else transitions.push(entry);
+      if (severityOf(entry.status) > severityOf(entry.alerted)) transitions.push(entry);
+      else result.suppressed += 1;
       continue;
     }
-    // Back to healthy. Clearing the mark is what re-arms the alert, so a source
-    // that breaks, gets fixed and breaks again raises the second alarm too.
-    if (entry.alerted !== null) recovered.push(entry);
+    // Back to healthy, and `ok` is the only thing that means. Clearing the mark
+    // is what re-arms the alert, so a source that breaks, gets fixed and breaks
+    // again raises the second alarm too — while a source that merely drops to
+    // `wobbling` on its way through has not been fixed and must not re-arm it.
+    if (entry.status === 'ok' && entry.alerted !== null) recovered.push(entry);
   }
 
   // Worst first, by the same score that orders the Sources tab — so the digest
   // and the screen an operator opens from it agree about what to look at, and so
   // the sources past `DIGEST_ROWS` are the least urgent ones.
   transitions.sort((a, b) => pollConcern(b.health, at) - pollConcern(a.health, at));
+
+  /**
+   * Only the sources the email actually NAMES are marked as reported.
+   *
+   * The digest lists `DIGEST_ROWS` cards and summarises the rest as "…and N
+   * more". Marking all of them meant those N were never named in any email at
+   * all — the mark says an operator has been told, so every later sweep
+   * suppressed them, and the only thing that would ever bring them back was
+   * recovering and breaking again. Worst on the first sweep after a deploy,
+   * which is when the backlog is largest and the sources most in need of
+   * naming. Left unmarked they are the whole of tomorrow's digest instead.
+   */
+  const named = transitions.slice(0, DIGEST_ROWS);
 
   if (transitions.length > 0) {
     const adminEmails = await recipients(deps.supabase);
@@ -205,7 +291,11 @@ export async function runPollHealthAlerts(deps: PollHealthAlertDeps): Promise<Po
         // refused it quietly. Marking first would suppress tomorrow's retry on
         // the strength of an email nobody received, and since the mark is only
         // cleared by a recovery, that source would never be raised again.
-        result.alerted = await mark(deps.supabase, transitions, atIso);
+        result.alerted = await mark(deps.supabase, named, atIso);
+        // Counted only on a send that happened. If nothing went out nothing was
+        // deferred either — the whole set is re-raised tomorrow, not just the
+        // tail of it.
+        result.deferred = transitions.length - named.length;
       } catch (err) {
         // Not thrown: the other creators in this sweep, and the rest of the
         // daily cron, are not this send's problem. Nothing was marked, so the

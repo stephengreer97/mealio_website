@@ -114,11 +114,15 @@ describe('/api/admin/creators', () => {
         last_error: 'Not Found', last_status: 404,
       },
     ]);
+    // `source` is on every row because the column is NOT NULL and poll health
+    // now reads it: an item belongs to the source it came off, and only the
+    // source a creator is currently polled on says whether that source is still
+    // producing.
     fakeDb.seed('creator_source_items', [
-      { creator_id: 'c1', created_at: '2026-06-01T00:00:00.000Z' },
-      { creator_id: 'c1', created_at: '2026-07-02T00:00:00.000Z' },
+      { creator_id: 'c1', source: 'website', created_at: '2026-06-01T00:00:00.000Z' },
+      { creator_id: 'c1', source: 'website', created_at: '2026-07-02T00:00:00.000Z' },
       // Another creator's post, which must not be counted as c1's.
-      { creator_id: 'c2', created_at: '2026-08-01T00:00:00.000Z' },
+      { creator_id: 'c2', source: 'website', created_at: '2026-08-01T00:00:00.000Z' },
     ]);
     fakeDb.seed('creator_import_drafts', [
       { creator_id: 'c1', published_meal_id: 'm1' },

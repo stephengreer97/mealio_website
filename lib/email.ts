@@ -307,16 +307,22 @@ const DIGEST_ERROR_CHARS = 240;
  * discovered by the creator asking. This is the same judgement — `pollStatus`,
  * not a second definition of unhealthy — arriving without being asked for.
  *
- * **A digest, and only of transitions.** The sweep sends this at most once a day
- * and only about sources that have *changed* into `failing` or `silent` since it
- * last said so; a standing problem is not re-sent. An operator who gets the same
- * message every morning stops reading it, at which point the alert is worse than
- * nothing because everyone believes it is working.
+ * **A digest, and only of escalations.** The sweep sends this at most once a day
+ * and only about sources that have got *worse* than what it last said about
+ * them; a standing problem is not re-sent, and neither is one that has bounced
+ * back to a milder complaint. An operator who gets the same message every
+ * morning stops reading it, at which point the alert is worse than nothing
+ * because everyone believes it is working.
  *
  * `silent` is the reason this exists. A failing source at least shows up as
- * failures on the screen; a source that polls cleanly and yields nothing reads
- * as healthy on every other column, so the digest leads with how long it has
- * been quiet rather than with a status word.
+ * failures on the screen; a source that is producing nothing can be polling on
+ * schedule with no failures at all, and then every column on the Sources tab but
+ * one reads as healthy — so the digest leads with how long it has been quiet
+ * rather than with a status word.
+ *
+ * Only the sources this NAMES are recorded as reported. The overflow line is a
+ * count, not a report, and the sweep leaves those sources unmarked so the next
+ * digest names them properly rather than suppressing them forever.
  *
  * The mail is the prompt, not the record — `creator_source_state` holds the
  * status and the timestamps, and still answers "what happened to this source?"
@@ -391,15 +397,17 @@ export async function sendPollHealthAlertEmail(opts: {
         <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">${opts.sources.length === 1 ? 'A creator source has gone unhealthy' : `${opts.sources.length} creator sources have gone unhealthy`}</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
-          These changed since the last check. A source that is <strong>producing nothing</strong> is still polling
-          cleanly — no failures, next poll scheduled — so nothing else on the Sources tab would have said so.
+          These got worse since the last check. A source that is <strong>producing nothing</strong> may still be
+          polling on schedule with nothing worse than the odd failure to show for itself, so on the Sources tab
+          the only column that gives it away is when it last produced a post.
         </p>
         ${cards}
-        ${overflow > 0 ? `<p style="color: #666; font-size: 13px; margin: 0 0 20px;">…and ${overflow} more. The Sources tab lists every creator, least healthy first.</p>` : ''}
+        ${overflow > 0 ? `<p style="color: #666; font-size: 13px; margin: 0 0 20px;">…and ${overflow} more, the least urgent by the same order as above. They have not been recorded as reported, so the next digest names them. The Sources tab lists every creator, least healthy first.</p>` : ''}
         <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Open the Sources tab</a>
         <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 20px 0 0;">
-          You get this once per source, when it changes. Nothing further is sent while it stays this way, and the
-          next change back to healthy re-arms it.
+          You get at most two of these per source: one when it first goes unhealthy, and one more if a quiet
+          source starts erroring outright. Nothing further is sent while it stays that way — only a source that
+          is polling and producing again re-arms the alert.
         </p>
       </div>
     `,
