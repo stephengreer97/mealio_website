@@ -166,6 +166,46 @@ export async function refreshKrogerAccessToken(
   };
 }
 
+export type KrogerProduct = {
+  upc: string;
+  description: string;
+  size: string | null;
+  averageWeightPerUnit: string | null;
+  imageUrl: string | null;
+  stockLevel: string | null;
+  price: number | null;
+  soldBy: string | null;
+};
+
+/**
+ * MEAL-19. This used to be a bare array, so `[]` was the answer to five
+ * different questions: Kroger listed nothing, the grant expired (401), we blew
+ * the daily product quota (429), Kroger was down (5xx), and — after the
+ * fulfillment filter below — this store cannot fulfil anything it listed. The
+ * UI rendered all five as "No products found for this search", which is the
+ * one explanation that had already been ruled out, and nothing was logged, so
+ * the failure was undiagnosable from production.
+ *
+ * `ok: false` therefore carries the upstream status, and `filteredOut` counts
+ * products Kroger *did* return for this term that this store cannot fulfil —
+ * the difference between "no such product" and "not at your store".
+ *
+ * `unfulfillable` carries the *descriptions* of the dropped products, not just
+ * how many there were. A count cannot support the claim the UI makes from it
+ * ("Kroger sells this, but not at the store you picked"), because Kroger's
+ * `filter.term` is a loose match: searching "Ghost Pepper Jelly" returns "Ghost
+ * Pepper Hot Sauce", and a bare integer cannot tell that apart from the jelly.
+ * The caller re-scores these against the ingredient before claiming anything.
+ *
+ * `unfulfillable.length` is deliberately NOT `filteredOut`. A product whose
+ * items carry no `fulfillment` block at all is counted in `filteredOut` (we
+ * dropped it) but never listed in `unfulfillable` (Kroger did not say this
+ * store cannot fulfil it — Kroger said nothing). Absent data is not evidence.
+ */
+export type KrogerSearchOutcome =
+  | { ok: true; products: KrogerProduct[]; filteredOut: number; unfulfillable: string[] }
+  | { ok: false; status: number; detail: string };
+
 /** Fetch up to `limit` products from Kroger for a search term. */
 export async function krogerSearchProducts(
   userAccessToken: string,
@@ -174,7 +214,7 @@ export async function krogerSearchProducts(
   limit = 5,
   _retry = 0,
   debug = false
-): Promise<Array<{ upc: string; description: string; size: string | null; averageWeightPerUnit: string | null; imageUrl: string | null; stockLevel: string | null; price: number | null; soldBy: string | null }>> {
+): Promise<KrogerSearchOutcome> {
   const truncatedTerm = term
     .replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '')  // strip weight suffix e.g. ", avg 5.1 lbs"
     .replace(/[™®©]/g, '')   // strip trademark symbols — Kroger counts each as a word
@@ -192,7 +232,10 @@ export async function krogerSearchProducts(
     headers: { Authorization: `Bearer ${userAccessToken}`, Accept: 'application/json' },
     cache: 'no-store',
   });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    return { ok: false, status: res.status, detail: detail.slice(0, 300) };
+  }
   const data = await res.json();
   if (debug) console.log('[Kroger:raw] term=%s response=%s', truncatedTerm, JSON.stringify(data, null, 2));
   const products: any[] = data.data ?? [];
@@ -203,13 +246,24 @@ export async function krogerSearchProducts(
     return krogerSearchProducts(userAccessToken, term, locationId, limit, 1, debug);
   }
 
-  return products
-    .filter(p => {
-      const f = p.items?.[0]?.fulfillment;
-      if (!f) return false;
-      return f.inStore || f.delivery || f.curbside;
-    })
-    .map(p => {
+  // Descriptions of products Kroger returned and explicitly marked as not
+  // pickable, deliverable or shelvable here. Products missing the fulfillment
+  // block are still dropped, but stay out of this list — see the type comment:
+  // "we don't know" must not be laundered into "your store doesn't have it".
+  const unfulfillable: string[] = [];
+  const fulfillable = products.filter(p => {
+    const f = p.items?.[0]?.fulfillment;
+    if (!f) return false;
+    if (f.inStore || f.delivery || f.curbside) return true;
+    unfulfillable.push(String(p.description ?? term));
+    return false;
+  });
+
+  return {
+    ok: true,
+    filteredOut: products.length - fulfillable.length,
+    unfulfillable,
+    products: fulfillable.map(p => {
       const images: any[] = p.images ?? [];
       const featured = images.find((img: any) => img.featured) ?? images[0];
       const imageUrl: string | null = featured?.sizes?.find((s: any) => s.size === 'medium')?.url ?? null;
@@ -220,7 +274,8 @@ export async function krogerSearchProducts(
       const size: string | null = p.items?.[0]?.size ?? null;
       const averageWeightPerUnit: string | null = p.itemInformation?.averageWeightPerUnit ?? null;
       return { upc: p.upc ?? p.productId, description: p.description ?? term, size, averageWeightPerUnit, imageUrl, stockLevel, price, soldBy };
-    });
+    }),
+  };
 }
 
 /** Search for a product at a given Kroger store. Returns the UPC, description, and exact flag or null. */
@@ -229,9 +284,9 @@ export async function krogerSearchProduct(
   term: string,
   locationId: string
 ): Promise<{ upc: string; description: string; exact: boolean } | null> {
-  const results = await krogerSearchProducts(userAccessToken, term, locationId, 1);
-  if (results.length === 0) return null;
-  const { upc, description } = results[0];
+  const outcome = await krogerSearchProducts(userAccessToken, term, locationId, 1);
+  if (!outcome.ok || outcome.products.length === 0) return null;
+  const { upc, description } = outcome.products[0];
   return { upc, description, exact: scoreProductMatch(term, description) === 100 };
 }
 

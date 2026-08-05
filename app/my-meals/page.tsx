@@ -174,7 +174,7 @@ interface KrogerSearchResult {
   upc: string | null;
   description: string | null;
   exact: boolean;
-  reason?: 'matched' | 'out_of_stock' | 'no_results' | 'low_confidence';
+  reason?: 'matched' | 'out_of_stock' | 'unavailable_at_store' | 'search_error' | 'no_results' | 'low_confidence';
   suggestions: Array<{ upc: string; description: string; imageUrl: string | null; stockLevel: string | null; price: number | null; size?: string | null; soldBy?: string | null; averageWeightPerUnit?: string | null }>;
   mealIds: string[];
   mealIngredients: MealIngredientQty[];
@@ -1846,6 +1846,7 @@ function KrogerCartFlow({
   // Suggestions produced by a custom search (replaces currentReview.suggestions in-place)
   const [customSuggestions, setCustomSuggestions] = useState<KrogerSearchResult['suggestions']>([]);
   const [customSearchTerm, setCustomSearchTerm] = useState('');
+  const [customSearchError, setCustomSearchError] = useState('');
   const shouldShowSuggestionsRef = useRef(false);
 
   // Per-review-item meal quantities: reviewIdx → mealId → qty
@@ -1874,6 +1875,7 @@ function KrogerCartFlow({
     setCustomText('');
     setCustomSuggestions([]);
     setCustomSearchTerm('');
+    setCustomSearchError('');
   }, [reviewIdx]);
 
   const handleStartSearch = async () => {
@@ -1925,6 +1927,16 @@ function KrogerCartFlow({
           body: JSON.stringify({ ingredients: [{ productName: term, quantity: 1 }], locationId }),
         });
         const data = await res.json();
+        // MEAL-19: this used to read `data.results` unconditionally, so a 403,
+        // 429 or 502 landed as an empty suggestion list with no error at all —
+        // the API failing looked exactly like the store not carrying it.
+        if (!res.ok) {
+          setCustomSearchError(data.error || 'Kroger search failed. Try again in a moment.');
+          setCustomText('');
+          shouldShowSuggestionsRef.current = true;  // stay on this item; the user has not chosen yet
+          return null;
+        }
+        setCustomSearchError('');
         const result = data.results?.[0];
         // Always show suggestions for custom searches — the user typed this term
         // to review options, so never silently add even if the score is exact.
@@ -2158,18 +2170,32 @@ function KrogerCartFlow({
             ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
             : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
           const isProcessing = customSearching;
+          // Every line below reports the outcome of the *automatic* search for
+          // this ingredient. Once a custom re-search has produced products,
+          // that outcome is history: "Kroger sells this, but not at the store
+          // you picked" was rendering directly above products this store can
+          // fulfil, and "No products found for this search" above a list of
+          // them. A failed re-search has its own message next to the input, so
+          // suppress these there too rather than stacking two errors.
+          const showAutoSearchNotice = customSuggestions.length === 0 && !customSearchError;
 
           return (
             <>
               <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
                 {/* What was searched */}
-                {currentReview.reason === 'out_of_stock' && (
+                {showAutoSearchNotice && currentReview.reason === 'out_of_stock' && (
                   <p className="text-xs font-medium" style={{ color: '#b45309' }}>⚠ Out of stock at this store</p>
                 )}
-                {currentReview.reason === 'no_results' && (
+                {showAutoSearchNotice && currentReview.reason === 'unavailable_at_store' && (
+                  <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} sells this, but not at the store you picked — try another store or search for something else</p>
+                )}
+                {showAutoSearchNotice && currentReview.reason === 'search_error' && (
+                  <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item — this isn&apos;t a sign the product is missing. Try again in a moment.</p>
+                )}
+                {showAutoSearchNotice && currentReview.reason === 'no_results' && (
                   <p className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>No products found for this search</p>
                 )}
-                {(!currentReview.reason || currentReview.reason === 'low_confidence') && (
+                {showAutoSearchNotice && (!currentReview.reason || currentReview.reason === 'low_confidence') && (
                   <p className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>No exact match found</p>
                 )}
                 <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -2184,6 +2210,9 @@ function KrogerCartFlow({
                   })}
                   {customSearchTerm && (
                     <p className="text-xs mt-1" style={{ color: storeColor }}>Showing results for: "{customSearchTerm}"</p>
+                  )}
+                  {customSearchError && (
+                    <p className="text-xs mt-1" style={{ color: '#b45309' }}>{customSearchError}</p>
                   )}
                 </div>
 
@@ -2431,6 +2460,7 @@ function ChooseProductsFlow({
   const [customText, setCustomText] = useState('');
   const [customSuggestions, setCustomSuggestions] = useState<KrogerSearchResult['suggestions']>([]);
   const [customSearchTerm, setCustomSearchTerm] = useState('');
+  const [customSearchError, setCustomSearchError] = useState('');
   const [customSearching, setCustomSearching] = useState(false);
   const [hoveredSugg, setHoveredSugg] = useState<{ idx: number; rect: DOMRect } | null>(null);
   const [savedCount, setSavedCount] = useState(0);
@@ -2459,6 +2489,7 @@ function ChooseProductsFlow({
     setCustomText('');
     setCustomSuggestions([]);
     setCustomSearchTerm('');
+    setCustomSearchError('');
     shouldShowSuggestionsRef.current = false;
   }, [pickIdx]);
 
@@ -2508,9 +2539,16 @@ function ChooseProductsFlow({
             body: JSON.stringify({ ingredients: [{ productName: term, quantity: 1 }], locationId }),
           });
           const data = await res.json();
-          setCustomSuggestions(data.results?.[0]?.suggestions ?? []);
-          setCustomSearchTerm(term);
-          setSelectedSuggIdx(0);
+          // MEAL-19: without the res.ok check a 403/429/502 read as
+          // `data.results === undefined` and rendered as "no products found".
+          if (!res.ok) {
+            setCustomSearchError(data.error || 'Kroger search failed. Try again in a moment.');
+          } else {
+            setCustomSearchError('');
+            setCustomSuggestions(data.results?.[0]?.suggestions ?? []);
+            setCustomSearchTerm(term);
+            setSelectedSuggIdx(0);
+          }
           setCustomText('');
           shouldShowSuggestionsRef.current = true;
         } finally { setCustomSearching(false); }
@@ -2602,6 +2640,7 @@ function ChooseProductsFlow({
             ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
             : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
           const isLast = pickIdx === searchResults.length - 1;
+          const showAutoSearchNotice = customSuggestions.length === 0 && !customSearchError;
 
           return (
             <>
@@ -2611,6 +2650,18 @@ function ChooseProductsFlow({
                   <p className="text-sm font-semibold text-ml-t1">{currentIngredient ? fmtMeasurement(currentIngredient) : currentResult.ingredientName}</p>
                   {customSearchTerm && (
                     <p className="text-xs mt-1" style={{ color: storeColor }}>Showing results for: "{customSearchTerm}"</p>
+                  )}
+                  {customSearchError && (
+                    <p className="text-xs mt-1" style={{ color: '#b45309' }}>{customSearchError}</p>
+                  )}
+                  {/* Both describe the automatic search. A custom re-search that
+                      returned products supersedes it — see showAutoSearchNotice
+                      in KrogerCartFlow for the same rule. */}
+                  {showAutoSearchNotice && currentResult.reason === 'unavailable_at_store' && (
+                    <p className="text-xs mt-1" style={{ color: '#b45309' }}>{storeName} sells this, but not at the store you picked</p>
+                  )}
+                  {showAutoSearchNotice && currentResult.reason === 'search_error' && (
+                    <p className="text-xs mt-1" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item — try again in a moment</p>
                   )}
                 </div>
 
