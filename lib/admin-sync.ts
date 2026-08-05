@@ -384,6 +384,17 @@ export interface CatalogEntry {
     at: string | null;
     firstSeenAt: string | null;
     draftId: string | null;
+    /**
+     * An import of this post is running right now.
+     *
+     * Not a status of its own: a claim is stored as `failed` carrying
+     * `CLAIM_DETAIL`, so a worker that dies mid-extraction leaves a retryable
+     * row rather than a wedged one. That distinction matters to the retry sweep
+     * and means nothing to a creator, who needs "we could not read this" and
+     * "we are reading it" to look different — the checklist was saying the first
+     * about a post it was importing at that moment.
+     */
+    inFlight: boolean;
   } | null;
 }
 
@@ -631,12 +642,25 @@ async function withImportRecords(
 
     const rows = (records ?? []) as Array<Record<string, any>>;
     for (const row of rows) {
+      // A claim in flight is stored as `failed` carrying `CLAIM_DETAIL` — see
+      // that constant for why it borrows the status rather than adding one. That
+      // is right for the retry sweep and wrong for a creator: the checklist read
+      // it as a failure and said "Could not read" about a post it was importing
+      // at that moment. Resolved here, where the lease is already understood,
+      // rather than by shipping the sentinel string to the browser.
+      const claimedAt = Date.parse(String(row.updated_at ?? ''));
+      const inFlight = String(row.status) === 'failed'
+        && row.detail === CLAIM_DETAIL
+        && Number.isFinite(claimedAt)
+        && Date.now() - claimedAt < CLAIM_LEASE_MS;
+
       byItemId.set(String(row.item_id), {
         status: String(row.status),
         detail: row.detail ?? null,
         at: row.updated_at ?? null,
         firstSeenAt: row.created_at ?? null,
         draftId: row.draft_id ?? null,
+        inFlight,
       });
     }
     if (rows.length < RECORD_PAGE_SIZE) break;
