@@ -1111,6 +1111,42 @@ describe('the back-catalogue checklist', () => {
     );
   }, 10_000);
 
+  it('shows what landed when the worker runs out of time', async () => {
+    // The chunk deadline is checked before starting a wave and never during
+    // one, so a wave beginning near the limit can outlive the function. Every
+    // item it finished is still written — `recordItem` persists per item — so
+    // the honest report is what landed plus "press Carry on", not a bare error
+    // over a queue frozen on whatever the last poll happened to catch.
+    harness({
+      creator: SYNCING,
+      entries: [entry(1), entry(2)],
+      routes: {
+        '/api/creator/sync': (init) =>
+          init?.method === 'POST'
+            ? json({ run: { id: 'r1', status: 'queued', items: [
+                { itemId: 'a', url: 'u', title: 'Post A', publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null },
+              ] } }, 201)
+            : json({
+                run: { id: 'r1', status: 'queued', items: [
+                  { itemId: 'a', url: 'u', title: 'Post A', publishedAt: null, status: 'drafted', detail: null, draftId: 'd1', mealName: 'Harissa Chicken', needALook: 0 },
+                ] },
+                totals: { selected: 1, pending: 0, drafted: 1, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 },
+              }),
+        // The function was killed mid-wave.
+        '/api/creator/sync/worker': () => json({}, 504),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 2 posts/ }));
+
+    // What landed is on screen, and the wording is a state rather than a fault.
+    await waitFor(() => expect(screen.getByTestId('run-queue').textContent).toMatch(/Harissa Chicken/));
+    expect(screen.getByRole('alert').textContent).toMatch(/saved/i);
+    expect(screen.getByRole('alert').textContent).not.toMatch(/stopped/i);
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
