@@ -43,7 +43,22 @@ export default function GuestPitch() {
         {PITCH_SUBHEAD}
       </p>
 
-      <ol className="grid gap-2 sm:gap-3 sm:grid-cols-3 mt-4 sm:mt-5 mb-0 p-0 list-none">
+      {/* Phones get the store line only.
+          The three steps are 296px of a 600px band on a 390px screen — 71% of
+          the viewport — and steps 1 and 3 restate the subhead almost verbatim
+          ("pick a meal", "every ingredient goes into your cart"). Step 2's
+          store list is the only thing here a visitor cannot already infer, and
+          it is the detail that answers "does this work at MY store". Dropping
+          the cards below `sm:` buys back ~250px and puts the first row of
+          recipes at the fold, which is the other half of the pitch. */}
+      <p
+        className="sm:hidden text-xs mt-3 leading-relaxed"
+        style={{ color: 'var(--text-2)' }}
+      >
+        {PITCH_STEPS[1].body}
+      </p>
+
+      <ol className="hidden sm:grid gap-2 sm:gap-3 sm:grid-cols-3 mt-4 sm:mt-5 mb-0 p-0 list-none">
         {PITCH_STEPS.map((step, i) => (
           <li
             key={step.title}
