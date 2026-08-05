@@ -129,11 +129,31 @@ CREATE TABLE IF NOT EXISTS creator_source_items (
   UNIQUE (creator_id, source, item_id)
 );
 
+-- Six statuses, and this file said four. Production had already been widened by
+-- hand for `skipped` and `withdrawn` without the migration following, so the
+-- checked-in schema described a database that no longer existed.
+--
+-- That gap is invisible until someone reads this file and believes it, and it
+-- has already cost one wrong diagnosis: a reviewer read `withdrawn` as
+-- unpermitted, concluded MEAL-105's withdraw write was being silently rejected
+-- in production, and reported a live bug that was not there.
+--
+--   seen       Polling has met this post. Nothing was imported from it.
+--   imported   A draft was made, and may since have been published.
+--   rejected   The gate read it and it is not a recipe. Permanent, because it
+--              is an answer about the post rather than about our afternoon.
+--   failed     Something broke on our side. Worth trying again.
+--   skipped    Not attempted this run: already imported, or another run held it.
+--   withdrawn  Imported once, and the meal made from it has since been deleted
+--              (MEAL-105). Offerable again, and deliberately not a deletion of
+--              the row: the poller reads the record's *presence* to know what it
+--              has seen, so clearing it would have the next poll re-import what
+--              the creator just removed.
 ALTER TABLE creator_source_items
   DROP CONSTRAINT IF EXISTS creator_source_items_status_check;
 ALTER TABLE creator_source_items
   ADD CONSTRAINT creator_source_items_status_check
-  CHECK (status IN ('seen', 'imported', 'rejected', 'failed'));
+  CHECK (status IN ('seen', 'imported', 'rejected', 'failed', 'skipped', 'withdrawn'));
 
 -- No (creator_id, source) index: the UNIQUE above already builds a btree whose
 -- leading columns are exactly those, so the planner serves every such lookup
