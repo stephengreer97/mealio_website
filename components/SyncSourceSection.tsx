@@ -646,6 +646,18 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    */
   const isWithdrawn = (entry: CatalogEntry) => entry.record?.status === 'withdrawn';
   /**
+   * We tried this post and could not read it.
+   *
+   * Unlike a gate rejection this is about our afternoon rather than about the
+   * post, so it stays tickable — the site was down, the fetch timed out, the
+   * URL 404'd. But it has to *say* so: with no tag it renders identically to a
+   * post nobody has touched, which is how the same recipe appeared twice in the
+   * list, once "Already Imported" and once looking brand new. (Budget Bytes had
+   * renamed a slug mid-publish, so the feed briefly carried both URLs and the
+   * old one 404'd.)
+   */
+  const isFailed = (entry: CatalogEntry) => entry.record?.status === 'failed';
+  /**
    * What "Tick the newest" ticks — which is less than what *can* be ticked.
    *
    * A rejected post stays out of the bulk tick even though its box is live
@@ -1030,6 +1042,15 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                           draft it made and said no. The box beside it is still
                           live, so this reads as an account of what happened
                           rather than a door being closed. */}
+                      {isFailed(entry) && (
+                        <span
+                          className="flex-shrink-0 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-100 rounded-md px-2 py-0.5"
+                          title={entry.record?.detail ?? undefined}
+                          data-testid="unreadable"
+                        >
+                          Could not read
+                        </span>
+                      )}
                       {rejected && (
                         <span
                           className="flex-shrink-0 text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 rounded-md px-2 py-0.5"

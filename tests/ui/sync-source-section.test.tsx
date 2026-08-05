@@ -956,6 +956,27 @@ describe('the back-catalogue checklist', () => {
     expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
   });
 
+  it('says when a post could not be read, and still lets it be retried', async () => {
+    // A failed post used to render with no tag at all — identical to one nobody
+    // had touched. That is how Budget Bytes' renamed slug showed up as the same
+    // recipe twice: once "Already Imported" under the new URL, once looking
+    // brand new under the old one, which by then was a 404.
+    //
+    // Still tickable, because a failure is about our afternoon rather than about
+    // the post: the site was down, the fetch timed out. Unlike a gate rejection,
+    // trying again can genuinely work.
+    const unreadable = {
+      ...entry(1),
+      record: { status: 'failed', detail: 'HTTP 404 from https://chefsarah.test/post-1', at: null, firstSeenAt: null },
+    };
+    harness({ creator: SYNCING, entries: [unreadable] });
+    await screen.findByTestId('catalogue');
+
+    expect(screen.getByTestId('unreadable').textContent).toMatch(/Could not read/);
+    expect(screen.getByTestId('unreadable').getAttribute('title')).toMatch(/404/);
+    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
