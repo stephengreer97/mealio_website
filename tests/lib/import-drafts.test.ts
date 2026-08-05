@@ -225,6 +225,38 @@ describe('listDraftQueue', () => {
     expect(filters.slice(0, 2).map((c) => c.args)).toEqual([['status', 'pending_review'], ['review_by', 'admin']]);
   });
 
+  it('attaches the duplicate a draft repeats, for the screen and the email', async () => {
+    // MEAL-98/107. Seeded rather than queued: `listDraftQueue` hits
+    // `creator_import_drafts` twice — once for the queue, once for duplicate
+    // candidates — and FIFO queued results cannot tell those apart. Seeding
+    // gives both queries real filter evaluation.
+    fakeDb.seed('creator_import_drafts', [queueRow({ id: 'short' })]);
+    fakeDb.seed('preset_meals', [{
+      id: 'live-1',
+      creator_id: 'c1',
+      name: 'Best Guacamole',
+      // The same dish already on Discover.
+      ingredients: (guacamole.draft.ingredients ?? []).map((i) => ({ ingredientName: i.ingredientName })),
+    }]);
+
+    const rows = await listDraftQueue(supabase, 'admin');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].duplicates[0]?.name).toBe('Best Guacamole');
+    expect(rows[0].duplicates[0]?.kind).toBe('published');
+  });
+
+  it('never offers a draft as a duplicate of itself', async () => {
+    // It matches perfectly, so without the guard every row in the queue flags —
+    // the most confident wrong answer this feature can give.
+    fakeDb.seed('creator_import_drafts', [queueRow({ id: 'only' })]);
+    fakeDb.seed('preset_meals', []);
+
+    const rows = await listDraftQueue(supabase, 'admin');
+
+    expect(rows[0].duplicates).toEqual([]);
+  });
+
   it('reads the creator queue with the same code, keyed the other way', async () => {
     fakeDb.queue('creator_import_drafts', { data: [queueRow({ review_by: 'creator' })] });
     await listDraftQueue(supabase, 'creator');
