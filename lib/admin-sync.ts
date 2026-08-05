@@ -369,8 +369,21 @@ export interface CatalogEntry {
    * `at` is when we last touched it and `firstSeenAt` when we first met it. Both,
    * because the poller's retry sweep is bounded from the first meeting and leased
    * from the last one, and one timestamp cannot say both (MEAL-75).
+   *
+   * `draftId` is what tells the two kinds of `rejected` apart, and they are
+   * different answers: a row with no draft behind it was refused by the gate
+   * without a human ever seeing it, and a row with one produced a draft that a
+   * person then declined (MEAL-99). Same status, because both mean "no meal came
+   * of this and no sync should try again on its own" — but a creator reading
+   * their own catalogue is owed the difference.
    */
-  record: { status: string; detail: string | null; at: string | null; firstSeenAt: string | null } | null;
+  record: {
+    status: string;
+    detail: string | null;
+    at: string | null;
+    firstSeenAt: string | null;
+    draftId: string | null;
+  } | null;
 }
 
 /**
@@ -609,7 +622,7 @@ async function withImportRecords(
     const from = page * RECORD_PAGE_SIZE;
     const { data: records } = await deps.supabase
       .from('creator_source_items')
-      .select('item_id, status, detail, created_at, updated_at')
+      .select('item_id, status, detail, draft_id, created_at, updated_at')
       .eq('creator_id', creator.id)
       .eq('source', source)
       .order('item_id', { ascending: true })
@@ -622,6 +635,7 @@ async function withImportRecords(
         detail: row.detail ?? null,
         at: row.updated_at ?? null,
         firstSeenAt: row.created_at ?? null,
+        draftId: row.draft_id ?? null,
       });
     }
     if (rows.length < RECORD_PAGE_SIZE) break;

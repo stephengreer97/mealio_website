@@ -119,7 +119,11 @@ CREATE TABLE IF NOT EXISTS creator_source_items (
   -- 'seen'      marked at first connect WITHOUT importing, so connecting a blog
   --             with 200 archived posts does not fire 200 extractions
   -- 'imported'  produced a draft or a published meal
-  -- 'rejected'  the gate said it is not a recipe; never retried, never notified
+  -- 'rejected'  no meal came of it and no sync will try again on its own: the
+  --             gate said it is not a recipe, or it became a draft that a human
+  --             then declined (MEAL-99). `draft_id` tells the two apart. Never
+  --             retried automatically, never notified — but offered back in the
+  --             catalogue, because a decline is a mind that can change
   -- 'failed'    extraction failed; retryable
   status        text NOT NULL DEFAULT 'seen',
   detail        text,

@@ -624,14 +624,18 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const entries: CatalogEntry[] = catalog?.ok ? catalog.entries : [];
   const isImported = (entry: CatalogEntry) => entry.record?.status === 'imported';
   /**
-   * The gate read this post and said it was not a recipe.
+   * Nothing came of this post, and nothing will unless somebody asks again.
    *
-   * Permanent, unlike a fetch that failed: `recordItem` writes `rejected` only
-   * for the gate's own answer, and everything that went wrong on our side is
-   * `failed` and worth another go. So this is not a post to offer again — the
-   * answer would be the same, and it would cost a model call to get it.
+   * Two ways to get here and the tag tells them apart, because they are
+   * different answers to the creator: the gate read the post and said it was not
+   * a recipe (no draft behind it), or it became a draft and a person declined it
+   * (MEAL-99). Either way it is still **tickable**. A gate verdict is a machine's
+   * reading and a decline is a mind that can change, and the only way to act on
+   * either used to be a DELETE in the SQL editor.
    */
   const isRejected = (entry: CatalogEntry) => entry.record?.status === 'rejected';
+  /** Declined in review rather than refused by the gate — a draft existed. */
+  const wasDeclined = (entry: CatalogEntry) => isRejected(entry) && Boolean(entry.record?.draftId);
   /**
    * Imported once, and the meal made from it has since been deleted.
    *
@@ -641,7 +645,18 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    * this and removed it gets no confirmation that we noticed.
    */
   const isWithdrawn = (entry: CatalogEntry) => entry.record?.status === 'withdrawn';
-  /** Neither already in, nor known to be something we cannot use. */
+  /**
+   * What "Tick the newest" ticks — which is less than what *can* be ticked.
+   *
+   * A rejected post stays out of the bulk tick even though its box is live
+   * (MEAL-99): we have already read it and been told it is not a recipe, or a
+   * person has already looked at the draft and said no, so re-reading costs a
+   * model call to most likely be told the same thing. That is worth a creator's
+   * one deliberate tick and not worth a button that ticks forty.
+   *
+   * A withdrawn post is in, because it is the opposite case — it did yield a
+   * recipe, and the meal was deleted afterwards.
+   */
   const importable = (entry: CatalogEntry) => !isImported(entry) && !isRejected(entry);
   const unimported = entries.filter(importable);
   const atCap = selected.length >= CREATOR_SELECTION_MAX;
@@ -961,12 +976,14 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                 {entries.map((entry, i) => {
                   const already = isImported(entry);
                   const rejected = isRejected(entry);
-                  // Nothing to decide about either one, so there is no tick to
-                  // offer. A box that can be ticked and then silently does
-                  // nothing is worse than no box: the creator counts it into
-                  // their selection and the run reports a number they did not
-                  // expect.
-                  const settled = already || rejected;
+                  const declined = wasDeclined(entry);
+                  // Only an imported post has no tick to offer. A box that can be
+                  // ticked and then silently does nothing is worse than no box —
+                  // the creator counts it into their selection and the run
+                  // reports a number they did not expect — and an import is the
+                  // one case the server really would refuse. A refused or
+                  // declined post it will happily read again.
+                  const settled = already;
                   const checked = selected.includes(entry.itemId);
                   return (
                     <label
@@ -998,9 +1015,6 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                           Already Imported
                         </span>
                       )}
-                      {/* Not a failure to apologise for and not a promise to try
-                          again. The post is fine; it just is not a recipe we can
-                          turn into a shopping list. */}
                       {isWithdrawn(entry) && (
                         <span
                           className="flex-shrink-0 text-[11px] font-semibold text-gray-500 bg-white border border-gray-200 rounded-md px-2 py-0.5"
@@ -1010,13 +1024,19 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                           Withdrawn
                         </span>
                       )}
+                      {/* Not a failure to apologise for and not a promise to try
+                          again. Either the post is fine and just is not a recipe
+                          we can turn into a shopping list, or a person read the
+                          draft it made and said no. The box beside it is still
+                          live, so this reads as an account of what happened
+                          rather than a door being closed. */}
                       {rejected && (
                         <span
                           className="flex-shrink-0 text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 rounded-md px-2 py-0.5"
                           title={entry.record?.detail ?? undefined}
-                          data-testid="not-a-recipe"
+                          data-testid={declined ? 'declined' : 'not-a-recipe'}
                         >
-                          No recipe found
+                          {declined ? 'Declined' : 'No recipe found'}
                         </span>
                       )}
                     </label>

@@ -1081,7 +1081,10 @@ describe('who decided is recorded as who decided', () => {
     fakeDb.seed('creator_import_drafts', [draftRow({ id: 'd3', review_by: 'creator' })]);
     await editDraft(deps({ role: 'creator' }), 'd3', { ...guacamole.draft, serves: '6' }, 'u1');
 
-    expect(loggedEvents()).toEqual(['CREATOR:DRAFT_DECIDE', 'CREATOR:DRAFT_DECIDE', 'CREATOR:DRAFT_EDIT']);
+    // The decline is two lines: the decision, then the post it frees up.
+    expect(loggedEvents()).toEqual([
+      'CREATOR:DRAFT_DECIDE', 'CREATOR:DRAFT_DECIDE', 'CREATOR:SOURCE_REJECT', 'CREATOR:DRAFT_EDIT',
+    ]);
   });
 
   it('records an operator’s decisions under ADMIN:', async () => {
@@ -1093,7 +1096,9 @@ describe('who decided is recorded as who decided', () => {
     fakeDb.seed('creator_import_drafts', [draftRow({ id: 'd3' })]);
     await editDraft(deps(), 'd3', { ...guacamole.draft, serves: '6' }, 'admin-1');
 
-    expect(loggedEvents()).toEqual(['ADMIN:DRAFT_APPROVE', 'ADMIN:DRAFT_CANCEL', 'ADMIN:DRAFT_EDIT']);
+    expect(loggedEvents()).toEqual([
+      'ADMIN:DRAFT_APPROVE', 'ADMIN:DRAFT_CANCEL', 'ADMIN:SOURCE_REJECT', 'ADMIN:DRAFT_EDIT',
+    ]);
   });
 
   it('defaults to admin, because every caller before MEAL-89 was one', async () => {
@@ -1134,12 +1139,59 @@ describe('cancelDraft — declining is a state, not a deletion', () => {
     expect(fakeDb.calls.some((c) => c.method === 'delete')).toBe(false);
   });
 
-  it('leaves the durable record alone, so a later sync still skips the post', async () => {
+  it('marks the post rejected rather than leaving it looking imported (MEAL-99)', async () => {
     fakeDb.seed('creator_import_drafts', [draftRow()]);
+    fakeDb.seed('creator_source_items', [
+      { creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'imported', detail: null, draft_id: 'd1' },
+    ]);
+
     await cancelDraft(deps(), 'd1', 'admin-1');
-    // Nothing here may reset `creator_source_items` back to something a sync
-    // would treat as new.
+
+    // `imported` means a draft or a meal came of this, and after a decline
+    // neither exists — the catalogue was showing the post as Already Imported
+    // with nothing behind it, and refusing the tick.
+    const [row] = fakeDb.rows('creator_source_items');
+    expect(row.status).toBe('rejected');
+    expect(row.detail).toMatch(/declined in review/i);
+    // Still a row, though. The poller reads presence and not status, so the
+    // record is what stops a declined post coming back on its own — deleting it
+    // makes the next poll treat the post as new and import it again.
+    expect(fakeDb.calls.some((c) => c.table === 'creator_source_items' && c.method === 'delete')).toBe(false);
+    expect(loggedEvents()).toContain('ADMIN:SOURCE_REJECT');
+  });
+
+  it('only rewrites a row that still says imported', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    // Re-imported since, and the new import is not this decline's to overwrite.
+    fakeDb.seed('creator_source_items', [
+      { creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'failed', detail: 'Timed out.', draft_id: 'd1' },
+    ]);
+
+    await cancelDraft(deps(), 'd1', 'admin-1');
+
+    expect(fakeDb.rows('creator_source_items')[0]).toMatchObject({ status: 'failed', detail: 'Timed out.' });
+  });
+
+  it('has nothing to mark for a draft made from a pasted link', async () => {
+    // The one-link admin sync (MEAL-90) stores no source item, so there is no
+    // row to move and no reason to go looking for one.
+    fakeDb.seed('creator_import_drafts', [draftRow({ source: null, item_id: null })]);
+
+    const result = await cancelDraft(deps(), 'd1', 'admin-1');
+
+    expect(result.ok).toBe(true);
     expect(fakeDb.calls.some((c) => c.table === 'creator_source_items')).toBe(false);
+  });
+
+  it('records who declined it, so a creator is not logged as an operator', async () => {
+    fakeDb.seed('creator_import_drafts', [draftRow({ review_by: 'creator' })]);
+    fakeDb.seed('creator_source_items', [
+      { creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'imported', detail: null, draft_id: 'd1' },
+    ]);
+
+    await cancelDraft(deps({ role: 'creator' }), 'd1', 'u1');
+
+    expect(loggedEvents()).toContain('CREATOR:SOURCE_REJECT');
   });
 
   it('refuses to decline something already published', async () => {

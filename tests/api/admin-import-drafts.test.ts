@@ -18,7 +18,10 @@ vi.mock('next/cache', () => ({ revalidateTag: (...args: unknown[]) => revalidate
  * mode being tested against, and it is only visible from out here.
  */
 const publishCreatorMeal = vi.fn();
-vi.mock('@/lib/creator-meals', () => ({
+// Publishing only — the decline's own write to `creator_source_items` goes to
+// the fake database like every other write these tests inspect.
+vi.mock('@/lib/creator-meals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/creator-meals')>()),
   publishCreatorMeal: (...args: unknown[]) => publishCreatorMeal(...args),
 }));
 

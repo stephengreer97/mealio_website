@@ -18,7 +18,12 @@ vi.mock('next/cache', () => ({ revalidateTag: (...args: unknown[]) => revalidate
  * and it is only visible from out here.
  */
 const publishCreatorMeal = vi.fn();
-vi.mock('@/lib/creator-meals', () => ({
+// Publishing only. `releaseImportedItem` is left real: it writes to the same
+// fake database these tests already read, and stubbing it would hide the
+// decline's bookkeeping from the very tests that check a decline writes no
+// delete.
+vi.mock('@/lib/creator-meals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/creator-meals')>()),
   publishCreatorMeal: (...args: unknown[]) => publishCreatorMeal(...args),
 }));
 
