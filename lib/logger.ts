@@ -57,6 +57,11 @@ export type EventType =
   | 'CREATOR:SOURCE_CONNECT'
   | 'CREATOR:SOURCE_DISCONNECT'
   | 'CREATOR:SOURCE_WITHDRAW'
+  // A declined draft's post moved off `imported`, so the catalogue offers it
+  // back instead of showing a meal that does not exist (MEAL-99). The pair of
+  // this and `ADMIN:SOURCE_REJECT` is the same event with different actors —
+  // who changed their mind about a post is the whole reason it is recorded.
+  | 'CREATOR:SOURCE_REJECT'
   // A creator moved the link we were polling, so `import_opt_in` was cleared and
   // an operator was emailed about it (MEAL-94). Logged only when that email
   // fails — the email is the signal, this is the record that it did not arrive.
@@ -109,6 +114,7 @@ export type EventType =
   | 'ADMIN:DRAFT_RECLAIM'       // and taken back, so a handoff is never one-way
   | 'ADMIN:DRAFT_EDIT'
   | 'ADMIN:DRAFT_CANCEL'        // declined; the row is marked, never removed
+  | 'ADMIN:SOURCE_REJECT'       // and its post is offerable again (MEAL-99)
   | 'ADMIN:DRAFT_NOTIFY'        // the "these are live now" email to the creator
   // Writing the Mealio link into a creator's own video description (MEAL-79).
   // The only event in this file that records us editing somebody else's

@@ -51,7 +51,13 @@ interface Entry {
   url: string;
   title: string;
   publishedAt: string;
-  record: { status: string; detail: string | null; at: string | null; firstSeenAt: string | null } | null;
+  record: {
+    status: string;
+    detail: string | null;
+    at: string | null;
+    firstSeenAt: string | null;
+    draftId?: string | null;
+  } | null;
 }
 
 function entry(i: number): Entry {
@@ -779,12 +785,12 @@ describe('the back-catalogue checklist', () => {
     expect(screen.getAllByText(/^Post /)).toHaveLength(2);
   });
 
-  it('cannot tick a post that is already in, or one with no recipe in it', async () => {
-    // Both are settled: the server refuses an already-imported post, and a gate
-    // rejection is permanent — `recordItem` writes `rejected` only for the
-    // gate's own answer, and anything that broke on our side is `failed`. A box
-    // that ticks and then silently does nothing is worse than no box, because
-    // the creator counts it in and the run reports a number they did not expect.
+  it('cannot tick a post that is already in, but can tick one nothing came of', async () => {
+    // Only an import is settled — that is the one the server refuses, and a box
+    // that ticks and then silently does nothing is worse than no box. A gate
+    // rejection is a machine's reading of the post and a decline is a mind that
+    // can change; both stay tickable, because until MEAL-99 the only way to act
+    // on either was a DELETE in the SQL editor.
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     const rejected = { ...entry(2), record: { status: 'rejected', detail: 'No ingredient list on the page.', at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, rejected, entry(3)] });
@@ -792,10 +798,43 @@ describe('the back-catalogue checklist', () => {
 
     const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
     expect(boxes[0].disabled).toBe(true);
-    expect(boxes[1].disabled).toBe(true);
+    expect(boxes[1].disabled).toBe(false);
     expect(boxes[2].disabled).toBe(false);
 
     expect(screen.getByTestId('not-a-recipe').textContent).toMatch(/No recipe found/i);
+
+    // Ticking it counts, so the run really is asked for it.
+    fireEvent.click(boxes[1]);
+    expect(screen.getByTestId('selection-count').textContent).toBe(`1 of ${CREATOR_SELECTION_MAX} chosen`);
+  });
+
+  it('says a declined post was declined, and offers it back', async () => {
+    // The post produced a draft and a person said no, so `imported` would be a
+    // lie — there is no meal. `Declined` is the tag, the box is live, and the
+    // detail says what to do about it. What does *not* happen is an automatic
+    // re-import: the poller reads the record's presence, not its status.
+    const declined = {
+      ...entry(1),
+      record: {
+        status: 'rejected',
+        detail: 'This was turned into a draft and then declined in review, so nothing was published.',
+        at: null,
+        firstSeenAt: null,
+        draftId: 'd1',
+      },
+    };
+    harness({ creator: SYNCING, entries: [declined, entry(2)] });
+    await screen.findByTestId('catalogue');
+
+    expect(screen.getByTestId('declined').textContent).toMatch(/Declined/);
+    expect(screen.queryByTestId('not-a-recipe')).toBeNull();
+    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+
+    // Not in the bulk tick, though. Re-reading a post costs a model call to be
+    // told the same thing, which is worth one creator's deliberate tick and not
+    // worth a button that ticks forty.
+    tickAll();
+    expect(screen.getByTestId('selection-count').textContent).toBe(`1 of ${CREATOR_SELECTION_MAX} chosen`);
   });
 
   it('shows every post in the run, with the one being read marked', async () => {

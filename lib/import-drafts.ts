@@ -29,7 +29,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { publishCreatorMeal, type PublishedMeal, type PublishingCreator } from '@/lib/creator-meals';
+import { publishCreatorMeal, releaseImportedItem, type PublishedMeal, type PublishingCreator } from '@/lib/creator-meals';
 import { sendCreatorSyncPublishedEmail } from '@/lib/email';
 import { appendMealioLink } from '@/lib/youtube-append';
 import { log } from '@/lib/logger';
@@ -161,10 +161,12 @@ function events(role: DraftReviewBy | undefined) {
     ? {
         approve: 'CREATOR:DRAFT_DECIDE', cancel: 'CREATOR:DRAFT_DECIDE',
         edit: 'CREATOR:DRAFT_EDIT', append: 'CREATOR:YOUTUBE_APPEND',
+        sourceReject: 'CREATOR:SOURCE_REJECT',
       } as const
     : {
         approve: 'ADMIN:DRAFT_APPROVE', cancel: 'ADMIN:DRAFT_CANCEL',
         edit: 'ADMIN:DRAFT_EDIT', append: 'ADMIN:YOUTUBE_APPEND',
+        sourceReject: 'ADMIN:SOURCE_REJECT',
       } as const;
 }
 
@@ -1041,12 +1043,31 @@ export async function reclaimDraft(deps: DraftDeps, id: string, adminUserId: str
 }
 
 /**
+ * What a declined post's `creator_source_items` row says about itself.
+ *
+ * Read by a creator, on hover, in the catalogue of their own posts — so it says
+ * what happened and what to do about it, not what a table thinks.
+ */
+export const DECLINED_DETAIL =
+  'This was turned into a draft and then declined in review, so nothing was published. ' +
+  'Tick it again to have another go at it.';
+
+/**
  * Declines a draft. **Marks, never removes.**
  *
  * `creator_source_items` still says this post was imported, so the next sync or
  * poll skips it. Delete the row instead and that record points at nothing, the
  * post comes back next cycle, and a human gets asked about a recipe they already
  * said no to.
+ *
+ * What it does *not* go on saying is `imported` (MEAL-99). That status means "a
+ * draft or a published meal came of this", and after a decline neither exists —
+ * so the catalogue showed the post as **Already Imported** with nothing behind
+ * it and refused the tick, and the only way to change a mind about a decline was
+ * a DELETE in the SQL editor. The row moves to `rejected`, which the poller
+ * still counts as seen (so a declined post never comes back on its own) and the
+ * catalogue offers back with a tag saying what happened. Deliberate re-import is
+ * a tick; automatic re-import remains impossible.
  */
 export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: string): Promise<DraftDecision> {
   const now = deps.now ?? Date.now;
@@ -1080,6 +1101,22 @@ export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: stri
     userId: adminUserId,
     detail: `draft=${id} creator=${loaded.draft.creatorId} url=${JSON.stringify(loaded.draft.sourceUrl)}`,
   });
+
+  // After the decision, and never in front of it. The draft row is what the
+  // queue reads and what the conditional write above protects; this is the
+  // bookkeeping that follows from it, so a failure here leaves a declined draft
+  // declined rather than a live draft with its post marked refused.
+  //
+  // A draft has a source item unless it came from a hand-pasted link, which
+  // MEAL-90 stores without one — nothing to mark, and nothing to say about it.
+  if (loaded.draft.source && loaded.draft.itemId) {
+    await releaseImportedItem(
+      deps.supabase,
+      { creatorId: loaded.draft.creatorId, source: loaded.draft.source, itemId: loaded.draft.itemId },
+      { status: 'rejected', detail: DECLINED_DETAIL },
+      { name: events(deps.role).sourceReject, detail: `draft=${id} creator=${loaded.draft.creatorId}` },
+    );
+  }
 
   return { ok: true, draft: { ...loaded.draft, status: 'cancelled' } };
 }

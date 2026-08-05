@@ -14,7 +14,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolvePhotoUrl } from '@/lib/photos';
-import { log } from '@/lib/logger';
+import { log, type EventType } from '@/lib/logger';
 import { platformSourceForUrl, type PlatformSource } from '@/lib/creator-sources';
 import { urlIdentity } from '@/lib/import/ssrf';
 import { videoIdFromUrl } from '@/lib/youtube';
@@ -298,6 +298,75 @@ export async function releaseLinkClaim(
   await dropClaim(supabase, creatorId, source, sourceItemId(source, identity));
 }
 
+/** Half of the `creator_source_items` key, with the creator that owns it. */
+export interface SourceItemKey {
+  creatorId: string;
+  source: string;
+  itemId: string;
+}
+
+/**
+ * Moves one source item off `imported`, so the post it names is offerable again.
+ *
+ * Two decisions reach this: a creator deleting a published meal, and a human
+ * declining the draft a post produced. They mean different things and log under
+ * different events, but the write is the same one and the parts that are easy to
+ * get wrong are shared.
+ *
+ * **Guarded on `imported`.** A row a later run, a poller retry or an operator
+ * has already moved on is not this decision's to rewrite — without the guard, a
+ * decline landing after the same post has been re-imported would mark the *new*
+ * import declined.
+ *
+ * **Never cleared.** The same table tells the poller what it has already seen,
+ * and it treats any record as seen whatever its status. Deleting the row would
+ * have the next poll find an unrecognised post, import it, get declined again,
+ * and round it goes — which is exactly what a decline exists to stop. A status
+ * the poller ignores and the catalogue offers is what makes re-import a request
+ * rather than a loop.
+ *
+ * **Says so out loud.** Every caller ignores the outcome — the meal is already
+ * deleted, the draft is already declined, and refusing either of those over
+ * bookkeeping would be worse — but "ignored by the caller" and "invisible to us"
+ * are different things, and the first attempt at the withdraw failed silently:
+ * the row kept saying `imported`, the checklist kept refusing the post, and
+ * nothing anywhere said why. A CHECK constraint that does not know the value
+ * being written is the likeliest cause and looks exactly like this.
+ */
+export async function releaseImportedItem(
+  supabase: SupabaseClient,
+  key: SourceItemKey,
+  next: { status: 'withdrawn' | 'rejected'; detail?: string },
+  event: { name: EventType; detail: string },
+): Promise<void> {
+  const patch: Record<string, unknown> = { status: next.status, updated_at: new Date().toISOString() };
+  // Only when the caller has something to say. The column is what the catalogue
+  // shows on hover, and overwriting a gate's explanation with an empty one loses
+  // the only account of why a post was refused.
+  if (next.detail !== undefined) patch.detail = next.detail;
+
+  const { data, error } = await supabase
+    .from('creator_source_items')
+    .update(patch)
+    .eq('creator_id', key.creatorId)
+    .eq('source', key.source)
+    .eq('item_id', key.itemId)
+    .eq('status', 'imported')
+    // Asked for, because "the guard declined" and "the write worked" are the two
+    // outcomes worth telling apart and a matchless UPDATE reports neither an
+    // error nor a row. `changed=0` in the log is how a row that has moved on —
+    // or a key that never named one — stops being indistinguishable from a
+    // success.
+    .select('item_id');
+
+  log({
+    event: event.name,
+    status: error ? 'error' : 'success',
+    detail: `${event.detail} source=${key.source} item=${key.itemId} changed=${Array.isArray(data) ? data.length : 0}`,
+    ...(error ? { error } : {}),
+  });
+}
+
 /**
  * Marks a deleted meal's source post as withdrawn rather than imported.
  *
@@ -317,6 +386,9 @@ export async function releaseLinkClaim(
  * the catalogue and `recordItem` both test for the exact string `imported`, so
  * a withdrawn post becomes tickable again and re-imports on request. Automatic
  * sync stays away, a deliberate re-import is one click.
+ *
+ * The declined-draft half of the same problem is `cancelDraft`'s (MEAL-99),
+ * which writes `rejected` through the same guarded update.
  */
 export async function withdrawImportedItem(
   supabase: SupabaseClient,
@@ -336,38 +408,15 @@ export async function withdrawImportedItem(
   const row = draft as { source?: string | null; item_id?: string | null } | null;
   if (!row?.source || !row.item_id) return;
 
-  // Only from `imported`. A row an operator or a later run has moved on to some
-  // other status is not this meal's to rewrite.
-  const { error } = await supabase
-    .from('creator_source_items')
-    .update({ status: 'withdrawn', updated_at: new Date().toISOString() })
-    .eq('creator_id', creatorId)
-    .eq('source', row.source)
-    .eq('item_id', row.item_id)
-    .eq('status', 'imported');
-
-  // Said out loud rather than swallowed. The caller deliberately ignores a
-  // failure here — the meal is already deleted and refusing that would be
-  // worse — but "ignored by the caller" and "invisible to us" are different
-  // things, and the first attempt at this failed silently: the row kept saying
-  // `imported`, the checklist kept refusing the post, and there was nothing
-  // anywhere to say why. A CHECK constraint that does not know `withdrawn` is
-  // the likeliest reason and would look exactly like this.
-  if (error) {
-    log({
-      event: 'CREATOR:SOURCE_WITHDRAW',
-      status: 'error',
-      detail: `creator=${creatorId} meal=${mealId} source=${row.source} item=${row.item_id}`,
-      error,
-    });
-    return;
-  }
-
-  log({
-    event: 'CREATOR:SOURCE_WITHDRAW',
-    status: 'success',
-    detail: `creator=${creatorId} meal=${mealId} source=${row.source} item=${row.item_id}`,
-  });
+  // No detail: the row's own account of what happened to it — the gate's
+  // sentence, an operator's note — outlives this and is still the truth about
+  // the post.
+  await releaseImportedItem(
+    supabase,
+    { creatorId, source: row.source, itemId: row.item_id },
+    { status: 'withdrawn' },
+    { name: 'CREATOR:SOURCE_WITHDRAW', detail: `creator=${creatorId} meal=${mealId}` },
+  );
 }
 
 export async function claimPublishFromLink(
