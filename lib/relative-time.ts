@@ -39,7 +39,7 @@ export function relativeTime(at: string | null | undefined, now: number = Date.n
   if (ms < 45 * 1000) return ahead ? 'in a moment' : 'just now';
 
   let phrase: string;
-  if (ms < 90 * MINUTE) phrase = plural(Math.round(ms / MINUTE), 'minute');
+  if (ms < 45 * MINUTE) phrase = plural(Math.round(ms / MINUTE), 'minute');
   // Handing over to days before the full 24 are up, because "1 day ago" is what
   // somebody scanning for staleness reads, and "24 hours ago" makes them divide.
   else if (ms < 22 * HOUR) phrase = plural(Math.round(ms / HOUR), 'hour');

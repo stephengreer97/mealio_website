@@ -24,6 +24,8 @@ describe('relativeTime', () => {
 
   it('says a single unit in the singular', () => {
     expect(relativeTime(ago(DAY), NOW)).toBe('1 day ago');
+    // Not "60 minutes ago", which is the same fact in the unit nobody chose.
+    expect(relativeTime(ago(HOUR), NOW)).toBe('1 hour ago');
   });
 
   it('stays in days well past a month', () => {
