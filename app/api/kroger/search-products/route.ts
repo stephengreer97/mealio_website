@@ -7,6 +7,7 @@ import {
   refreshKrogerAccessToken,
   krogerSearchProducts,
   scoreProductMatch,
+  type KrogerProduct,
 } from '@/lib/kroger';
 import { log } from '@/lib/logger';
 import { getFlag } from '@/lib/flags';
@@ -23,9 +24,22 @@ export const dynamic = 'force-dynamic';
  *     If that returns no suggestions, fall back to just "<productName>".
  *   - Else use productName directly.
  *
- * Returns: { results: Array<{ term, quantity, upc, description, exact, suggestions }> }
+ * Returns: { results: Array<{ term, quantity, upc, description, exact, reason, suggestions }> }
  * `term` echoes back productName (ingredientName) for client-side matching.
  */
+
+/**
+ * Why an ingredient came back without a match. `no_results` used to absorb all
+ * of these; MEAL-19 is about telling them apart, because the honest answer to
+ * three of them is not "we found nothing".
+ */
+type SearchReason =
+  | 'matched'
+  | 'out_of_stock'           // matches exist here, but none are currently stocked
+  | 'unavailable_at_store'   // Kroger lists the product; this store can't fulfil it
+  | 'search_error'           // Kroger itself failed — 401/429/5xx, not an empty shelf
+  | 'no_results'             // Kroger genuinely returned nothing for every term we tried
+  | 'low_confidence';
 
 function buildSearchTerm(base: string, measure: string | null, unit: string): string {
   const full = `${base} ${measure ?? ''} ${unit}`.replace(/\s+/g, ' ').trim();
@@ -90,9 +104,11 @@ export async function POST(request: NextRequest) {
   const results: Array<{
     term: string; quantity: number;
     upc: string | null; description: string | null; exact: boolean;
-    reason: 'matched' | 'out_of_stock' | 'no_results' | 'low_confidence';
+    reason: SearchReason;
     suggestions: Array<{ upc: string; description: string }>;
   }> = [];
+  /** HTTP statuses Kroger returned, so the log line names the real failure. */
+  const upstreamStatuses: number[] = [];
 
   for (let i = 0; i < ingredients.length; i += BATCH) {
     const batch = ingredients.slice(i, i + BATCH);
@@ -100,38 +116,36 @@ export async function POST(request: NextRequest) {
       batch.map(async (ing) => {
         const base = ing.productName;
         const unit = ing.unit ?? 'qty';
-        const usesMeasurement = !ing.searchTerm && unit !== 'qty';
+        const bare = base.split(' ').slice(0, 8).join(' ');
 
-        // Determine the actual search string
-        let searchStr: string;
-        let suggestions: Awaited<ReturnType<typeof krogerSearchProducts>>;
+        // Terms to try, widest-specificity first. A saved searchTerm is a
+        // *display* string ("Kroger Whole Milk, 1 gal"), so it misses often
+        // enough to need the ingredient name behind it.
+        const ladder = ing.searchTerm
+          ? [
+              ing.searchTerm,
+              ...(unit !== 'qty' ? [buildSearchTerm(base, ing.measure ?? null, unit)] : []),
+              bare,
+            ]
+          : [bare];
 
-        if (ing.searchTerm) {
-          // User already picked a product — search with their chosen term
-          searchStr = ing.searchTerm;
-          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
-          // Repeat once in case of a transient empty response
-          if (suggestions.length === 0) {
-            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
-          }
-          // Retry 1: fall back to ingredientName + measure/unit (if non-qty)
-          if (suggestions.length === 0 && unit !== 'qty') {
-            searchStr = buildSearchTerm(base, ing.measure ?? null, unit);
-            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
-          }
-          // Retry 2: fall back to bare ingredientName
-          if (suggestions.length === 0) {
-            searchStr = base.split(' ').slice(0, 8).join(' ');
-            suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
-          }
-        } else if (usesMeasurement) {
-          // Search with just the ingredient name (no measure/unit)
-          searchStr = base.split(' ').slice(0, 8).join(' ');
-          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
-        } else {
-          searchStr = base.split(' ').slice(0, 8).join(' ');
-          suggestions = await krogerSearchProducts(userAccessToken, searchStr, locationId, 10, 0, debugMode);
+        let searchStr = ladder[0];
+        let suggestions: KrogerProduct[] = [];
+        let filteredOut = 0;
+        let upstreamStatus: number | null = null;
+
+        for (const candidate of ladder) {
+          searchStr = candidate;
+          const outcome = await krogerSearchProducts(userAccessToken, candidate, locationId, 10, 0, debugMode);
+          // Stop on an upstream failure rather than walking the rest of the
+          // ladder. Re-asking a 429'd or 5xx'ing API with different words cannot
+          // produce products, and it was multiplying one throttled request into
+          // four per ingredient — ten of those in flight at a time (MEAL-19).
+          if (!outcome.ok) { upstreamStatus = outcome.status; break; }
+          filteredOut += outcome.filteredOut;
+          if (outcome.products.length > 0) { suggestions = outcome.products; break; }
         }
+        if (upstreamStatus !== null) upstreamStatuses.push(upstreamStatus);
 
         // Score against the chosen product name (searchTerm), falling back to ingredient name.
         // Also try matching against description + size to catch weight items like
@@ -157,10 +171,15 @@ export async function POST(request: NextRequest) {
         }
 
         const filteredSuggestions = sortedScored.map(({ s }) => s).filter(s => s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
-        const reason: 'matched' | 'out_of_stock' | 'no_results' | 'low_confidence' = exactMatch ? 'matched'
+        const reason: SearchReason = upstreamStatus !== null ? 'search_error'
+          : exactMatch ? 'matched'
           : outOfStockExact ? 'out_of_stock'
-          : filteredSuggestions.length === 0 ? 'no_results'
-          : 'low_confidence';
+          : filteredSuggestions.length > 0 ? 'low_confidence'
+          // Nothing to offer. Which of the three reasons it is depends on what
+          // Kroger actually said, not on the empty list we ended up with.
+          : suggestions.length > 0 ? 'out_of_stock'
+          : filteredOut > 0 ? 'unavailable_at_store'
+          : 'no_results';
 
         return {
           term: base,
@@ -176,12 +195,28 @@ export async function POST(request: NextRequest) {
     results.push(...batchResults);
   }
 
+  // MEAL-19: the old line only counted hits, so a run where Kroger 429'd every
+  // request and one where the store simply stocks nothing logged identically.
+  if (upstreamStatuses.length) {
+    log({
+      event: 'KROGER:SEARCH_PRODUCTS',
+      status: 'error',
+      userId: decoded.userId,
+      email: decoded.email,
+      reason: 'upstream_error',
+      detail: `failed=${upstreamStatuses.length}/${results.length} statuses=${[...new Set(upstreamStatuses)].sort((a, b) => a - b).join(',')} store=${storeId ?? locationId}`,
+    });
+  }
+
+  const tally = (r: SearchReason) => results.filter(x => x.reason === r).length;
   log({
     event: 'KROGER:SEARCH_PRODUCTS',
     status: 'success',
     userId: decoded.userId,
     email: decoded.email,
-    detail: `found=${results.filter(r => r.upc).length} total=${results.length} store=${storeId ?? locationId} meals=${mealNames.join(', ') || '(unknown)'}`,
+    detail: `found=${results.filter(r => r.upc).length} total=${results.length}`
+      + ` empty=${tally('no_results')} unavailable=${tally('unavailable_at_store')} oos=${tally('out_of_stock')} errored=${tally('search_error')}`
+      + ` store=${storeId ?? locationId} meals=${mealNames.join(', ') || '(unknown)'}`,
   });
 
   return NextResponse.json({ results });
