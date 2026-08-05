@@ -632,6 +632,15 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    * answer would be the same, and it would cost a model call to get it.
    */
   const isRejected = (entry: CatalogEntry) => entry.record?.status === 'rejected';
+  /**
+   * Imported once, and the meal made from it has since been deleted.
+   *
+   * Tickable again — that is the whole point of the status — but it needs
+   * saying. The tag going away and the box unlocking is indistinguishable from
+   * a post that was never imported, so the one creator who knows they published
+   * this and removed it gets no confirmation that we noticed.
+   */
+  const isWithdrawn = (entry: CatalogEntry) => entry.record?.status === 'withdrawn';
   /** Neither already in, nor known to be something we cannot use. */
   const importable = (entry: CatalogEntry) => !isImported(entry) && !isRejected(entry);
   const unimported = entries.filter(importable);
@@ -992,6 +1001,15 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                       {/* Not a failure to apologise for and not a promise to try
                           again. The post is fine; it just is not a recipe we can
                           turn into a shopping list. */}
+                      {isWithdrawn(entry) && (
+                        <span
+                          className="flex-shrink-0 text-[11px] font-semibold text-gray-500 bg-white border border-gray-200 rounded-md px-2 py-0.5"
+                          title="You imported this before and deleted the meal. Tick it to import it again."
+                          data-testid="withdrawn"
+                        >
+                          Withdrawn
+                        </span>
+                      )}
                       {rejected && (
                         <span
                           className="flex-shrink-0 text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 rounded-md px-2 py-0.5"

@@ -904,6 +904,19 @@ describe('the back-catalogue checklist', () => {
     void releaseWorker;
   });
 
+  it('says a post was imported and withdrawn, and still lets it be ticked', async () => {
+    // Deleting a published meal withdraws its post (MEAL-105) so it can be
+    // imported again. Without the label that reads exactly like a post we never
+    // touched — the one creator who knows they published and deleted it gets no
+    // sign we noticed.
+    const withdrawn = { ...entry(1), record: { status: 'withdrawn', detail: null, at: null, firstSeenAt: null } };
+    harness({ creator: SYNCING, entries: [withdrawn] });
+    await screen.findByTestId('catalogue');
+
+    expect(screen.getByTestId('withdrawn').textContent).toMatch(/Withdrawn/);
+    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });

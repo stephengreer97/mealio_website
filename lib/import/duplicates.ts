@@ -38,15 +38,17 @@ import type { DraftIngredient } from './types';
  *  - Two different chicken dinners from one creator: **0.33**. A curry against a
  *    carbonara: **0.27**. What they share is a kitchen — oil, garlic, onion.
  *
- * Nothing observed lands between 0.33 and 0.83, so 0.7 sits in a gap half the
- * scale wide and is not finely balanced. Numbers from `tests/lib/import-
+ * Nothing observed lands between 0.33 and 0.83, so the threshold sits in a gap
+ * half the scale wide and is not finely balanced. Set at 0.75 rather than 0.70
+ * — still comfortably under the 0.83 floor of the duplicates, and further from
+ * the recipes that merely share a pantry. Numbers from `tests/lib/import-
  * duplicates.test.ts`, which is where to re-measure if this ever seems wrong. Erring high is
  * the right way to be wrong: a missed duplicate costs one extra row on Discover,
  * while a false positive teaches reviewers that the flag is noise, and a flag
  * nobody trusts is worse than no flag. One line to change once there is real
  * data to change it against.
  */
-export const DUPLICATE_THRESHOLD = 0.7;
+export const DUPLICATE_THRESHOLD = 0.75;
 
 /**
  * Ingredient lists shorter than this are not compared at all.
@@ -57,6 +59,28 @@ export const DUPLICATE_THRESHOLD = 0.7;
  * built to fail on.
  */
 export const MIN_INGREDIENTS_TO_COMPARE = 4;
+
+/**
+ * A title reduced to what two posts of one dish would still share.
+ *
+ * Case, surrounding whitespace, punctuation and the decoration a platform title
+ * carries — emoji, and the trailing hashtags a Short is titled with. What is
+ * left is the words. This is deliberately *not* the fuzzy matcher: it exists to
+ * catch a creator posting under the same title twice, which the ingredient
+ * overlap can miss when a Short lists three ingredients and the long form lists
+ * nine.
+ */
+export function titleKey(title: string): string {
+  return String(title ?? '')
+    .toLowerCase()
+    // Hashtags first: "#shorts" is a tag on the title rather than part of it.
+    .replace(/#[\p{L}\p{N}_]+/gu, ' ')
+    // Anything that is not a letter, a number or a space — emoji, punctuation,
+    // the vertical bars and dashes titles are padded with.
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /** A meal or draft this one might be a repeat of. */
 export interface DuplicateCandidate {
@@ -74,6 +98,17 @@ export interface DuplicateMatch {
   kind: 'published' | 'draft';
   /** 0–1, rounded to two places so it reads as a figure rather than a float. */
   overlap: number;
+  /**
+   * The titles are the same once decoration is stripped.
+   *
+   * Its own signal rather than a tiebreak. The ingredient overlap can miss a
+   * pair the title makes obvious: a Short whose description lists three
+   * ingredients against a long form that lists nine scores badly on Jaccard —
+   * few shared over many combined — while both are plainly "Garlic Butter
+   * Shrimp". A creator who titled two posts identically has told us something
+   * no amount of list comparison would.
+   */
+  sameTitle: boolean;
 }
 
 /**
@@ -118,29 +153,43 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
  * is supposed to save.
  */
 export function findDuplicates(
-  draftIngredients: readonly (DraftIngredient | { ingredientName: string })[],
+  draft: { name?: string | null; ingredients?: readonly (DraftIngredient | { ingredientName: string })[] },
   candidates: readonly DuplicateCandidate[],
   threshold: number = DUPLICATE_THRESHOLD,
 ): DuplicateMatch[] {
-  const mine = ingredientKeys(draftIngredients.map((i) => i.ingredientName));
-  if (mine.size < MIN_INGREDIENTS_TO_COMPARE) return [];
+  const mine = ingredientKeys((draft.ingredients ?? []).map((i) => i.ingredientName));
+  const myTitle = titleKey(draft.name ?? '');
+  const comparable = mine.size >= MIN_INGREDIENTS_TO_COMPARE;
 
   const matches: DuplicateMatch[] = [];
   for (const candidate of candidates) {
+    // Titles first, and independently. This holds even for a list too short to
+    // compare — the ingredient floor exists because Jaccard is unreliable down
+    // there, which is a reason to distrust the *overlap*, not a reason to ignore
+    // a creator having used the same title twice.
+    const sameTitle = myTitle.length > 0 && titleKey(candidate.name) === myTitle;
+
     const theirs = ingredientKeys(candidate.ingredientNames);
-    if (theirs.size < MIN_INGREDIENTS_TO_COMPARE) continue;
-    const overlap = jaccard(mine, theirs);
-    if (overlap >= threshold) {
+    const overlap = comparable && theirs.size >= MIN_INGREDIENTS_TO_COMPARE
+      ? jaccard(mine, theirs)
+      : 0;
+
+    if (sameTitle || overlap >= threshold) {
       matches.push({
         id: candidate.id,
         name: candidate.name,
         kind: candidate.kind,
         overlap: Math.round(overlap * 100) / 100,
+        sameTitle,
       });
     }
   }
 
-  return matches.sort((a, b) => b.overlap - a.overlap);
+  // An identical title first whatever the overlap says, then by overlap. It is
+  // the more certain of the two signals, so it is the one a reviewer should read
+  // before the rest.
+  return matches.sort((a, b) =>
+    (a.sameTitle === b.sameTitle ? 0 : a.sameTitle ? -1 : 1) || b.overlap - a.overlap);
 }
 
 /**
@@ -158,7 +207,13 @@ export function duplicateNotice(matches: readonly DuplicateMatch[]): string | nu
   const others = matches.length > 1
     ? ` (and ${matches.length - 1} other${matches.length === 2 ? '' : 's'})`
     : '';
-  return `Shares ${Math.round(first.overlap * 100)}% of its ingredients with “${first.name}”, ${where}${others}. `
+  // Led by whichever signal fired, because they are different claims: one is
+  // "you titled two posts the same", the other "these lists barely differ", and
+  // a reviewer checks them in different ways.
+  const because = first.sameTitle
+    ? `Has the same title as “${first.name}”, ${where}${others}`
+    : `Shares ${Math.round(first.overlap * 100)}% of its ingredients with “${first.name}”, ${where}${others}`;
+  return `${because}. `
     + 'If that is the same dish posted twice, decline this one; if it is a different recipe, carry on.';
 }
 

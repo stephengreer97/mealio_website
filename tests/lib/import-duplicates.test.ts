@@ -29,7 +29,7 @@ const candidate = (over: Partial<DuplicateCandidate> = {}): DuplicateCandidate =
   ...over,
 });
 
-const named = (names: string[]) => names.map(ingredientName => ({ ingredientName }));
+const named = (names: string[], name = 'Some Dish') => ({ name, ingredients: names.map(ingredientName => ({ ingredientName })) });
 
 describe('findDuplicates', () => {
   it('catches a Short of a recipe already published', () => {
@@ -48,7 +48,7 @@ describe('findDuplicates', () => {
     const curry = named(['chickpeas', 'coconut milk', 'curry powder', 'onion', 'garlic', 'olive oil', 'spinach']);
     const pasta = named(['spaghetti', 'parmesan', 'egg', 'pancetta', 'onion', 'garlic', 'olive oil']);
 
-    expect(findDuplicates(curry, [candidate({ ingredientNames: pasta.map(p => p.ingredientName) })])).toEqual([]);
+    expect(findDuplicates(curry, [candidate({ ingredientNames: pasta.ingredients.map(p => p.ingredientName) })])).toEqual([]);
   });
 
   it('refuses to judge a list too short to judge', () => {
@@ -76,6 +76,46 @@ describe('findDuplicates', () => {
 
   it('says nothing when nothing matches', () => {
     expect(duplicateNotice([])).toBeNull();
+  });
+});
+
+describe('an identical title is its own signal', () => {
+  it('flags a repeat the ingredient lists would have missed', async () => {
+    // The case Jaccard cannot reach: a Short whose description lists three
+    // ingredients against the long form that lists nine. Few shared over many
+    // combined scores badly, and both are plainly the same dish — which the
+    // creator said by titling them the same.
+    const short = { name: 'GARLIC BUTTER SHRIMP 🔥 #shorts', ingredients: named(['shrimp', 'butter', 'garlic']).ingredients };
+
+    const [match] = findDuplicates(short, [candidate({ name: 'Garlic Butter Shrimp!' })]);
+
+    expect(match?.sameTitle).toBe(true);
+    // Reported honestly: the titles matched, the lists did not.
+    expect(match.overlap).toBeLessThan(DUPLICATE_THRESHOLD);
+  });
+
+  it('reads a same-title match before a merely similar one', () => {
+    const draft = named(SHRIMP, 'Garlic Butter Shrimp');
+    const matches = findDuplicates(draft, [
+      candidate({ id: 'similar', name: 'Buttery Shrimp Skillet' }),
+      candidate({ id: 'titled', name: 'garlic butter shrimp', ingredientNames: ['shrimp', 'butter'] }),
+    ]);
+
+    // The more certain claim first, whatever the overlap says.
+    expect(matches[0].id).toBe('titled');
+  });
+
+  it('says which of the two signals fired', () => {
+    const matches = findDuplicates(named(SHRIMP, 'Garlic Butter Shrimp'), [candidate({ name: 'Garlic Butter Shrimp' })]);
+    expect(duplicateNotice(matches)).toMatch(/same title/i);
+  });
+
+  it('does not call two untitled drafts the same dish', () => {
+    // An empty title matching an empty title is not a creator telling us
+    // anything, and every draft would flag every other.
+    const matches = findDuplicates({ name: '', ingredients: named(['a', 'b', 'c', 'd']).ingredients },
+      [candidate({ name: '', ingredientNames: ['w', 'x', 'y', 'z'] })]);
+    expect(matches).toEqual([]);
   });
 });
 

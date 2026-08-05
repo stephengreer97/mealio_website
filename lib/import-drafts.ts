@@ -307,7 +307,7 @@ export async function listDraftQueue(
       // Compared against everything of this creator's except itself. A draft
       // matches itself perfectly, which would flag every row in the queue.
       duplicates: findDuplicates(
-        draft.draft?.ingredients ?? [],
+        { name: draft.draft?.name, ingredients: draft.draft?.ingredients ?? [] },
         (candidatesByCreator.get(draft.creatorId) ?? []).filter((c) => c.id !== draft.id),
       ),
     }))
@@ -861,7 +861,7 @@ export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200
     ...draft,
     summary: reviewDraft(draft).summary,
     duplicates: findDuplicates(
-      draft.draft?.ingredients ?? [],
+      { name: draft.draft?.name, ingredients: draft.draft?.ingredients ?? [] },
       (candidatesByCreator.get(draft.creatorId) ?? []).filter((c) => c.id !== draft.id),
     ),
   }));
