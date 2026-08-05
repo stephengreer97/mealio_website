@@ -97,8 +97,8 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 12px;">You already post your recipes somewhere. You shouldn't have to type them in twice. Tell Mealio where you publish and new posts sync automatically, coming back to you as drafts to review.</p>
         <ol style="color: #666; font-size: 14px; line-height: 2; margin: 0 0 12px; padding-left: 20px;">
           <li>Open <a href="${appUrl}/creator#settings" style="color: #dd0031;">Settings</a> in your Creator Portal and find <strong>Sync your content with Mealio</strong></li>
-          <li>Pick one place: your <strong>website or blog</strong>, your <strong>YouTube</strong> channel, or <strong>TikTok</strong></li>
-          <li>For a website, save the link — we read your site and check we can actually import recipes from it before syncing. For YouTube or TikTok, connect the account.</li>
+          <li>Pick one place: your <strong>website or blog</strong>, your <strong>YouTube</strong> channel, <strong>Instagram</strong> or <strong>TikTok</strong></li>
+          <li>For a website, save the link — we read your site and check we can actually import recipes from it before syncing. For YouTube, Instagram or TikTok, connect the account.</li>
           <li>Review what arrives under <a href="${appUrl}/creator#drafts" style="color: #dd0031;">Drafts</a> — anything we weren't sure about is flagged for you</li>
           <li>Publish the ones you're happy with; the rest stay drafts until you say so</li>
         </ol>
