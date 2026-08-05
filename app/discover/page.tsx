@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
 import CreatorPopup from '@/components/CreatorPopup';
+import GuestPitch from '@/components/GuestPitch';
 import MealCard, { MealDetailModal, fmtMeasurement, normIng, type Ingredient, type PresetMeal } from '@/components/MealCard';
 
 interface User {
@@ -898,6 +899,14 @@ export default function DiscoverPage() {
 
         {/* Discover Section */}
         <div className="mb-10">
+          {/*
+            Discover is the homepage for anyone not signed in, so the product's
+            one claim is stated here before they tap anything (MEAL-86). Keyed
+            off `user` rather than `token` because an expired token clears both
+            and leaves a visitor who is, for this purpose, a guest.
+          */}
+          {!user && <GuestPitch />}
+
           {isCreator && (
             <div className="flex items-center justify-between gap-4 my-4 px-4 py-3 rounded-xl" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)' }}>
               <p className="text-sm font-medium" style={{ color: 'var(--brand)' }}>

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
+import { PITCH_STORES } from '@/lib/pitch';
 
 /**
  * What Mealio is, for someone who has never seen it.
@@ -54,8 +55,8 @@ export default function AboutPage() {
               <strong>Browse meals</strong> published by cooks and creators, or save your own.
             </li>
             <li style={{ marginBottom: '8px' }}>
-              <strong>Send the ingredients to your grocery cart</strong> in one step. Mealio supports HEB,
-              Walmart, Kroger and its banners, Albertsons, Safeway, ALDI, Amazon Fresh and Wegmans.
+              <strong>Send the ingredients to your grocery cart</strong> in one step. Mealio supports{' '}
+              {PITCH_STORES}.
             </li>
             <li style={{ marginBottom: '8px' }}>
               <strong>Adjust before you buy.</strong> Nothing is ordered — the items land in your own cart at
