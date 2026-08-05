@@ -141,11 +141,15 @@ describe('YouTubeConnectCard — once connected', () => {
     expect(calls.find((call) => call.method === 'PATCH')?.body).toEqual({ appendOptIn: true });
   });
 
-  it('disables the toggle on a grant that never got the write scope', async () => {
+  it('leaves the toggle live on a grant that only has read', async () => {
+    // Which is now every fresh connection. The write scope is asked for when
+    // somebody ticks this box, so disabling it would disable the only way to
+    // ask — and the standing "reconnect to allow it" notice went with it,
+    // because it would have shown against every connected channel.
     harness({ ...CONNECTED, canWriteDescriptions: false });
     const box = await screen.findByRole('checkbox');
-    expect((box as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/without permission to edit descriptions/i)).toBeTruthy();
+    expect((box as HTMLInputElement).disabled).toBe(false);
+    expect(screen.queryByText(/without permission to edit descriptions/i)).toBeNull();
   });
 
   it('tells the creator when the connection has broken, and offers to reconnect', async () => {
@@ -195,5 +199,36 @@ describe('YouTubeConnectCard — once connected', () => {
     // The card never inspected the response, so a failed revocation left the
     // grant live and the creator told it was gone.
     expect(await screen.findByText(/could not disconnect/i)).toBeTruthy();
+  });
+});
+
+describe('turning on description editing', () => {
+  it('goes straight to Google when the connection only has read', async () => {
+    // The ordinary case now: the write scope is asked for when somebody ticks
+    // this box, not when they connect. Reporting a refusal and making them find
+    // the reconnect button would be answering a request with an error.
+    const calls: string[] = [];
+    let redirected = '';
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? 'GET'} ${new URL(url, 'http://localhost').pathname}`);
+      if (url.includes('/connect')) return json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?scope=write' });
+      if (init?.method === 'PATCH') return json({ error: 'not granted yet', needsConsent: true }, 409);
+      return json({
+        hasChannel: true, connected: true, channel: { title: 'Chef Sarah' },
+        brokenReason: null, canWriteDescriptions: false, appendOptIn: false,
+      });
+    }) as unknown as typeof fetch);
+    const location = { href: '' };
+    Object.defineProperty(window, 'location', { value: location, writable: true });
+
+    render(<YouTubeConnectCard />);
+    fireEvent.click(await screen.findByRole('checkbox'));
+
+    // The consent trip is started, not an error shown.
+    await waitFor(() => expect(calls).toContain('POST /api/creator/youtube/connect'));
+    await waitFor(() => expect(location.href).toMatch(/accounts\.google\.com/));
+    redirected = location.href;
+    expect(redirected).toBeTruthy();
   });
 });

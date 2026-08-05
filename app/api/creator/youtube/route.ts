@@ -95,8 +95,14 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Connect your YouTube channel before turning this on.' }, { status: 400 });
     }
     if (!connection.scopes.includes(YOUTUBE_WRITE_SCOPE)) {
+      // Flagged rather than only described, so the card can act on it instead
+      // of matching the sentence. The write scope is asked for at this moment
+      // by design — it is the only moment it means anything to the creator.
       return NextResponse.json(
-        { error: 'This connection was granted without permission to edit descriptions. Reconnect YouTube to allow it.' },
+        {
+          error: 'This connection has not been given permission to edit descriptions yet.',
+          needsConsent: true,
+        },
         { status: 409 },
       );
     }
