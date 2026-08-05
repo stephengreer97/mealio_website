@@ -796,12 +796,15 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
   const label = source === 'none' ? '' : SOURCE_LABELS[source];
 
   /**
-   * Is there a right-hand column at all?
+   * Is there anything to put in the right-hand column?
    *
-   * Only once a source is connected and its checklist has loaded. Until then
-   * the left column has the panel to itself rather than sitting in half of it
-   * beside an empty space — and the run card cannot appear before the checklist
-   * that produced it, so this one test covers the whole column.
+   * The column itself is always there. The cards keep the width they had before
+   * a source was connected, and connecting one fills the space beside them
+   * rather than shrinking them into half of what they were — a card that
+   * resizes when you connect an account reads as the page breaking.
+   *
+   * The run card cannot appear before the checklist that produced it, so this
+   * one test covers the whole column.
    */
   const hasCatalogue = (ready && catalogFor === source) || Boolean(run);
 
@@ -811,14 +814,15 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
     // have already posted". Explicit rather than balanced — a layout that
     // redistributes when a card appears is one nobody can learn, and the import
     // queue appears exactly when they are watching for it.
+    // Two fixed tracks rather than auto-fit, which collapses the empty one and
+    // lets the remaining card stretch across the whole panel. Blank space on the
+    // right is the honest picture while nothing is connected: there is a second
+    // column, and it is waiting for something. Classes rather than inline style
+    // for the tracks, because the collapse to a single column on a narrow screen
+    // needs a media query.
     <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: hasCatalogue ? 'repeat(auto-fit, minmax(min(440px, 100%), 1fr))' : '1fr',
-        gap: '16px',
-        alignItems: 'start',
-        maxWidth: '1560px',
-      }}
+      className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start"
+      style={{ maxWidth: '1560px' }}
     >
     <div className="flex flex-col gap-4">
     {children}

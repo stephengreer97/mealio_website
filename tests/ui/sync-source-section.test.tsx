@@ -1055,14 +1055,16 @@ describe('the back-catalogue checklist', () => {
     expect(catalogue.parentElement?.parentElement).toBe(picker.parentElement?.parentElement);
   });
 
-  it('gives the left column the whole panel until something is connected', async () => {
-    // No checklist means no right-hand column, rather than half a panel beside
-    // an empty space.
+  it('keeps the cards their own width and leaves the right side blank', async () => {
+    // The second column exists whether or not there is anything in it. Letting
+    // the remaining card stretch across the whole panel would mean it shrank
+    // the moment a source was connected, which reads as the page breaking
+    // rather than as a checklist arriving.
     harness();
 
     expect(screen.queryByTestId('catalogue')).toBeNull();
     const grid = screen.getByTestId('sync-source-section').parentElement?.parentElement;
-    expect(grid?.style.gridTemplateColumns).toBe('1fr');
+    expect(grid?.className).toContain('lg:grid-cols-2');
   });
 
   it('renders whatever the portal puts above the picker', async () => {
