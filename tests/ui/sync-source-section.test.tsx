@@ -1147,6 +1147,69 @@ describe('the back-catalogue checklist', () => {
     expect(screen.getByRole('alert').textContent).not.toMatch(/stopped/i);
   });
 
+  it('hides a state when it is unticked, and says how many went', async () => {
+    const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
+    harness({ creator: SYNCING, entries: [already, entry(2)] });
+    await screen.findByTestId('catalogue');
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+
+    fireEvent.click(screen.getByTestId('filter-toggle'));
+    fireEvent.click(within(screen.getByTestId('filter-menu')).getByLabelText('Already Imported'));
+
+    // The imported row is gone, and the control says so — a list that quietly
+    // shrank would read as posts having disappeared from the creator's site.
+    await waitFor(() => expect(screen.getByTestId('filter-toggle').textContent).toMatch(/1 hidden/));
+  });
+
+  it('will not let every state be unticked at once', async () => {
+    // An empty list with every box cleared looks like the source went away.
+    harness({ creator: SYNCING, entries: [entry(1)] });
+    await screen.findByTestId('catalogue');
+    fireEvent.click(screen.getByTestId('filter-toggle'));
+
+    // Re-queried each time: the menu re-renders on every click, so nodes
+    // captured up front are detached and clicking them does nothing.
+    for (const state of ['Not imported', 'Importing', 'Already Imported', 'Withdrawn', 'Declined', 'No recipe found', 'Could not read']) {
+      fireEvent.click(within(screen.getByTestId('filter-menu')).getByLabelText(state));
+    }
+
+    const boxes = Array.from(screen.getByTestId('filter-menu').querySelectorAll('input'));
+    expect(boxes.some(b => (b as HTMLInputElement).checked)).toBe(true);
+  });
+
+  it('asks before fetching more from the creator’s site while filtered', async () => {
+    // The load-bearing one. A filtered list is short, so the scroll sentinel
+    // sits in view from the moment it renders: it would fetch, get a page that
+    // is mostly hidden, still be in view, and fetch again — walking up to fifty
+    // requests at somebody's website off a single checkbox.
+    stubIntersectionObserver();
+    const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
+    const { calls } = harness({
+      creator: SYNCING,
+      routes: {
+        '/api/creator/sync/catalog': () => json({
+          catalog: { ok: true, source: 'website', feed: null, entries: [already, entry(2)], truncated: false, nextPageToken: '2' },
+        }),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    fireEvent.click(screen.getByTestId('filter-toggle'));
+    fireEvent.click(within(screen.getByTestId('filter-menu')).getByLabelText('Already Imported'));
+    await waitFor(() => expect(screen.getByTestId('filter-toggle').textContent).toMatch(/hidden/));
+
+    const before = calls.filter(c => c.url.includes('/api/creator/sync/catalog')).length;
+    scrollToBottom();
+    // The sentinel is gone, so scrolling asks for nothing.
+    expect(screen.queryByTestId('catalogue-more')).toBeNull();
+    expect(calls.filter(c => c.url.includes('/api/creator/sync/catalog')).length).toBe(before);
+
+    // A button instead, so spending those requests is somebody's decision.
+    fireEvent.click(screen.getByTestId('load-more'));
+    await waitFor(() =>
+      expect(calls.filter(c => c.url.includes('/api/creator/sync/catalog')).length).toBeGreaterThan(before));
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
