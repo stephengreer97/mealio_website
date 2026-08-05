@@ -1041,6 +1041,37 @@ describe('the back-catalogue checklist', () => {
     expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
   });
 
+  it('puts the checklist beside the picker, not under it', async () => {
+    // Two columns and two questions: "where do you publish" on the left, "what
+    // have you already posted" on the right. Sibling columns rather than one
+    // stack, so the checklist never pushes the picker up the page as it grows.
+    harness({ creator: SYNCING, entries: [entry(1)] });
+    await screen.findByTestId('catalogue');
+
+    const picker = screen.getByTestId('sync-source-section');
+    const catalogue = screen.getByTestId('catalogue');
+    expect(catalogue.parentElement).not.toBe(picker.parentElement);
+    // Same grid, one level up.
+    expect(catalogue.parentElement?.parentElement).toBe(picker.parentElement?.parentElement);
+  });
+
+  it('gives the left column the whole panel until something is connected', async () => {
+    // No checklist means no right-hand column, rather than half a panel beside
+    // an empty space.
+    harness();
+
+    expect(screen.queryByTestId('catalogue')).toBeNull();
+    const grid = screen.getByTestId('sync-source-section').parentElement?.parentElement;
+    expect(grid?.style.gridTemplateColumns).toBe('1fr');
+  });
+
+  it('renders whatever the portal puts above the picker', async () => {
+    // The profile card arrives as children so the left column reads as one
+    // decision — who you are, and where you publish.
+    render(<SyncSourceSection creator={CREATOR}><p>profile card</p></SyncSourceSection>);
+    expect(await screen.findByText('profile card')).toBeTruthy();
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
