@@ -5,6 +5,26 @@ import { generateOtp, hashOtp } from '@/lib/otp';
 import { sendOtpEmail } from '@/lib/email';
 import { log } from '@/lib/logger';
 
+/**
+ * Accounts named in `MFA_EXEMPT_EMAILS` (comma-separated) skip the 2FA gate.
+ *
+ * This exists for external app-review teams — Google Play data safety review
+ * signs in as a creator, and the OTP goes to an inbox they have no access to,
+ * so the gate is an unopenable door rather than a second factor. It is a
+ * temporary, env-scoped allowlist: point it at a dedicated review account with
+ * no real data on it, and delete the variable once the review is signed off.
+ *
+ * Compared against the address Supabase authenticated, not the one posted, so
+ * the allowlist can only ever match the account that actually just logged in.
+ */
+function isMfaExempt(email: string): boolean {
+  return (process.env.MFA_EXEMPT_EMAILS ?? '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(email.trim().toLowerCase());
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { email, password } = await request.json();
@@ -53,7 +73,14 @@ export async function POST(request: NextRequest) {
       .eq('user_id', userId)
       .maybeSingle();
 
-    if (isAdmin || creator) {
+    const needsTwoFactor = Boolean(isAdmin || creator);
+    const exemptFromTwoFactor = needsTwoFactor && isMfaExempt(authData.user.email ?? email);
+
+    if (exemptFromTwoFactor) {
+      log({ event: 'AUTH:2FA_EXEMPT', status: 'success', email, userId, ip, reason: 'MFA_EXEMPT_EMAILS' });
+    }
+
+    if (needsTwoFactor && !exemptFromTwoFactor) {
       // Check for a trusted remembered device — skip 2FA if found
       const deviceCookie = request.cookies.get('mealio_device')?.value;
       if (deviceCookie) {
