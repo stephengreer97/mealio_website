@@ -1074,6 +1074,43 @@ describe('the back-catalogue checklist', () => {
     expect(await screen.findByText('profile card')).toBeTruthy();
   });
 
+  it('shows a row settling while the chunk is still working', async () => {
+    // The worker persists after every two items but only answers when its
+    // 40-second budget is spent, so the queue used to move once per chunk: one
+    // row spinning for most of a minute, then several resolving at once. The
+    // rows were already right in the database; nothing was asking for them.
+    const items = (status: string) => [
+      { itemId: 'a', url: 'u', title: 'Post A', publishedAt: null, status, detail: null, draftId: null, mealName: status === 'drafted' ? 'Harissa Chicken' : null, needALook: null },
+      { itemId: 'b', url: 'v', title: 'Post B', publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null },
+    ];
+    harness({
+      creator: SYNCING,
+      entries: [entry(1), entry(2)],
+      routes: {
+        '/api/creator/sync': (init) =>
+          // The POST creates the run; the GET is the progress read.
+          init?.method === 'POST'
+            ? json({ run: { id: 'r1', status: 'queued', items: items('pending') } }, 201)
+            : json({ run: { id: 'r1', status: 'running', items: items('drafted') }, totals: { selected: 2, pending: 1, drafted: 1, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 } }),
+        // Never answers: this is the chunk still working.
+        '/api/creator/sync/worker': () => new Response(new ReadableStream({ start() {} })),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 2 posts/ }));
+    await screen.findByTestId('run-queue');
+
+    // Nothing has come back from the worker, and the first row has still landed.
+    // Real time rather than fake: the poll is an interval around a fetch, and
+    // faking the clock stalls the microtasks the fetch resolves on.
+    await waitFor(
+      () => expect(screen.getByTestId('run-queue').textContent).toMatch(/Harissa Chicken/),
+      { timeout: 6_000 },
+    );
+  }, 10_000);
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });

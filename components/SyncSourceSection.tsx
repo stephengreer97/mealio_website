@@ -95,6 +95,17 @@ const CARD = 'bg-white rounded-2xl shadow-sm border border-gray-100 p-5 sm:p-6';
 const POLL_DELAY_MS = 750;
 
 /**
+ * How often the screen re-reads a run while a chunk is still working.
+ *
+ * The worker writes after every two items and answers only when its budget is
+ * spent, so without this the queue moved once per chunk — one row spinning for
+ * most of a minute, then several resolving together. Fast enough that a row
+ * settling looks like it happened when it happened, slow enough that a
+ * forty-item run is a few dozen cheap reads rather than a poll storm.
+ */
+const RUN_WATCH_MS = 1_500;
+
+/**
  * Chunks one press of Import will drive. A 100-item run at two per chunk needs
  * 50, so this is headroom — its job is to stop a run that is making no progress
  * from polling forever.
@@ -724,9 +735,42 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
    * call. The run lives in the database, so closing this tab delays it rather
    * than losing it — the daily sweep picks up whatever is left.
    */
+  /**
+   * Read the run while a chunk is still working.
+   *
+   * The worker persists after every wave of two items but only answers when its
+   * whole 40-second budget is spent, so the screen sat on one row for most of a
+   * minute and then resolved several at once. The rows were already right in the
+   * database the whole time; nothing was asking for them.
+   *
+   * Read-only, and it never touches the loop's own control flow — the POST is
+   * still what decides whether to keep going. This only refreshes what is on
+   * screen, so a failed poll is worth nothing more than a missed frame.
+   */
+  const watchRun = (runId: string) => {
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/creator/sync?runId=${encodeURIComponent(runId)}`, {
+          headers: { Authorization: `Bearer ${token()}` },
+        });
+        if (!res.ok || !mounted.current) return;
+        const data = await res.json();
+        if (!data?.run) return;
+        setRun(data.run as SyncRun);
+        if (data.totals) setTotals(data.totals as SyncRunTotals);
+      } catch {
+        // A dropped poll is a frame that did not arrive. The next one carries
+        // the same state, and the chunk's own response is authoritative anyway.
+      }
+    }, RUN_WATCH_MS);
+    return () => clearInterval(timer);
+  };
+
   const drive = async (runId: string) => {
     for (let chunk = 0; chunk < MAX_CHUNKS; chunk++) {
+      const stopWatching = watchRun(runId);
       const { res, data } = await authed('/api/creator/sync/worker', { runId });
+      stopWatching();
       if (!mounted.current) return;
       if (!res.ok) {
         setError(data.error || 'That import stopped. It is saved — press Carry on to pick it up.');
