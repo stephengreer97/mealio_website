@@ -93,15 +93,21 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">You're in, ${displayName}! 🎉</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">Your creator application has been approved. You can now publish meals to the Mealio Discover feed and earn profit based on how often your meals are saved.</p>
 
-        <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">How to publish your first meal</h3>
-        <ol style="color: #666; font-size: 14px; line-height: 2; margin: 0 0 24px; padding-left: 20px;">
-          <li>Go to your <a href="${appUrl}/creator" style="color: #dd0031;">Creator Portal</a></li>
-          <li>Click <strong>Publish a Meal</strong></li>
-          <li>Add your meal name, ingredients, difficulty, and tags</li>
-          <li>Upload a photo — meals with photos get significantly more saves</li>
-          <li>Optionally add a recipe and a link to the original source</li>
-          <li>Hit <strong>Publish</strong> — your meal goes live on Discover immediately</li>
+        <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">Start here: sync your recipes automatically</h3>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 12px;">You already post your recipes somewhere. You shouldn't have to type them in twice. Tell Mealio where you publish and new posts sync automatically, coming back to you as drafts to review.</p>
+        <ol style="color: #666; font-size: 14px; line-height: 2; margin: 0 0 12px; padding-left: 20px;">
+          <li>Open <a href="${appUrl}/creator#settings" style="color: #dd0031;">Settings</a> in your Creator Portal and find <strong>Sync your content with Mealio</strong></li>
+          <li>Pick one place: your <strong>website or blog</strong>, your <strong>YouTube</strong> channel, or <strong>TikTok</strong></li>
+          <li>For a website, save the link — we read your site and check we can actually import recipes from it before syncing. For YouTube or TikTok, connect the account.</li>
+          <li>Review what arrives under <a href="${appUrl}/creator#drafts" style="color: #dd0031;">Drafts</a> — anything we weren't sure about is flagged for you</li>
+          <li>Publish the ones you're happy with; the rest stay drafts until you say so</li>
         </ol>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">Two things worth knowing. Mealio reads <strong>one</strong> place, so pick where you post recipes most — you can change it whenever you like. And the first sync marks everything you've already published as seen rather than importing it, so your back catalogue doesn't arrive all at once; there's a button in that same section for bringing it in when you want it.</p>
+
+        <a href="${appUrl}/creator#settings" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 28px;">Set up syncing</a>
+
+        <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">Prefer to add them yourself?</h3>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">You can always publish a meal by hand — <strong>Publish a Meal</strong> in your <a href="${appUrl}/creator" style="color: #dd0031;">Creator Portal</a> takes a name, ingredients, a photo and tags, and puts it live on Discover straight away. Plenty of creators do both.</p>
 
         <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">Tips for more saves</h3>
         <ul style="color: #666; font-size: 14px; line-height: 1.9; margin: 0 0 24px; padding-left: 20px;">
@@ -113,7 +119,7 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
           <li><strong>Share your profile link.</strong> Put your Mealio creator link in your Instagram/TikTok bio and posts to send your audience straight to your meals.</li>
         </ul>
 
-        <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 24px;">Go to Creator Portal</a>
+        <a href="${appUrl}/creator" style="display: inline-block; background: #fff; color: #dd0031; text-decoration: none; padding: 11px 22px; border: 1px solid #dd0031; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 24px;">Go to Creator Portal</a>
 
         <p style="color: #999; font-size: 12px; margin: 0;">Questions? Reply to this email or reach us at contact@mealio.co.</p>
       </div>
