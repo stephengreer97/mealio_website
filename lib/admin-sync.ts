@@ -1048,8 +1048,15 @@ export const LEASE_MS = 180_000;
  * Wall-clock budget for one worker invocation, under the 60s function limit with
  * room for the write-back and the notification. Whatever is left over is picked
  * up by the next call.
+ *
+ * The deadline is checked before *starting* a wave, never during one, so it
+ * cannot bound the invocation: the arithmetic above allows a single item ~132s
+ * worst case, and a wave beginning at 24s can outlive the function whatever this
+ * says. Lowered from 40s to widen the gap, which makes the overrun rarer without
+ * pretending to prevent it — a run that loses its invocation mid-wave is saved
+ * and resumable, which is what the client is built around.
  */
-export const CHUNK_BUDGET_MS = 40_000;
+export const CHUNK_BUDGET_MS = 25_000;
 
 /** Items imported at once. Each is a fetch plus two model calls; two is plenty. */
 export const CHUNK_CONCURRENCY = 2;

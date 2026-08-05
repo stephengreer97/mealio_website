@@ -747,22 +747,24 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
    * still what decides whether to keep going. This only refreshes what is on
    * screen, so a failed poll is worth nothing more than a missed frame.
    */
+  const readRun = async (runId: string) => {
+    try {
+      const res = await fetch(`/api/creator/sync?runId=${encodeURIComponent(runId)}`, {
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (!res.ok || !mounted.current) return;
+      const data = await res.json();
+      if (!data?.run) return;
+      setRun(data.run as SyncRun);
+      if (data.totals) setTotals(data.totals as SyncRunTotals);
+    } catch {
+      // A dropped read is a frame that did not arrive. The next one carries the
+      // same state, and the chunk's own response is authoritative anyway.
+    }
+  };
+
   const watchRun = (runId: string) => {
-    const timer = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/creator/sync?runId=${encodeURIComponent(runId)}`, {
-          headers: { Authorization: `Bearer ${token()}` },
-        });
-        if (!res.ok || !mounted.current) return;
-        const data = await res.json();
-        if (!data?.run) return;
-        setRun(data.run as SyncRun);
-        if (data.totals) setTotals(data.totals as SyncRunTotals);
-      } catch {
-        // A dropped poll is a frame that did not arrive. The next one carries
-        // the same state, and the chunk's own response is authoritative anyway.
-      }
-    }, RUN_WATCH_MS);
+    const timer = setInterval(() => { void readRun(runId); }, RUN_WATCH_MS);
     return () => clearInterval(timer);
   };
 
@@ -773,7 +775,22 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
       stopWatching();
       if (!mounted.current) return;
       if (!res.ok) {
-        setError(data.error || 'That import stopped. It is saved — press Carry on to pick it up.');
+        // Usually the invocation running out of time rather than anything being
+        // wrong. The chunk deadline is checked before starting a wave and never
+        // during one, so a wave that begins near the limit can outlive the
+        // function — and every item it had already finished is written, because
+        // `recordItem` persists per item rather than per chunk.
+        //
+        // So: read the run one last time, so the queue shows what actually
+        // landed instead of freezing on whatever the last poll caught, and say
+        // it as a state rather than a failure. Nothing is lost and Carry on
+        // resumes it — the run card already offers that button.
+        await readRun(runId);
+        if (!mounted.current) return;
+        setError(
+          data.error
+          || 'That is as far as this run got in one go. Everything read so far is saved — press Carry on to finish it.',
+        );
         return;
       }
       const next = data.run as SyncRun;
