@@ -189,9 +189,21 @@ export type KrogerProduct = {
  * `ok: false` therefore carries the upstream status, and `filteredOut` counts
  * products Kroger *did* return for this term that this store cannot fulfil —
  * the difference between "no such product" and "not at your store".
+ *
+ * `unfulfillable` carries the *descriptions* of the dropped products, not just
+ * how many there were. A count cannot support the claim the UI makes from it
+ * ("Kroger sells this, but not at the store you picked"), because Kroger's
+ * `filter.term` is a loose match: searching "Ghost Pepper Jelly" returns "Ghost
+ * Pepper Hot Sauce", and a bare integer cannot tell that apart from the jelly.
+ * The caller re-scores these against the ingredient before claiming anything.
+ *
+ * `unfulfillable.length` is deliberately NOT `filteredOut`. A product whose
+ * items carry no `fulfillment` block at all is counted in `filteredOut` (we
+ * dropped it) but never listed in `unfulfillable` (Kroger did not say this
+ * store cannot fulfil it — Kroger said nothing). Absent data is not evidence.
  */
 export type KrogerSearchOutcome =
-  | { ok: true; products: KrogerProduct[]; filteredOut: number }
+  | { ok: true; products: KrogerProduct[]; filteredOut: number; unfulfillable: string[] }
   | { ok: false; status: number; detail: string };
 
 /** Fetch up to `limit` products from Kroger for a search term. */
@@ -234,15 +246,23 @@ export async function krogerSearchProducts(
     return krogerSearchProducts(userAccessToken, term, locationId, limit, 1, debug);
   }
 
+  // Descriptions of products Kroger returned and explicitly marked as not
+  // pickable, deliverable or shelvable here. Products missing the fulfillment
+  // block are still dropped, but stay out of this list — see the type comment:
+  // "we don't know" must not be laundered into "your store doesn't have it".
+  const unfulfillable: string[] = [];
   const fulfillable = products.filter(p => {
     const f = p.items?.[0]?.fulfillment;
     if (!f) return false;
-    return f.inStore || f.delivery || f.curbside;
+    if (f.inStore || f.delivery || f.curbside) return true;
+    unfulfillable.push(String(p.description ?? term));
+    return false;
   });
 
   return {
     ok: true,
     filteredOut: products.length - fulfillable.length,
+    unfulfillable,
     products: fulfillable.map(p => {
       const images: any[] = p.images ?? [];
       const featured = images.find((img: any) => img.featured) ?? images[0];

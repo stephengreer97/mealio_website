@@ -34,9 +34,15 @@ import { encryptKrogerToken, krogerSearchProducts } from '@/lib/kroger';
 
 const LOCATION = '01400376';
 
-/** A product shaped the way Kroger returns one for a located search. */
-function product(description: string, opts: { fulfillable?: boolean; stockLevel?: string } = {}) {
-  const { fulfillable = true, stockLevel = 'HIGH' } = opts;
+/**
+ * A product shaped the way Kroger returns one for a located search.
+ *
+ * `omitFulfillment` drops the block entirely, which Kroger does: that is a
+ * different fact from "this store cannot fulfil it" and must not be reported
+ * as one.
+ */
+function product(description: string, opts: { fulfillable?: boolean; stockLevel?: string; omitFulfillment?: boolean } = {}) {
+  const { fulfillable = true, stockLevel = 'HIGH', omitFulfillment = false } = opts;
   return {
     productId: '0001111041700',
     upc: '0001111041700',
@@ -48,9 +54,11 @@ function product(description: string, opts: { fulfillable?: boolean; stockLevel?
       soldBy: 'UNIT',
       price: { regular: 3.49 },
       inventory: { stockLevel },
-      fulfillment: fulfillable
-        ? { curbside: true, delivery: true, inStore: true, shipToHome: false }
-        : { curbside: false, delivery: false, inStore: false, shipToHome: true },
+      ...(omitFulfillment ? {} : {
+        fulfillment: fulfillable
+          ? { curbside: true, delivery: true, inStore: true, shipToHome: false }
+          : { curbside: false, delivery: false, inStore: false, shipToHome: true },
+      }),
     }],
   };
 }
@@ -89,6 +97,8 @@ async function search(body: Record<string, unknown>) {
 }
 
 const MILK = { productName: 'Whole Milk', searchTerm: 'Kroger Whole Milk, 1 gal', unit: 'cup', measure: '2', quantity: 1 };
+/** A niche term. Kroger's `filter.term` answers it with something adjacent. */
+const JELLY = { productName: 'Ghost Pepper Jelly', searchTerm: 'Ghost Pepper Jelly, 12 oz', unit: 'tbsp', measure: '2', quantity: 1 };
 
 beforeEach(() => {
   fakeDb.reset();
@@ -122,6 +132,17 @@ describe('lib/kroger krogerSearchProducts', () => {
 
     expect(outcome).toMatchObject({ ok: true, filteredOut: 1 });
     expect(outcome.ok && outcome.products).toHaveLength(0);
+    // Named, not just counted — a count cannot be checked for relevance.
+    expect(outcome.ok && outcome.unfulfillable).toEqual(['Kroger Whole Milk']);
+  });
+
+  it('separates "this store cannot fulfil it" from "Kroger said nothing about fulfillment"', async () => {
+    stubKroger({ status: 200, products: [product('Kroger Whole Milk', { omitFulfillment: true })] });
+
+    const outcome = await krogerSearchProducts('access', 'whole milk', LOCATION, 10);
+
+    // Dropped, so it counts as filtered — but it is not evidence of anything.
+    expect(outcome).toMatchObject({ ok: true, filteredOut: 1, unfulfillable: [] });
   });
 });
 
@@ -193,6 +214,84 @@ describe('POST /api/kroger/search-products', () => {
     const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
 
     expect(json.results[0].reason).toBe('out_of_stock');
+  });
+
+  /**
+   * "Kroger sells this, but not at the store you picked" is a claim about a
+   * product, made from evidence the route never looked at: a count. These pin
+   * the three ways the count lied.
+   */
+  describe('the "sells this, not here" claim', () => {
+    it('does not claim it from an irrelevant product the fulfillment filter dropped', async () => {
+      // Kroger answers a niche term with an adjacent one. If the hot sauce were
+      // fulfillable this is `low_confidence` — "No exact match found", which is
+      // honest. The same irrelevant result must not become a confident claim
+      // about the jelly merely because the store cannot deliver the sauce.
+      const calls = stubKroger([{ status: 200, products: [product('Ghost Pepper Hot Sauce', { fulfillable: false })] }]);
+
+      const { json } = await search({ ingredients: [JELLY], locationId: LOCATION });
+
+      expect(json.results[0].reason).not.toBe('unavailable_at_store');
+      expect(json.results[0].reason).toBe('no_results');
+      // And the rung-1 leftover did not decide a verdict the later rungs
+      // reached on their own: the ladder was walked to the end.
+      expect(calls.length).toBeGreaterThan(1);
+    });
+
+    it('does not claim it when Kroger returned no fulfillment block at all', async () => {
+      // The filter drops these too, but Kroger saying nothing about a store is
+      // not Kroger saying the store cannot fulfil it.
+      stubKroger({ status: 200, products: [product('Kroger Whole Milk', { omitFulfillment: true })] });
+
+      const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
+
+      expect(json.results[0].reason).toBe('no_results');
+    });
+
+    it('still claims it when the dropped product really is the ingredient', async () => {
+      stubKroger({ status: 200, products: [product('Kroger Whole Milk', { fulfillable: false })] });
+
+      const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
+
+      expect(json.results[0].reason).toBe('unavailable_at_store');
+    });
+  });
+
+  describe('a rung that flakes is not the whole ladder', () => {
+    it('recovers an exact match from rung 2 when rung 1 returns a transient 500', async () => {
+      // Measured regression: this used to cost 2 calls and yield the UPC. After
+      // the blanket break it cost 1 call and yielded `search_error` and no UPC,
+      // for a failure the very next request was going to answer.
+      const calls = stubKroger([
+        { status: 500 },
+        { status: 200, products: [product('Kroger Whole Milk, 1 gal')] },
+      ]);
+
+      const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
+
+      expect(json.results[0]).toMatchObject({ reason: 'matched', exact: true, upc: '0001111041700' });
+      expect(calls).toHaveLength(2);
+    });
+
+    it('still caps a total 5xx outage at one request per rung', async () => {
+      // Continuing on 5xx must not resurrect the amplification MEAL-19 fixed.
+      // Three rungs, one call each — fewer than the four the original ladder made.
+      const calls = stubKroger({ status: 503 });
+
+      const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
+
+      expect(calls).toHaveLength(3);
+      expect(json.results[0].reason).toBe('search_error');
+    });
+
+    it('still stops dead on a 401, where a different term cannot help', async () => {
+      const calls = stubKroger({ status: 401 });
+
+      const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
+
+      expect(calls).toHaveLength(1);
+      expect(json.results[0].reason).toBe('search_error');
+    });
   });
 
   it('breaks down the outcomes in the success log', async () => {

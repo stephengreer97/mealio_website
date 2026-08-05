@@ -2170,24 +2170,32 @@ function KrogerCartFlow({
             ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
             : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
           const isProcessing = customSearching;
+          // Every line below reports the outcome of the *automatic* search for
+          // this ingredient. Once a custom re-search has produced products,
+          // that outcome is history: "Kroger sells this, but not at the store
+          // you picked" was rendering directly above products this store can
+          // fulfil, and "No products found for this search" above a list of
+          // them. A failed re-search has its own message next to the input, so
+          // suppress these there too rather than stacking two errors.
+          const showAutoSearchNotice = customSuggestions.length === 0 && !customSearchError;
 
           return (
             <>
               <div className="flex-1 px-5 py-4 overflow-y-auto space-y-3">
                 {/* What was searched */}
-                {currentReview.reason === 'out_of_stock' && (
+                {showAutoSearchNotice && currentReview.reason === 'out_of_stock' && (
                   <p className="text-xs font-medium" style={{ color: '#b45309' }}>⚠ Out of stock at this store</p>
                 )}
-                {currentReview.reason === 'unavailable_at_store' && (
+                {showAutoSearchNotice && currentReview.reason === 'unavailable_at_store' && (
                   <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} sells this, but not at the store you picked — try another store or search for something else</p>
                 )}
-                {currentReview.reason === 'search_error' && (
+                {showAutoSearchNotice && currentReview.reason === 'search_error' && (
                   <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item — this isn&apos;t a sign the product is missing. Try again in a moment.</p>
                 )}
-                {currentReview.reason === 'no_results' && (
+                {showAutoSearchNotice && currentReview.reason === 'no_results' && (
                   <p className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>No products found for this search</p>
                 )}
-                {(!currentReview.reason || currentReview.reason === 'low_confidence') && (
+                {showAutoSearchNotice && (!currentReview.reason || currentReview.reason === 'low_confidence') && (
                   <p className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>No exact match found</p>
                 )}
                 <div className="rounded-xl px-4 py-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
@@ -2632,6 +2640,7 @@ function ChooseProductsFlow({
             ? (selectedSuggIdx !== 'custom' || customText.trim().length > 0)
             : (selectedSuggIdx === 'custom' && customText.trim().length > 0);
           const isLast = pickIdx === searchResults.length - 1;
+          const showAutoSearchNotice = customSuggestions.length === 0 && !customSearchError;
 
           return (
             <>
@@ -2645,10 +2654,13 @@ function ChooseProductsFlow({
                   {customSearchError && (
                     <p className="text-xs mt-1" style={{ color: '#b45309' }}>{customSearchError}</p>
                   )}
-                  {!customSearchError && currentResult.reason === 'unavailable_at_store' && (
+                  {/* Both describe the automatic search. A custom re-search that
+                      returned products supersedes it — see showAutoSearchNotice
+                      in KrogerCartFlow for the same rule. */}
+                  {showAutoSearchNotice && currentResult.reason === 'unavailable_at_store' && (
                     <p className="text-xs mt-1" style={{ color: '#b45309' }}>{storeName} sells this, but not at the store you picked</p>
                   )}
-                  {!customSearchError && currentResult.reason === 'search_error' && (
+                  {showAutoSearchNotice && currentResult.reason === 'search_error' && (
                     <p className="text-xs mt-1" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item — try again in a moment</p>
                   )}
                 </div>

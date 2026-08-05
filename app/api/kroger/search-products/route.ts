@@ -45,6 +45,49 @@ function buildSearchTerm(base: string, measure: string | null, unit: string): st
   const full = `${base} ${measure ?? ''} ${unit}`.replace(/\s+/g, ' ').trim();
   return full.split(' ').slice(0, 8).join(' ');
 }
+
+/**
+ * How well a product Kroger refused to fulfil here must match the ingredient
+ * before we are willing to tell the user "Kroger sells this, but not at the
+ * store you picked".
+ *
+ * That sentence is a factual claim about a specific product, and the only thing
+ * behind it is a `filter.term` search — which is loose enough that the codebase
+ * already has a `low_confidence` reason for exactly this reason. "Ghost Pepper
+ * Jelly" returns "Ghost Pepper Hot Sauce"; if the sauce happens to be
+ * fulfillable we honestly say "No exact match found", and it would be perverse
+ * for the *same* irrelevant result to become a confident claim about the jelly
+ * just because the store cannot deliver it.
+ *
+ * 70 is where `scoreProductMatch` starts scoring at all (it floors anything
+ * under 0.7 word overlap, or any missing critical word, to 0), so this is
+ * currently "the scorer was willing to call it a match". It is a named constant
+ * so the bar can be raised without hunting for the comparison.
+ */
+const UNAVAILABLE_CLAIM_MIN_SCORE = 70;
+
+/**
+ * One rung of the fallback ladder and what its search turned up but dropped.
+ * `filteredOut` counts everything the fulfillment filter removed; `unfulfillable`
+ * names only the subset Kroger explicitly said this store cannot fulfil. The gap
+ * between them is products Kroger returned no fulfillment data for.
+ */
+type RungEvidence = { term: string; filteredOut: number; unfulfillable: string[] };
+
+/**
+ * Statuses where asking again — with different words, on the next rung — is
+ * provably pointless and actively harmful. An expired/insufficient grant fails
+ * identically for every term, and a 429 is a request budget: spending three
+ * more of it per ingredient, ten ingredients at a time, is how MEAL-19's soft
+ * quota became a hard outage.
+ *
+ * 5xx is deliberately NOT here. A transient 500 on one rung says nothing about
+ * the next, and breaking on it regressed a case that used to recover: rung 1
+ * flakes, rung 2 holds the exact match, and stopping early reported
+ * `search_error` with no UPC. Worst case is now 3 requests on a total outage
+ * rather than the old 4, so the load argument still holds.
+ */
+const FATAL_UPSTREAM_STATUSES = new Set([401, 403, 429]);
 export async function POST(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -131,21 +174,23 @@ export async function POST(request: NextRequest) {
 
         let searchStr = ladder[0];
         let suggestions: KrogerProduct[] = [];
-        let filteredOut = 0;
-        let upstreamStatus: number | null = null;
+        /** Per rung, so a rung-1 leftover is never inherited by rung 3's verdict. */
+        const rungs: RungEvidence[] = [];
+        const rungStatuses: number[] = [];
 
         for (const candidate of ladder) {
           searchStr = candidate;
           const outcome = await krogerSearchProducts(userAccessToken, candidate, locationId, 10, 0, debugMode);
-          // Stop on an upstream failure rather than walking the rest of the
-          // ladder. Re-asking a 429'd or 5xx'ing API with different words cannot
-          // produce products, and it was multiplying one throttled request into
-          // four per ingredient — ten of those in flight at a time (MEAL-19).
-          if (!outcome.ok) { upstreamStatus = outcome.status; break; }
-          filteredOut += outcome.filteredOut;
+          if (!outcome.ok) {
+            rungStatuses.push(outcome.status);
+            // Stop only where re-asking cannot help (see FATAL_UPSTREAM_STATUSES).
+            if (FATAL_UPSTREAM_STATUSES.has(outcome.status)) break;
+            continue;
+          }
+          rungs.push({ term: candidate, filteredOut: outcome.filteredOut, unfulfillable: outcome.unfulfillable });
           if (outcome.products.length > 0) { suggestions = outcome.products; break; }
         }
-        if (upstreamStatus !== null) upstreamStatuses.push(upstreamStatus);
+        upstreamStatuses.push(...rungStatuses);
 
         // Score against the chosen product name (searchTerm), falling back to ingredient name.
         // Also try matching against description + size to catch weight items like
@@ -168,17 +213,40 @@ export async function POST(request: NextRequest) {
           console.log('[Kroger:match] searched:', JSON.stringify(searchStr), '| scored against:', JSON.stringify(strippedTarget));
           console.log('[Kroger:match] suggestions:', sortedScored.map(({ s, score }) => `${score} — ${s.description}${s.size ? ', ' + s.size : ''}`).join(' | ') || '(none)');
           console.log('[Kroger:match] selected:', top ? `${top.description} (exact=${!!exactMatch})` : '(none)');
+          // Per rung, because "the store cannot fulfil it" is decided from these
+          // and a total told you nothing about which search produced it.
+          console.log('[Kroger:match] dropped by fulfillment filter:',
+            rungs.map(r => `${JSON.stringify(r.term)} dropped=${r.filteredOut} unfulfillable=[${r.unfulfillable.join(' | ')}]`).join(' ; ') || '(none)');
         }
 
+        // "Kroger sells this, but not at the store you picked" needs a product
+        // that is (a) one Kroger returned, (b) one this store explicitly said it
+        // cannot fulfil, and (c) plausibly the thing the user asked for. Only
+        // (a) and (b) used to be checked, via a count that had accumulated
+        // across every rung. Each dropped description is now re-scored here
+        // rather than trusted for having come from some rung, against both the
+        // saved display string and the bare ingredient name — the display
+        // string carries size noise ("Kroger Whole Milk, 1 gal") that sinks an
+        // otherwise perfect description below the floor.
+        const sellsItElsewhere = rungs.some(rung =>
+          rung.unfulfillable.some(desc =>
+            Math.max(scoreProductMatch(scoreTarget, desc), scoreProductMatch(base, desc)) >= UNAVAILABLE_CLAIM_MIN_SCORE
+          )
+        );
+
         const filteredSuggestions = sortedScored.map(({ s }) => s).filter(s => s.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK');
-        const reason: SearchReason = upstreamStatus !== null ? 'search_error'
-          : exactMatch ? 'matched'
+        // Upstream failures are checked last, not first: a rung may now flake
+        // and a later rung still hold the answer, and having the answer beats
+        // reporting the flake.
+        const reason: SearchReason =
+            exactMatch ? 'matched'
           : outOfStockExact ? 'out_of_stock'
           : filteredSuggestions.length > 0 ? 'low_confidence'
-          // Nothing to offer. Which of the three reasons it is depends on what
+          // Nothing to offer. Which of the four reasons it is depends on what
           // Kroger actually said, not on the empty list we ended up with.
           : suggestions.length > 0 ? 'out_of_stock'
-          : filteredOut > 0 ? 'unavailable_at_store'
+          : rungStatuses.length > 0 ? 'search_error'
+          : sellsItElsewhere ? 'unavailable_at_store'
           : 'no_results';
 
         return {
@@ -197,6 +265,11 @@ export async function POST(request: NextRequest) {
 
   // MEAL-19: the old line only counted hits, so a run where Kroger 429'd every
   // request and one where the store simply stocks nothing logged identically.
+  //
+  // `failed` counts ingredients that ended with nothing to show because of an
+  // upstream failure; `requests` counts refused calls. They differ now that a
+  // 5xx on one rung can be recovered by the next, and the gap between them is
+  // exactly the flakiness the ladder is absorbing — worth seeing.
   if (upstreamStatuses.length) {
     log({
       event: 'KROGER:SEARCH_PRODUCTS',
@@ -204,7 +277,9 @@ export async function POST(request: NextRequest) {
       userId: decoded.userId,
       email: decoded.email,
       reason: 'upstream_error',
-      detail: `failed=${upstreamStatuses.length}/${results.length} statuses=${[...new Set(upstreamStatuses)].sort((a, b) => a - b).join(',')} store=${storeId ?? locationId}`,
+      detail: `failed=${results.filter(r => r.reason === 'search_error').length}/${results.length}`
+        + ` requests=${upstreamStatuses.length} statuses=${[...new Set(upstreamStatuses)].sort((a, b) => a - b).join(',')}`
+        + ` store=${storeId ?? locationId}`,
     });
   }
 
