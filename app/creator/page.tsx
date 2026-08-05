@@ -2029,22 +2029,27 @@ export default function CreatorPortal() {
             aria-labelledby="portal-tab-settings"
             hidden={tab !== 'settings'}
           >
-            {/* Masonry, via multi-column rather than grid.
+            {/* Two columns, each a self-contained stack.
                 
-                A grid gives every card in a row the height of the tallest one,
-                so the back catalogue — which is short until it has a list in it
-                — sat under a band of white space waiting for the sync card
-                beside it to finish. Columns flow instead: a card starts where
-                the one above it ended, and when the window narrows the
-                catalogue slides up under the sync card rather than leaving a
-                gap where a third column used to be.
+                This was multi-column for a while, to stop a short card sitting
+                under a band of white space waiting for a tall one beside it. It
+                cost more than it bought: multi-column balances height, so any
+                card appearing or growing — the import queue, most visibly —
+                made the browser redistribute all of them, and cards moved while
+                a creator was using them.
                 
-                `break-inside: avoid` on the children is what stops a card being
-                sliced in half across a column boundary, and the bottom margin is
-                the row gap — `gap` only sets the space *between* columns. */}
+                Each feature now hands down one item that stacks its own cards,
+                so a grid is enough: an item growing pushes nothing sideways, and
+                `align-items: start` keeps a short column short instead of
+                stretching it to match its neighbour. */}
             <div
-              className="[&>*]:break-inside-avoid [&>*]:mb-4"
-              style={{ columnWidth: '400px', columnGap: '16px', maxWidth: '1560px' }}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(440px, 100%), 1fr))',
+                gap: '16px',
+                alignItems: 'start',
+                maxWidth: '1560px',
+              }}
             >
 
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">

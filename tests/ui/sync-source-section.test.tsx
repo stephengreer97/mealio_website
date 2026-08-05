@@ -979,6 +979,35 @@ describe('the back-catalogue checklist', () => {
     expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
   });
 
+  it('keeps the import queue directly under the checklist it came from', async () => {
+    // The settings page lays these out in a grid, and the section hands down a
+    // single stacked item so nothing can be redistributed when a card appears.
+    // Pressing Import used to insert a sibling into a balanced multi-column
+    // layout, and the queue landed under the checklist or beside it depending on
+    // which arrangement evened the columns out.
+    harness({
+      creator: SYNCING,
+      entries: [entry(1), entry(2)],
+      routes: {
+        '/api/creator/sync': () => json({ run: { id: 'r1', status: 'queued', items: [
+          { itemId: 'a', url: 'u', title: 'Post A', publishedAt: null, status: 'pending', detail: null, draftId: null, mealName: null, needALook: null },
+        ] } }, 201),
+        '/api/creator/sync/worker': () => new Response(new ReadableStream({ start() {} })),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 2 posts/ }));
+    await screen.findByTestId('run-summary');
+
+    // Same parent, and the run comes after the checklist in document order.
+    const catalogue = screen.getByTestId('catalogue');
+    const run = screen.getByTestId('run-summary');
+    expect(run.parentElement).toBe(catalogue.parentElement);
+    expect(catalogue.compareDocumentPosition(run) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });

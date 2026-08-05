@@ -777,7 +777,14 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
   const label = source === 'none' ? '' : SOURCE_LABELS[source];
 
   return (
-    <>
+    // One column of cards, and one item as far as the settings grid is
+    // concerned. They were three siblings in a balanced multi-column layout, so
+    // pressing Import inserted a fourth and the browser redistributed
+    // everything to even the columns out — the queue landed under the checklist
+    // or beside it depending on which arrangement happened to balance, and the
+    // profile card moved with it. A layout that rearranges itself on an action
+    // is one nobody can learn.
+    <div className="flex flex-col gap-4">
     <div className={CARD} data-testid="sync-source-section">
       <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Your recipes</p>
       <h2 className="text-base font-bold text-gray-900 leading-tight mb-2">Sync your content with Mealio</h2>
@@ -1220,6 +1227,6 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
           </ul>
         </div>
       )}
-    </>
+    </div>
   );
 }
