@@ -91,6 +91,23 @@ interface Props {
 /** The card shell every section of this feature sits on. */
 const CARD = 'bg-white rounded-2xl shadow-sm border border-gray-100 p-5 sm:p-6';
 
+/**
+ * The states a post can be in, as a creator would name them.
+ *
+ * Ordered as the list itself reads: what is left to do first, then what has
+ * already been dealt with. `new` is the absence of a record rather than a status
+ * in the table — it is what "I have not touched this" looks like.
+ */
+const FILTER_STATES: Array<{ key: string; label: string }> = [
+  { key: 'new', label: 'Not imported' },
+  { key: 'importing', label: 'Importing' },
+  { key: 'imported', label: 'Already Imported' },
+  { key: 'withdrawn', label: 'Withdrawn' },
+  { key: 'declined', label: 'Declined' },
+  { key: 'rejected', label: 'No recipe found' },
+  { key: 'failed', label: 'Could not read' },
+];
+
 /** How long between worker calls while a run is unfinished. */
 const POLL_DELAY_MS = 750;
 
@@ -501,24 +518,6 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
   /** Where the next window starts, or null when the list is complete. */
   const nextPageToken = catalog?.ok ? catalog.nextPageToken ?? null : null;
 
-  /**
-   * Ask for the next window when the creator scrolls into the end of the list.
-   *
-   * An observer rather than a scroll handler: the list lives in its own
-   * scrolling box, and the sentinel is inside it, so "have they reached the
-   * bottom" is a question about intersection rather than about arithmetic on two
-   * elements' offsets.
-   */
-  useEffect(() => {
-    const node = sentinel.current;
-    if (!node || !nextPageToken || loadingMore || moreFailed) return;
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) void loadCatalog(nextPageToken);
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextPageToken, loadingMore, moreFailed]);
 
   /**
    * Re-read the checklist when a meal is published or deleted.
@@ -642,7 +641,61 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
     }
   };
 
-  const entries: CatalogEntry[] = catalog?.ok ? catalog.entries : [];
+  const allEntries: CatalogEntry[] = catalog?.ok ? catalog.entries : [];
+
+  /**
+   * Which states the list is showing. Everything, until a creator says otherwise.
+   *
+   * A filter and not a search: the states are the six things that can have
+   * happened to a post, and a creator looking for "what have I not brought over
+   * yet" is asking to hide four of them.
+   */
+  const [visibleStates, setVisibleStates] = useState<Set<string>>(() => new Set(FILTER_STATES.map(f => f.key)));
+  const [filterOpen, setFilterOpen] = useState(false);
+
+  const stateOf = (entry: CatalogEntry): string => {
+    // `inFlight` read directly rather than through `isImporting`, which is
+    // declared with the other row predicates further down — this runs before
+    // them, because the paging effect needs to know how much is hidden.
+    if (entry.record?.inFlight === true) return 'importing';
+    const status = entry.record?.status;
+    if (status === 'imported') return 'imported';
+    if (status === 'declined') return 'declined';
+    if (status === 'rejected') return 'rejected';
+    if (status === 'withdrawn') return 'withdrawn';
+    if (status === 'failed') return 'failed';
+    return 'new';
+  };
+
+  const entries = allEntries.filter(entry => visibleStates.has(stateOf(entry)));
+  const hiddenCount = allEntries.length - entries.length;
+
+  /**
+   * Ask for the next window when the creator scrolls into the end of the list.
+   *
+   * An observer rather than a scroll handler: the list lives in its own
+   * scrolling box, and the sentinel is inside it, so "have they reached the
+   * bottom" is a question about intersection rather than about arithmetic on two
+   * elements' offsets.
+   */
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || !nextPageToken || loadingMore || moreFailed) return;
+    // Not while a filter is on. A filtered list is short, so the sentinel sits
+    // in view from the moment it renders — it would fetch, receive a page that
+    // is mostly hidden, still be in view, and fetch again, walking up to
+    // `FEED_MAX_PAGES` requests at the creator's own website off a single
+    // checkbox. Filtered, the next page is asked for by a button instead, so
+    // spending those requests is a choice somebody made.
+    if (hiddenCount > 0) return;
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadCatalog(nextPageToken);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextPageToken, loadingMore, moreFailed, hiddenCount]);
   const isImported = (entry: CatalogEntry) => entry.record?.status === 'imported';
   /**
    * Nothing came of this post, and nothing will unless somebody asks again.
@@ -1075,7 +1128,11 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
             </p>
           )}
 
-          {catalog?.ok && entries.length > 0 && (
+          {/* `allEntries`, not `entries`: filtering everything out must not take
+              the filter control with it. A creator who hides every state and
+              then cannot find the button to unhide them has been locked out of
+              their own list by a checkbox. */}
+          {catalog?.ok && allEntries.length > 0 && (
             <>
               <div className="flex flex-wrap items-center gap-3 mb-2.5">
                 <span
@@ -1090,6 +1147,55 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
                 >
                   Tick the {Math.min(unimported.length, CREATOR_SELECTION_MAX)} newest
                 </button>
+                {/* A filter, not a search. Beside the tick control because the
+                    two answer the same question from opposite ends: choose what
+                    to import, or hide what you cannot. */}
+                <div className="relative">
+                  <button
+                    onClick={() => setFilterOpen(open => !open)}
+                    aria-expanded={filterOpen}
+                    aria-label="Filter by what has happened to each post"
+                    data-testid="filter-toggle"
+                    className={`text-xs font-semibold border rounded-lg px-2.5 py-1.5 transition-colors ${
+                      hiddenCount > 0
+                        ? 'text-red-700 border-red-200 bg-red-50 hover:bg-red-100'
+                        : 'text-gray-500 border-gray-200 hover:text-gray-800 hover:bg-gray-50'
+                    }`}
+                  >
+                    {/* A funnel, drawn rather than imported: one glyph is not
+                        worth a dependency. */}
+                    <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 inline-block align-[-2px]" aria-hidden fill="currentColor">
+                      <path d="M1.5 2.5h13l-5 6v5l-3-1.5v-3.5z" />
+                    </svg>
+                    {hiddenCount > 0 && <span className="ml-1.5">{hiddenCount} hidden</span>}
+                  </button>
+
+                  {filterOpen && (
+                    <div
+                      data-testid="filter-menu"
+                      className="absolute z-10 mt-1.5 w-56 bg-white border border-gray-200 rounded-xl shadow-lg p-2"
+                    >
+                      {FILTER_STATES.map(state => (
+                        <label key={state.key} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={visibleStates.has(state.key)}
+                            onChange={() => setVisibleStates(current => {
+                              const next = new Set(current);
+                              // Never all-off: an empty list with every box
+                              // cleared looks like the source went away.
+                              if (next.has(state.key) && next.size > 1) next.delete(state.key);
+                              else next.add(state.key);
+                              return next;
+                            })}
+                            className="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                          />
+                          <span className="text-xs text-gray-700">{state.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {selected.length > 0 && (
                   <button
                     onClick={() => setSelected([])}
@@ -1199,9 +1305,25 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
                     it. Inside the scrolling box rather than after it, because
                     the box is what scrolls — a sentinel outside would be on
                     screen from the start and fetch every page at once. */}
-                {nextPageToken && !moreFailed && (
+                {nextPageToken && !moreFailed && hiddenCount === 0 && (
                   <div ref={sentinel} className="px-3 py-3 text-xs text-gray-400" data-testid="catalogue-more">
                     {loadingMore ? 'Reading more…' : 'Scroll for more'}
+                  </div>
+                )}
+                {nextPageToken && !moreFailed && hiddenCount > 0 && (
+                  <div className="px-3 py-3 text-xs text-gray-500" data-testid="catalogue-more-filtered">
+                    {/* Said before the button, because the number explains why
+                        the list looks shorter than the creator expects. */}
+                    Showing {entries.length} of {allEntries.length} read so far.{' '}
+                    <button
+                      type="button"
+                      onClick={() => { void loadCatalog(nextPageToken); }}
+                      disabled={loadingMore}
+                      data-testid="load-more"
+                      className="font-semibold text-gray-700 underline disabled:opacity-60"
+                    >
+                      {loadingMore ? 'Reading more…' : 'Read more from your site'}
+                    </button>
                   </div>
                 )}
                 {moreFailed && (
