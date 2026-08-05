@@ -28,6 +28,7 @@ export type EventType =
   | 'AUTH:2FA_SENT'
   | 'AUTH:2FA_VERIFY'
   | 'AUTH:2FA_RESEND'
+  | 'AUTH:2FA_EXEMPT'       // MFA_EXEMPT_EMAILS allowlist skipped the 2FA gate
   | 'AUTH:OAUTH_GOOGLE'
   | 'AUTH:OAUTH_APPLE'
   // ── Meals ─────────────────────────────────────────────────────────────────

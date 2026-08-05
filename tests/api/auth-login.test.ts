@@ -30,6 +30,7 @@ describe('POST /api/auth/login', () => {
     fakeDb.reset();
     signInWithPassword.mockReset();
     vi.mocked(sendOtpEmail).mockClear();
+    vi.unstubAllEnvs(); // an allowlist must never leak into the next test
   });
 
   it('400 when email or password is missing', async () => {
@@ -104,6 +105,56 @@ describe('POST /api/auth/login', () => {
       (c) => c.table === 'remembered_devices' && c.method === 'eq' && c.args[0] === 'token_hash'
     );
     expect(lookup?.args[1]).toBe(hashToken('device-token'));
+  });
+
+  it('creator on the MFA_EXEMPT_EMAILS allowlist logs straight in', async () => {
+    // App-review teams (Google Play data safety) sign in as a creator and have
+    // no way to read the OTP inbox, so the gate is an unopenable door for them.
+    vi.stubEnv('MFA_EXEMPT_EMAILS', 'reviewer@play.test, A@B.TEST');
+    signInWithPassword.mockResolvedValue(CONFIRMED_USER);
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'full', is_admin: false } });
+    fakeDb.queue('creators', { data: { id: 'creator-1' } });
+
+    const res = await POST(loginRequest());
+    const body = await res.json();
+
+    // Listed case-insensitively and with stray whitespace — still a match.
+    expect(body.requiresTwoFactor).toBeUndefined();
+    expect(sendOtpEmail).not.toHaveBeenCalled();
+    expect(await verifyAccessToken(body.accessToken)).toMatchObject({ userId: 'user-1' });
+  });
+
+  it('allowlist exempts only the accounts named on it', async () => {
+    vi.stubEnv('MFA_EXEMPT_EMAILS', 'reviewer@play.test');
+    signInWithPassword.mockResolvedValue(CONFIRMED_USER); // a@b.test, not listed
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'free', is_admin: false } });
+    fakeDb.queue('creators', { data: { id: 'creator-1' } });
+    fakeDb.queue('otp_codes', { error: null });
+    fakeDb.queue('otp_codes', { error: null });
+
+    const body = await (await POST(loginRequest())).json();
+
+    expect(body.requiresTwoFactor).toBe(true);
+    expect(body.accessToken).toBeUndefined();
+  });
+
+  it('an empty allowlist exempts nobody, rather than everybody', async () => {
+    // `''.split(',')` is `['']`, so an unfiltered allowlist would match the
+    // empty string — and every account whose email normalized to it.
+    vi.stubEnv('MFA_EXEMPT_EMAILS', '');
+    signInWithPassword.mockResolvedValue({
+      data: { user: { id: 'user-1', email: '', email_confirmed_at: '2026-01-01T00:00:00Z' } },
+      error: null,
+    });
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'free', is_admin: true } });
+    fakeDb.queue('creators', { data: null });
+    fakeDb.queue('otp_codes', { error: null });
+    fakeDb.queue('otp_codes', { error: null });
+
+    const body = await (await POST(loginRequest())).json();
+
+    expect(body.requiresTwoFactor).toBe(true);
+    expect(body.accessToken).toBeUndefined();
   });
 
   it('500 when the code could not be sent, rather than a prompt for a code nobody has', async () => {
