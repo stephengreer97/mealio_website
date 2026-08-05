@@ -118,7 +118,16 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
 
   useEffect(() => { load(); }, []);
 
-  const connect = async () => {
+  /**
+   * Start a consent round trip.
+   *
+   * `write` is passed explicitly by the caller that already knows the answer —
+   * the append toggle, which sends the creator here the moment they ask for
+   * description editing on a connection that only has read. Otherwise it
+   * follows the tick on the connect form, which is the same question asked
+   * before there is any connection at all.
+   */
+  const connect = async (options: { write?: boolean } = {}) => {
     setBusy(true);
     setError('');
     try {
@@ -127,7 +136,7 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
         // The tick travels with the request that starts the round trip, so the
         // server stores what was on screen rather than trusting a later call.
-        body: JSON.stringify({ appendOptIn: appendConsent }),
+        body: JSON.stringify({ appendOptIn: options.write ?? appendConsent }),
       });
       const data = await res.json();
       if (!res.ok || !data.url) {
@@ -153,6 +162,17 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
       });
       const data = await res.json();
       if (!res.ok) {
+        // The connection has read access and nothing else, which is now the
+        // ordinary case: the write scope is asked for when somebody ticks this
+        // box rather than when they connect. So take them straight to Google
+        // instead of reporting a refusal and making them find the button —
+        // ticking the box *is* the request, and the consent screen is the rest
+        // of it.
+        if (data?.needsConsent) {
+          setAppendConsent(true);
+          await connect({ write: true });
+          return;
+        }
         setError(data.error || 'Could not save that.');
         return;
       }
@@ -217,9 +237,6 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
   const hasConnection = status.connected;
   const needsConnect = !status.connected || Boolean(status.brokenReason);
   const consent = hasConnection ? status.appendOptIn : appendConsent;
-  // Turning it on needs the write scope; turning it off must work from every
-  // state there is, or it is not revocation.
-  const consentLocked = hasConnection && !status.canWriteDescriptions && !status.appendOptIn;
 
   return (
     <div className={embedded ? '' : 'bg-white rounded-2xl shadow-sm border border-gray-100 p-6'}>
@@ -268,10 +285,15 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
           while the grant is broken; with nothing connected it is a local tick
           that travels with the request that starts the OAuth round trip. */}
       <label className="flex items-start gap-3 mb-4 cursor-pointer">
+        {/* Never disabled for want of the write scope. A connection without it
+            is now the ordinary state — it is asked for when somebody ticks this
+            box rather than when they connect — so locking the box would lock
+            away the only way to ask. The PATCH answers `needsConsent` and the
+            tick becomes a consent trip. */}
         <input
           type="checkbox"
           checked={consent}
-          disabled={busy || consentLocked}
+          disabled={busy}
           onChange={e => (hasConnection ? setAppendOptIn(e.target.checked) : setAppendConsent(e.target.checked))}
           className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500 disabled:opacity-50"
         />
@@ -287,17 +309,11 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
         </span>
       </label>
 
-      {hasConnection && !status.canWriteDescriptions && (
-        <p className="text-xs text-gray-500 mb-4">
-          This connection was made without permission to edit descriptions. Reconnect YouTube if you want to
-          allow it.
-        </p>
-      )}
 
       {needsConnect && (
         <>
           <button
-            onClick={connect}
+            onClick={() => { void connect(); }}
             disabled={busy}
             className="w-full sm:w-auto bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl px-5 py-2.5 transition-colors"
           >

@@ -79,15 +79,33 @@ beforeEach(() => {
 
 // ── Consent URL ──────────────────────────────────────────────────────────────
 
-describe('youtube — the consent screen asks once', () => {
-  it('requests the write scope alongside the read scope', () => {
+describe('youtube — the consent screen asks for what it is using', () => {
+  it('asks only to read the channel when connecting', () => {
     const url = new URL(youtubeAuthUrl('nonce-1')!);
     const scopes = (url.searchParams.get('scope') ?? '').split(' ');
 
-    // Adding the write scope later re-prompts every creator who already
-    // connected, and the ones who ignore that prompt break the feature silently.
+    // Google words the write scope as "See, edit, and permanently delete your
+    // YouTube videos, ratings, comments and captions". Every creator used to
+    // read that in order to use a feature that is off by default and that most
+    // never turn on — the scariest line on the consent screen, shown to the
+    // people it did not apply to.
     expect(scopes).toContain('https://www.googleapis.com/auth/youtube.readonly');
+    expect(scopes).not.toContain(YOUTUBE_WRITE_SCOPE);
+  });
+
+  it('adds the write scope when description editing is what was asked for', () => {
+    const url = new URL(youtubeAuthUrl('nonce-1', { write: true })!);
+    const scopes = (url.searchParams.get('scope') ?? '').split(' ');
+
     expect(scopes).toContain(YOUTUBE_WRITE_SCOPE);
+    // Still carries read: dropping it here would trade one grant for the other.
+    expect(scopes).toContain('https://www.googleapis.com/auth/youtube.readonly');
+  });
+
+  it('makes the second grant additive rather than a replacement', () => {
+    // Without this a creator who grants write loses read, and the whole feature
+    // stops on the trip that was meant to extend it.
+    expect(new URL(youtubeAuthUrl('nonce-1', { write: true })!).searchParams.get('include_granted_scopes')).toBe('true');
   });
 
   it('asks Google for a refresh token, which needs both offline access and a forced prompt', () => {

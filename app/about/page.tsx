@@ -116,7 +116,8 @@ export default function AboutPage() {
             <li>
               <strong>Permission to edit that channel&rsquo;s video descriptions</strong> &mdash; so that a
               creator can have Mealio add a link to their recipe at the end of the description of the video it
-              came from. This is off unless the creator turns it on, it only ever adds our link and changes
+              came from. <strong>We only ask for this if a creator turns that feature on</strong>; connecting a
+              channel by itself asks to read it and nothing more. It only ever adds our link and changes
               nothing else, and it applies only to videos on the channel they connected. A creator can turn it
               off, disconnect the channel in Mealio, or revoke access from their Google account at any time.
             </li>

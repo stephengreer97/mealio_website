@@ -58,7 +58,8 @@ export async function POST(request: NextRequest) {
   }
 
   const nonce = randomBytes(16).toString('hex');
-  const authUrl = youtubeAuthUrl(nonce);
+  // The write scope rides on the tick, not on connecting.
+  const authUrl = youtubeAuthUrl(nonce, { write: appendOptIn });
   if (!authUrl) {
     return NextResponse.json({ error: 'YouTube connection is not configured on this deployment.' }, { status: 500 });
   }

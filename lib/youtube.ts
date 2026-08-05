@@ -45,19 +45,30 @@ import type { SourceDocument } from '@/lib/import/types';
 export const YOUTUBE_READ_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 
 /**
- * The write scope, requested at connect time even though nothing here writes.
+ * The write scope, asked for only when the creator turns description-appending
+ * on — never at connect time.
  *
- * MEAL-78 and MEAL-79 both append the Mealio link to a video's description, and
- * `captions.download` needs it too. Adding a scope later re-prompts every creator
- * who already connected — a second consent screen for people who thought they
- * were done — and the ones who ignore it break the feature silently. Ask once.
+ * It used to be requested up front, on the reasoning that adding a scope later
+ * re-prompts everyone who already connected. That is true, and it was the wrong
+ * trade: Google words this scope as **"See, edit, and permanently delete your
+ * YouTube videos, ratings, comments and captions"**, and every creator was
+ * reading that sentence in order to use a feature that is off by default and
+ * that most of them never turn on. The scariest line on the consent screen was
+ * being shown to the people it did not apply to.
  *
- * Asking for it does **not** authorise using it: `creators.youtube_append_opt_in`
- * decides that, separately and explicitly, and defaults to false.
+ * So it is incremental now. `include_granted_scopes=true` means the second grant
+ * carries the first, and the extra consent trip falls on the minority who
+ * actually enable appending — at the moment they ask for it, which is also when
+ * the sentence makes sense to them.
+ *
+ * Holding the scope still does **not** authorise using it:
+ * `creators.youtube_append_opt_in` decides that, separately, and defaults to
+ * false.
  */
 export const YOUTUBE_WRITE_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
 
-export const YOUTUBE_SCOPES = [YOUTUBE_READ_SCOPE, YOUTUBE_WRITE_SCOPE];
+/** What a plain connection asks for: reading the creator's own channel. */
+export const YOUTUBE_SCOPES = [YOUTUBE_READ_SCOPE];
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -77,15 +88,20 @@ export function youtubeRedirectUri(): string {
  * later with nothing to renew it — which is precisely the silent failure the
  * refresh sweep exists to make visible.
  */
-export function youtubeAuthUrl(state: string): string | null {
+export function youtubeAuthUrl(state: string, options: { write?: boolean } = {}): string | null {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) return null;
+
+  // Only when they have asked to have descriptions edited. `include_granted_scopes`
+  // below is what makes this additive rather than a replacement, so a creator
+  // who already granted read keeps it.
+  const scopes = options.write ? [...YOUTUBE_SCOPES, YOUTUBE_WRITE_SCOPE] : YOUTUBE_SCOPES;
 
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: youtubeRedirectUri(),
     response_type: 'code',
-    scope: YOUTUBE_SCOPES.join(' '),
+    scope: scopes.join(' '),
     state,
     access_type: 'offline',
     prompt: 'consent',
