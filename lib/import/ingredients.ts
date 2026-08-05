@@ -107,7 +107,13 @@ const SINGULAR_UNITS: Record<string, string> = {
  * this to be wrong.
  */
 export function unitLabel(unit: string, amount: string | number | null | undefined): string {
-  const one = typeof amount === 'number' ? amount === 1 : String(amount ?? '').trim() === '1';
+  const text = String(amount ?? '').trim();
+  // A bare fraction takes the singular too: a cook writes "1/2 cup" and "1/4
+  // cup", never "1/2 cups". Matched as a string rather than parsed, so "1 1/2"
+  // — which is more than one and keeps the plural — cannot be caught by it.
+  const one = typeof amount === 'number'
+    ? amount <= 1
+    : text === '1' || /^\d+\s*\/\s*\d+$/.test(text);
   return one ? (SINGULAR_UNITS[unit] ?? unit) : unit;
 }
 
@@ -194,8 +200,27 @@ export function canonicalUnit(input: string | null | undefined): string | null {
   return UNIT_ALIASES[depluralised] ?? null;
 }
 
+/**
+ * The fractions recipes are written in, and `parseAmount` reads back.
+ *
+ * "0.25 cups tahini" is not a line any cook has written. Round-trip safe: every
+ * spelling here parses to the number it came from.
+ */
+const AMOUNT_FRACTIONS: Array<[number, string]> = [
+  [0.125, '1/8'], [0.2, '1/5'], [0.25, '1/4'], [1 / 3, '1/3'], [0.375, '3/8'],
+  [0.4, '2/5'], [0.5, '1/2'], [0.6, '3/5'], [0.625, '5/8'], [2 / 3, '2/3'],
+  [0.75, '3/4'], [0.8, '4/5'], [0.875, '7/8'],
+];
+
 function formatAmount(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
+  if (Number.isInteger(value)) return String(value);
+  const whole = Math.floor(value);
+  const remainder = value - whole;
+  // Tolerance rather than equality: a third arrives as 0.33 from one source and
+  // 0.3333 from another, and both are a third to a cook.
+  const match = AMOUNT_FRACTIONS.find(([n]) => Math.abs(n - remainder) < 0.011);
+  if (!match) return String(Math.round(value * 100) / 100);
+  return whole ? `${whole} ${match[1]}` : match[1];
 }
 
 /**

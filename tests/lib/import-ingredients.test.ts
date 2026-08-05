@@ -377,3 +377,28 @@ describe('import/vocab — canonicalizeServes', () => {
     }
   });
 });
+
+describe('amounts read the way recipes are written', () => {
+  it('renders a fraction rather than a decimal', () => {
+    // "0.25 cups tahini" is not a line any cook has written, and the seeded
+    // preset catalogue was full of them.
+    expect(canonicalizeIngredient(ing({ productName: 'tahini', measure: '0.25', unit: 'cup' }))?.measure).toBe('1/4');
+    expect(canonicalizeIngredient(ing({ productName: 'salt', measure: '1.5', unit: 'tsp' }))?.measure).toBe('1 1/2');
+  });
+
+  it('recognises a third however it was rounded', () => {
+    // 0.33 from one source and 0.3333 from another are both a third.
+    expect(canonicalizeIngredient(ing({ productName: 'stock', measure: '0.33', unit: 'cup' }))?.measure).toBe('1/3');
+  });
+
+  it('leaves an amount no cook would recognise as a decimal', () => {
+    expect(canonicalizeIngredient(ing({ productName: 'x', measure: '0.07', unit: 'cup' }))?.measure).toBe('0.07');
+  });
+
+  it('takes the singular for a bare fraction, and the plural above one', () => {
+    // "1/2 cup", never "1/2 cups" — but "1 1/2 cups", which is more than one.
+    expect(unitLabel('cups', '1/2')).toBe('cup');
+    expect(unitLabel('cups', '1 1/2')).toBe('cups');
+    expect(unitLabel('cups', '2')).toBe('cups');
+  });
+});
