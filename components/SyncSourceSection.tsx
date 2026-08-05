@@ -666,7 +666,16 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
    * renamed a slug mid-publish, so the feed briefly carried both URLs and the
    * old one 404'd.)
    */
-  const isFailed = (entry: CatalogEntry) => entry.record?.status === 'failed';
+  const isFailed = (entry: CatalogEntry) =>
+    entry.record?.status === 'failed' && !entry.record?.inFlight;
+  /**
+   * An import of this post is running right now.
+   *
+   * A claim is stored as `failed` while the extraction is in flight, so without
+   * this the checklist said "Could not read" about a post it was importing at
+   * that moment — the most alarming possible way to report normal progress.
+   */
+  const isImporting = (entry: CatalogEntry) => entry.record?.inFlight === true;
   /**
    * What "Tick the newest" ticks — which is less than what *can* be ticked.
    *
@@ -1006,13 +1015,14 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                   const already = isImported(entry);
                   const rejected = isRejected(entry);
                   const declined = wasDeclined(entry);
-                  // Only an imported post has no tick to offer. A box that can be
+                  // An imported post has no tick to offer, and neither does one
+                  // being imported at this moment: the server would stand the
+                  // second run down as "already in flight". A box that can be
                   // ticked and then silently does nothing is worse than no box —
                   // the creator counts it into their selection and the run
-                  // reports a number they did not expect — and an import is the
-                  // one case the server really would refuse. A refused or
-                  // declined post it will happily read again.
-                  const settled = already;
+                  // reports a number they did not expect. A refused or declined
+                  // post it will happily read again.
+                  const settled = already || isImporting(entry);
                   const checked = selected.includes(entry.itemId);
                   return (
                     <label
@@ -1059,6 +1069,14 @@ export default function SyncSourceSection({ creator, onSaved }: Props) {
                           draft it made and said no. The box beside it is still
                           live, so this reads as an account of what happened
                           rather than a door being closed. */}
+                      {isImporting(entry) && (
+                        <span
+                          className="flex-shrink-0 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-100 rounded-md px-2 py-0.5"
+                          data-testid="importing"
+                        >
+                          Importing…
+                        </span>
+                      )}
                       {isFailed(entry) && (
                         <span
                           className="flex-shrink-0 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-100 rounded-md px-2 py-0.5"

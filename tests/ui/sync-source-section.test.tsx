@@ -1008,6 +1008,39 @@ describe('the back-catalogue checklist', () => {
     expect(catalogue.compareDocumentPosition(run) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('says a post is being imported, not that it could not be read', async () => {
+    // A claim in flight is stored as `failed` carrying CLAIM_DETAIL, so a worker
+    // that dies leaves a retryable row. Right for the retry sweep, alarming for
+    // a creator: the checklist said "Could not read" about a post it was
+    // importing at that moment.
+    const importing = {
+      ...entry(1),
+      record: { status: 'failed', detail: 'An import of this post started…', at: null, firstSeenAt: null, inFlight: true },
+    };
+    harness({ creator: SYNCING, entries: [importing] });
+    await screen.findByTestId('catalogue');
+
+    expect(screen.getByTestId('importing').textContent).toMatch(/Importing/);
+    expect(screen.queryByTestId('unreadable')).toBeNull();
+    // And no tick: the server would stand a second run down as already in flight.
+    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('still says a genuinely failed post could not be read', async () => {
+    // The lease has passed or the run finished with a real failure. Tickable,
+    // because a failure is about our afternoon rather than about the post.
+    const failed = {
+      ...entry(1),
+      record: { status: 'failed', detail: 'HTTP 404', at: null, firstSeenAt: null, inFlight: false },
+    };
+    harness({ creator: SYNCING, entries: [failed] });
+    await screen.findByTestId('catalogue');
+
+    expect(screen.getByTestId('unreadable').textContent).toMatch(/Could not read/);
+    expect(screen.queryByTestId('importing')).toBeNull();
+    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+  });
+
   it('marks what is already in, and leaves it out of select-all', async () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
