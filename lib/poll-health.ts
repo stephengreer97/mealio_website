@@ -22,14 +22,13 @@ import type { SupabaseClient } from '@supabase/supabase-js';
  *
  * ## What is not here, and why
  *
- * The ticket asks for the **last failed poll and its reason**. Neither is
- * stored: `creator_source_state` keeps `consecutive_failures` but not when the
- * last failure happened or what it said, and the poller's own sentence goes to
- * the log and nowhere else. Surfacing it needs two new columns
- * (`last_failed_at`, `last_failure_reason`) written by `recordPollOutcome`, and
- * a migration — so this reports the count, which is stored, and says plainly
- * that the reason is not. A screen that invented a reason would be worse than
- * one that admits it has none.
+ * Everything the ticket asks for is here. An earlier version of this note said
+ * the last failure's reason was unstored and needed a migration; that was
+ * wrong — `creator_source_state.last_error` and `last_status` have been written
+ * on every failure since the poller shipped. Only *when* it failed was missing,
+ * because `last_polled_at` is deliberately left untouched by a failure so the
+ * next pass cannot mistake a broken source for one that has ever worked. That
+ * one column, `last_failed_at`, is the only thing this needed adding.
  */
 
 export interface CreatorPollHealth {
@@ -41,6 +40,19 @@ export interface CreatorPollHealth {
   pollAfter: string | null;
   /** One failure is weather; six is a broken source nobody has looked at. */
   consecutiveFailures: number;
+  /** When it last broke. Kept through later successes — see `writeState`. */
+  lastFailedAt: string | null;
+  /**
+   * What went wrong, in the poller's own words.
+   *
+   * `creator_source_state.last_error`, which already existed — an earlier note
+   * here claimed the reason was unstored and asked for a migration to add one.
+   * It was wrong: `last_error` and `last_status` have been written on every
+   * failure all along. Only the *timestamp* was missing.
+   */
+  lastError: string | null;
+  /** The HTTP status behind the failure, where there was one. */
+  lastStatus: number | null;
   /**
    * When polling last saw a post it had not seen before.
    *
@@ -90,7 +102,7 @@ export async function pollHealthByCreator(
   const [stateRes, itemRes, draftRes] = await Promise.all([
     supabase
       .from('creator_source_state')
-      .select('creator_id, source, last_polled_at, poll_after, consecutive_failures')
+      .select('creator_id, source, last_polled_at, poll_after, consecutive_failures, last_failed_at, last_error, last_status')
       .in('creator_id', ids),
     // Every item this creator's polling has ever seen, newest first seen. The
     // max per creator is the answer; done in one pass below rather than one
@@ -112,6 +124,9 @@ export async function pollHealthByCreator(
       lastPolledAt: null,
       pollAfter: null,
       consecutiveFailures: 0,
+      lastFailedAt: null,
+      lastError: null,
+      lastStatus: null,
       lastNewItemAt: null,
       draftedCount: 0,
       publishedCount: 0,
@@ -125,6 +140,9 @@ export async function pollHealthByCreator(
     entry.lastPolledAt = iso(row.last_polled_at);
     entry.pollAfter = iso(row.poll_after);
     entry.consecutiveFailures = Number.isFinite(row.consecutive_failures) ? Number(row.consecutive_failures) : 0;
+    entry.lastFailedAt = iso(row.last_failed_at);
+    entry.lastError = iso(row.last_error);
+    entry.lastStatus = Number.isFinite(row.last_status) ? Number(row.last_status) : null;
   }
 
   for (const row of (itemRes.data ?? []) as Array<Record<string, any>>) {

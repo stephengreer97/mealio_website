@@ -451,6 +451,7 @@ export async function pollCreator(
       // Untouched: this attempt listed nothing, so it must not make the next
       // pass think the source has ever worked.
       polledAt: state?.lastPolledAt ?? null,
+      failedAt: new Date(now()).toISOString(),
       pollAfter: new Date(now() + backoffMs(failures)).toISOString(),
       consecutiveFailures: failures,
       status: refused ? 403 : null,
@@ -744,6 +745,15 @@ interface StateWrite {
   etag: string | null;
   lastModified: string | null;
   polledAt: string | null;
+  /**
+   * When this attempt failed, or null when it did not (MEAL-96).
+   *
+   * Separate from `polledAt`, which a failure deliberately leaves untouched so
+   * the next pass cannot mistake a broken source for one that has ever worked.
+   * That is right, and it is also why "when did this last break" had no answer:
+   * `last_error` said what went wrong and nothing said when.
+   */
+  failedAt?: string | null;
   pollAfter: string;
   consecutiveFailures: number;
   status: number | null;
@@ -762,6 +772,11 @@ async function writeState(deps: PollDeps, creator: PollableCreator, next: StateW
       consecutive_failures: next.consecutiveFailures,
       last_status: next.status,
       last_error: next.error,
+      // Only written when this attempt failed. Left alone otherwise, so it keeps
+      // pointing at the last real failure rather than being cleared by the next
+      // success — an operator asking "when did this start going wrong" is asking
+      // about a source that may be working again now.
+      ...(next.failedAt ? { last_failed_at: next.failedAt } : {}),
     },
     { onConflict: 'creator_id,source' },
   );

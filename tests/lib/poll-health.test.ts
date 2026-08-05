@@ -3,7 +3,8 @@ import { pollConcern, type CreatorPollHealth } from '@/lib/poll-health';
 
 const health = (over: Partial<CreatorPollHealth> = {}): CreatorPollHealth => ({
   creatorId: 'c1', source: 'website', lastPolledAt: null, pollAfter: null,
-  consecutiveFailures: 0, lastNewItemAt: null, draftedCount: 0, publishedCount: 0, ...over,
+  consecutiveFailures: 0, lastFailedAt: null, lastError: null, lastStatus: null,
+  lastNewItemAt: null, draftedCount: 0, publishedCount: 0, ...over,
 });
 
 const NOW = Date.parse('2026-08-05T00:00:00.000Z');

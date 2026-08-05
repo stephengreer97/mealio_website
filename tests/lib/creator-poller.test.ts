@@ -310,6 +310,11 @@ describe('the first poll of a source imports nothing', () => {
     expect(failed.status).toBe('failed');
     expect(state()?.last_polled_at).toBeNull();
     expect(state()?.consecutive_failures).toBe(1);
+    // When it broke, which nothing recorded before (MEAL-96). `last_polled_at`
+    // cannot answer it — a failure leaves that untouched on purpose, so the next
+    // pass cannot mistake a broken source for one that has ever worked.
+    expect(state()?.last_failed_at).toBeTruthy();
+    expect(state()?.last_error).toBeTruthy();
   });
 
   it('stays a first poll when the baseline rows could not be written', async () => {
