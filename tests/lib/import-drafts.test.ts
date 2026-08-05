@@ -1139,7 +1139,7 @@ describe('cancelDraft — declining is a state, not a deletion', () => {
     expect(fakeDb.calls.some((c) => c.method === 'delete')).toBe(false);
   });
 
-  it('marks the post rejected rather than leaving it looking imported (MEAL-99)', async () => {
+  it('marks the post declined rather than leaving it looking imported (MEAL-99)', async () => {
     fakeDb.seed('creator_import_drafts', [draftRow()]);
     fakeDb.seed('creator_source_items', [
       { creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'imported', detail: null, draft_id: 'd1' },
@@ -1151,7 +1151,10 @@ describe('cancelDraft — declining is a state, not a deletion', () => {
     // neither exists — the catalogue was showing the post as Already Imported
     // with nothing behind it, and refusing the tick.
     const [row] = fakeDb.rows('creator_source_items');
-    expect(row.status).toBe('rejected');
+    // `declined`, not `rejected`: a person looked at a draft and said no, which
+    // is a different answer from the gate refusing the page before any draft
+    // existed. Both are offered back; only one had a human behind it.
+    expect(row.status).toBe('declined');
     expect(row.detail).toMatch(/declined in review/i);
     // Still a row, though. The poller reads presence and not status, so the
     // record is what stops a declined post coming back on its own — deleting it
@@ -1340,5 +1343,23 @@ describe('editableDraft — the same rules the publish form has', () => {
     // "a knob of butter" still folds — knob is not a unit anything can show.
     const folded = editableDraft({ ...base, ingredients: [{ ingredientName: 'butter', measure: null, unit: 'knob', qty: 1 }] });
     expect(folded.ok && folded.draft.ingredients[0]).toMatchObject({ ingredientName: 'butter', unit: 'qty', qty: 1 });
+  });
+});
+
+describe('a decline and a gate refusal are different answers', () => {
+  it('does not need draft_id to tell them apart', async () => {
+    // The old rule inferred it: a `rejected` row with a draft behind it was a
+    // decline, one without was the gate. Sound in every path, and it made a
+    // foreign key carry a meaning nothing in the schema mentioned — so clearing
+    // `draft_id` would silently have turned every decline into a gate refusal.
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    fakeDb.seed('creator_source_items', [
+      { creator_id: 'c1', source: 'website', item_id: 'guid-1', status: 'imported', detail: null, draft_id: null },
+    ]);
+
+    await cancelDraft(deps(), 'd1', 'admin-1');
+
+    const [row] = fakeDb.rows('creator_source_items');
+    expect(row.status).toBe('declined');
   });
 });

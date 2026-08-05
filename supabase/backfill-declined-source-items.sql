@@ -1,7 +1,7 @@
 -- Posts that were declined before MEAL-99, and still say `imported` (MEAL-99).
 --
 -- `cancelDraft` now moves a declined post's `creator_source_items` row to
--- `rejected`, so the catalogue offers it back with a tag saying what happened.
+-- `declined`, so the catalogue offers it back with a tag saying what happened.
 -- Rows declined before that change never got the update: they still say
 -- `imported`, which means "a draft or a published meal came of this" — and after
 -- a decline neither exists. The creator sees **Already Imported** against a post
@@ -16,7 +16,7 @@
 
 UPDATE creator_source_items AS i
 SET
-  status = 'rejected',
+  status = 'declined',
   detail = 'This was turned into a draft and then declined in review, so nothing was published. Tick it again to have another go at it.',
   updated_at = now()
 FROM creator_import_drafts AS d

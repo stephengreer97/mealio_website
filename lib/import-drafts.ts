@@ -1113,7 +1113,7 @@ export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: stri
     await releaseImportedItem(
       deps.supabase,
       { creatorId: loaded.draft.creatorId, source: loaded.draft.source, itemId: loaded.draft.itemId },
-      { status: 'rejected', detail: DECLINED_DETAIL },
+      { status: 'declined', detail: DECLINED_DETAIL },
       { name: events(deps.role).sourceReject, detail: `draft=${id} creator=${loaded.draft.creatorId}` },
     );
   }
