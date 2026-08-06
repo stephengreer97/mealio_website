@@ -105,3 +105,68 @@ describe('admin Sources tab — why a creator is not being polled', () => {
     expect(screen.queryByTestId('source-health-feed-host')).toBeNull();
   });
 });
+
+/**
+ * MEAL-112, as the operator met it.
+ *
+ * The route passed every creator id to one PostgREST `.in()` filter. Past 221 that
+ * URL is too long, the proxy answers 414, `data ?? []` swallows it, and every row's
+ * health came back null — which this tab rendered as "with no source". So the screen
+ * said nothing was configured, for the entire creator list, and an operator reading
+ * it had no reason to disbelieve it.
+ *
+ * The route no longer produces that answer. This pins the other half: that a missing
+ * health reading can never be *displayed* as a configured-nothing, whatever produced
+ * it. The two failures are indistinguishable on a row and mean opposite things.
+ */
+describe('admin Sources tab — health that could not be read', () => {
+  function stubIncomplete(incomplete: string[]) {
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/auth/verify')) return json({ user: { isAdmin: true } });
+      if (url.includes('/api/admin/applications')) return json({ applications: [] });
+      if (url.includes('/api/admin/creators')) {
+        return json({
+          // A creator with a source configured, whose health simply was not read.
+          creators: [{ ...PAUSED, import_opt_in: true, pollHealth: null }],
+          incomplete,
+        });
+      }
+      return json({}, 404);
+    }) as typeof fetch);
+  }
+
+  async function openWith(incomplete: string[]) {
+    stubIncomplete(incomplete);
+    render(<AdminPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sources' }));
+    return await screen.findByText('Chef Sarah');
+  }
+
+  it('counts a creator whose health was not read as "not read", never as "no source"', async () => {
+    await openWith(['pollHealth']);
+
+    expect(screen.getByTestId('poll-health-unknown').textContent).toMatch(/1 not read/);
+    // The exact sentence the bug produced, for the whole list.
+    expect(screen.queryByText(/with no source/)).toBeNull();
+  });
+
+  it('warns above the list that the screen is showing less than it was asked for', async () => {
+    await openWith(['pollHealth']);
+
+    const banner = screen.getByTestId('incomplete-banner');
+    expect(banner.textContent).toMatch(/Incomplete data/i);
+    expect(banner.textContent).toMatch(/poll health/i);
+  });
+
+  it('says nothing at all when the read was complete', async () => {
+    // The warning has to be absent on a healthy response, or it becomes furniture
+    // and stops being read on the day it matters.
+    stubApi({ ...PAUSED, import_opt_in: true, pollHealth: null });
+    render(<AdminPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sources' }));
+    await screen.findByText('Chef Sarah');
+
+    expect(screen.queryByTestId('incomplete-banner')).toBeNull();
+  });
+});

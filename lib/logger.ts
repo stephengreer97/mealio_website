@@ -107,6 +107,12 @@ export type EventType =
   | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
   | 'ADMIN:AUTOMATION_FUNNEL'   // per-store add-to-cart reliability dashboard
   | 'ADMIN:STATS'               // logged only when an aggregate read came back short (MEAL-127)
+  | 'ADMIN:EMAIL_STATS'         // only ever logged when the funnel read came back short
+  // Listing creators for the Sources tab. Kept apart from ADMIN:CREATOR_SOURCE so
+  // that event stays a record of what an operator CHANGED — this one is only ever
+  // written when a read came back short (MEAL-112), and mixing the two would put
+  // read failures in the middle of the audit trail for source decisions.
+  | 'ADMIN:CREATOR_LIST'
   | 'ADMIN:SYNC_RUN'            // an operator-triggered sync run (MEAL-90)
   | 'ADMIN:SYNC_ITEM'           // one item inside a run: recorded, or retried
   // The four decisions in the admin review queue (MEAL-91). Every publish under

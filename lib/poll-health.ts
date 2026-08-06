@@ -76,8 +76,41 @@ export interface CreatorPollHealth {
   publishedCount: number;
 }
 
-/** How many creators one call will report on. A page, not the world. */
+/**
+ * How many creators one call will report on. A page, not the world.
+ *
+ * Exceeding it is not silent to the CALLER — the returned map simply has no
+ * entry for the ids past it — but it is silent to whoever reads the screen, so a
+ * caller that lists every creator has to say when it truncated. See `incomplete`
+ * in `app/api/admin/creators/route.ts`.
+ */
 export const POLL_HEALTH_LIMIT = 500;
+
+/**
+ * How many creator ids go into one `.in()` filter.
+ *
+ * A filter travels in the QUERY STRING, so `.in('creator_id', ids)` grows the
+ * URL linearly with the id count, and the proxy in front of PostgREST rejects a
+ * long URI before the database sees it. Measured exactly, because this was a
+ * live bug (MEAL-112) and not a theory: `creator_id=in.(…)` of n uuids is
+ * `15 + 37n` bytes, so 221 ids is 8192 bytes and fits, and **222 ids is 8229 and
+ * comes back 414**. The route that lists every creator passed all of them.
+ *
+ * A 414 is the worst possible shape of failure here. It is not an exception and
+ * `data ?? []` turns it into "no state rows", which reads as "never polled",
+ * which `pollStatus` calls `unconfigured` — so the Sources tab rendered the whole
+ * creator list as having no source configured, and an operator looking at a
+ * screen that says nothing is set up has no reason to disbelieve it.
+ *
+ * 100 is the same chunk `poll-health-alerts.ts` sweeps in and the idiom
+ * `loadStates` uses, and it leaves an order of magnitude of headroom: 100 uuids
+ * is 3715 bytes against a conservative 8 KB ceiling. Chunking here rather than in
+ * each caller is deliberate — the paging inside `foldDrafts` and
+ * `foldLastNewItem` was unreachable from the admin route until the filter that
+ * carried the ids stopped being over-long, and a fix in one caller leaves the
+ * next one to rediscover this.
+ */
+const ID_CHUNK = 100;
 
 /**
  * Rows one read asks for, and how many of those reads it is allowed.
@@ -149,41 +182,51 @@ export async function pollHealthByCreator(
   const ids = creatorIds.slice(0, POLL_HEALTH_LIMIT);
   for (const id of ids) out.set(id, blank(id));
 
-  const [stateRes] = await Promise.all([
-    supabase
-      .from('creator_source_state')
-      .select('creator_id, source, last_polled_at, poll_after, consecutive_failures, last_failed_at, last_error, last_status')
-      .in('creator_id', ids)
-      // One row per source, so a creator can have several. Ordered so that the
-      // fallback below picks the same one every time.
-      .order('source', { ascending: true }),
-    foldDrafts(supabase, ids, out),
-  ]);
+  // A chunk at a time, for the URI ceiling in `ID_CHUNK`. Each creator falls in
+  // exactly one chunk, so every fold below is complete for the ids it is given
+  // and nothing has to be reconciled across chunks. `source` has to be resolved
+  // for a chunk before `foldLastNewItem` runs on it, since that fold only counts
+  // items belonging to the source the creator is actually polled on.
+  for (let from = 0; from < ids.length; from += ID_CHUNK) {
+    const chunk = ids.slice(from, from + ID_CHUNK);
 
-  const chosen = new Map<string, Record<string, any>>();
-  for (const row of (stateRes.data ?? []) as Array<Record<string, any>>) {
-    if (!out.has(row.creator_id)) continue;
-    const wanted = primarySource?.get(row.creator_id) ?? null;
-    // A state row for a source this creator is no longer polled on is history,
-    // not health. Judging it would report on a source nobody is watching and,
-    // worse, write the alert mark onto a row the live source never reads.
-    if (wanted !== null && row.source !== wanted) continue;
-    if (chosen.has(row.creator_id)) continue;
-    chosen.set(row.creator_id, row);
+    const [stateRes] = await Promise.all([
+      supabase
+        .from('creator_source_state')
+        .select('creator_id, source, last_polled_at, poll_after, consecutive_failures, last_failed_at, last_error, last_status')
+        .in('creator_id', chunk)
+        // One row per source, so a creator can have several. Ordered so that the
+        // fallback below picks the same one every time.
+        .order('source', { ascending: true }),
+      foldDrafts(supabase, chunk, out),
+    ]);
+
+    const chosen = new Map<string, Record<string, any>>();
+    for (const row of (stateRes.data ?? []) as Array<Record<string, any>>) {
+      if (!out.has(row.creator_id)) continue;
+      const wanted = primarySource?.get(row.creator_id) ?? null;
+      // A state row for a source this creator is no longer polled on is history,
+      // not health. Judging it would report on a source nobody is watching and,
+      // worse, write the alert mark onto a row the live source never reads.
+      if (wanted !== null && row.source !== wanted) continue;
+      if (chosen.has(row.creator_id)) continue;
+      chosen.set(row.creator_id, row);
+    }
+
+    for (const [creatorId, row] of chosen) {
+      const entry = out.get(creatorId)!;
+      entry.source = iso(row.source);
+      entry.lastPolledAt = iso(row.last_polled_at);
+      entry.pollAfter = iso(row.poll_after);
+      entry.consecutiveFailures = Number.isFinite(row.consecutive_failures) ? Number(row.consecutive_failures) : 0;
+      entry.lastFailedAt = iso(row.last_failed_at);
+      entry.lastError = iso(row.last_error);
+      entry.lastStatus = Number.isFinite(row.last_status) ? Number(row.last_status) : null;
+    }
+
+    await foldLastNewItem(supabase, chunk, out);
   }
 
-  for (const [creatorId, row] of chosen) {
-    const entry = out.get(creatorId)!;
-    entry.source = iso(row.source);
-    entry.lastPolledAt = iso(row.last_polled_at);
-    entry.pollAfter = iso(row.poll_after);
-    entry.consecutiveFailures = Number.isFinite(row.consecutive_failures) ? Number(row.consecutive_failures) : 0;
-    entry.lastFailedAt = iso(row.last_failed_at);
-    entry.lastError = iso(row.last_error);
-    entry.lastStatus = Number.isFinite(row.last_status) ? Number(row.last_status) : null;
-  }
-
-  await foldLastNewItem(supabase, ids, out);
   return out;
 }
 
