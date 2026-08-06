@@ -5,26 +5,49 @@ import { jsonRequest } from '../helpers/request';
 // The bucket and the deletes live outside the query builder, so the shared fake
 // is wrapped rather than replaced: `from` still goes to FakeSupabase (that is
 // what models the 1000-row ceiling), while `rpc` answers with a bucket listing
-// and `storage.from().remove()` records what would be destroyed.
+// and `storage.from()` models the object side — what was asked for, what actually
+// went away, and the URL an upload gets back.
 //
 // vi.hoisted because the mock factory below is hoisted above these declarations.
 const bucket = vi.hoisted(() => ({
   objects: [] as Array<{ name: string; size: number }>,
+  /** Every path handed to `remove()`, whether or not it went away. */
   removed: [] as string[],
+  /** Paths `remove()` silently declines to delete — a batch that half-succeeds. */
+  undeletable: new Set<string>(),
+  /** When set, `remove()` fails outright, the way a storage outage does. */
+  removeError: null as { message: string } | null,
 }));
 
 vi.mock('@/lib/supabase', async () => {
   const { fakeDb: db } = await import('../helpers/supabase-mock');
+  const base = 'https://etaracmlewdvzpcjrgru.supabase.co/storage/v1/object/public/meal-photos/';
   return {
     createServerSupabaseClient: () => ({
       from: (table: string) => db.from(table),
       rpc: async () => ({ data: bucket.objects, error: null }),
       storage: {
         from: () => ({
+          // Models the real endpoint rather than a stub that always says "fine":
+          // `remove()` answers 200 with the rows it DID delete, and a path it
+          // could not delete is simply absent from that list instead of raising
+          // an error. MEAL-132's fix reads that list to decide which dedupe rows
+          // may be dropped, so a fake returning `data: null` would have made the
+          // safe branch — invalidate nothing — look correct.
           remove: async (paths: string[]) => {
             bucket.removed.push(...paths);
-            return { data: null, error: null };
+            if (bucket.removeError) return { data: null, error: bucket.removeError };
+            const gone = paths.filter(
+              (p) => !bucket.undeletable.has(p) && bucket.objects.some((o) => o.name === p),
+            );
+            bucket.objects = bucket.objects.filter((o) => !gone.includes(o.name));
+            return { data: gone.map((name) => ({ name })), error: null };
           },
+          upload: async (path: string, buffer: Buffer) => {
+            bucket.objects.push({ name: path, size: buffer.length });
+            return { data: { path }, error: null };
+          },
+          getPublicUrl: (path: string) => ({ data: { publicUrl: `${base}${path}` } }),
         }),
       },
     }),
@@ -36,6 +59,11 @@ const log = vi.fn();
 vi.mock('@/lib/logger', () => ({ log: (...args: unknown[]) => log(...args) }));
 
 import { POST } from '@/app/api/admin/storage/cleanup-orphans/route';
+// The other half of the MEAL-132 loop: the sweep poisons the dedupe cache and it
+// is the UPLOAD that hands the dead URL out. Driving the real route rather than
+// asserting on rows is the only way to show the poisoning is gone, because the
+// row and the URL agreeing is exactly what the bug looked like.
+import { POST as uploadImage } from '@/app/api/images/upload/route';
 import { clearRevocationCache, createAccessToken } from '@/lib/tokens';
 
 const BASE_URL = 'https://etaracmlewdvzpcjrgru.supabase.co/storage/v1/object/public/meal-photos/';
@@ -64,6 +92,8 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
     log.mockClear();
     bucket.objects = [];
     bucket.removed = [];
+    bucket.undeletable = new Set();
+    bucket.removeError = null;
     token = await createAccessToken('admin-1', 'admin@mealio.co');
     clearRevocationCache();
     // Seeded rather than queued: requireAuth's revocation read is memoised, so
@@ -260,6 +290,185 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
       expect(body.keepSetSize).toBe(1500);
       expect(body.tables.find((t: { table: string }) => t.table === 'creator_import_drafts'))
         .toMatchObject({ expected: 1500, read: 1500, complete: true });
+    });
+  });
+
+  // ── MEAL-132 regression ───────────────────────────────────────────────────
+  //
+  // Deleting the object is only half of a deletion. `photo_hashes` maps sha256 →
+  // stored URL and is read before every upload, so a row left pointing at a
+  // deleted object is a permanent lie: the next upload of those bytes is handed
+  // the dead URL, and re-uploading cannot fix it because dedupe keeps answering
+  // the same way. One sweep poisons that image for every future upload of it.
+  //
+  // Note what is NOT tested here: `photo_hashes` is never read as a reference
+  // source. Every object ever uploaded has a row, so protecting objects with it
+  // would make the keep-set equal the bucket and turn the whole cleanup into a
+  // no-op — a cache to invalidate, not a reference to honour.
+  describe('the dedupe cache must not outlive the objects it points at', () => {
+    const dataUrl = (label: string) =>
+      `data:image/png;base64,${Buffer.from(label).toString('base64')}`;
+
+    const upload = (imageData: string) =>
+      uploadImage(jsonRequest('/api/images/upload', { method: 'POST', body: { imageData }, token }));
+
+    it('does not hand a later upload of the same bytes the URL it just deleted', async () => {
+      fakeDb.seed('meals', []);
+      fakeDb.seed('photo_hashes', []);
+      const imageData = dataUrl('one image, uploaded twice');
+
+      // A held clock, because the upload path is `${userId}/${Date.now()}.png`:
+      // two uploads inside one millisecond would reuse a path and the assertion
+      // below could not tell a fresh object from the dead one it replaced.
+      const clock = vi.spyOn(Date, 'now');
+      const t0 = new Date().getTime();
+      clock.mockReturnValue(t0);
+
+      const first = await upload(imageData);
+      expect(first.status).toBe(201);
+      const deadUrl = (await first.json()).url as string;
+      const deadPath = deadUrl.slice(BASE_URL.length);
+      expect(bucket.objects.map((o) => o.name)).toEqual([deadPath]);
+      expect(fakeDb.rows('photo_hashes')).toHaveLength(1);
+
+      // Nothing ever referenced it — the meal was abandoned before saving — so the
+      // sweep is right to take the object. The bug is in what it leaves behind.
+      const sweep = await run();
+      const body = await sweep.json();
+      expect(sweep.status).toBe(200);
+      expect(bucket.removed).toEqual([deadPath]);
+
+      clock.mockReturnValue(t0 + 9_999);
+      const second = await upload(imageData);
+      const secondUrl = (await second.json()).url as string;
+
+      // The assertion that fails against the unfixed route: dedupe matched the
+      // stale row and returned the deleted URL, for this upload and every later
+      // one of the same bytes.
+      expect(secondUrl).not.toBe(deadUrl);
+      // And a real object stands behind it — 201 is the store-it path, 200 is the
+      // dedupe path, so this also pins WHY the URL is different.
+      expect(second.status).toBe(201);
+      expect(bucket.objects.map((o) => o.name)).toEqual([secondUrl.slice(BASE_URL.length)]);
+      clock.mockRestore();
+
+      // The mechanism, asserted after the behaviour on purpose: against the
+      // unfixed route the failure above is a user-visible broken image, and a
+      // missing report field would otherwise fail first and hide it.
+      expect(fakeDb.rows('photo_hashes').map((r) => r.url)).toEqual([secondUrl]);
+      expect(body.hashRowsDeleted).toBe(1);
+      expect(body.hashInvalidationComplete).toBe(true);
+    });
+
+    it('leaves the hash row of an object storage did not confirm removing', async () => {
+      // `remove()` answers 200 with the rows it DID delete; a path it declined is
+      // simply absent from that list. Dropping a hash row because the call did not
+      // error would lose dedupe for an image that is still sitting there — the
+      // milder of the two mistakes, but still a mistake, and avoidable.
+      const survives = 'user-9/survives.jpg';
+      const gone = 'user-9/really-deleted.jpg';
+      fakeDb.seed('meals', []);
+      fakeDb.seed('photo_hashes', [
+        { hash: 'aaa', url: `${BASE_URL}${survives}` },
+        { hash: 'bbb', url: `${BASE_URL}${gone}` },
+      ]);
+      bucket.objects = [{ name: survives, size: 1 }, { name: gone, size: 1 }];
+      bucket.undeletable = new Set([survives]);
+
+      const body = await (await run()).json();
+
+      expect(fakeDb.rows('photo_hashes').map((r) => r.hash)).toEqual(['aaa']);
+      expect(body.removalsConfirmed).toBe(1);
+      expect(body.removalsUnconfirmed).toBe(1);
+      expect(body.hashRowsDeleted).toBe(1);
+      expect(body.warnings.join(' ')).toContain('did not confirm');
+    });
+
+    it('invalidates nothing when the removal itself failed', async () => {
+      fakeDb.seed('meals', []);
+      fakeDb.seed('photo_hashes', [{ hash: 'aaa', url: `${BASE_URL}user-9/x.jpg` }]);
+      bucket.objects = [{ name: 'user-9/x.jpg', size: 1 }];
+      bucket.removeError = { message: 'storage unavailable' };
+
+      const body = await (await run()).json();
+
+      expect(body.deleted).toBe(0);
+      expect(body.removalsUnconfirmed).toBe(1);
+      expect(body.hashRowsDeleted).toBe(0);
+      expect(fakeDb.rows('photo_hashes')).toHaveLength(1);
+    });
+
+    it('says so when the hash delete fails, rather than reporting a clean sweep', async () => {
+      // This route had never written to `photo_hashes` before, so a failure here is
+      // a new way for a sweep to be half-done: the object is gone and the poisoned
+      // row is still there. Reported, not swallowed — and re-running fixes it.
+      fakeDb.seed('meals', []);
+      fakeDb.seed('photo_hashes', [{ hash: 'aaa', url: `${BASE_URL}user-9/x.jpg` }]);
+      fakeDb.queue('photo_hashes', { data: null, error: { message: 'statement timeout' } });
+      bucket.objects = [{ name: 'user-9/x.jpg', size: 1 }];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.deleted).toBe(1);
+      expect(body.hashInvalidationComplete).toBe(false);
+      expect(body.hashDeletesFailed).toBe(1);
+      expect(body.warnings.join(' ')).toContain('statement timeout');
+      expect(fakeDb.rows('photo_hashes')).toHaveLength(1);
+      expect(
+        log.mock.calls.some(
+          (call) => (call[0] as { reason?: string })?.reason === 'photo_hashes invalidation incomplete',
+        ),
+      ).toBe(true);
+    });
+
+    it('deletes no hash rows on a dry run, or on a run either gate blocked', async () => {
+      fakeDb.seed('meals', []);
+      fakeDb.seed('photo_hashes', [{ hash: 'aaa', url: `${BASE_URL}user-9/orphan.jpg` }]);
+      bucket.objects = [{ name: 'user-9/orphan.jpg', size: 1 }];
+
+      expect((await run('?dryRun=true')).status).toBe(200);
+      expect(fakeDb.rows('photo_hashes')).toHaveLength(1);
+      expect(bucket.removed).toEqual([]);
+
+      // Gate 1, live and dry. A cache pruned by a run that refused to delete
+      // anything would be MEAL-126's mistake in a new place: acting on a keep-set
+      // the route has already said it does not trust.
+      fakeDb.queue('meals', { data: null, count: 7 });
+      expect((await run()).status).toBe(409);
+      expect(fakeDb.rows('photo_hashes')).toHaveLength(1);
+      fakeDb.queue('meals', { data: null, count: 7 });
+      expect((await run('?dryRun=true')).status).toBe(409);
+      expect(fakeDb.rows('photo_hashes')).toHaveLength(1);
+
+      // Gate 2.
+      bucket.objects = Array.from({ length: 120 }, (_, i) => ({ name: `user-1/p-${i}.jpg`, size: 1 }));
+      expect((await run()).status).toBe(409);
+      expect(fakeDb.rows('photo_hashes')).toHaveLength(1);
+      expect(bucket.removed).toEqual([]);
+    });
+
+    it('chunks the hash delete so a big sweep does not 414', async () => {
+      // `.in('url', […])` rides in the query string and a public URL encodes to
+      // ~155 bytes, so one delete for 250 objects would be a ~39 KB URI — which the
+      // fake rejects exactly like the proxies in front of PostgREST. Unchunked, the
+      // rows left behind would be the poisoned ones, on the largest sweeps only.
+      const paths = Array.from(
+        { length: 250 },
+        (_, i) => `user-9/bulk-${String(i).padStart(4, '0')}.jpg`,
+      );
+      fakeDb.seed('meals', []);
+      fakeDb.seed('photo_hashes', paths.map((p, i) => ({ hash: `h-${i}`, url: `${BASE_URL}${p}` })));
+      bucket.objects = paths.map((name) => ({ name, size: 1 }));
+
+      // The whole bucket is orphaned, which is what Gate 2 is for; `force=true` is
+      // the operator having read the dry-run list and confirmed it.
+      const body = await (await run('?force=true')).json();
+
+      expect(body.hashRowsDeleted).toBe(250);
+      expect(body.hashInvalidationComplete).toBe(true);
+      expect(fakeDb.rows('photo_hashes')).toEqual([]);
     });
   });
 

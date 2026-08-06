@@ -136,6 +136,21 @@ const MAX_ORPHAN_SHARE = 0.5;
  */
 const MIN_OBJECTS_FOR_SHARE_CHECK = 50;
 
+/**
+ * Public URLs per `photo_hashes` delete.
+ *
+ * `.in('url', […])` is a query-string filter, so the URI grows with the list, and
+ * one public URL is ~105 characters that percent-encode to ~155 bytes. The
+ * 100-item chunk `lib/push.ts` uses for Expo tokens would therefore be a ~16 KB
+ * DELETE URI — inside the 8–16 KB range Cloudflare and Kong reject, so it would
+ * not be slow, it would 414. 25 keeps it under 4 KB, which also stays under the
+ * 8 KB ceiling the fake in `tests/helpers/supabase-mock.ts` enforces.
+ *
+ * A 414 here is not just a missing invalidation: it would leave exactly the
+ * poisoned rows this route exists to remove, on the biggest sweeps only.
+ */
+const HASH_FILTER_CHUNK = 25;
+
 function toStoragePath(url: string | null | undefined): string | null {
   if (!url) return null;
   if (url.startsWith(BASE_URL)) return url.slice(BASE_URL.length);
@@ -293,6 +308,121 @@ async function collectReferencedPaths(supabase: SupabaseClient): Promise<KeepSet
   };
 }
 
+/**
+ * The subset of `batch` that storage reported as ACTUALLY removed.
+ *
+ * `remove()` is not all-or-nothing. It answers 200 with the rows it deleted, and a
+ * path it did not delete — already gone, renamed under it, or refused by a storage
+ * policy — is simply ABSENT from that list rather than raised as an `error`. So a
+ * batch can half-succeed with `error` null, and this list is the only evidence of
+ * which half. `name` on those rows is the object's key within the bucket, which is
+ * both what this route asked to delete and what its public URL is built from.
+ *
+ * Intersected with what was asked for rather than trusted wholesale, so a hash row
+ * can only ever be dropped for a path THIS run put in a remove call.
+ *
+ * When the list is missing altogether — `null`, which a client version or a proxy
+ * that drops the response body can produce — this returns nothing. The hash rows
+ * then stay, the response reports them as unconfirmed, and behaviour degrades to
+ * exactly what it was before MEAL-132 rather than to deleting rows on a guess.
+ */
+function confirmedRemovals(batch: string[], removed: unknown): string[] {
+  if (!Array.isArray(removed)) return [];
+  const asked = new Set(batch);
+  const confirmed = new Set<string>();
+  for (const entry of removed) {
+    const name = (entry as { name?: unknown } | null)?.name;
+    if (typeof name === 'string' && asked.has(name)) confirmed.add(name);
+  }
+  return [...confirmed];
+}
+
+/** Outcome of dropping the dedupe rows for the objects this run destroyed. */
+interface HashInvalidation {
+  /** `photo_hashes` rows actually removed. */
+  deleted: number;
+  /** Destroyed objects whose row could not be dropped, because the delete failed. */
+  failed: number;
+  /** True only when every delete this run attempted succeeded. */
+  complete: boolean;
+  reason?: string;
+}
+
+/**
+ * Drops the `photo_hashes` rows that point at objects which no longer exist.
+ *
+ * MEAL-132. `photo_hashes` is a content-addressed cache of "these bytes are
+ * already stored, here is the URL", read by `storeImageBuffer` and by
+ * `/api/images/upload` before they upload anything. Deleting the object without
+ * deleting the row leaves a permanent lie: the next upload of those exact bytes
+ * matches the row, is handed the URL of an object that is gone, and saves a meal
+ * or a draft with a broken image. Re-uploading cannot fix it, because dedupe keeps
+ * answering with the same dead URL for the same bytes — one sweep poisons that
+ * image for every future upload of it, with no user-visible way out. It also
+ * falsifies MEAL-131's recovery path: re-running an import re-downloads the same
+ * source image, hashes to the same sha256, and gets the dead URL straight back.
+ *
+ * `photo_hashes` is emphatically NOT a reference source and must never join
+ * REFERENCE_SOURCES: every object ever uploaded has a row here, so protecting
+ * objects with it would make the keep-set equal the bucket and disable the cleanup
+ * silently. It is a cache to invalidate, not a reference to honour.
+ *
+ * Rows are addressed by `url`, not by `hash`, because this route never sees the
+ * bytes — only paths. That URL is `BASE_URL + path`, the exact string both writers
+ * store (`getPublicUrl(path)`), so an object's row is found by rebuilding it. A row
+ * written in some other shape simply does not match and is left behind, which is
+ * the safe direction below.
+ *
+ * ORDER AND ERROR DIRECTION. Called only with paths storage confirmed are gone, and
+ * only after they are gone, so the two ways to be wrong are not symmetrical:
+ *
+ *  - Leaving a row whose object went away costs dedupe correctness until the next
+ *    sweep — and it is recoverable, since re-running the cleanup deletes it.
+ *  - Deleting a row whose object SURVIVED costs dedupe for a live image: the next
+ *    upload of those bytes stores a second copy. Wasteful, but never a broken
+ *    image, and self-correcting.
+ *
+ * Both are mild next to the poisoning above, so this errs toward the first: no
+ * confirmation from storage means no delete. A partially failed batch invalidates
+ * only its confirmed half, and a hash delete that fails is reported rather than
+ * folded into a clean-looking sweep — this route had never written to
+ * `photo_hashes` before, and a silent failure here reads exactly like the bug.
+ */
+async function invalidateHashes(
+  supabase: SupabaseClient,
+  paths: string[],
+): Promise<HashInvalidation> {
+  let deleted = 0;
+  let failed = 0;
+  const reasons: string[] = [];
+
+  for (let i = 0; i < paths.length; i += HASH_FILTER_CHUNK) {
+    const chunk = paths.slice(i, i + HASH_FILTER_CHUNK);
+    const { count, error } = await supabase
+      .from('photo_hashes')
+      .delete({ count: 'exact' })
+      .in('url', chunk.map((path) => `${BASE_URL}${path}`));
+
+    if (error) {
+      failed += chunk.length;
+      reasons.push(`${chunk.length} at offset ${i}: ${error.message ?? 'unknown error'}`);
+      continue;
+    }
+
+    // A confirmed-removed object with no row is normal, not a failure: objects
+    // predating the hash cache, and anything `backfill-hashes` never reached, have
+    // none. So this counts rows deleted and never compares it to the object count.
+    deleted += count ?? 0;
+  }
+
+  return {
+    deleted,
+    failed,
+    complete: failed === 0,
+    reason: reasons.length > 0 ? reasons.join('; ') : undefined,
+  };
+}
+
 export async function POST(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -410,19 +540,56 @@ export async function POST(request: NextRequest) {
 
   // Delete in batches of 100
   let deleted = 0;
+  /** Paths storage confirmed are gone — the only ones whose hash row may be dropped. */
+  const removedForCertain: string[] = [];
+  /** Paths asked for whose removal storage did not confirm, so their row stays. */
+  let removalsUnconfirmed = 0;
+
   for (let i = 0; i < orphanPaths.length; i += 100) {
     const batch = orphanPaths.slice(i, i + 100);
-    const { error: deleteError } = await supabase.storage.from('meal-photos').remove(batch);
+    const { data: removedRows, error: deleteError } =
+      await supabase.storage.from('meal-photos').remove(batch);
     if (deleteError) {
       log({ event: 'STORAGE:CLEANUP', status: 'error', userId: admin.userId, error: deleteError, detail: `batch ${i}` });
-    } else {
-      deleted += batch.length;
+      removalsUnconfirmed += batch.length;
+      continue;
     }
+    deleted += batch.length;
+    const confirmed = confirmedRemovals(batch, removedRows);
+    removedForCertain.push(...confirmed);
+    removalsUnconfirmed += batch.length - confirmed.length;
+  }
+
+  // Invalidate the dedupe cache LAST, and only for what is provably gone. Nothing
+  // above this line is reached on a dry run or on either gate's refusal, so those
+  // paths write no rows either — a dry run that pruned a cache would not be one.
+  const hashes = await invalidateHashes(supabase, removedForCertain);
+
+  const warnings: string[] = [];
+  if (removalsUnconfirmed > 0) {
+    warnings.push(
+      `${removalsUnconfirmed} of ${orphanPaths.length} object(s) were asked for but storage did not ` +
+      `confirm removing them, so their photo_hashes rows were deliberately left in place.`,
+    );
+  }
+  if (!hashes.complete) {
+    warnings.push(
+      `${hashes.failed} photo_hashes row(s) for objects that WERE deleted could not be removed ` +
+      `(${hashes.reason}). Uploading those exact bytes again will be handed the deleted URL until ` +
+      `this cleanup is re-run, which is safe to do.`,
+    );
+    log({
+      event: 'STORAGE:CLEANUP', status: 'error', userId: admin.userId,
+      reason: 'photo_hashes invalidation incomplete', detail: hashes.reason,
+    });
   }
 
   log({
     event: 'STORAGE:CLEANUP', status: 'success', userId: admin.userId,
-    detail: `deleted=${deleted} estimatedBytes=${estimatedBytes} keep=${keepSet.paths.size}${force ? ' forced' : ''}`,
+    detail:
+      `deleted=${deleted} estimatedBytes=${estimatedBytes} keep=${keepSet.paths.size}` +
+      ` hashRowsDeleted=${hashes.deleted} hashDeletesFailed=${hashes.failed}` +
+      ` unconfirmed=${removalsUnconfirmed}${force ? ' forced' : ''}`,
   });
   return NextResponse.json({
     dryRun: false,
@@ -433,6 +600,17 @@ export async function POST(request: NextRequest) {
     estimatedBytes,
     paths: orphanPaths,
     forced: force,
+    // `deleted` counts paths storage accepted without an error; this counts the
+    // ones it listed back as genuinely removed, which is the number the hash
+    // invalidation is driven from. A gap between them is a half-succeeded batch.
+    removalsConfirmed: removedForCertain.length,
+    removalsUnconfirmed,
+    hashRowsDeleted: hashes.deleted,
+    hashDeletesFailed: hashes.failed,
+    // A sweep that removed objects but could not prune their dedupe rows has left
+    // the MEAL-132 poisoning in place for those bytes. It must not read as clean.
+    hashInvalidationComplete: hashes.complete,
+    ...(warnings.length > 0 ? { warnings } : {}),
     ...stats,
   });
 }
