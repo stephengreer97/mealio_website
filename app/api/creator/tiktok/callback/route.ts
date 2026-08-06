@@ -34,12 +34,15 @@ export async function GET(request: NextRequest) {
     //
     // It is worth keeping *because* of the split below. `access_denied` is
     // TikTok's documented code for the creator pressing Cancel; anything else is
-    // TikTok refusing rather than the creator declining, and while the app is in
-    // sandbox the overwhelmingly likely reason is an account that is not on its
-    // tester allow-list. Reporting that as "you cancelled on TikTok's screen"
-    // is the dead end this branch exists to avoid: it blames the creator for
-    // something they did not do and tells them nothing to do next. This log line
-    // is how the exact sandbox code gets learned rather than guessed.
+    // TikTok refusing rather than the creator declining. Reporting that as "you
+    // cancelled on TikTok's screen" is the dead end this branch exists to avoid:
+    // it blames the creator for something they did not do and tells them nothing
+    // to do next.
+    //
+    // The app moved to production credentials on 2026-08-06. Under sandbox the
+    // likely cause was the tester allow-list; now it is a real refusal, and this
+    // log line is the only place the actual code is recorded — which is what
+    // makes a pattern in production diagnosable at all.
     log({
       event: 'CREATOR:SOURCE_CONNECT',
       status: 'failed',

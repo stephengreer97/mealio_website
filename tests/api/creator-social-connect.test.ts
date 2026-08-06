@@ -373,7 +373,7 @@ describe('GET /api/creator/tiktok/callback', () => {
    * TikTok refusing an account is not the creator declining (MEAL-101).
    *
    * Every `error` on the redirect used to be reported as "you cancelled on
-   * TikTok's screen". With the app in sandbox that is now usually wrong, and
+   * TikTok's screen". That is wrong whenever TikTok itself declined, and
    * wrong in the worst direction: TikTok only authorises accounts registered
    * with it as testers, so the common case is a creator who pressed Connect,
    * was turned down by TikTok, and is then told by us that they changed their
@@ -416,7 +416,7 @@ describe('GET /api/creator/tiktok/callback', () => {
         ),
       );
 
-      // The log is how the exact sandbox error code gets learned rather than
+      // The log is how the exact error code gets learned rather than
       // guessed at. The redirect carries a code we chose — see `ConnectFailure`:
       // prose in the query string lets anyone who can get a creator to open a
       // link choose the sentence rendered in our error styling on our domain.
