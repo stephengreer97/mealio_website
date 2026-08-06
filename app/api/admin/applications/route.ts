@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
 import { sendCreatorApprovedEmail, sendCreatorRejectedEmail } from '@/lib/email';
 import { log } from '@/lib/logger';
+import { fetchAllPages } from '@/lib/paged-select';
 
 // GET /api/admin/applications — list all creator applications
 export async function GET(request: NextRequest) {
@@ -12,28 +13,58 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = createServerSupabaseClient();
-  const { data, error } = await supabase
-    .from('creator_applications')
-    .select(`
-      id,
-      display_name,
-      phone,
-      find_us,
-      website_url,
-      youtube_url,
-      instagram_url,
-      tiktok_url,
-      status,
-      created_at,
-      user_profiles!user_id ( email )
-    `)
-    .order('created_at', { ascending: false });
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  // Paged, because the unpaged version of this read was MEAL-135 and it truncated
+  // in the worst possible direction: the list is newest-first, so the 1000-row
+  // ceiling dropped the OLDEST applications — the ones that have been waiting
+  // longest and are most likely to still need a decision. An applicant could sit
+  // unreviewed forever without appearing anywhere on this screen.
+  //
+  // Paged on `id` rather than on `created_at`: `created_at` is the order the
+  // screen wants but it is not unique, and two applications sharing a timestamp
+  // make an OFFSET walk ambiguous at exactly the page boundary — one row repeated
+  // and another skipped. Ordering for display happens in memory below, which is
+  // free since this fetches all of them anyway.
+  const read = await fetchAllPages<Record<string, any>>((from, to) =>
+    supabase
+      .from('creator_applications')
+      .select(`
+        id,
+        display_name,
+        phone,
+        find_us,
+        website_url,
+        youtube_url,
+        instagram_url,
+        tiktok_url,
+        status,
+        created_at,
+        user_profiles!user_id ( email )
+      `)
+      .order('id', { ascending: true })
+      .range(from, to));
+
+  if (read.error) {
+    return NextResponse.json({ error: read.error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ applications: data });
+  const applications = [...read.rows].sort((a, b) =>
+    String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+
+  if (!read.complete) {
+    // Said out loud rather than absorbed. A truncated queue that looks whole is
+    // how an application goes unreviewed, so the screen is told the list is short
+    // instead of being left to render a plausible one. Convention is MEAL-127's.
+    log({
+      event: 'ADMIN:APPLICATION_LIST',
+      status: 'error',
+      userId: admin.userId,
+      email: admin.email,
+      detail: `incomplete read after ${applications.length} rows`,
+    });
+  }
+
+  return NextResponse.json({ applications, incomplete: read.complete ? [] : ['applications'] });
 }
 
 // PATCH /api/admin/applications — approve or reject an application

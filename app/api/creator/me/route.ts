@@ -5,6 +5,7 @@ import { getCachedTrendingMeals } from '@/lib/trending-cache';
 import { log } from '@/lib/logger';
 import { adminNotifyEmails, sendCreatorSourceMovedEmail } from '@/lib/email';
 import { HANDLE_RE, RESERVED_HANDLES, normalizeHandle } from '@/lib/handles';
+import { fetchAllPages } from '@/lib/paged-select';
 import {
   checkPollingInvariants,
   chooseCreatorSource,
@@ -192,6 +193,7 @@ async function grantNotices(
   const connectable = cleared.filter(isConnectedPlatform);
   if (connectable.length === 0) return [];
 
+  // unbounded-select-ok: one creator's grants — at most one row per platform, so four
   const { data } = await supabase
     .from('creator_platform_accounts')
     .select('platform')
@@ -288,6 +290,7 @@ export async function PATCH(request: NextRequest) {
     // sees a grant-backed source as having nothing to poll, and since its verdict
     // writes `import_opt_in = false`, a creator editing an unrelated link would
     // silently pause their own working import and be told they broke it.
+    // unbounded-select-ok: one creator's grants — at most one row per platform, so four
     const { data: linkEditAccounts } = await supabase
       .from('creator_platform_accounts')
       .select('platform')
@@ -364,6 +367,7 @@ export async function PATCH(request: NextRequest) {
     // The grants, because "connected" for YouTube means a grant and not a link.
     // Read even when the requested source is `website`, so one query answers the
     // question whichever way it is asked.
+    // unbounded-select-ok: one creator's grants — at most one row per platform, so four
     const { data: accounts } = await supabase
       .from('creator_platform_accounts')
       .select('platform')
@@ -530,14 +534,20 @@ export async function GET(request: NextRequest) {
   }
 
   // Get their meals — direct query for full editable fields + cached RPC for trending score
-  const [{ data: myMealsRaw }, allMealsRpc] = await Promise.all([
-    supabase
-      .from('preset_meals')
-      .select('id, name, photo_url, difficulty, ingredients, recipe, source, story, tags')
-      .eq('creator_id', creator.id)
-      .order('created_at', { ascending: false }),
+  const [myMealsRead, allMealsRpc] = await Promise.all([
+    // Paged: this is the creator's own catalogue, and every per-meal figure below
+    // is keyed off `mealIds` derived from it. A meal missing here is a meal the
+    // creator cannot edit AND a meal whose saves are left out of their totals.
+    fetchAllPages<Record<string, any>>((from, to) =>
+      supabase
+        .from('preset_meals')
+        .select('id, name, photo_url, difficulty, ingredients, recipe, source, story, tags')
+        .eq('creator_id', creator.id)
+        .order('id', { ascending: true })
+        .range(from, to)),
     getCachedTrendingMeals().catch(() => []),
   ]);
+  const myMealsRaw = myMealsRead.rows;
 
   const allScores = allMealsRpc;
   const rawScores = allScores.map(m => Number(m.trending_score));
@@ -548,7 +558,7 @@ export async function GET(request: NextRequest) {
 
   const trendingMap = new Map(allScores.map(m => [m.id, m.trending_score]));
 
-  const mealIds = (myMealsRaw ?? []).map((m: { id: string }) => m.id);
+  const mealIds = myMealsRaw.map((m) => String(m.id));
 
   // Rolling 12-month (annual) window — profit share is based entirely on saves in the last 365 days.
   const annualStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
@@ -561,7 +571,7 @@ export async function GET(request: NextRequest) {
     { count: saves30d },
     { count: savesAnnual },
     { count: savesAll },
-    { data: perMealSavesRaw },
+    perMealSavesRead,
   ] = await Promise.all([
     supabase.from('preset_meal_saves').select('id', { count: 'exact', head: true })
       .in('preset_meal_id', safeMealIds).gte('saved_at', thirtyDaysAgo),
@@ -569,21 +579,34 @@ export async function GET(request: NextRequest) {
       .in('preset_meal_id', safeMealIds).gte('saved_at', annualStart),
     supabase.from('preset_meal_saves').select('id', { count: 'exact', head: true })
       .in('preset_meal_id', safeMealIds),
-    supabase.from('preset_meal_saves').select('preset_meal_id')
-      .in('preset_meal_id', safeMealIds),
+    // Paged, and this is MEAL-127 wearing a different hat. The three reads above
+    // ask the server to count and are correct at any size; this one pulls one row
+    // per save and counts them HERE, so at 1000 saves it silently stopped counting
+    // — and `saves_all` per meal is what a creator reads to check their profit
+    // share against. A successful creator was the only one who could be wrong.
+    fetchAllPages<{ preset_meal_id: string }>((from, to) =>
+      supabase.from('preset_meal_saves').select('preset_meal_id')
+        .in('preset_meal_id', safeMealIds)
+        .order('id', { ascending: true })
+        .range(from, to)),
   ]);
 
   // Count saves per meal
   const perMealSavesMap = new Map<string, number>();
-  for (const row of (perMealSavesRaw ?? [])) {
-    const id = (row as { preset_meal_id: string }).preset_meal_id;
-    perMealSavesMap.set(id, (perMealSavesMap.get(id) ?? 0) + 1);
+  for (const row of perMealSavesRead.rows) {
+    perMealSavesMap.set(row.preset_meal_id, (perMealSavesMap.get(row.preset_meal_id) ?? 0) + 1);
   }
+  // A per-meal count folded from an incomplete read is a number that is simply
+  // wrong, so it is not shown as one. `savesAll` (a server-side count) stays
+  // correct either way, which is what makes the discrepancy visible.
+  const perMealSavesComplete = perMealSavesRead.complete;
 
   const myMeals = (myMealsRaw ?? []).map(m => ({
     ...m,
     trending_score: normalize(trendingMap.get(m.id) ?? minScore),
-    saves_all: perMealSavesMap.get(m.id) ?? 0,
+    // `null`, not a smaller number, when the read behind it came back short. A
+    // zero looks like an answer; nothing does not.
+    saves_all: perMealSavesComplete ? (perMealSavesMap.get(m.id) ?? 0) : null,
   })).sort((a, b) => b.trending_score - a.trending_score);
 
   // Platform total for creator meals in the rolling 12-month window (denominator for revenue share) + follower count

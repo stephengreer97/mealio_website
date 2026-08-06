@@ -30,6 +30,15 @@ export const URL_LIMIT_BYTES = 8 * 1024;
  * Concretely, the case that motivated this: a partial `creator_source_items`
  * map, where a record missing because it was past the page boundary reads as
  * "this post is new" and the post is imported a second time.
+ *
+ * This constant was RIGHT for all nine instances of that bug and none of them
+ * were caught by it, because a fake only judges the code a test drives through
+ * it and most of those reads had no such test. `tests/lib/select-bounds.test.ts`
+ * covers the other side: it reads every select in `app/`, `lib/` and
+ * `components/` straight off disk and fails the build on any that has no visible
+ * bound, whether or not anyone wrote a test for it. Write the paging with
+ * `fetchAllPages` from `@/lib/paged-select`; the two ceilings are the same number
+ * in both places on purpose.
  */
 export const DEFAULT_PAGE_ROWS = 1000;
 

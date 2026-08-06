@@ -4,6 +4,7 @@ import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { resolvePhotoUrl } from '@/lib/photos';
 import { tagCapError } from '@/lib/import/vocab';
+import { fetchAllPages } from '@/lib/paged-select';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -19,19 +20,41 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = createServerSupabaseClient();
-  const { data: meals, error } = await supabase
-    .from('meals')
-    .select('*')
-    .eq('user_id', decoded.userId)
-    .eq('is_active', true)
-    .order('created_at', { ascending: false });
 
-  if (error) {
-    log({ event: 'MEAL:GET', status: 'error', userId: decoded.userId, error });
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  // Paged. This endpoint's contract is "every meal this user saved" — my-meals
+  // renders the whole list and filters it client-side — so a silent 1000-row cut
+  // would not shorten the list, it would make a saved meal vanish from the only
+  // screen that can find it. Paid accounts have no meal cap, so nothing in the
+  // product keeps this under the ceiling.
+  //
+  // Ordered on `id` for the walk and re-sorted for display: `created_at` is not
+  // unique (a bulk import writes several in the same millisecond) and an OFFSET
+  // walk over a non-unique order can repeat one row and skip another.
+  const read = await fetchAllPages<Record<string, any>>((from, to) =>
+    supabase
+      .from('meals')
+      .select('*')
+      .eq('user_id', decoded.userId)
+      .eq('is_active', true)
+      .order('id', { ascending: true })
+      .range(from, to));
+
+  if (read.error) {
+    log({ event: 'MEAL:GET', status: 'error', userId: decoded.userId, error: read.error });
+    return NextResponse.json({ error: read.error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ meals });
+  const meals = [...read.rows].sort((a, b) =>
+    String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+
+  if (!read.complete) {
+    log({
+      event: 'MEAL:GET', status: 'error', userId: decoded.userId,
+      detail: `incomplete read after ${meals.length} meals`,
+    });
+  }
+
+  return NextResponse.json({ meals, incomplete: read.complete ? [] : ['meals'] });
 }
 
 // POST /api/meals — create a new meal

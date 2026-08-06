@@ -1,4 +1,5 @@
 import { canonicalizeIngredient } from './ingredients';
+import { fetchAllPages } from '@/lib/paged-select';
 import type { DraftIngredient } from './types';
 
 /**
@@ -234,14 +235,28 @@ export async function duplicateCandidates(
   creatorId: string,
   excludeDraftId?: string | null,
 ): Promise<DuplicateCandidate[]> {
+  // Both paged. A duplicate check reads a corpus to prove a NEGATIVE — "nothing
+  // here matches" — and that is the one shape where a truncated read is worse than
+  // an error: the rows that fall off the end are silently declared not to exist,
+  // the import is waved through, and the duplicate is published. A creator with a
+  // large back catalogue is precisely the one most likely to re-import something,
+  // and was the only one the check could fail for.
   const [publishedRes, draftRes] = await Promise.all([
-    supabase.from('preset_meals').select('id, name, ingredients').eq('creator_id', creatorId),
-    supabase.from('creator_import_drafts').select('id, draft').eq('creator_id', creatorId).eq('status', 'pending_review'),
+    fetchAllPages<Record<string, any>>((from, to) =>
+      supabase.from('preset_meals').select('id, name, ingredients')
+        .eq('creator_id', creatorId)
+        .order('id', { ascending: true })
+        .range(from, to)),
+    fetchAllPages<Record<string, any>>((from, to) =>
+      supabase.from('creator_import_drafts').select('id, draft')
+        .eq('creator_id', creatorId).eq('status', 'pending_review')
+        .order('id', { ascending: true })
+        .range(from, to)),
   ]);
 
   const out: DuplicateCandidate[] = [];
 
-  for (const row of ((publishedRes?.data ?? []) as Array<Record<string, any>>)) {
+  for (const row of publishedRes.rows) {
     const ingredients = Array.isArray(row.ingredients) ? row.ingredients : [];
     out.push({
       id: String(row.id),
@@ -255,7 +270,7 @@ export async function duplicateCandidates(
     });
   }
 
-  for (const row of ((draftRes?.data ?? []) as Array<Record<string, any>>)) {
+  for (const row of draftRes.rows) {
     if (excludeDraftId && String(row.id) === excludeDraftId) continue;
     const ingredients = Array.isArray(row.draft?.ingredients) ? row.draft.ingredients : [];
     out.push({

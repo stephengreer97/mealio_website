@@ -191,6 +191,8 @@ export async function pollHealthByCreator(
     const chunk = ids.slice(from, from + ID_CHUNK);
 
     const [stateRes] = await Promise.all([
+      // unbounded-select-ok: ID_CHUNK (100) creators per chunk and one row per source,
+      // so at most a few hundred rows — see the chunking loop this sits inside
       supabase
         .from('creator_source_state')
         .select('creator_id, source, last_polled_at, poll_after, consecutive_failures, last_failed_at, last_error, last_status')

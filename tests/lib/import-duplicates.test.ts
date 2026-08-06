@@ -8,6 +8,7 @@ import {
   ingredientKeys,
   type DuplicateCandidate,
 } from '@/lib/import/duplicates';
+import { FakeSupabase, DEFAULT_PAGE_ROWS } from '@/tests/helpers/supabase-mock';
 
 /**
  * Flagging a recipe a creator has already published (MEAL-98).
@@ -134,17 +135,29 @@ describe('the comparison itself', () => {
 });
 
 describe('duplicateCandidates', () => {
-  const db = (published: any[], drafts: any[]) => ({
-    from: (table: string) => {
-      const data = table === 'preset_meals' ? published : drafts;
-      const chain: any = { select: () => chain, eq: () => chain, then: undefined, data };
-      // `.eq()` is chained twice on drafts and once on meals, so the object has
-      // to answer both and still be awaitable at the end.
-      chain.select = () => chain;
-      chain.eq = () => chain;
-      return Object.assign(Promise.resolve({ data }), chain);
-    },
-  });
+  /**
+   * The shared fake, not a bespoke chain object.
+   *
+   * This used to be a hand-rolled stub whose `.eq()` returned itself and which
+   * answered every query with the same array. It passed while the two reads here
+   * were unbounded, and it could not have done anything else: it ignored the
+   * filters, so it could not tell a query scoped to one creator from one that
+   * read the table, and it had no row ceiling, so it could not tell a paged read
+   * from a truncated one. When those reads were paged it did not report a
+   * behaviour change — it threw `.order is not a function`, which is the most
+   * useful thing it ever said.
+   *
+   * `FakeSupabase` evaluates the filters and enforces `DEFAULT_PAGE_ROWS`, so
+   * these tests now exercise the paging rather than stubbing it out.
+   */
+  const db = (published: any[], drafts: any[]) => {
+    const fake = new FakeSupabase();
+    fake.seed('preset_meals', published.map((row) => ({ creator_id: 'c1', ...row })));
+    fake.seed('creator_import_drafts', drafts.map((row) => ({
+      creator_id: 'c1', status: 'pending_review', ...row,
+    })));
+    return fake;
+  };
 
   it('reads both published meals and drafts still in the queue', async () => {
     const out = await duplicateCandidates(
@@ -175,5 +188,44 @@ describe('duplicateCandidates', () => {
       'c1',
     );
     expect(out[0].ingredientNames).toEqual(['shrimp', 'butter']);
+  });
+
+  it('reads a creator’s whole back catalogue, past the 1000-row page ceiling', async () => {
+    // The bug this read had (MEAL-130). A duplicate check proves a NEGATIVE, so a
+    // truncated candidate list does not degrade the answer, it inverts it: the
+    // meals past the ceiling are declared not to exist and the re-import is waved
+    // through. The creator with the largest catalogue — the one most likely to
+    // repeat themselves — was the only one it failed for.
+    //
+    // 1500 is deliberately just over DEFAULT_PAGE_ROWS: enough to need a second
+    // page, and the fake truncates at exactly that boundary the way PostgREST
+    // does, silently.
+    const published = Array.from({ length: DEFAULT_PAGE_ROWS + 500 }, (_, i) => ({
+      id: `m${String(i).padStart(5, '0')}`,
+      name: `Meal ${i}`,
+      ingredients: [{ ingredientName: 'shrimp' }],
+    }));
+
+    const out = await duplicateCandidates(db(published, []), 'c1');
+
+    expect(out).toHaveLength(DEFAULT_PAGE_ROWS + 500);
+    // The last meal in the catalogue is the one an unpaged read loses, so name it
+    // rather than trusting the count alone.
+    expect(out.some((c) => c.id === `m0${DEFAULT_PAGE_ROWS + 499}`)).toBe(true);
+  });
+
+  it('does not read another creator’s meals while paging', async () => {
+    // The paging walk adds an `.order()` and a `.range()` to a filtered query, and
+    // getting that wrong reads the whole table in creator order. The old stub
+    // ignored filters entirely and could not have caught it.
+    const fake = new FakeSupabase();
+    fake.seed('preset_meals', [
+      { id: 'm1', creator_id: 'c1', name: 'Mine', ingredients: [{ ingredientName: 'shrimp' }] },
+      { id: 'm2', creator_id: 'c2', name: 'Theirs', ingredients: [{ ingredientName: 'shrimp' }] },
+    ]);
+    fake.seed('creator_import_drafts', []);
+
+    const out = await duplicateCandidates(fake, 'c1');
+    expect(out.map((c) => c.name)).toEqual(['Mine']);
   });
 });

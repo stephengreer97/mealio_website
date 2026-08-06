@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, checkTokenRevoked, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
+import { fetchAllPages, chunkIds } from '@/lib/paged-select';
 
 export async function DELETE(request: NextRequest) {
   const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
@@ -36,13 +37,40 @@ export async function DELETE(request: NextRequest) {
     if (creator?.id) {
       // preset_meal_saves.preset_meal_id is NOT NULL, so clear saves of this
       // creator's meals before deleting the meals.
-      const { data: authoredMeals } = await supabase
-        .from('preset_meals')
-        .select('id')
-        .eq('creator_id', creator.id);
-      const mealIds = (authoredMeals ?? []).map((m) => m.id);
-      if (mealIds.length) {
-        await supabase.from('preset_meal_saves').delete().in('preset_meal_id', mealIds);
+      // Paged, and this one has teeth. `preset_meal_saves.preset_meal_id` is NOT
+      // NULL with a foreign key onto `preset_meals`, so any save left behind here
+      // makes the `preset_meals` delete two lines down fail outright — a truncated
+      // id list does not delete slightly less, it aborts the account deletion and
+      // leaves the account half-erased. A user exercising a deletion right is
+      // exactly who must not get a partial answer.
+      const authored = await fetchAllPages<{ id: string }>((from, to) =>
+        supabase
+          .from('preset_meals')
+          .select('id')
+          .eq('creator_id', creator.id)
+          .order('id', { ascending: true })
+          .range(from, to));
+
+      if (!authored.complete) {
+        // Refuse rather than delete what we can. A cascade driven by an
+        // incomplete list is the orphan-cleanup failure (MEAL-126) with the rows
+        // reversed: there, an incomplete keep-set deleted live data.
+        log({
+          event: 'ACCOUNT:DELETE', status: 'error', userId,
+          detail: `authored-meal read incomplete after ${authored.rows.length} rows`,
+        });
+        return NextResponse.json(
+          { error: 'Could not read all of your published meals. Nothing was deleted — please try again.' },
+          { status: 503 },
+        );
+      }
+
+      const mealIds = authored.rows.map((m) => m.id);
+      // Chunked for the URI ceiling: ids travel in the query string, and a creator
+      // with a few hundred meals would otherwise build a DELETE URL past the
+      // proxy's limit and get a 414 that reads as "nothing to delete".
+      for (const chunk of chunkIds(mealIds)) {
+        await supabase.from('preset_meal_saves').delete().in('preset_meal_id', chunk);
       }
       await supabase.from('preset_meals').delete().eq('creator_id', creator.id);
       await supabase.from('creator_follows').delete().eq('creator_id', creator.id);
