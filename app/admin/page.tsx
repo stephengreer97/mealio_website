@@ -439,26 +439,51 @@ interface Stats {
     saves30d: number | null;
     savesQtr: number;
     savesAll: number | null;
-    totalCreatorAnnualSaves: number;
+    // Payout-relevant figures are `number | null`, and the null is not "zero yet":
+    // it is the API saying the read behind this number could not be completed, so
+    // any number here would be understated. Rendered as a dash, never as 0.
+    totalCreatorAnnualSaves: number | null;
     signups30d: number | null;
     signupsQtr: number;
     signupsAll: number | null;
     subsStarted30d: number | null;
-    subsStartedQtr: number;
+    subsStartedQtr: number | null;
     subsStartedAll: number | null;
     subsCancelled30d: number | null;
-    subsCancelledQtr: number;
+    subsCancelledQtr: number | null;
     subsCancelledAll: number | null;
     netNewPaid30d: number | null;
-    netNewPaidQtr: number;
+    netNewPaidQtr: number | null;
     netNewPaidAll: number | null;
   };
+  /** Aggregates the API could not read in full — empty on a healthy response. */
+  incomplete: string[];
+  /** null when the creator-save read was short; [] genuinely means no saves. */
   leaderboard: {
     name: string;
     annualSaves: number;
     sharePercent: number;
-  }[];
+  }[] | null;
 }
+
+/**
+ * A figure, or an em dash when the API could not complete the read behind it.
+ *
+ * `?? 0` was the old habit and it is the whole MEAL-127 failure mode in one
+ * operator-facing character: a zero looks like an answer, and payouts get read off
+ * it. A dash cannot be mistaken for a number.
+ */
+const figure = (value: number | null) => (value === null ? '—' : value.toLocaleString());
+
+/** Same, signed, for the net-new-paid tiles. */
+const signedFigure = (value: number | null) =>
+  value === null ? '—' : `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
+
+/** What each name in `stats.incomplete` means to a human. */
+const INCOMPLETE_LABELS: Record<string, string> = {
+  creatorSaves:       'creator saves (profit-share leaderboard)',
+  subscriptionEvents: 'subscription events (net new paid)',
+};
 
 interface EmailCampaign {
   type: string;
@@ -1277,6 +1302,21 @@ export default function AdminPage() {
               <p style={{ textAlign: 'center', color: '#888', padding: '32px' }}>Loading…</p>
             ) : (
               <>
+                {/* An aggregate came back short. Loud, and above the numbers rather
+                    than under them: the figures below decide creator payouts, and the
+                    bug this replaces was precisely that nothing said the answer was
+                    partial. */}
+                {stats.incomplete.length > 0 && (
+                  <div style={{ marginBottom: '20px', padding: '14px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                    <strong>Incomplete data — do not pay out from this screen.</strong>{' '}
+                    These reads could not be completed:{' '}
+                    {stats.incomplete.map(k => INCOMPLETE_LABELS[k] ?? k).join(', ')}. The
+                    affected figures are shown as “—” rather than as a number that would be
+                    understated. Retry, and if it persists check the server log for
+                    ADMIN:STATS.
+                  </div>
+                )}
+
                 {/* Quarter selector */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
                   <label style={{ fontSize: '13px', fontWeight: 600, color: '#555' }}>Quarter:</label>
@@ -1315,7 +1355,7 @@ export default function AdminPage() {
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '16px', marginBottom: '24px' }}>
                       <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
-                        <div style={{ fontSize: '32px', fontWeight: 700, color: '#555' }}>{stats.totals.totalCreatorAnnualSaves.toLocaleString()}</div>
+                        <div style={{ fontSize: '32px', fontWeight: 700, color: '#555' }}>{figure(stats.totals.totalCreatorAnnualSaves)}</div>
                         <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Creator saves (last 12 months)</div>
                       </div>
                     </div>
@@ -1339,14 +1379,14 @@ export default function AdminPage() {
                     <div style={{ fontSize: '13px', fontWeight: 600, color: '#555', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Net New Paid</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', marginBottom: '32px' }}>
                       {[
-                        { label: 'Net new paid (30d)',      started: stats.totals.subsStarted30d ?? 0,  cancelled: stats.totals.subsCancelled30d ?? 0,  net: stats.totals.netNewPaid30d ?? 0 },
+                        { label: 'Net new paid (30d)',      started: stats.totals.subsStarted30d,  cancelled: stats.totals.subsCancelled30d,  net: stats.totals.netNewPaid30d },
                         { label: `Net new paid (${stats.quarterLabel})`, started: stats.totals.subsStartedQtr, cancelled: stats.totals.subsCancelledQtr, net: stats.totals.netNewPaidQtr },
-                        { label: 'Net new paid (all time)', started: stats.totals.subsStartedAll ?? 0,  cancelled: stats.totals.subsCancelledAll ?? 0,  net: stats.totals.netNewPaidAll ?? 0 },
+                        { label: 'Net new paid (all time)', started: stats.totals.subsStartedAll,  cancelled: stats.totals.subsCancelledAll,  net: stats.totals.netNewPaidAll },
                       ].map(s => (
                         <div key={s.label} style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
-                          <div style={{ fontSize: '32px', fontWeight: 700, color: s.net >= 0 ? '#16a34a' : '#c40029' }}>{s.net >= 0 ? '+' : ''}{s.net.toLocaleString()}</div>
+                          <div style={{ fontSize: '32px', fontWeight: 700, color: s.net === null ? '#aaa' : s.net >= 0 ? '#16a34a' : '#c40029' }}>{signedFigure(s.net)}</div>
                           <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>{s.label}</div>
-                          <div style={{ fontSize: '11px', color: '#aaa', marginTop: '6px' }}>+{s.started} started · −{s.cancelled} cancelled</div>
+                          <div style={{ fontSize: '11px', color: '#aaa', marginTop: '6px' }}>{figure(s.started)} started · {figure(s.cancelled)} cancelled</div>
                         </div>
                       ))}
                     </div>
@@ -1373,11 +1413,11 @@ export default function AdminPage() {
                   <div style={{ fontSize: '13px', fontWeight: 600, color: '#555', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Net New Paid</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '16px', marginBottom: '32px' }}>
                     <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
-                      <div style={{ fontSize: '32px', fontWeight: 700, color: stats.totals.netNewPaidQtr >= 0 ? '#16a34a' : '#c40029' }}>
-                        {stats.totals.netNewPaidQtr >= 0 ? '+' : ''}{stats.totals.netNewPaidQtr.toLocaleString()}
+                      <div style={{ fontSize: '32px', fontWeight: 700, color: stats.totals.netNewPaidQtr === null ? '#aaa' : stats.totals.netNewPaidQtr >= 0 ? '#16a34a' : '#c40029' }}>
+                        {signedFigure(stats.totals.netNewPaidQtr)}
                       </div>
                       <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Net new paid ({stats.quarterLabel})</div>
-                      <div style={{ fontSize: '11px', color: '#aaa', marginTop: '6px' }}>+{stats.totals.subsStartedQtr} started · −{stats.totals.subsCancelledQtr} cancelled</div>
+                      <div style={{ fontSize: '11px', color: '#aaa', marginTop: '6px' }}>{figure(stats.totals.subsStartedQtr)} started · {figure(stats.totals.subsCancelledQtr)} cancelled</div>
                     </div>
                   </div>
                   </>
@@ -1389,7 +1429,16 @@ export default function AdminPage() {
                     <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#222' }}>Profit-Share Leaderboard</h2>
                     <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>Creator saves over the rolling last 12 months — sorted by share of pool</p>
                   </div>
-                  {stats.leaderboard.length === 0 ? (
+                  {stats.leaderboard === null ? (
+                    /* The read was short, so the shares are wrong for everybody — not
+                       just small. Showing the table anyway is how a creator gets
+                       under-paid by a number that looked plausible. */
+                    <p style={{ padding: '32px 24px', color: '#b91c1c', textAlign: 'center', fontSize: '13px', margin: 0 }}>
+                      Leaderboard unavailable — the creator-save read could not be completed,
+                      so every share below it would be understated. Nothing is shown rather
+                      than something partial. Retry before paying out.
+                    </p>
+                  ) : stats.leaderboard.length === 0 ? (
                     <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>No creator saves in the last 12 months.</p>
                   ) : (
                     <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
