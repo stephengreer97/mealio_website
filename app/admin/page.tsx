@@ -515,7 +515,10 @@ export default function AdminPage() {
   const [bcStatus, setBcStatus] = useState('');
 
   const [storageLoading, setStorageLoading] = useState(false);
-  const [storageDryRunResult, setStorageDryRunResult] = useState<{ orphanCount: number; estimatedBytes: number; paths: string[] } | null>(null);
+  // `wouldBlock`/`blockReason` are the cleanup route's own verdict on its result
+  // (MEAL-126): the orphan list is only worth acting on if the route considers it
+  // trustworthy, and that has to be on screen next to the number.
+  const [storageDryRunResult, setStorageDryRunResult] = useState<{ orphanCount: number; estimatedBytes: number; paths: string[]; wouldBlock?: boolean; blockReason?: string } | null>(null);
   const [storageDeleteResult, setStorageDeleteResult] = useState<{ deleted: number; estimatedBytes: number } | null>(null);
   const [storageError, setStorageError] = useState('');
   const [backfillLoading, setBackfillLoading] = useState(false);
@@ -780,7 +783,11 @@ export default function AdminPage() {
       const data = await res.json();
       setStorageDryRunResult(data);
     } else {
-      setStorageError('Dry run failed.');
+      // The server's message, not a generic one: a 409 here means it refused to
+      // compute orphans because the reference read was incomplete, and "Dry run
+      // failed." would read as a hiccup worth retrying rather than a defect.
+      const data = await res.json().catch(() => null);
+      setStorageError(data?.error ?? 'Dry run failed.');
     }
   };
 
@@ -798,7 +805,8 @@ export default function AdminPage() {
       setStorageDeleteResult(data);
       setStorageDryRunResult(null);
     } else {
-      setStorageError('Delete failed.');
+      const data = await res.json().catch(() => null);
+      setStorageError(data?.error ?? 'Delete failed.');
     }
   };
 
@@ -1542,6 +1550,11 @@ export default function AdminPage() {
                     Dry run: {storageDryRunResult.orphanCount} orphan{storageDryRunResult.orphanCount !== 1 ? 's' : ''} found
                     — ~{(storageDryRunResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB
                   </div>
+                  {storageDryRunResult.wouldBlock && (
+                    <div style={{ margin: '0 0 8px', padding: '10px 12px', background: '#fff4e5', border: '1px solid #f0b37e', borderRadius: '6px', color: '#8a4b08', fontWeight: 600 }}>
+                      Delete will refuse: {storageDryRunResult.blockReason}
+                    </div>
+                  )}
                   {storageDryRunResult.orphanCount === 0 ? (
                     <div style={{ color: '#16a34a' }}>No orphans — storage is clean.</div>
                   ) : (
