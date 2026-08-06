@@ -104,21 +104,25 @@ const FAILURE_COPY: Record<string, (label: string) => string> = {
    * (MEAL-101).
    *
    * The callback used to read *any* `error` on the redirect as "cancelled",
-   * which for TikTok is now usually wrong and is the worst kind of wrong: it
-   * blames a creator for something they did not do and gives them nothing to do
-   * next. While the TikTok app is in sandbox, TikTok only authorises accounts
-   * registered with it as testers, and everyone else is turned down on TikTok's
-   * own screen with nothing on it that mentions Mealio.
+   * which is the worst kind of wrong: it blames a creator for something they
+   * did not do and gives them nothing to do next.
    *
-   * Worded so it is true either way. We cannot be certain from the redirect
-   * whether a given refusal was the allow-list or something else, so this does
-   * not assert which — it names the overwhelmingly likely cause and the one
-   * thing that fixes it.
+   * This wording changed when TikTok approved the app (2026-08-06). While the
+   * credentials were sandbox ones, a refusal was overwhelmingly the tester
+   * allow-list, and the copy said so and told the creator to ask us to add
+   * them. On production credentials that advice is actively wrong: a refusal is
+   * now a real refusal — a personal account TikTok will not grant, a revoked
+   * grant, a genuine cancel — and sending those creators to ask for an
+   * allow-list they are not on buries the real cause under a support thread.
+   *
+   * So it names what we can actually know from a redirect, which is only that
+   * the platform declined, and gives the two things that are worth trying.
+   * Deliberately does not assert a cause.
    */
   unavailable: (label) =>
-    `${label} did not connect that account. Our ${label} app is in limited release while it is under review, ` +
-    `so ${label} only lets accounts we have registered for testing connect — if you did not cancel on ` +
-    `${label}'s screen, that is almost certainly why. Tell us and we will add yours.`,
+    `${label} would not connect that account. That usually means ${label} declined it rather than you ` +
+    `cancelling — a personal account it will not grant access to, or a permission that was turned down. ` +
+    `Try again, and if it keeps happening tell us which account and we will look at what ${label} sent back.`,
   scope: () =>
     'That connection came back without permission to read your posts, so there would be nothing to import. ' +
     'Connect again and leave the permission ticked.',
@@ -288,10 +292,11 @@ export default function PlatformConnectCard({
               platform is the same paragraph a third time. */}
           {!embedded && <p className="text-sm text-gray-600 leading-relaxed mb-4">{copy.pitch}</p>}
 
-          {/* What to expect from the press, said before it. TikTok's app is in
-              sandbox, so the account has to be one we registered — a creator
-              refused on TikTok's own screen sees nothing there that mentions
-              Mealio, and would have no idea why. */}
+          {/* What to expect from the press, said before it. Only rendered when a
+              platform supplies a `note`; none do today — TikTok's sandbox note
+              was dropped when the app was approved (2026-08-06). Kept because a
+              platform-specific caveat before the press is the right shape for
+              one, and Instagram will need it if it ships gated. */}
           {note && !unconfigured && (
             <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 mb-4 leading-relaxed" data-testid={`note-${platform}`}>
               {note}

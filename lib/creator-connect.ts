@@ -74,8 +74,9 @@ export type ConnectFailure =
   // The provider turned the account down rather than the creator declining
   // (MEAL-101). Distinct from `cancelled`, which is an outcome rather than a
   // failure: reading every redirect `error` as "you cancelled" blames a creator
-  // for something they did not do. TikTok's app is in sandbox, so this is
-  // usually an account not on its tester allow-list.
+  // for something they did not do. While TikTok's app was in sandbox this was
+  // usually its tester allow-list; since approval (2026-08-06) it is a real
+  // refusal, so the copy no longer names a cause it cannot know.
   | 'unavailable';
 
 /** Where the creator lands afterwards, with something the portal can render. */

@@ -442,7 +442,8 @@ describe('creator-sources — chooseCreatorSource', () => {
 
   it('offers TikTok plainly, with nothing hedged in front of it', () => {
     const tiktok = CREATOR_SOURCE_OPTIONS.find(option => option.source === 'tiktok');
-    // Neither blocked nor caveated. The sandbox refusal is real but rare, and it
+    // Neither blocked nor caveated. A refusal is rare, and since approval
+    // (2026-08-06) there is no allow-list to warn about at all — and it
     // is the callback's to explain — to the creator it happened to, at the
     // moment it happened, rather than to everyone in advance.
     expect(tiktok?.blockedReason).toBeNull();

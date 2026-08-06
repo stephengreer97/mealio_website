@@ -252,15 +252,16 @@ describe('the source picker', () => {
 
 // ── TikTok, which is real but provisional ────────────────────────────────────
 
-describe('TikTok’s limited release', () => {
+describe('TikTok refusals', () => {
   it('warns nobody in advance about a refusal most will never hit', async () => {
     harness();
     fireEvent.change(picker(), { target: { value: 'tiktok' } });
 
-    // The credentials are sandbox credentials, so TikTok refuses accounts it has
-    // not registered as testers. That used to be said up front to every creator;
-    // it is said by the callback instead, to the one creator it happened to. A
-    // caveat above a button is read by everyone and true for almost none of them.
+    // Nothing is warned about up front. Under sandbox credentials TikTok refused
+    // accounts it had not registered as testers, and even then the warning lived
+    // in the callback rather than above the button — a caveat everyone reads and
+    // almost nobody hits is the wrong trade. Since approval (2026-08-06) there
+    // is no allow-list to warn about at all.
     await waitFor(() => expect(picker().value).toBe('tiktok'));
     expect(screen.queryByTestId('note-tiktok')).toBeNull();
     // And the option stays a plain choice, as it was.
@@ -268,9 +269,10 @@ describe('TikTok’s limited release', () => {
   });
 
   it('explains a refusal from TikTok instead of blaming the creator', async () => {
-    // What the callback now redirects to when TikTok returns an error that is
-    // not `access_denied` — which, while the app is in sandbox, is usually an
-    // account that is not on its allow-list.
+    // Where the callback redirects when TikTok returns an error that is not
+    // `access_denied`. Under sandbox credentials that was usually the tester
+    // allow-list; on production credentials (2026-08-06) it is a real refusal,
+    // so the copy must not name a cause it cannot know from a redirect.
     window.history.replaceState(null, '', '/creator?tiktok=failed&reason=unavailable');
     harness();
 
@@ -278,9 +280,15 @@ describe('TikTok’s limited release', () => {
     // to arrive at the panel that can tell them why, and the failure case is the
     // one where landing anywhere else is worst.
     await waitFor(() => expect(picker().value).toBe('tiktok'));
-    const message = await screen.findByText(/did not connect that account/i);
-    expect(message.textContent).toMatch(/limited release/i);
-    expect(message.textContent).toMatch(/tell us and we will add yours/i);
+    const message = await screen.findByText(/would not connect that account/i);
+    // Says what a redirect can actually establish — TikTok declined — and gives
+    // something to do, without asserting which cause.
+    expect(message.textContent).toMatch(/declined it rather than you cancelling/i);
+    expect(message.textContent).toMatch(/try again/i);
+    // The sandbox advice is gone. Telling a creator to ask for an allow-list
+    // they are not on buries the real cause under a support thread.
+    expect(message.textContent).not.toMatch(/limited release/i);
+    expect(message.textContent).not.toMatch(/add yours/i);
     // And it does not say they cancelled, which is what every TikTok error used
     // to be reported as.
     expect(screen.queryByText(/you cancelled/i)).toBeNull();

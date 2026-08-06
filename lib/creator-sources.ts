@@ -553,11 +553,11 @@ export const CREATOR_SOURCE_OPTIONS: readonly CreatorSourceOption[] = [
     label: 'TikTok',
     blockedReason: null,
     /**
-     * No note before the press. The app's credentials are TikTok *sandbox*
-     * credentials, so a creator TikTok has not registered as a tester is refused
-     * on TikTok's own screen — but that is said by the callback, when it
-     * actually happens and to the creator it actually happened to, rather than
-     * as a caveat every creator reads and most will never hit.
+     * No note before the press. TikTok approved the app on 2026-08-06, so the
+     * sandbox tester allow-list no longer applies and there is nothing to warn
+     * about up front. A refusal is now a genuine one and is reported by the
+     * callback — when it actually happens, to the creator it happened to,
+     * rather than as a caveat every creator reads and most will never hit.
      */
     note: null,
   },
