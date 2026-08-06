@@ -75,6 +75,7 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
     fakeDb.seed('preset_meals', []);
     fakeDb.seed('creators', []);
     fakeDb.seed('creator_applications', []);
+    fakeDb.seed('creator_import_drafts', []);
   });
 
   const run = (query = '') =>
@@ -128,6 +129,138 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
     const meals = body.tables.find((t: { table: string }) => t.table === 'meals');
     // Two reads: the full page, then the empty one that proves it was the last.
     expect(meals).toMatchObject({ expected: DEFAULT_PAGE_ROWS, read: DEFAULT_PAGE_ROWS, pages: 2, complete: true });
+  });
+
+  // ── MEAL-131 regression ───────────────────────────────────────────────────
+  //
+  // A different failure from MEAL-126, and not a paging one: `creator_import_drafts`
+  // was not a source at all. Paging every table perfectly cannot save a table
+  // nobody reads, and neither gate notices — every table the route knows about
+  // reconciles against its own count, and one creator's drafts are nowhere near
+  // half the bucket. An allowlist that is missing an entry is silently complete.
+  describe('import drafts hold their photo inside the `draft` jsonb', () => {
+    /** A draft row shaped like the ones `creator_import_drafts` actually carries. */
+    function draftRow(photoUrl: string | null, over: Record<string, unknown> = {}) {
+      return {
+        id: 'draft-00001',
+        creator_id: 'c-1',
+        source_url: 'https://cookieandkate.example/guacamole',
+        status: 'pending_review',
+        draft: {
+          name: 'Guacamole',
+          ingredients: [{ ingredientName: 'avocado', qty: 3, productQty: 3, unit: 'qty' }],
+          recipe: 'Mash it.',
+          source: 'https://cookieandkate.example/guacamole',
+          story: null,
+          photoUrl,
+          difficulty: 1,
+          tags: ['Mexican'],
+          serves: '4',
+        },
+        ...over,
+      };
+    }
+
+    it('does not delete the photo of a draft that has not been published yet', async () => {
+      // The whole bug. The import stored the creator's page image via
+      // storeImageBuffer and put the URL on `draft.photoUrl`; until the draft is
+      // published no `photo_url` column anywhere points at it, so every sweep
+      // deleted it and the review queue rendered a broken image.
+      const draftPath = 'creator-7/1754440000000.jpg';
+      fakeDb.seed('meals', []);
+      fakeDb.seed('creator_import_drafts', [draftRow(`${BASE_URL}${draftPath}`)]);
+
+      const trueOrphan = { name: 'user-9/abandoned.jpg', size: 10 };
+      bucket.objects = [{ name: draftPath, size: 4242 }, trueOrphan];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      // Against the unfixed route this is the assertion that fails: the draft's
+      // photo is in `removed` and object-storage deletion does not come back.
+      expect(bucket.removed).not.toContain(draftPath);
+      expect(bucket.removed).toEqual([trueOrphan.name]);
+      expect(body.keepSetSize).toBe(1);
+    });
+
+    it('keeps the photo of a cancelled draft too, which is never deleted from the table', async () => {
+      // `creator_import_drafts` marks a decision, it does not delete the row —
+      // the poller must not re-propose the same post, and MEAL-77's consent
+      // story shows what was proposed and what the creator did about it. That
+      // history is still rendered, so its photo is still referenced. Hence no
+      // status filter on the read.
+      const cancelled = 'creator-7/cancelled.jpg';
+      const approved = 'creator-7/approved.jpg';
+      fakeDb.seed('meals', []);
+      fakeDb.seed('creator_import_drafts', [
+        draftRow(`${BASE_URL}${cancelled}`, { id: 'draft-00001', status: 'cancelled' }),
+        draftRow(`${BASE_URL}${approved}`, { id: 'draft-00002', status: 'approved', published_meal_id: 'meal-1' }),
+      ]);
+      bucket.objects = [{ name: cancelled, size: 1 }, { name: approved, size: 1 }];
+
+      const res = await run();
+      expect(res.status).toBe(200);
+      expect(bucket.removed).toEqual([]);
+      expect((await res.json()).keepSetSize).toBe(2);
+    });
+
+    it('protects a storage URL anywhere in the draft, not just the `photoUrl` key', async () => {
+      // The point of scanning the jsonb rather than selecting `draft->>photoUrl`:
+      // the next key someone adds to the draft shape is protected the day it is
+      // added, instead of becoming MEAL-131 a second time.
+      const nested = 'creator-7/step-3.jpg';
+      fakeDb.seed('meals', []);
+      fakeDb.seed('creator_import_drafts', [
+        draftRow(null, { draft: { name: 'Tacos', steps: [{ text: 'Fry', image: `${BASE_URL}${nested}` }] } }),
+      ]);
+      bucket.objects = [{ name: nested, size: 1 }];
+
+      const res = await run();
+      expect(res.status).toBe(200);
+      expect(bucket.removed).toEqual([]);
+    });
+
+    it('reconciles the drafts read against its count, and refuses when it falls short', async () => {
+      // The new source is behind the same completeness gate as the other four: a
+      // truncated read of it is fatal, not a quietly smaller keep-set.
+      fakeDb.seed('meals', []);
+      fakeDb.seed('creator_import_drafts', [draftRow(`${BASE_URL}creator-7/a.jpg`)]);
+      fakeDb.queue('creator_import_drafts', { data: null, count: 900 });
+      bucket.objects = [{ name: 'creator-7/a.jpg', size: 1 }, { name: 'user-9/orphan.jpg', size: 1 }];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(body.blocked).toBe(true);
+      expect(body.reason).toContain('creator_import_drafts');
+      expect(body.reason).toContain('of 900');
+      // Nothing deleted, including the genuine orphan.
+      expect(bucket.removed).toEqual([]);
+      expect(body.tables.map((t: { table: string }) => t.table)).toContain('creator_import_drafts');
+    });
+
+    it('pages the drafts table past the 1000-row ceiling like every other source', async () => {
+      // MEAL-126's lesson applied to the new source rather than rediscovered by
+      // it: 1500 drafts is 1500 protected photos, not the first 1000.
+      const drafts = Array.from({ length: 1500 }, (_, i) => {
+        const path = `creator-7/draft-${String(i).padStart(5, '0')}.jpg`;
+        return { row: draftRow(`${BASE_URL}${path}`, { id: `draft-${String(i).padStart(5, '0')}` }), path };
+      });
+      fakeDb.seed('meals', []);
+      fakeDb.seed('creator_import_drafts', drafts.map((d) => d.row));
+      bucket.objects = drafts.map((d) => ({ name: d.path, size: 1 }));
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(bucket.removed).toEqual([]);
+      expect(body.keepSetSize).toBe(1500);
+      expect(body.tables.find((t: { table: string }) => t.table === 'creator_import_drafts'))
+        .toMatchObject({ expected: 1500, read: 1500, complete: true });
+    });
   });
 
   // ── Gate 1: completeness reconciliation ───────────────────────────────────

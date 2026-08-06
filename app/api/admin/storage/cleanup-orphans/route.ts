@@ -23,8 +23,97 @@ const PAGE_ROWS = 1000;
  */
 const MAX_PAGES = 2000;
 
-/** The tables whose `photo_url` protects an object from deletion. */
-const REFERENCE_TABLES = ['meals', 'preset_meals', 'creators', 'creator_applications'] as const;
+/**
+ * One place a live photo reference is stored.
+ *
+ * `column` is both what the select asks for and what the null-filter is written
+ * against, so the count and the pages always ask the same question — see
+ * `readTable`. `extract` turns one row's value for that column into zero or more
+ * storage paths.
+ *
+ * This list is an ALLOWLIST, and that is the shape of the whole bug class: a
+ * place to store an image that is not named here is not under-protected, it is
+ * DELETED, silently, on the next sweep. MEAL-126 was the reads being short;
+ * MEAL-131 was this list being short. Adding a column or a jsonb key that can
+ * hold a storage URL without adding it here is a data-loss change, so anything
+ * new goes in this list in the same commit. See the note on `extractFromJsonb`
+ * for how far that obligation is reduced within a jsonb blob.
+ */
+interface ReferenceSource {
+  table: string;
+  column: string;
+  extract: (value: unknown, paths: Set<string>) => void;
+}
+
+/** A plain `text` column holding at most one URL. */
+function extractFromUrlColumn(value: unknown, paths: Set<string>): void {
+  const path = toStoragePath(typeof value === 'string' ? value : null);
+  if (path) paths.add(path);
+}
+
+/**
+ * Every storage URL anywhere inside a jsonb value, at any depth.
+ *
+ * Deliberately a whole-blob scan rather than the narrower `draft->>'photoUrl'`
+ * that would answer MEAL-131 exactly, for two reasons.
+ *
+ * The first is safety of the DEFAULT. Inside a jsonb column this inverts the
+ * allowlist above into deny-by-default: the next key added to the draft shape —
+ * a per-step photo, a second image, a gallery array — is protected the day it is
+ * added, by nobody remembering anything. A key-specific select would make that
+ * addition MEAL-131 a second time, and the failure would again be a silent
+ * deletion rather than an error.
+ *
+ * The second is that a jsonb-path select cannot be verified here. PostgREST
+ * would take `draft->>photoUrl` in the select and the filter, but if that
+ * expression is wrong in any way — the operator, the quoting, a renamed key —
+ * the read does not fail. It returns nulls, the count agrees with the pages, the
+ * completeness gate passes, and the keep-set is missing every draft photo: the
+ * exact bug being fixed, wearing the fix's clothes. The test double this
+ * repository uses does not implement jsonb operators either, so a green suite
+ * would prove nothing about the real query. Selecting the column whole is a
+ * plain column read that behaves identically in both, and the extraction is
+ * ordinary TypeScript that the tests genuinely exercise.
+ *
+ * The cost is transferring the draft blobs rather than one field of each. On an
+ * operator-triggered sweep over a review queue that is thousands of rows at
+ * most, that is the cheaper half of the trade.
+ */
+function extractFromJsonb(value: unknown, paths: Set<string>): void {
+  if (typeof value === 'string') { extractFromUrlColumn(value, paths); return; }
+  if (Array.isArray(value)) {
+    for (const item of value) extractFromJsonb(item, paths);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const nested of Object.values(value)) extractFromJsonb(nested, paths);
+  }
+}
+
+/** Every table whose contents protect an object from deletion. */
+const REFERENCE_SOURCES: readonly ReferenceSource[] = [
+  { table: 'meals',                 column: 'photo_url', extract: extractFromUrlColumn },
+  { table: 'preset_meals',          column: 'photo_url', extract: extractFromUrlColumn },
+  { table: 'creators',              column: 'photo_url', extract: extractFromUrlColumn },
+  { table: 'creator_applications',  column: 'photo_url', extract: extractFromUrlColumn },
+  // MEAL-131. The import pipeline stores a creator's page image through
+  // `storeImageBuffer` — same bucket as everything else — and the URL lands on
+  // `draft.photoUrl`, INSIDE the jsonb. So there is no `photo_url` column here
+  // to read: a column select would have found nothing even if the table had been
+  // scanned. Until the draft is published nothing else references the object, so
+  // every sweep deleted it and the creator's review queue rendered a broken
+  // image. Unlike MEAL-126 this needed no particular table size; it fired every
+  // time.
+  //
+  // No status filter: `creator_import_drafts` marks a decision and never deletes
+  // the row, and a cancelled draft's photo is still displayed as part of the
+  // record of what was proposed. Every row of this table is a live reference.
+  //
+  // `confidence` is NOT read. It holds field provenance — level, match, score,
+  // and the evidence span quoted from the source page — and no storage URL of
+  // ours. If it ever carries one it belongs in this list as its own source.
+  { table: 'creator_import_drafts', column: 'draft',     extract: extractFromJsonb },
+];
 
 /**
  * Refuse to delete when more than this share of the bucket looks orphaned.
@@ -74,7 +163,8 @@ interface KeepSet {
 }
 
 /**
- * Reads every `photo_url` in one table, paged, and folds it into `paths`.
+ * Reads one reference source to exhaustion, paged, folding every storage path it
+ * yields into `paths`.
  *
  * An unlimited select is not "all rows": PostgREST answers with the first
  * `db-max-rows` of them, with no error and nothing saying it truncated. That is
@@ -104,20 +194,24 @@ interface KeepSet {
  */
 async function readTable(
   supabase: SupabaseClient,
-  table: string,
+  source: ReferenceSource,
   paths: Set<string>,
 ): Promise<TableRead> {
-  // Rows with no photo cannot protect an object, so they are filtered out of
-  // both the count and the pages. The filter is written once, here, on purpose:
-  // if the count and the pages ever disagreed about which rows they cover, the
-  // reconciliation below would be comparing two different questions.
+  const { table, column } = source;
+
+  // Rows with nothing in the column cannot protect an object, so they are
+  // filtered out of both the count and the pages. The filter is written once,
+  // here, on purpose: if the count and the pages ever disagreed about which rows
+  // they cover, the reconciliation below would be comparing two different
+  // questions. (On a NOT NULL column like `creator_import_drafts.draft` the
+  // filter is a no-op, which is why it can stay unconditional.)
   const rowsWithPhotos = () =>
-    supabase.from(table).select('photo_url').not('photo_url', 'is', null);
+    supabase.from(table).select(column).not(column, 'is', null);
 
   const { count, error: countError } = await supabase
     .from(table)
-    .select('photo_url', { count: 'exact', head: true })
-    .not('photo_url', 'is', null);
+    .select(column, { count: 'exact', head: true })
+    .not(column, 'is', null);
 
   if (countError) {
     return {
@@ -143,11 +237,12 @@ async function readTable(
       };
     }
 
-    const rows = (data ?? []) as Array<{ photo_url: string | null }>;
-    for (const row of rows) {
-      const path = toStoragePath(row.photo_url);
-      if (path) paths.add(path);
-    }
+    // Through `unknown` because the select list is a variable rather than a
+    // literal, so supabase-js can no longer infer the row shape from it and
+    // falls back to `GenericStringError[]`. The runtime shape is a row object
+    // keyed by `column`; `extract` treats anything else as no reference.
+    const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
+    for (const row of rows) source.extract(row[column], paths);
     read += rows.length;
 
     // A short page is the only proof there is nothing after it. A full page may
@@ -176,11 +271,15 @@ async function collectReferencedPaths(supabase: SupabaseClient): Promise<KeepSet
   const paths = new Set<string>();
   const tables: TableRead[] = [];
 
-  // Sequential, not Promise.all as before: four tables paged concurrently is a
+  // Sequential, not Promise.all as before: every source paged concurrently is a
   // burst of requests against one PostgREST instance for no benefit on an
   // operator-triggered sweep, and a partial failure is easier to report.
-  for (const table of REFERENCE_TABLES) {
-    tables.push(await readTable(supabase, table, paths));
+  //
+  // Driven off REFERENCE_SOURCES so a source cannot be added to the keep-set
+  // without also being reconciled below — an unreconciled source would be a
+  // truncatable read whose truncation is not fatal, which is MEAL-126 again.
+  for (const source of REFERENCE_SOURCES) {
+    tables.push(await readTable(supabase, source, paths));
   }
 
   const broken = tables.filter((t) => !t.complete);
