@@ -106,6 +106,7 @@ export type EventType =
   | 'ADMIN:CREATOR_VIABILITY'   // the onboarding importability measurement (MEAL-81)
   | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
   | 'ADMIN:AUTOMATION_FUNNEL'   // per-store add-to-cart reliability dashboard
+  | 'ADMIN:STATS'               // logged only when an aggregate read came back short (MEAL-127)
   | 'ADMIN:SYNC_RUN'            // an operator-triggered sync run (MEAL-90)
   | 'ADMIN:SYNC_ITEM'           // one item inside a run: recorded, or retried
   // The four decisions in the admin review queue (MEAL-91). Every publish under
