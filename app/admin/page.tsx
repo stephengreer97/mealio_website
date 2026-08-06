@@ -1522,8 +1522,8 @@ export default function AdminPage() {
             <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
               <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Orphan Cleanup</h2>
               <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
-                Finds storage files in the meal-photos bucket that are not referenced by any meal, preset meal, creator, or application.
-                Run a dry run first to preview what would be deleted.
+                Finds storage files in the meal-photos bucket that are not referenced by any meal, preset meal, creator,
+                application, or pending import draft. Run a dry run first to preview what would be deleted.
               </p>
               <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
                 <button
