@@ -8,7 +8,8 @@ import {
   isPrimarySource,
   normalizePlatformUrl,
 } from '@/lib/creator-sources';
-import { pollHealthByCreator } from '@/lib/poll-health';
+import { pollHealthByCreator, POLL_HEALTH_LIMIT } from '@/lib/poll-health';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 /**
  * Creator sources: which of a creator's four links we poll (MEAL-81).
@@ -35,6 +36,96 @@ import { pollHealthByCreator } from '@/lib/poll-health';
 const CREATOR_FIELDS =
   'id, display_name, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url, import_paused_reason, import_paused_at';
 
+/**
+ * Rows one read asks for, and how many of those reads it is allowed.
+ *
+ * PostgREST answers a select with at most `db-max-rows` — 1000 on Supabase — and
+ * **says nothing about having truncated**. No error, no flag, nothing in the body.
+ * So a select with no `.limit()`, `.range()` or `.order()` is not "all the rows",
+ * it is an arbitrary and unordered 1000 of them, and which 1000 is decided by
+ * physical row order — the same request can answer differently twice.
+ *
+ * Both lists below are therefore ORDERED and PAGED. Ordered on the primary key
+ * specifically: an OFFSET walk without an ORDER BY may repeat one row and skip
+ * another, which for a list of creators means one rendered twice and one missing.
+ *
+ * `MAX_PAGES` bounds one screen draw rather than the business. 20k creators is
+ * two orders of magnitude past where we are, and reaching it is reported rather
+ * than absorbed — see `incomplete`.
+ */
+const PAGE_ROWS = 1000;
+const MAX_PAGES = 20;
+
+/** `CREATOR_FIELDS` plus the column the list is ordered by for display. */
+const GET_FIELDS = `${CREATOR_FIELDS}, created_at`;
+
+/**
+ * Every creator, paged to exhaustion.
+ *
+ * Paged on `id` rather than on `created_at`, then sorted for display in memory.
+ * `created_at` is the order the tab wants but it is not declared unique, and two
+ * creators sharing a timestamp make an offset walk ambiguous at exactly the page
+ * boundary. Since this fetches all of them anyway, sorting after the fact is the
+ * same answer with none of the ambiguity.
+ */
+async function fetchAllCreators(
+  supabase: SupabaseClient,
+): Promise<{ rows: Array<Record<string, any>>; complete: boolean; error: { message: string } | null }> {
+  const rows: Array<Record<string, any>> = [];
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data, error } = await supabase
+      .from('creators')
+      .select(GET_FIELDS)
+      .order('id', { ascending: true })
+      .range(page * PAGE_ROWS, page * PAGE_ROWS + PAGE_ROWS - 1);
+
+    if (error) return { rows, complete: false, error };
+
+    const batch = (data ?? []) as Array<Record<string, any>>;
+    rows.push(...batch);
+    // A short page is the end of the table. A full page proves nothing either
+    // way, so ask again.
+    if (batch.length < PAGE_ROWS) return { rows, complete: true, error: null };
+  }
+
+  return { rows, complete: false, error: null };
+}
+
+/**
+ * Platform grants for every creator, paged to exhaustion.
+ *
+ * This one hits the ceiling *sooner* than the creator list does, which is why it
+ * is not left alone: a creator can have up to four grants, so 250 creators is
+ * already 1000 rows. A grant dropped past the ceiling renders as a creator with
+ * no connected platform — indistinguishable from one who never connected, and the
+ * broken-grant warning this table exists to surface disappears with it.
+ *
+ * Deliberately selected column by column: `select *` here would carry refresh
+ * tokens into an admin response.
+ */
+async function fetchAllPlatformAccounts(
+  supabase: SupabaseClient,
+): Promise<{ rows: Array<Record<string, any>>; complete: boolean }> {
+  const rows: Array<Record<string, any>> = [];
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data, error } = await supabase
+      .from('creator_platform_accounts')
+      .select('creator_id, platform, external_id, external_name, broken_reason, broken_at')
+      .order('id', { ascending: true })
+      .range(page * PAGE_ROWS, page * PAGE_ROWS + PAGE_ROWS - 1);
+
+    if (error) return { rows, complete: false };
+
+    const batch = (data ?? []) as Array<Record<string, any>>;
+    rows.push(...batch);
+    if (batch.length < PAGE_ROWS) return { rows, complete: true };
+  }
+
+  return { rows, complete: false };
+}
+
 export async function GET(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) {
@@ -42,17 +133,31 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = createServerSupabaseClient();
-  const { data, error } = await supabase
-    .from('creators')
-    .select(CREATOR_FIELDS)
-    .order('created_at', { ascending: false });
+
+  // Which of this page's figures could not be read in full. Everything named
+  // here is returned as `null` rather than as a smaller or emptier answer, so the
+  // Sources tab cannot print a partial one by forgetting to look. The convention
+  // is MEAL-127's, and the reason it is reused rather than reinvented is that
+  // every bug in this class failed the same way: to a plausible wrong answer.
+  const incomplete: string[] = [];
+
+  const { rows: creatorRowsRaw, complete: creatorsComplete, error } = await fetchAllCreators(supabase);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+  if (!creatorsComplete) incomplete.push('creators');
 
-  const creatorRows = (data ?? []) as Array<{ id: string; primary_source?: string | null }>;
-  const creatorIds = creatorRows.map((row) => row.id);
+  // Newest first, the order the tab has always shown. Done here rather than in
+  // SQL because the read above pages on the primary key — see `fetchAllCreators`.
+  const creatorRows = [...creatorRowsRaw].sort((a, b) =>
+    String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+
+  const creatorIds = creatorRows.map((row) => row.id as string);
+  // Past this many creators the health map has no entry for the tail, and a
+  // missing entry is exactly what used to read as "no source configured". Said
+  // out loud instead: the tab warns and renders those rows' health as unknown.
+  if (creatorIds.length > POLL_HEALTH_LIMIT) incomplete.push('pollHealth');
   // Which source each creator is actually polled on. `creator_source_state` is
   // keyed `(creator_id, source)` and the PATCH below never deletes the row for a
   // source it moves a creator off, so without this the row rendered is whichever
@@ -66,21 +171,19 @@ export async function GET(request: NextRequest) {
   // the row at all, and a broken grant is otherwise indistinguishable from a
   // creator who simply published nothing.
   //
-  // Deliberately selected column by column: `select *` on this table would
-  // carry refresh tokens into an admin response.
-  //
-  // Poll health alongside it (MEAL-96): a fixed handful of queries for the whole
-  // page, so the Sources tab stays one request no matter how many creators it
-  // lists. Both reads are independent of each other, hence in parallel.
-  const [{ data: accounts }, health] = await Promise.all([
-    supabase
-      .from('creator_platform_accounts')
-      .select('creator_id, platform, external_id, external_name, broken_reason, broken_at'),
+  // Poll health alongside it (MEAL-96): a handful of queries per chunk of
+  // creators rather than one per creator, so the Sources tab stays one request no
+  // matter how many creators it lists. Both reads are independent of each other,
+  // hence in parallel.
+  const [accountsRes, health] = await Promise.all([
+    fetchAllPlatformAccounts(supabase),
     pollHealthByCreator(supabase, creatorIds, primarySource),
   ]);
 
+  if (!accountsRes.complete) incomplete.push('connections');
+
   const byCreator = new Map<string, Array<Record<string, unknown>>>();
-  for (const row of (accounts ?? []) as Array<Record<string, any>>) {
+  for (const row of accountsRes.rows) {
     const list = byCreator.get(row.creator_id) ?? [];
     list.push({
       platform: row.platform,
@@ -92,13 +195,30 @@ export async function GET(request: NextRequest) {
     byCreator.set(row.creator_id, list);
   }
 
-  const creators = ((data ?? []) as Array<Record<string, any>>).map((creator) => ({
+  const creators = creatorRows.map((creator) => ({
     ...creator,
     connections: byCreator.get(creator.id) ?? [],
     pollHealth: health.get(creator.id) ?? null,
   }));
 
-  return NextResponse.json({ creators });
+  if (incomplete.length > 0) {
+    // Worth a log line as well as a response field. This is the failure that used
+    // to be invisible, and the shape of it — a screen reporting every creator as
+    // unconfigured — is one nobody would think to report as a bug.
+    log({
+      event: 'ADMIN:CREATOR_LIST',
+      status: 'error',
+      userId: admin.userId,
+      email: admin.email,
+      detail: `incomplete read: ${incomplete.join(',')}`,
+    });
+  }
+
+  // `incomplete` is empty on a healthy response. Anything named in it means the
+  // figures it covers are short, and the tab renders them as unknown plus a
+  // warning rather than as a smaller number — a partial answer that looks whole
+  // is worse than no answer, because nobody double-checks a plausible screen.
+  return NextResponse.json({ creators, incomplete });
 }
 
 export async function PATCH(request: NextRequest) {

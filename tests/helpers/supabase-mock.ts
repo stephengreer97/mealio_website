@@ -303,6 +303,25 @@ export class FakeSupabase {
     return null;
   }
 
+  /**
+   * A set-returning RPC, as an ordinary query builder over `rpc:<fn>`.
+   *
+   * Seed or queue it under that name: `db.seed('rpc:list_storage_objects', [...])`.
+   *
+   * It routes through `from()` rather than answering directly because the thing
+   * worth modelling is that **a set-returning function is subject to
+   * `db-max-rows` exactly like a table is**. PostgREST applies the ceiling to the
+   * function's result set, so `.rpc()` awaited with no `.range()` returns the
+   * first 1000 rows and says nothing — and a caller that treats the result as "all
+   * the storage objects" is wrong in precisely the way an unbounded select is.
+   * Answering RPCs from a plain array would have hidden that, which is the one
+   * thing this fake exists not to do.
+   */
+  rpc(fn: string, args?: Record<string, unknown>) {
+    this.calls.push({ table: `rpc:${fn}`, method: 'rpc', args: [args] });
+    return this.from(`rpc:${fn}`);
+  }
+
   from(table: string) {
     const queued = (): QueryResult | null => {
       const q = this.queues.get(table);

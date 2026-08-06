@@ -217,6 +217,51 @@ const VERDICT_COLORS: Record<string, string> = {
   yes: '#16a34a', no: '#c40029', unsure: '#b45309', error: '#6b7280',
 };
 
+// ── Reads that came back short (MEAL-112 / MEAL-128) ─────────────────────────
+
+/**
+ * A figure, or an em dash when the API could not complete the read behind it.
+ *
+ * `?? 0` was the old habit and it is this whole class of bug in one
+ * operator-facing character: a zero looks like an answer. A dash cannot be
+ * mistaken for a number.
+ */
+const orDash = (value: number | null | undefined) =>
+  value === null || value === undefined ? '—' : value.toLocaleString();
+
+/** What each name an API puts in `incomplete` means to a human. */
+const READ_LABELS: Record<string, string> = {
+  creators:    'the creator list',
+  connections: 'connected platform accounts',
+  pollHealth:  'poll health for creators past the first 500',
+  campaigns:   'the per-campaign funnel',
+  totalSent:   'the total emails sent',
+};
+
+/**
+ * Says that a screen is showing less than it was asked for.
+ *
+ * Above the numbers rather than under them, and loud, because the failure this
+ * replaces was never a visible error: PostgREST truncates a read at 1000 rows
+ * without saying so, so the screen rendered a plausible wrong answer and nobody
+ * had a reason to disbelieve it. MEAL-112 was the worst shape of that — the Sources
+ * tab reported every creator as having no source configured.
+ */
+function IncompleteBanner({ names, children }: { names: string[]; children?: React.ReactNode }) {
+  if (names.length === 0) return null;
+  return (
+    <div
+      data-testid="incomplete-banner"
+      style={{ padding: '14px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}
+    >
+      <strong>Incomplete data — this screen is showing less than it was asked for.</strong>{' '}
+      These reads could not be completed: {names.map(n => READ_LABELS[n] ?? n).join(', ')}.{' '}
+      {children ?? 'The affected figures are shown as “—” rather than as a number that would be understated.'}{' '}
+      Retry, and if it persists check the server log.
+    </div>
+  );
+}
+
 // ── Poll health on the Sources tab (MEAL-96) ─────────────────────────────────
 
 const POLL_STATUS_STYLES: Record<PollStatusKind, { label: string; fg: string; bg: string; accent: string }> = {
@@ -265,8 +310,13 @@ function PollStatusBadge({ health, now }: { health: CreatorPollHealth; now: numb
  */
 function PollHealthSummary({ creators, now }: { creators: CreatorSource[]; now: number }) {
   const tally: Record<PollStatusKind, number> = { failing: 0, silent: 0, wobbling: 0, ok: 0, unconfigured: 0 };
+  // Creators the API returned no health for at all. Counting these as
+  // `unconfigured` is exactly the MEAL-112 lie — "222 with no source" was the
+  // sentence a 414 produced — so a missing answer is counted as missing.
+  let unknown = 0;
   for (const creator of creators) {
-    tally[creator.pollHealth ? pollStatus(creator.pollHealth, now) : 'unconfigured'] += 1;
+    if (!creator.pollHealth) { unknown += 1; continue; }
+    tally[pollStatus(creator.pollHealth, now)] += 1;
   }
 
   const parts: Array<[PollStatusKind, string]> = [
@@ -291,6 +341,14 @@ function PollHealthSummary({ creators, now }: { creators: CreatorSource[]; now: 
           {text}
         </span>
       ))}
+      {unknown > 0 && (
+        <span
+          data-testid="poll-health-unknown"
+          style={{ fontSize: '12px', fontWeight: 600, borderRadius: '99px', padding: '3px 12px', color: '#b91c1c', background: '#fef2f2' }}
+        >
+          {unknown} not read
+        </span>
+      )}
       <span style={{ fontSize: '11px', color: '#aaa', marginLeft: 'auto' }}>Least healthy first</span>
     </div>
   );
@@ -540,6 +598,27 @@ const INCOMPLETE_LABELS: Record<string, string> = {
   subscriptionEvents: 'subscription events (net new paid)',
 };
 
+/**
+ * What a bounded backfill reports back (MEAL-129).
+ *
+ * `complete` is the field that did not exist and had to: both of these routes
+ * process an explicit batch, so "it returned 200" and "the job is done" are
+ * different facts and the operator needs the second one.
+ */
+interface BackfillResult {
+  total: number;
+  processed: number;
+  skipped: number;
+  errors: number;
+  /** Candidates found but not attempted this run. */
+  remaining: number;
+  /** False when another run is required. */
+  complete: boolean;
+  /** False when the scan hit its page bound, so `total` is a floor not a count. */
+  scanComplete: boolean;
+  batchLimit: number;
+}
+
 interface EmailCampaign {
   type: string;
   sent: number;
@@ -555,9 +634,19 @@ interface EmailCampaign {
 }
 
 interface EmailStats {
-  campaigns: EmailCampaign[];
-  totals: { totalSent: number; unsubscribes: number };
+  /**
+   * `null` when the row walk behind the funnel came back short.
+   *
+   * Not `[]`: an empty list means "no campaign has ever sent", which is a
+   * different and equally actionable answer from "we could not read them". A
+   * truncated read does not scale every campaign down uniformly either — it drops
+   * whichever rows sat past the cut, so the open and click RATES are wrong too.
+   */
+  campaigns: EmailCampaign[] | null;
+  totals: { totalSent: number | null; unsubscribes: number };
   recent: { email: string; type: string; status: string; sent_at: string; opened_at: string | null; clicked_at: string | null }[];
+  /** Figures the API could not read in full — empty on a healthy response. */
+  incomplete: string[];
 }
 
 export default function AdminPage() {
@@ -567,6 +656,8 @@ export default function AdminPage() {
 
   const [applications, setApplications] = useState<Application[]>([]);
   const [creators, setCreators] = useState<CreatorSource[]>([]);
+  /** Reads behind the Sources tab that came back short — empty when all is well. */
+  const [creatorsIncomplete, setCreatorsIncomplete] = useState<string[]>([]);
   // Viability results for this session only, keyed creator → source. Not stored:
   // a check is a measurement of the feed as it is today, and a stale "viable"
   // from three months ago is worse than no answer.
@@ -605,9 +696,16 @@ export default function AdminPage() {
   const [storageDeleteResult, setStorageDeleteResult] = useState<{ deleted: number; estimatedBytes: number } | null>(null);
   const [storageError, setStorageError] = useState('');
   const [backfillLoading, setBackfillLoading] = useState(false);
-  const [backfillResult, setBackfillResult] = useState<{ processed: number; skipped: number; errors: number; total: number } | null>(null);
+  /**
+   * A backfill result, including whether the job actually finished (MEAL-129).
+   *
+   * `complete` and `remaining` are load-bearing, not decoration: both backfills used
+   * to process at most 1000 rows and report success, so an operator had no way to
+   * tell a finished job from one that hit the page ceiling.
+   */
+  const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null);
   const [photoBackfillLoading, setPhotoBackfillLoading] = useState(false);
-  const [photoBackfillResult, setPhotoBackfillResult] = useState<{ total: number; processed: number; skipped: number; errors: number } | null>(null);
+  const [photoBackfillResult, setPhotoBackfillResult] = useState<BackfillResult | null>(null);
 
   useEffect(() => {
     verifyAdmin();
@@ -652,6 +750,7 @@ export default function AdminPage() {
     if (res.ok) {
       const data = await res.json();
       setCreators(data.creators ?? []);
+      setCreatorsIncomplete(data.incomplete ?? []);
     }
   };
 
@@ -1056,6 +1155,14 @@ export default function AdminPage() {
         {/* Sources Tab — MEAL-81. One manually-chosen source per creator. */}
         {tab === 'sources' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+            {/* A creator missing from the list, or a creator whose health was never
+                read, both used to render as a confident "nothing is configured". */}
+            <IncompleteBanner names={creatorsIncomplete}>
+              Creators whose poll health could not be read are counted as “not read”
+              rather than as having no source — the two look identical on a row and mean
+              opposite things.
+            </IncompleteBanner>
 
             {creators.length === 0 ? (
               <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '32px', textAlign: 'center', color: '#888' }}>
@@ -1540,10 +1647,21 @@ export default function AdminPage() {
               <p style={{ textAlign: 'center', color: '#888', padding: '32px' }}>Loading…</p>
             ) : (
               <>
+                {/* A funnel computed over an arbitrary 1000 sends is not a smaller
+                    funnel, it is a biased one — physical row order decided which sends
+                    counted. So it is withheld rather than shown. */}
+                <div style={{ marginBottom: '20px' }}>
+                  <IncompleteBanner names={emailStats.incomplete}>
+                    Rates are withheld rather than shown from a partial sample: which sends
+                    survive a truncated read is decided by physical row order, so the
+                    percentages would be biased, not merely based on fewer rows.
+                  </IncompleteBanner>
+                </div>
+
                 {/* Totals */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '24px' }}>
                   <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
-                    <div style={{ fontSize: '32px', fontWeight: 700, color: '#dd0031' }}>{emailStats.totals.totalSent.toLocaleString()}</div>
+                    <div style={{ fontSize: '32px', fontWeight: 700, color: emailStats.totals.totalSent === null ? '#aaa' : '#dd0031' }}>{orDash(emailStats.totals.totalSent)}</div>
                     <div style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Emails sent</div>
                   </div>
                   <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', textAlign: 'center' }}>
@@ -1564,7 +1682,13 @@ export default function AdminPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {emailStats.campaigns.length === 0 ? (
+                      {emailStats.campaigns === null ? (
+                        <tr><td colSpan={7} style={{ padding: '20px', textAlign: 'center', color: '#b91c1c' }}>
+                          Funnel unavailable — the send log could not be read in full, so every
+                          rate below it would be computed over a biased slice. Nothing is shown
+                          rather than something partial.
+                        </td></tr>
+                      ) : emailStats.campaigns.length === 0 ? (
                         <tr><td colSpan={7} style={{ padding: '20px', textAlign: 'center', color: '#aaa' }}>No emails sent yet.</td></tr>
                       ) : emailStats.campaigns.map(c => (
                         <tr key={c.type} style={{ borderTop: '1px solid #f0eae6' }}>
@@ -1697,9 +1821,18 @@ export default function AdminPage() {
                 </button>
               </div>
               {photoBackfillResult && (
-                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#f5f3ff', borderRadius: '8px', fontSize: '13px', color: '#5b21b6', fontWeight: 600 }}>
-                  Done — {photoBackfillResult.processed} resolved, {photoBackfillResult.skipped} skipped (already permanent or unchanged), {photoBackfillResult.errors} errors
+                <div data-testid="photo-backfill-result" style={{ marginTop: '16px', padding: '14px 16px', background: photoBackfillResult.complete ? '#f5f3ff' : '#fffbeb', borderRadius: '8px', fontSize: '13px', color: photoBackfillResult.complete ? '#5b21b6' : '#92400e', fontWeight: 600 }}>
+                  {photoBackfillResult.complete ? 'Done' : 'Partial run'} — {photoBackfillResult.processed} resolved, {photoBackfillResult.skipped} skipped (already permanent or unchanged), {photoBackfillResult.errors} errors
                   {' '}({photoBackfillResult.total} proxy URLs found)
+                  {/* The sentence that was missing. A batch of 500 out of 1200 used to
+                      read simply as "Done". */}
+                  {!photoBackfillResult.complete && (
+                    <div style={{ marginTop: '6px', fontWeight: 400 }}>
+                      {photoBackfillResult.remaining.toLocaleString()} still to do — this run is capped at{' '}
+                      {photoBackfillResult.batchLimit.toLocaleString()} rows. Run it again.
+                      {!photoBackfillResult.scanComplete && ' The scan was also truncated, so the total above is a floor.'}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1721,8 +1854,15 @@ export default function AdminPage() {
                 </button>
               </div>
               {backfillResult && (
-                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#e6f9ed', borderRadius: '8px', fontSize: '13px', color: '#1a7a3a', fontWeight: 600 }}>
-                  Done — {backfillResult.processed} hashed, {backfillResult.skipped} skipped, {backfillResult.errors} errors (of {backfillResult.total} total files)
+                <div data-testid="hash-backfill-result" style={{ marginTop: '16px', padding: '14px 16px', background: backfillResult.complete ? '#e6f9ed' : '#fffbeb', borderRadius: '8px', fontSize: '13px', color: backfillResult.complete ? '#1a7a3a' : '#92400e', fontWeight: 600 }}>
+                  {backfillResult.complete ? 'Done' : 'Partial run'} — {backfillResult.processed} hashed, {backfillResult.skipped} skipped, {backfillResult.errors} errors (of {backfillResult.total} total files)
+                  {!backfillResult.complete && (
+                    <div style={{ marginTop: '6px', fontWeight: 400 }}>
+                      {backfillResult.remaining.toLocaleString()} still to do — this run is capped at{' '}
+                      {backfillResult.batchLimit.toLocaleString()} files. Run it again.
+                      {!backfillResult.scanComplete && ' The scan was also truncated, so the total above is a floor.'}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

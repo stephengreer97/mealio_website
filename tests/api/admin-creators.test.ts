@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { fakeDb } from '../helpers/supabase-mock';
+import { fakeDb, URL_LIMIT_BYTES, DEFAULT_PAGE_ROWS } from '../helpers/supabase-mock';
 import { jsonRequest } from '../helpers/request';
 
 // vi.mock is hoisted above imports, so the factory must import the helper
@@ -154,6 +154,162 @@ describe('/api/admin/creators', () => {
         && ['creator_source_state', 'creator_source_items', 'creator_import_drafts'].includes(c.table),
     );
     expect(reads).toHaveLength(3);
+  });
+
+  /**
+   * MEAL-112. The Sources tab rendered every creator as `unconfigured` once there
+   * were 222 of them, and nothing anywhere said so.
+   *
+   * The mechanism is a transport ceiling, not a database one. `.in('creator_id',
+   * ids)` puts every id in the QUERY STRING, `creator_id=in.(…)` of n uuids is
+   * `15 + 37n` bytes, and the proxy in front of PostgREST rejects a long URI with
+   * a 414 before the database sees it. `data ?? []` then turns that into "no state
+   * rows", which reads as "never polled", which `pollStatus` calls
+   * `unconfigured` — so the failure is not an error an operator can see, it is a
+   * screen calmly reporting that nothing is set up.
+   *
+   * The boundary is pinned on both sides deliberately. 221 has always worked and
+   * has to keep working; 222 is the first count that broke, and a fix that moved
+   * the cliff instead of removing it would still pass a test that only checked one
+   * side of it.
+   */
+  describe('the URI ceiling on the creator id filter (MEAL-112)', () => {
+    /** A canonical 36-byte uuid — the id length the ceiling was measured against. */
+    const uuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+
+    /** `n` creators, each polled on their website and each with a state row. */
+    function seedCreators(n: number) {
+      const rows = Array.from({ length: n }, (_, i) => ({
+        ...READY,
+        id: uuid(i),
+        display_name: `Chef ${i}`,
+        // Descending, so the list order the tab shows is checkable.
+        created_at: new Date(Date.UTC(2026, 0, 1) - i * 60_000).toISOString(),
+      }));
+      fakeDb.seed('creators', rows);
+      fakeDb.seed('creator_platform_accounts', []);
+      fakeDb.seed('creator_source_state', rows.map((row) => ({
+        creator_id: row.id,
+        source: 'website',
+        last_polled_at: '2026-08-04T00:00:00.000Z',
+        poll_after: '2026-08-04T06:00:00.000Z',
+        consecutive_failures: 0,
+        last_failed_at: null,
+        last_error: null,
+        last_status: null,
+      })));
+      fakeDb.seed('creator_source_items', []);
+      fakeDb.seed('creator_import_drafts', []);
+      return rows;
+    }
+
+    it('the measurement itself: 221 uuids fit in one filter and 222 do not', () => {
+      // The arithmetic behind the number, so the threshold in the tests below is
+      // an established fact rather than a magic constant somebody has to re-derive.
+      const bytesFor = (n: number) =>
+        Buffer.byteLength(`creator_id=in.(${Array.from({ length: n }, (_, i) => uuid(i)).join(',')})`);
+
+      expect(bytesFor(221)).toBe(8192);
+      expect(bytesFor(221)).toBeLessThanOrEqual(URL_LIMIT_BYTES);
+      expect(bytesFor(222)).toBe(8229);
+      expect(bytesFor(222)).toBeGreaterThan(URL_LIMIT_BYTES);
+    });
+
+    it.each([221, 222, 400])('reports a source for every one of %i creators', async (n) => {
+      asAdmin();
+      seedCreators(n);
+
+      const body = await (await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }))).json();
+
+      expect(body.creators).toHaveLength(n);
+      // The assertion that failed at 222 and passed at 221. Not "some rows have
+      // health": EVERY row, because the 414 took all of them out at once and a
+      // spot check of the first creator would have gone on passing.
+      const unconfigured = body.creators.filter(
+        (c: { pollHealth: { source: string | null } | null }) => c.pollHealth?.source !== 'website',
+      );
+      expect(unconfigured).toHaveLength(0);
+      // Nothing was hidden behind an `?? []`: a complete read says so.
+      expect(body.incomplete).toEqual([]);
+    });
+
+    it('never sends a filter the proxy would reject, however many creators there are', async () => {
+      asAdmin();
+      seedCreators(400);
+
+      await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }));
+
+      const filters = fakeDb.calls.filter((c) => c.method === 'in' && c.args[0] === 'creator_id');
+      expect(filters.length).toBeGreaterThan(1); // i.e. it chunked at all
+      for (const filter of filters) {
+        const ids = filter.args[1] as string[];
+        expect(Buffer.byteLength(`creator_id=in.(${ids.join(',')})`)).toBeLessThanOrEqual(URL_LIMIT_BYTES);
+      }
+    });
+  });
+
+  /**
+   * The other half of MEAL-112: two selects with no bound at all.
+   *
+   * PostgREST caps an unlimited select at `db-max-rows` and says nothing, so both
+   * of these were correct only while the tables stayed small. `creator_platform_accounts`
+   * is the one that bites first — four grants per creator means 250 creators is
+   * already a full page.
+   */
+  describe('lists past the 1000-row page ceiling', () => {
+    const uuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+    const OVER = DEFAULT_PAGE_ROWS + 200;
+
+    it(`lists all ${OVER} creators, not the first ${DEFAULT_PAGE_ROWS}`, async () => {
+      asAdmin();
+      fakeDb.seed('creators', Array.from({ length: OVER }, (_, i) => ({
+        ...READY, id: uuid(i), display_name: `Chef ${i}`,
+        created_at: new Date(Date.UTC(2026, 0, 1) - i * 60_000).toISOString(),
+      })));
+      fakeDb.seed('creator_platform_accounts', []);
+      fakeDb.seed('creator_source_state', []);
+      fakeDb.seed('creator_source_items', []);
+      fakeDb.seed('creator_import_drafts', []);
+
+      const body = await (await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }))).json();
+
+      expect(body.creators).toHaveLength(OVER);
+      // Past `POLL_HEALTH_LIMIT` the health map has no entry for the tail. That is
+      // the same missing-entry-reads-as-unconfigured trap, so it is declared
+      // rather than left for the tab to misread.
+      expect(body.incomplete).toContain('pollHealth');
+    });
+
+    it(`keeps the connections of creator ${DEFAULT_PAGE_ROWS + 100}, past the ceiling`, async () => {
+      asAdmin();
+      const creators = Array.from({ length: OVER }, (_, i) => ({
+        ...READY, id: uuid(i), display_name: `Chef ${i}`,
+        created_at: new Date(Date.UTC(2026, 0, 1) - i * 60_000).toISOString(),
+      }));
+      fakeDb.seed('creators', creators);
+      fakeDb.seed('creator_platform_accounts', creators.map((creator, i) => ({
+        id: `pa-${String(i).padStart(6, '0')}`,
+        creator_id: creator.id,
+        platform: 'youtube',
+        external_id: `UC${i}`,
+        external_name: `Chef ${i}`,
+        // A grant that has stopped working — the warning that vanished with it.
+        broken_reason: 'Token has been expired or revoked.',
+        broken_at: '2026-08-01T00:00:00.000Z',
+      })));
+      fakeDb.seed('creator_source_state', []);
+      fakeDb.seed('creator_source_items', []);
+      fakeDb.seed('creator_import_drafts', []);
+
+      const body = await (await GET(jsonRequest('/api/admin/creators', { method: 'GET', token }))).json();
+
+      const late = body.creators.find(
+        (c: { id: string }) => c.id === uuid(DEFAULT_PAGE_ROWS + 100),
+      );
+      expect(late.connections).toHaveLength(1);
+      expect(late.connections[0].brokenReason).toBe('Token has been expired or revoked.');
+      expect(body.incomplete).not.toContain('connections');
+    });
   });
 
   it('sets the primary source', async () => {
