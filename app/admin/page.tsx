@@ -19,6 +19,10 @@ import { pollConcern, pollStatus, type CreatorPollHealth, type PollStatusKind } 
 import { daysSince, relativeTime } from '@/lib/relative-time';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
+import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelChart';
+// Pure, no server imports: the "which step is this store dying on" verdict lives
+// in the same module as the aggregation it reads, and is unit-tested there.
+import { worstStep, type AlertReason } from '@/lib/automation-funnel';
 
 type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email' | 'automation';
 
@@ -45,9 +49,36 @@ interface StepStats {
   step: string;
   total: number;
   outcomes: Record<string, number>;
+  /** WAF/robot walls. Held out of `attempted`, so they never read as drift. */
+  blocked: number;
+  attempted: number;
   okRate: number | null;
+  failures: number;
+  /** MEAL-4 failure codes; `uncoded` is the pre-taxonomy bucket, not zero. */
+  codes: Record<string, number>;
   p50DurationMs: number | null;
   p95DurationMs: number | null;
+}
+
+interface WindowSummary {
+  runs: number;
+  runsSucceeded: number;
+  terminalSuccessRate: number | null;
+  blocked: number;
+  failures: number;
+}
+
+interface WeekOverWeek {
+  current: WindowSummary;
+  previous: WindowSummary;
+  terminalSuccessRateDelta: number | null;
+  runsDelta: number;
+}
+
+interface FunnelCoverage {
+  missingSteps: string[];
+  partialInstrumentation: boolean;
+  uncodedFailures: number;
 }
 
 interface StoreFunnel {
@@ -60,8 +91,19 @@ interface StoreFunnel {
   steps: StepStats[];
   confirmRate: number | null;
   firstClickConfirmRate: number | null;
+  terminalSuccessRate: number | null;
+  /** `runs` is distinct runs walled off; `rate` is those over runs, not steps. */
+  blocked: { steps: number; runs: number; rate: number | null };
+  failureCodes: Record<string, number>;
+  runSummaryCodes: Record<string, number>;
+  /** Share of RUNS walled off — a real percentage, so it cannot exceed 100%. */
   blockedRate: number | null;
+  coverage: FunnelCoverage;
+  daily: DayPoint[];
+  weekOverWeek: WeekOverWeek | null;
   alerting: boolean;
+  /** Why it is alerting. The badge and banners name the reason. */
+  alertReasons: AlertReason[];
 }
 
 interface FunnelResponse {
@@ -69,8 +111,12 @@ interface FunnelResponse {
   since: string;
   truncated: boolean;
   stepRowsScanned: number;
+  runRowsScanned: number;
   stores: StoreFunnel[];
   alerting: string[];
+  confirmRateAlerting: string[];
+  blockedAlerting: string[];
+  partialInstrumentation: string[];
 }
 
 interface ConfigVersion {
@@ -94,11 +140,20 @@ function ms(v: number | null): string {
   return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`;
 }
 
-function Metric({ label, value, bad }: { label: string; value: string; bad?: boolean }) {
+/** A signed percentage-point change, or "—" when either side had no denominator. */
+function delta(v: number | null): string {
+  if (v == null) return '—';
+  const pp = v * 100;
+  if (Math.abs(pp) < 0.05) return 'no change';
+  return `${pp > 0 ? '+' : '−'}${Math.abs(pp).toFixed(1)} pts`;
+}
+
+function Metric({ label, value, bad, note }: { label: string; value: string; bad?: boolean; note?: string }) {
   return (
     <div>
       <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
       <div style={{ fontSize: '20px', fontWeight: 700, color: bad ? '#b91c1c' : '#333' }}>{value}</div>
+      {note && <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{note}</div>}
     </div>
   );
 }
@@ -499,7 +554,10 @@ export default function AdminPage() {
   const [emailSearch, setEmailSearch] = useState('');
 
   const [funnel, setFunnel] = useState<FunnelResponse | null>(null);
-  const [funnelDays, setFunnelDays] = useState(7);
+  // 30 by default: the trend line and the week-over-week comparison both need a
+  // window wider than the week being judged, and this is the view the ticket's
+  // "is HEB worse than last week" question is actually asked from.
+  const [funnelDays, setFunnelDays] = useState(30);
   const [configVersions, setConfigVersions] = useState<ConfigVersion[]>([]);
   const [configDraft, setConfigDraft] = useState('');
   const [configNotes, setConfigNotes] = useState('');
@@ -1718,7 +1776,7 @@ export default function AdminPage() {
               <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                 <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Add-to-cart funnel</h2>
                 <div style={{ display: 'flex', gap: '6px' }}>
-                  {[1, 7, 30].map((d) => (
+                  {[7, 14, 30].map((d) => (
                     <button
                       key={d}
                       onClick={() => { setFunnelDays(d); loadFunnel(d); }}
@@ -1744,15 +1802,45 @@ export default function AdminPage() {
 
               {!funnel && <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>Loading…</p>}
 
-              {funnel && funnel.alerting.length > 0 && (
+              {funnel && funnel.confirmRateAlerting?.length > 0 && (
                 <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
-                  <strong>Confirm rate below threshold:</strong> {funnel.alerting.join(', ')}
+                  <strong>Confirm rate below threshold:</strong> {funnel.confirmRateAlerting.join(', ')}
+                </div>
+              )}
+
+              {/* Its own banner, because it is its own failure and the confirm
+                  rate cannot see it: blocked clicks leave that denominator, so a
+                  store with nearly all of its runs walled off reports a healthy
+                  confirm rate on the few that got through. */}
+              {funnel && funnel.blockedAlerting?.length > 0 && (
+                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                  <strong>Runs being walled off:</strong> {funnel.blockedAlerting.join(', ')}. A large share of
+                  these stores&apos; runs hit a WAF or robot wall. Nothing to the left of the WAF tile can show
+                  this — blocked clicks are excluded from those rates on purpose — so judge these stores on
+                  terminal success, not on their confirm rate.
                 </div>
               )}
 
               {funnel && funnel.truncated && (
                 <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
-                  Showing a partial window — the step row cap was hit. Narrow the range for accurate numbers.
+                  Showing a partial window — the row cap was hit. Every number below is an
+                  undercount. Narrow the range or filter to one store.
+                </div>
+              )}
+
+              {/* The most important caveat on the page, so it sits above the data
+                  rather than inside a card someone has to scroll to. */}
+              {funnel && funnel.partialInstrumentation.length > 0 && (
+                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
+                  <strong>Funnel has no middle for:</strong> {funnel.partialInstrumentation.join(', ')}.
+                  No <code>search</code>, <code>candidates</code>, <code>add_click</code> or{' '}
+                  <code>confirm</code> rows at all — so the funnel is{' '}
+                  <code>login_check → (nothing) → reconcile</code>. Two known causes: the parallel and
+                  pre-search add pools emit no per-item steps (MEAL-122, and they are on for HEB,
+                  Walmart, Amazon Fresh and Albertsons), and Kroger adds through the public API rather
+                  than the WebView, so it reports no steps at all. Either way a clean funnel here means{' '}
+                  <em>no data</em>, not no failures — judge these stores on terminal success and items
+                  added, not on the step table.
                 </div>
               )}
 
@@ -1762,13 +1850,48 @@ export default function AdminPage() {
                 </p>
               )}
 
-              {funnel && funnel.stores.map((s) => (
+              {funnel && funnel.stores.map((s) => {
+                // The step the eye should go to first — or an explicit reason
+                // there isn't one. The rules (a 20-attempt floor, ranking by the
+                // optimistic reading rather than the raw rate, and no answer at
+                // all for a store whose per-item funnel isn't instrumented) live
+                // in lib/automation-funnel.ts with the tests that pin them.
+                const worst = worstStep(s);
+                // `?? []` only for a response served from before this deploy.
+                const reasons = s.alertReasons ?? [];
+                const blockedOnly = reasons.includes('blocked') && !reasons.includes('confirm_rate');
+                const worstNote =
+                  worst.kind === 'dying'
+                    ? `${pct(worst.okRate)} ok over ${worst.attempted}`
+                    : worst.kind === 'unmeasured'
+                      ? 'per-item steps not reported for this store'
+                      : worst.kind === 'insufficient_sample'
+                        ? 'no step with a usable sample (20+ attempts)'
+                        : 'no step convincingly below 90%';
+
+                return (
                 <div key={s.storeId} style={{ borderTop: '1px solid #f0f0f0', padding: '20px 24px' }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
                     <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700 }}>{s.storeId}</h3>
                     {s.alerting && (
-                      <span style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
-                        ALERTING
+                      <span
+                        title={
+                          reasons.includes('blocked')
+                            ? 'A large share of this store’s runs are being walled off by a WAF or robot wall.'
+                            : 'Confirm rate below threshold on a large enough sample.'
+                        }
+                        style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}
+                      >
+                        {/* Naming the reason: the two conditions are independent
+                            and a store walled off at 90% can have a flawless
+                            confirm rate, so an unlabelled badge sends someone to
+                            the wrong number. */}
+                        ALERTING{blockedOnly ? ' · BLOCKED' : ''}
+                      </span>
+                    )}
+                    {s.coverage.partialInstrumentation && (
+                      <span style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
+                        NO STEP DATA
                       </span>
                     )}
                     <span style={{ fontSize: '13px', color: '#666' }}>
@@ -1779,43 +1902,149 @@ export default function AdminPage() {
                     </span>
                   </div>
 
-                  <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                  {/* Headline: where is it dying, and is that new? */}
+                  <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-start' }}>
+                    <Metric
+                      label="Terminal success"
+                      value={pct(s.terminalSuccessRate)}
+                      bad={s.terminalSuccessRate != null && s.terminalSuccessRate < 0.9}
+                      note={`${s.runsSucceeded}/${s.runs} runs`}
+                    />
+                    <Metric
+                      label="Dying on"
+                      value={worst.kind === 'dying' ? worst.step : '—'}
+                      bad={worst.kind === 'dying'}
+                      note={worstNote}
+                    />
                     <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < 0.9} />
                     <Metric label="First-click confirm" value={pct(s.firstClickConfirmRate)} />
-                    <Metric label="Blocked rate" value={pct(s.blockedRate)} bad={!!s.blockedRate && s.blockedRate > 0.05} />
+                    {/* Blocks sit apart on purpose: they are excluded from every
+                        rate to the left of here, because a WAF wall and a renamed
+                        button need different people to fix them. */}
+                    <div style={{ paddingLeft: '16px', borderLeft: '2px solid #fde68a' }}>
+                      {/* A share of RUNS, so it reads as a percentage of this
+                          store's traffic and cannot exceed 100%. The step count
+                          stays beside it as a count, which is the only honest way
+                          to show it: one walled-off run emits a blocked row per
+                          item, so steps over runs is not a percentage of
+                          anything — it rendered "WAF blocked 450.0%". */}
+                      <Metric
+                        label="WAF blocked"
+                        value={pct(s.blockedRate)}
+                        bad={!!s.blockedRate && s.blockedRate > 0.05}
+                        note={`${s.blocked.runs} run${s.blocked.runs === 1 ? '' : 's'} walled off · ${s.blocked.steps} blocked step${s.blocked.steps === 1 ? '' : 's'} · excluded from the rates left`}
+                      />
+                    </div>
                   </div>
+
+                  {/* Week over week + 30-day trend, side by side. */}
+                  <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+                        Terminal success, daily
+                      </div>
+                      <TrendSparkline daily={s.daily} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+                        Week over week
+                      </div>
+                      {s.weekOverWeek ? (
+                        <div style={{ fontSize: '13px', color: '#666', lineHeight: 1.7 }}>
+                          <div>
+                            <strong style={{ color: (s.weekOverWeek.terminalSuccessRateDelta ?? 0) < -0.05 ? '#b91c1c' : '#333' }}>
+                              {delta(s.weekOverWeek.terminalSuccessRateDelta)}
+                            </strong>{' '}
+                            terminal success
+                          </div>
+                          <div>
+                            this week {pct(s.weekOverWeek.current.terminalSuccessRate)} of {s.weekOverWeek.current.runs} run
+                            {s.weekOverWeek.current.runs === 1 ? '' : 's'}
+                          </div>
+                          <div>
+                            prior week {pct(s.weekOverWeek.previous.terminalSuccessRate)} of {s.weekOverWeek.previous.runs} run
+                            {s.weekOverWeek.previous.runs === 1 ? '' : 's'}
+                          </div>
+                          <div style={{ color: '#999' }}>
+                            blocks {s.weekOverWeek.current.blocked} vs {s.weekOverWeek.previous.blocked} · failures{' '}
+                            {s.weekOverWeek.current.failures} vs {s.weekOverWeek.previous.failures}
+                          </div>
+                        </div>
+                      ) : (
+                        <p style={{ fontSize: '13px', color: '#aaa', margin: 0, maxWidth: '260px' }}>
+                          Needs a 14-day window or wider — a seven-day fetch has no prior week to
+                          compare against, and half a week of data would invent a regression.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {s.coverage.partialInstrumentation ? (
+                    <p style={{ fontSize: '13px', color: '#92400e', margin: '0 0 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px' }}>
+                      This store reported no <code>search</code>, <code>candidates</code>, <code>add_click</code> or{' '}
+                      <code>confirm</code> rows at all — the parallel-add blind spot (MEAL-122), or a store
+                      that never runs the WebView engine. Not a flawless run: whatever is below cannot tell
+                      you where this store is dying.
+                    </p>
+                  ) : s.coverage.missingSteps.length > 0 ? (
+                    <p style={{ fontSize: '12px', color: '#999', margin: '0 0 12px' }}>
+                      No rows for {s.coverage.missingSteps.join(', ')} in this window — either the run
+                      never got that far, or that pool does not report.
+                    </p>
+                  ) : null}
 
                   {s.steps.length === 0 ? (
                     <p style={{ fontSize: '13px', color: '#888', margin: 0 }}>
-                      No step telemetry — runs from a build that predates step reporting.
+                      No step telemetry at all in this window — a store that adds through the public API,
+                      a pool that reports nothing, or a build that predates step reporting. The runs above
+                      are real; there is simply nothing to break down.
                     </p>
                   ) : (
                     <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '560px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '720px' }}>
                         <thead>
                           <tr style={{ textAlign: 'left', color: '#888', fontSize: '12px' }}>
                             <th style={{ padding: '6px 8px' }}>Step</th>
-                            <th style={{ padding: '6px 8px' }}>Total</th>
+                            <th style={{ padding: '6px 8px' }} title="Rows where the automation got to try — blocked rows excluded">Attempted</th>
                             <th style={{ padding: '6px 8px' }}>OK</th>
-                            <th style={{ padding: '6px 8px' }}>Outcomes</th>
+                            <th style={{ padding: '6px 8px' }}>Failures</th>
+                            <th style={{ padding: '6px 8px' }} title="WAF/robot walls; never counted as a failure">Blocked</th>
+                            <th style={{ padding: '6px 8px' }}>Why (code)</th>
                             <th style={{ padding: '6px 8px' }}>p50</th>
                             <th style={{ padding: '6px 8px' }}>p95</th>
                           </tr>
                         </thead>
                         <tbody>
                           {s.steps.map((st) => (
-                            <tr key={st.step} style={{ borderTop: '1px solid #f5f5f5' }}>
+                            <tr
+                              key={st.step}
+                              style={{
+                                borderTop: '1px solid #f5f5f5',
+                                background: worst.kind === 'dying' && st.step === worst.step ? '#fff8f8' : undefined,
+                              }}
+                            >
                               <td style={{ padding: '6px 8px', fontWeight: 600 }}>{st.step}</td>
-                              <td style={{ padding: '6px 8px' }}>{st.total}</td>
+                              <td style={{ padding: '6px 8px' }}>
+                                {st.attempted}
+                                {st.blocked > 0 && <span style={{ color: '#aaa' }}> / {st.total}</span>}
+                              </td>
                               <td style={{ padding: '6px 8px', color: st.okRate != null && st.okRate < 0.9 ? '#b91c1c' : '#333' }}>
                                 {pct(st.okRate)}
                               </td>
                               <td style={{ padding: '6px 8px', color: '#666' }}>
-                                {Object.entries(st.outcomes)
-                                  .filter(([k]) => k !== 'ok')
-                                  .map(([k, v]) => `${k} ${v}`)
-                                  .join(', ') || '—'}
+                                {st.failures}
+                                {st.failures > 0 && (
+                                  <span style={{ color: '#999' }}>
+                                    {' '}
+                                    ({Object.entries(st.outcomes)
+                                      .filter(([k]) => k !== 'ok' && k !== 'blocked')
+                                      .map(([k, v]) => `${k} ${v}`)
+                                      .join(', ')})
+                                  </span>
+                                )}
                               </td>
+                              <td style={{ padding: '6px 8px', color: st.blocked > 0 ? '#92400e' : '#ccc' }}>{st.blocked || '—'}</td>
+                              <td style={{ padding: '6px 8px' }}><CodeChips codes={st.codes} /></td>
                               <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p50DurationMs)}</td>
                               <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p95DurationMs)}</td>
                             </tr>
@@ -1824,8 +2053,31 @@ export default function AdminPage() {
                       </table>
                     </div>
                   )}
+
+                  <div style={{ marginTop: '12px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', fontSize: '12px', color: '#888' }}>
+                    <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>All failures</span>
+                    <CodeChips codes={s.failureCodes} empty="none in this window" />
+                    {s.coverage.uncodedFailures > 0 && (
+                      <span style={{ color: '#999' }}>
+                        — {s.coverage.uncodedFailures} of them predate the code taxonomy and can never be attributed.
+                      </span>
+                    )}
+                  </div>
+
+                  {Object.keys(s.runSummaryCodes).length > 0 && (
+                    <div style={{ marginTop: '8px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', fontSize: '12px', color: '#888' }}>
+                      <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>run_summary says</span>
+                      <CodeChips codes={s.runSummaryCodes} />
+                      <span style={{ color: '#999' }}>
+                        — the run&apos;s MOST FREQUENT code, not its most severe (MEAL-123). Three
+                        confirm_failed and one waf_block reports confirm_failed. Trust the per-step
+                        codes above over this.
+                      </span>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* ── Remote config ──────────────────────────────────────────── */}
