@@ -314,6 +314,7 @@ export class FakeSupabase {
     let payload: any = null;
     let columns: string | undefined;
     let conflict: string[] = [];
+    let ignoreDuplicates = false;
     let returning = false;
     const filters: Filter[] = [];
     let orderBy: { column: string; ascending: boolean; nullsFirst: boolean } | null = null;
@@ -361,6 +362,17 @@ export class FakeSupabase {
       payload = args[0];
       if (args[1]?.count) writeCounting = true;
       conflict = String(args[1]?.onConflict ?? '').split(',').map((c) => c.trim()).filter(Boolean);
+      // `ignoreDuplicates: true` is `ON CONFLICT DO NOTHING`, not `DO UPDATE`. The
+      // difference is the whole meaning of the option and this fake used to erase
+      // it, assigning the incoming values over the existing row either way — so a
+      // conflicting upsert looked like it UPDATED, and code relying on "an
+      // existing row is left alone" could not be told apart from code relying on
+      // the opposite. Concretely: `photo_hashes` is written with
+      // `{ onConflict: 'hash', ignoreDuplicates: true }`, so an upload that finds
+      // a row already holding its hash does not correct that row's url. MEAL-132's
+      // read-side heal has to DELETE the poisoned row for that reason, and against
+      // the old fake the heal looked unnecessary — the upsert appeared to fix it.
+      ignoreDuplicates = args[1]?.ignoreDuplicates === true;
       return builder;
     };
 
@@ -451,6 +463,9 @@ export class FakeSupabase {
 
           const written: any[] = [];
           for (const { value, existing } of plan) {
+            // `DO NOTHING`: the row already there is not touched, and — like
+            // Postgres' RETURNING — it is not reported as written either.
+            if (existing && ignoreDuplicates) continue;
             if (existing) { Object.assign(existing, value); written.push(existing); }
             else { const row = { ...value }; rows.push(row); written.push(row); }
           }

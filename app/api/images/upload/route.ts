@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
+import { MEAL_PHOTOS_BUCKET, verifiedDedupeUrl } from '@/lib/photos';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -49,21 +50,20 @@ export async function POST(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
 
-  // Check for existing duplicate
-  const { data: existing } = await supabase
-    .from('photo_hashes')
-    .select('url')
-    .eq('hash', hash)
-    .maybeSingle();
+  // Check for existing duplicate — shared with `storeImageBuffer` rather than
+  // written twice, because the two copies of this lookup are what let the two
+  // copies of the MEAL-132 bug exist. A hit whose object has been swept is a
+  // cache MISS here, so the bytes are re-stored and the poisoned row repaired.
+  const deduped = await verifiedDedupeUrl(supabase, hash, decoded.userId, 'IMAGE:UPLOAD');
 
-  if (existing?.url) {
-    log({ event: 'IMAGE:UPLOAD', status: 'success', userId: decoded.userId, reason: 'dedup', detail: existing.url.split('/').pop() });
-    return NextResponse.json({ url: existing.url }, { status: 200 });
+  if (deduped) {
+    log({ event: 'IMAGE:UPLOAD', status: 'success', userId: decoded.userId, reason: 'dedup', detail: deduped.split('/').pop() });
+    return NextResponse.json({ url: deduped }, { status: 200 });
   }
 
   const path = `${decoded.userId}/${Date.now()}.${ext}`;
   const { error: uploadError } = await supabase.storage
-    .from('meal-photos')
+    .from(MEAL_PHOTOS_BUCKET)
     .upload(path, buffer, { contentType: mimeType, upsert: false });
 
   if (uploadError) {
@@ -72,10 +72,12 @@ export async function POST(request: NextRequest) {
   }
 
   const { data: { publicUrl } } = supabase.storage
-    .from('meal-photos')
+    .from(MEAL_PHOTOS_BUCKET)
     .getPublicUrl(path);
 
-  // Record hash (upsert handles race conditions gracefully)
+  // Record hash (upsert handles race conditions gracefully). `ignoreDuplicates`
+  // leaves an existing row for this hash untouched, which is why a poisoned row
+  // is DELETED on the read side rather than corrected here.
   await supabase.from('photo_hashes').upsert({ hash, url: publicUrl }, { onConflict: 'hash', ignoreDuplicates: true });
 
   log({ event: 'IMAGE:UPLOAD', status: 'success', userId: decoded.userId, detail: path });

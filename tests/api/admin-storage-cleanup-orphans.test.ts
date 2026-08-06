@@ -1,59 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { fakeDb, DEFAULT_PAGE_ROWS } from '../helpers/supabase-mock';
+import { fakeStorage as bucket, mockSupabaseWithStorage } from '../helpers/storage-mock';
 import { jsonRequest } from '../helpers/request';
 
 // The bucket and the deletes live outside the query builder, so the shared fake
 // is wrapped rather than replaced: `from` still goes to FakeSupabase (that is
 // what models the 1000-row ceiling), while `rpc` answers with a bucket listing
 // and `storage.from()` models the object side — what was asked for, what actually
-// went away, and the URL an upload gets back.
+// went away, whether it is still there, and the URL an upload gets back.
 //
-// vi.hoisted because the mock factory below is hoisted above these declarations.
-const bucket = vi.hoisted(() => ({
-  objects: [] as Array<{ name: string; size: number }>,
-  /** Every path handed to `remove()`, whether or not it went away. */
-  removed: [] as string[],
-  /** Paths `remove()` silently declines to delete — a batch that half-succeeds. */
-  undeletable: new Set<string>(),
-  /** When set, `remove()` fails outright, the way a storage outage does. */
-  removeError: null as { message: string } | null,
-}));
-
-vi.mock('@/lib/supabase', async () => {
-  const { fakeDb: db } = await import('../helpers/supabase-mock');
-  const base = 'https://etaracmlewdvzpcjrgru.supabase.co/storage/v1/object/public/meal-photos/';
-  return {
-    createServerSupabaseClient: () => ({
-      from: (table: string) => db.from(table),
-      rpc: async () => ({ data: bucket.objects, error: null }),
-      storage: {
-        from: () => ({
-          // Models the real endpoint rather than a stub that always says "fine":
-          // `remove()` answers 200 with the rows it DID delete, and a path it
-          // could not delete is simply absent from that list instead of raising
-          // an error. MEAL-132's fix reads that list to decide which dedupe rows
-          // may be dropped, so a fake returning `data: null` would have made the
-          // safe branch — invalidate nothing — look correct.
-          remove: async (paths: string[]) => {
-            bucket.removed.push(...paths);
-            if (bucket.removeError) return { data: null, error: bucket.removeError };
-            const gone = paths.filter(
-              (p) => !bucket.undeletable.has(p) && bucket.objects.some((o) => o.name === p),
-            );
-            bucket.objects = bucket.objects.filter((o) => !gone.includes(o.name));
-            return { data: gone.map((name) => ({ name })), error: null };
-          },
-          upload: async (path: string, buffer: Buffer) => {
-            bucket.objects.push({ name: path, size: buffer.length });
-            return { data: { path }, error: null };
-          },
-          getPublicUrl: (path: string) => ({ data: { publicUrl: `${base}${path}` } }),
-        }),
-      },
-    }),
-    createAnonSupabaseClient: () => ({ auth: { signInWithPassword: vi.fn() } }),
-  };
-});
+// That object side now lives in `tests/helpers/storage-mock.ts`, shared with the
+// upload paths (MEAL-132's read half), because the two must agree about the
+// bucket to prove anything: this route deletes the object and the uploaders
+// decide whether the dedupe row that names it is still true.
+vi.mock('@/lib/supabase', () => mockSupabaseWithStorage());
 
 const log = vi.fn();
 vi.mock('@/lib/logger', () => ({ log: (...args: unknown[]) => log(...args) }));
@@ -90,10 +50,7 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
   beforeEach(async () => {
     fakeDb.reset();
     log.mockClear();
-    bucket.objects = [];
-    bucket.removed = [];
-    bucket.undeletable = new Set();
-    bucket.removeError = null;
+    bucket.reset();
     token = await createAccessToken('admin-1', 'admin@mealio.co');
     clearRevocationCache();
     // Seeded rather than queued: requireAuth's revocation read is memoised, so
