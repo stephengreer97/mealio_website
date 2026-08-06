@@ -378,6 +378,10 @@ export async function pendingAmong(
   creatorId: string,
 ): Promise<string[]> {
   if (ids.length === 0) return [];
+  // unbounded-select-ok: filtered on the primary key, so at most one row per id in
+  // `ids`, and `ids` is the batch of drafts one request named. A batch big enough to
+  // truncate would breach the URI ceiling first and come back 414, which this
+  // function already reports as "all of them are still pending".
   const { data, error } = await supabase
     .from('creator_import_drafts')
     .select('id')

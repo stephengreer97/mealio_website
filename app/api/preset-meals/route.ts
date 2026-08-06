@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { getCachedTrendingMeals } from '@/lib/trending-cache';
+import { fetchAllPages } from '@/lib/paged-select';
 
 // GET /api/preset-meals                        → trending (default), paginated
 // GET /api/preset-meals?sort=new               → newest first, paginated
@@ -26,16 +27,28 @@ export async function GET(request: NextRequest) {
   // ── Following feed ────────────────────────────────────────────────────────
   if (searchParams.get('followed') === 'true') {
     if (!decoded) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const { data: follows } = await supabase
-      .from('creator_follows')
-      .select('creator_id')
-      .eq('user_id', decoded.userId);
+    // Paged: a follow missing from this list is a creator whose meals never
+    // appear in the Following feed, with nothing on screen to say why.
+    const followsRead = await fetchAllPages<{ creator_id: string }>((from, to) =>
+      supabase
+        .from('creator_follows')
+        .select('creator_id')
+        .eq('user_id', decoded.userId)
+        .order('creator_id', { ascending: true })
+        .range(from, to));
 
-    const ids = (follows ?? []).map((f: any) => f.creator_id);
+    const ids = followsRead.rows.map((f) => f.creator_id);
     if (ids.length === 0) {
       return NextResponse.json({ presetMeals: [], hasMore: false });
     }
 
+    // NOTE (row ceiling is handled; URI ceiling is NOT): this `.in()` puts every
+    // followed creator id in the query string, and `creator_id=in.(…)` of n uuids
+    // is `15 + 37n` bytes — so a user following 222 creators produces an 8 KB URI
+    // and gets a 414 back as `data: null`, which reads here as an empty feed. The
+    // fix is `chunkIds` from `@/lib/paged-select` plus a merge across chunks, which
+    // is a real change to how this endpoint paginates and is tracked separately
+    // (MEAL-112 class). Left explicit rather than silent.
     let query = supabase
       .from('preset_meals')
       .select(`

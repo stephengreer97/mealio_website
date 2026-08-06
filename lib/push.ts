@@ -1,6 +1,7 @@
 import { Expo, type ExpoPushMessage, type ExpoPushReceipt, type ExpoPushTicket } from 'expo-server-sdk';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
+import { fetchAllPages, chunkIds } from '@/lib/paged-select';
 
 /**
  * Expo push sending (MEAL-88).
@@ -164,20 +165,45 @@ export async function sendPushToUsers(
   if (ids.length === 0) return result;
 
   const supabase = createServerSupabaseClient();
-  const { data, error } = await supabase
-    .from('push_tokens')
-    .select('token')
-    .in('user_id', ids)
-    .is('revoked_at', null);
 
-  if (error) {
-    log({ event: 'PUSH:SEND', status: 'error', error, detail: 'token lookup' });
-    return result;
+  // Chunked and paged, because both ceilings bite here and this function is the
+  // one that fans out widest. `ids` is however many users a caller wants to
+  // notify — a broadcast is every user — and each user has a row PER DEVICE, so
+  // the row count is a multiple of the id count. Unbounded, the read silently
+  // stopped at 1000 tokens and the send reported full success for the devices it
+  // never saw: `devices` counts what came back, so there was no number anywhere
+  // in the result that disagreed with the truth.
+  const rows: Array<{ token: string }> = [];
+  for (const chunk of chunkIds(ids)) {
+    const read = await fetchAllPages<{ token: string }>((from, to) =>
+      supabase
+        .from('push_tokens')
+        .select('token')
+        .in('user_id', chunk)
+        .is('revoked_at', null)
+        .order('token', { ascending: true })
+        .range(from, to));
+
+    if (read.error) {
+      log({ event: 'PUSH:SEND', status: 'error', error: read.error, detail: 'token lookup' });
+      return result;
+    }
+    if (!read.complete) {
+      // Refusing beats notifying an arbitrary subset: a push that reaches some of
+      // a user's devices and not others is indistinguishable, from the outside,
+      // from one that worked.
+      log({
+        event: 'PUSH:SEND', status: 'error', detail:
+          `token lookup incomplete after ${rows.length + read.rows.length} tokens`,
+      });
+      return result;
+    }
+    rows.push(...read.rows);
   }
 
   // A malformed token can only get here by having been written before this
   // check existed; drop it rather than letting one bad row reject a whole chunk.
-  const tokens = (data ?? [])
+  const tokens = rows
     .map((row: { token: string | null }) => row.token)
     .filter((t): t is string => Expo.isExpoPushToken(t));
 

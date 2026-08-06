@@ -1,5 +1,6 @@
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { sendMarketingEmail } from '@/lib/marketing-email';
+import { fetchAllPages, chunkIds } from '@/lib/paged-select';
 
 // M2 lifecycle campaigns: the user upsell drip (C) and creator publish-reminders
 // (B). Both are invoked once/day from /api/cron/daily and route every send
@@ -64,6 +65,15 @@ const UPSELL_STEPS: Array<{ step: 1 | 2 | 3; day: number }> = [
 ];
 const CATCHUP_WINDOW = 2; // days — covers a skipped daily cron run
 
+/**
+ * How much re-engage history the cadence check reads.
+ *
+ * Only has to be larger than the cap it enforces (3 sends since the last
+ * publish). 50 is that with room to spare, and small enough that this stays one
+ * cheap request inside a per-creator loop.
+ */
+const REENGAGE_HISTORY = 50;
+
 export async function runUserUpsellDrip(): Promise<number> {
   const supabase = createServerSupabaseClient();
   let sent = 0;
@@ -73,16 +83,24 @@ export async function runUserUpsellDrip(): Promise<number> {
     const olderThan = new Date(Date.now() - (day + CATCHUP_WINDOW) * DAY).toISOString();
     const newerThan = new Date(Date.now() - day * DAY).toISOString();
 
-    const { data: users } = await supabase
-      .from('user_profiles')
-      .select('id, email, display_name')
-      .eq('subscription_tier', 'free')
-      .eq('marketing_opt_out', false)
-      .not('last_login_at', 'is', null) // engagement gate: must have signed in at least once
-      .gte('created_at', olderThan)
-      .lt('created_at', newerThan);
+    // Paged. `user_profiles` is the biggest table in the product and this is a
+    // sweep over a slice of it, so the ceiling is not hypothetical here — it is
+    // the first read in this file that will hit it. A truncated sweep is a set of
+    // users who are silently never emailed and never retried: the window has
+    // moved on by the next daily run, so the miss is permanent and invisible.
+    const usersRead = await fetchAllPages<{ id: string; email: string; display_name: string }>((from, to) =>
+      supabase
+        .from('user_profiles')
+        .select('id, email, display_name')
+        .eq('subscription_tier', 'free')
+        .eq('marketing_opt_out', false)
+        .not('last_login_at', 'is', null) // engagement gate: must have signed in at least once
+        .gte('created_at', olderThan)
+        .lt('created_at', newerThan)
+        .order('id', { ascending: true })
+        .range(from, to));
 
-    for (const u of users ?? []) {
+    for (const u of usersRead.rows) {
       const res = await sendMarketingEmail({
         userId: u.id,
         to: u.email,
@@ -102,25 +120,57 @@ export async function runUserUpsellDrip(): Promise<number> {
 export async function runCreatorReminders(): Promise<number> {
   const supabase = createServerSupabaseClient();
 
-  const { data: creators } = await supabase
-    .from('creators')
-    .select('id, user_id, display_name, approved_at');
-  if (!creators?.length) return 0;
+  // Every creator, paged.
+  const creatorsRead = await fetchAllPages<{
+    id: string; user_id: string; display_name: string; approved_at: string | null;
+  }>((from, to) =>
+    supabase
+      .from('creators')
+      .select('id, user_id, display_name, approved_at')
+      .order('id', { ascending: true })
+      .range(from, to));
+  const creators = creatorsRead.rows;
+  if (!creators.length) return 0;
 
-  const { data: profiles } = await supabase
-    .from('user_profiles')
-    .select('id, email, marketing_opt_out')
-    .in('id', creators.map((c) => c.user_id));
-  const profById = new Map((profiles ?? []).map((p) => [p.id, p]));
+  // The next two reads filter on an id list, so they are CHUNKED as well as
+  // paged, and the chunking is the load-bearing half: ids travel in the query
+  // string and 222 uuids in one `.in()` is an 8 KB URI that comes back 414 (see
+  // `chunkIds`). A 414 arrives as `data: null`, which `?? []` turns into "this
+  // creator has no profile" and "this creator has published nothing" — the
+  // second of which sends a first-meal nudge to every creator who already
+  // publishes. Past 222 creators this campaign would have mailed the whole
+  // roster the wrong email.
+  const profById = new Map<string, { id: string; email: string; marketing_opt_out: boolean }>();
+  for (const chunk of chunkIds(creators.map((c) => c.user_id))) {
+    const read = await fetchAllPages<{ id: string; email: string; marketing_opt_out: boolean }>((from, to) =>
+      supabase
+        .from('user_profiles')
+        .select('id, email, marketing_opt_out')
+        .in('id', chunk)
+        .order('id', { ascending: true })
+        .range(from, to));
+    // Not `p` — that is the paragraph helper at the top of this file.
+    for (const prof of read.rows) profById.set(prof.id, prof);
+  }
 
-  const { data: pubs } = await supabase
-    .from('preset_meals')
-    .select('creator_id, created_at')
-    .in('creator_id', creators.map((c) => c.id));
+  const pubs: Array<{ creator_id: string; created_at: string }> = [];
+  for (const chunk of chunkIds(creators.map((c) => c.id))) {
+    // Paged inside each chunk too, unlike the profile read above: that one returns
+    // at most one row per id, this one returns one row per PUBLISHED MEAL, so a
+    // chunk of 100 prolific creators can be thousands of rows on its own.
+    const read = await fetchAllPages<{ creator_id: string; created_at: string }>((from, to) =>
+      supabase
+        .from('preset_meals')
+        .select('creator_id, created_at')
+        .in('creator_id', chunk)
+        .order('id', { ascending: true })
+        .range(from, to));
+    pubs.push(...read.rows);
+  }
 
   // Aggregate published-meal count + last-publish time per creator.
   const agg = new Map<string, { count: number; last: number }>();
-  for (const m of pubs ?? []) {
+  for (const m of pubs) {
     if (!m.creator_id) continue;
     const t = new Date(m.created_at).getTime();
     const a = agg.get(m.creator_id) ?? { count: 0, last: 0 };
@@ -159,12 +209,20 @@ export async function runCreatorReminders(): Promise<number> {
 
     // Cadence: at most one per 21 days, capped at 3 — and reset by any new
     // publish (only count re-engage sends that came AFTER the last publish).
+    // Bounded rather than paged, because the question only needs the recent end
+    // of the list: the rows are newest-first and the two things read off them are
+    // "are there three or more since the last publish" and "when was the most
+    // recent". Any window comfortably larger than the cap of 3 gives the same
+    // answer as the whole history would, so a small explicit limit is the honest
+    // bound here — and paging a per-creator history inside a per-creator loop
+    // would be a lot of requests to reach the same decision.
     const { data: prior } = await supabase
       .from('email_sends')
       .select('sent_at')
       .eq('user_id', c.user_id)
       .eq('type', 'creator_reengage')
-      .order('sent_at', { ascending: false });
+      .order('sent_at', { ascending: false })
+      .limit(REENGAGE_HISTORY);
     const sinceLastPublish = (prior ?? []).filter((r) => new Date(r.sent_at).getTime() > a.last);
     if (sinceLastPublish.length >= 3) continue;
     const lastReengageMs = sinceLastPublish[0] ? new Date(sinceLastPublish[0].sent_at).getTime() : 0;

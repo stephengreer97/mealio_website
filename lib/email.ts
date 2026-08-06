@@ -163,6 +163,8 @@ export async function sendCreatorRejectedEmail(to: string, displayName: string) 
 export async function adminNotifyEmails(
   supabase: { from: (table: string) => any },
 ): Promise<string[]> {
+  // unbounded-select-ok: staff accounts with is_admin set — a handful, and a list of
+  // 1000 admins would be a much louder problem than a truncated read
   const { data } = await supabase.from('user_profiles').select('email').eq('is_admin', true);
   const fromDb = ((data ?? []) as Array<{ email: string }>).map((row) => row.email).filter(Boolean);
   if (fromDb.length > 0) return fromDb;

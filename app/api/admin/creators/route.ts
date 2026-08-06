@@ -292,6 +292,7 @@ export async function PATCH(request: NextRequest) {
   // route and the creator's own picker judge a row on the same evidence; without
   // it an operator would be refused for a creator who has connected properly and
   // never pasted a link, which the poller reads perfectly well.
+  // unbounded-select-ok: one creator's grants — at most one row per platform, so four
   const { data: accounts } = await supabase
     .from('creator_platform_accounts')
     .select('platform')

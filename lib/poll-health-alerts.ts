@@ -324,6 +324,8 @@ export async function runPollHealthAlerts(deps: PollHealthAlertDeps): Promise<Po
 async function lastAlerted(supabase: SupabaseClient, ids: string[]): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>();
   if (ids.length === 0) return out;
+  // unbounded-select-ok: callers pass one HEALTH_CHUNK (100) of creators at a time and
+  // there is one row per source, so at most a few hundred rows
   const { data, error } = await supabase
     .from('creator_source_state')
     .select('creator_id, source, health_alerted_status')

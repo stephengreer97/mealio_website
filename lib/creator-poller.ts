@@ -930,6 +930,8 @@ async function loadStates(
   // reads as "never polled" for every creator at once, which is the whole-archive
   // back-catalogue import for every creator at once.
   for (let from = 0; from < ids.length; from += POLL_CREATOR_BATCH) {
+    // unbounded-select-ok: POLL_CREATOR_BATCH (100) creators per chunk and one row per
+    // source, so at most a few hundred rows — an order of magnitude under the ceiling
     const { data } = await supabase
       .from('creator_source_state')
       .select('creator_id, source, etag, last_modified, last_polled_at, poll_after, consecutive_failures')

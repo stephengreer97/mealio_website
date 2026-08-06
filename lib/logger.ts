@@ -113,6 +113,10 @@ export type EventType =
   // written when a read came back short (MEAL-112), and mixing the two would put
   // read failures in the middle of the audit trail for source decisions.
   | 'ADMIN:CREATOR_LIST'
+  // Same idea as ADMIN:CREATOR_LIST and separate from ADMIN:APPLICATION_REVIEW
+  // for the same reason: this is only ever written when the application list came
+  // back short (MEAL-135), and a read failure is not a review decision.
+  | 'ADMIN:APPLICATION_LIST'
   | 'ADMIN:SYNC_RUN'            // an operator-triggered sync run (MEAL-90)
   | 'ADMIN:SYNC_ITEM'           // one item inside a run: recorded, or retried
   // The four decisions in the admin review queue (MEAL-91). Every publish under
