@@ -58,6 +58,9 @@ CREATE TABLE automation_steps (
   store_id       text NOT NULL,
   step           text NOT NULL,
   outcome        text NOT NULL,
+  -- MEAL-4 failure taxonomy on non-ok terminal steps; NULL on ok/skipped rows
+  -- and on everything written before the app started sending it.
+  code           text,
   seq            int NOT NULL,
   duration_ms    int,
   item_index     int,
@@ -253,6 +256,7 @@ CREATE INDEX idx_app_opens_user_opened          ON app_opens        (user_id, op
 CREATE INDEX idx_automation_runs_user_started   ON automation_runs  (user_id, started_at);
 CREATE INDEX idx_automation_runs_store          ON automation_runs  (store_id);
 CREATE INDEX idx_automation_steps_store_step_time ON automation_steps (store_id, step, occurred_at DESC);
+CREATE INDEX idx_automation_steps_store_code_time ON automation_steps (store_id, code, occurred_at DESC);
 CREATE INDEX idx_automation_steps_run             ON automation_steps (run_id);
 CREATE UNIQUE INDEX automation_steps_run_seq_key   ON automation_steps (run_id, seq);
 CREATE UNIQUE INDEX automation_config_version_key  ON automation_config (version);

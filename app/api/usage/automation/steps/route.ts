@@ -7,7 +7,7 @@ import { log } from '@/lib/logger';
 //
 // Batched per-step telemetry for one add-to-cart run:
 //   { runId, configVersion?, appVersion?, platform?, steps: [
-//       { seq, step, outcome, durationMs?, itemIndex?, detail? }, ...
+//       { seq, step, outcome, code?, durationMs?, itemIndex?, detail? }, ...
 //   ] }
 //
 // This is the funnel that answers "what percent of HEB adds confirmed on the
@@ -29,6 +29,13 @@ const STEPS = new Set([
   'confirm', 'reconcile', 'blocked', 'run_summary',
 ]);
 const OUTCOMES = new Set(['ok', 'empty', 'timeout', 'error', 'blocked', 'skipped']);
+
+// MEAL-4's failure taxonomy. Deliberately NOT part of the row-skip guard below:
+// that guard `continue`s, so an older server meeting a newer client's ninth code
+// would silently delete the whole step from the funnel — losing the row we most
+// want to see, at exactly the moment a new failure mode appears. An unrecognized
+// code is stored as-is and shows up in the dashboard as its own bucket instead.
+const MAX_CODE_LENGTH = 40;
 
 const int = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : null;
@@ -79,6 +86,11 @@ export async function POST(request: NextRequest) {
     // better than losing the whole run's funnel.
     if (seq == null || !step || !outcome || !STEPS.has(step) || !OUTCOMES.has(outcome)) continue;
 
+    // Top-level field on the step record, not inside `detail`. Sanitized on its
+    // own — length-clamped and nothing more — so a code this deploy has never
+    // heard of still lands in the table and stays countable.
+    const code = str(raw?.code, MAX_CODE_LENGTH);
+
     let detail = null;
     if (raw?.detail && typeof raw.detail === 'object') {
       const s = JSON.stringify(raw.detail);
@@ -91,6 +103,7 @@ export async function POST(request: NextRequest) {
       store_id: run.store_id,
       step,
       outcome,
+      code,
       seq,
       duration_ms: int(raw?.durationMs),
       item_index: int(raw?.itemIndex),

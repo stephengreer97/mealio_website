@@ -195,6 +195,74 @@ describe('POST /api/usage/automation/steps', () => {
     expect(upsertedRows()[0].platform).toBeNull();
   });
 
+  // ── MEAL-4's failure taxonomy ─────────────────────────────────────────────
+  // `code` is a TOP-LEVEL field on the step record, not something inside detail,
+  // and it is the field that turns "add_click is at 60%" into a thing someone can
+  // act on. The rule it must obey: an unknown code costs you the code, never the
+  // row — the guard above `continue`s, so validating `code` there would delete a
+  // whole step from the funnel the first time a ninth code shipped.
+
+  it('stores a recognized failure code as a top-level column', async () => {
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', { error: null });
+    await POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step({ outcome: 'error', code: 'selector_miss' })]),
+    }));
+    expect(upsertedRows()[0].code).toBe('selector_miss');
+  });
+
+  it('does not look for the code inside detail', async () => {
+    // MEAL-4 moved it out of detail deliberately; reading it from there would
+    // quietly report every new-client failure as uncoded.
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', { error: null });
+    await POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step({ outcome: 'error', detail: { code: 'waf_block' } })]),
+    }));
+    expect(upsertedRows()[0].code).toBeNull();
+  });
+
+  it('KEEPS the row when the code is one this deploy has never heard of', async () => {
+    // The whole point. A newer client's ninth code must cost us the attribution,
+    // not the step: dropping the row hides the failure mode we just learned about
+    // at exactly the moment it starts happening.
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', { error: null });
+    const res = await POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step({ seq: 0, outcome: 'error', code: 'captcha_wall' }), step({ seq: 1 })]),
+    }));
+    expect((await res.json()).inserted).toBe(2);
+    expect(upsertedRows().map((r) => r.code)).toEqual(['captcha_wall', null]);
+  });
+
+  it('nulls a non-string code rather than storing garbage', async () => {
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', { error: null });
+    await POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step({ outcome: 'error', code: { evil: true } })]),
+    }));
+    expect(upsertedRows()[0].code).toBeNull();
+  });
+
+  it('clamps an absurdly long code instead of rejecting the row', async () => {
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', { error: null });
+    const res = await POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step({ outcome: 'error', code: 'x'.repeat(500) })]),
+    }));
+    expect((await res.json()).inserted).toBe(1);
+    expect(upsertedRows()[0].code).toHaveLength(40);
+  });
+
+  it('leaves code null on an ok row that sends none', async () => {
+    // The permanent NULL case: a code describes a failure, so most rows in the
+    // table will never have one and the dashboard must not read that as zero.
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', { error: null });
+    await POST(jsonRequest('/api/usage/automation/steps', { token, body: body([step()]) }));
+    expect(upsertedRows()[0].code).toBeNull();
+  });
+
   it('500s when the insert fails so the client retries', async () => {
     fakeDb.queue('automation_runs', OWNED_RUN);
     fakeDb.queue('automation_steps', { error: { message: 'db down' } });
