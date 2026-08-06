@@ -15,7 +15,9 @@ import { log } from '@/lib/logger';
 //   {
 //     days, since, truncated, stepRowsScanned, runRowsScanned,
 //     stores: StoreFunnel[],   // see lib/automation-funnel.ts
-//     alerting: string[],      // store ids below the confirm-rate threshold
+//     alerting: string[],              // store ids alerting for any reason
+//     confirmRateAlerting: string[],   // …below the confirm-rate threshold
+//     blockedAlerting: string[],       // …with a large share of runs walled off
 //     partialInstrumentation: string[],  // stores whose funnel has no middle
 //   }
 //
@@ -62,14 +64,23 @@ export async function GET(request: NextRequest) {
   const supabase = createServerSupabaseClient();
 
   try {
-    // `id` is not a stable sort key across pages for automation_runs (uuid), so
-    // runs page by started_at; steps page by their identity column.
+    // Both tables page by their PRIMARY KEY. OFFSET paging needs a TOTAL order,
+    // and only a unique column gives one: order by non-unique started_at and a
+    // tie group straddling a page boundary can hand back one row twice and skip
+    // another, because the database is free to break the tie differently on each
+    // query. That `id` is a uuid rather than a sequence makes no difference — it
+    // is unique, so the order is total. (Runs are one insert per request with a
+    // server-side DEFAULT now(), so real started_at ties are vanishingly rare;
+    // this is correctness, not a bug anyone has seen.)
+    //
+    // `id` is also selected, not just ordered by: the funnel counts DISTINCT runs
+    // behind a WAF wall, which needs run identity on both sides of the join.
     const runsPage = await fetchAllPages<RunRow>((from, to) => {
       let q = supabase
         .from('automation_runs')
-        .select('store_id, outcome, status, items_requested, items_added, started_at')
+        .select('id, store_id, outcome, status, items_requested, items_added, started_at')
         .gte('started_at', since)
-        .order('started_at', { ascending: true })
+        .order('id', { ascending: true })
         .range(from, to);
       if (storeId) q = q.eq('store_id', storeId);
       return q;
@@ -81,7 +92,10 @@ export async function GET(request: NextRequest) {
         // `code` is MEAL-4's failure taxonomy — the field that turns "add_click
         // is at 60%" into something someone can act on. NULL for every ok row
         // and for everything written before the column existed.
-        .select('store_id, step, outcome, code, duration_ms, detail, occurred_at')
+        // `run_id` is what makes the blocked rate a share of RUNS: a walled-off
+        // run emits one blocked row per item, so counting rows over runs is a
+        // ratio of two different units and read 450% on a blocked store.
+        .select('store_id, run_id, step, outcome, code, duration_ms, detail, occurred_at')
         .gte('occurred_at', since)
         .order('id', { ascending: true })
         .range(from, to);
@@ -100,7 +114,13 @@ export async function GET(request: NextRequest) {
       stepRowsScanned: stepsPage.rows.length,
       runRowsScanned: runsPage.rows.length,
       stores: funnel,
+      // Every alerting store, whatever the reason, plus the reason-specific lists
+      // the page banners off. A store can be alerting for the blocked reason with
+      // a perfect confirm rate, so one undifferentiated list would have the page
+      // blame the confirm rate for a WAF campaign.
       alerting: funnel.filter((s) => s.alerting).map((s) => s.storeId),
+      confirmRateAlerting: funnel.filter((s) => s.alertReasons.includes('confirm_rate')).map((s) => s.storeId),
+      blockedAlerting: funnel.filter((s) => s.alertReasons.includes('blocked')).map((s) => s.storeId),
       // Stores whose funnel has no middle at all (MEAL-122). Hoisted to the top
       // level because "HEB looks perfect" is the failure mode of this page, and
       // it should be visible before anyone scrolls.

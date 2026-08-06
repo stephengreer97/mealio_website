@@ -20,6 +20,9 @@ import { daysSince, relativeTime } from '@/lib/relative-time';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelChart';
+// Pure, no server imports: the "which step is this store dying on" verdict lives
+// in the same module as the aggregation it reads, and is unit-tested there.
+import { worstStep, type AlertReason } from '@/lib/automation-funnel';
 
 type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email' | 'automation';
 
@@ -89,14 +92,18 @@ interface StoreFunnel {
   confirmRate: number | null;
   firstClickConfirmRate: number | null;
   terminalSuccessRate: number | null;
-  blocked: { steps: number; rate: number | null };
+  /** `runs` is distinct runs walled off; `rate` is those over runs, not steps. */
+  blocked: { steps: number; runs: number; rate: number | null };
   failureCodes: Record<string, number>;
   runSummaryCodes: Record<string, number>;
+  /** Share of RUNS walled off — a real percentage, so it cannot exceed 100%. */
   blockedRate: number | null;
   coverage: FunnelCoverage;
   daily: DayPoint[];
   weekOverWeek: WeekOverWeek | null;
   alerting: boolean;
+  /** Why it is alerting. The badge and banners name the reason. */
+  alertReasons: AlertReason[];
 }
 
 interface FunnelResponse {
@@ -107,6 +114,8 @@ interface FunnelResponse {
   runRowsScanned: number;
   stores: StoreFunnel[];
   alerting: string[];
+  confirmRateAlerting: string[];
+  blockedAlerting: string[];
   partialInstrumentation: string[];
 }
 
@@ -1780,9 +1789,22 @@ export default function AdminPage() {
 
               {!funnel && <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>Loading…</p>}
 
-              {funnel && funnel.alerting.length > 0 && (
+              {funnel && funnel.confirmRateAlerting?.length > 0 && (
                 <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
-                  <strong>Confirm rate below threshold:</strong> {funnel.alerting.join(', ')}
+                  <strong>Confirm rate below threshold:</strong> {funnel.confirmRateAlerting.join(', ')}
+                </div>
+              )}
+
+              {/* Its own banner, because it is its own failure and the confirm
+                  rate cannot see it: blocked clicks leave that denominator, so a
+                  store with nearly all of its runs walled off reports a healthy
+                  confirm rate on the few that got through. */}
+              {funnel && funnel.blockedAlerting?.length > 0 && (
+                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                  <strong>Runs being walled off:</strong> {funnel.blockedAlerting.join(', ')}. A large share of
+                  these stores&apos; runs hit a WAF or robot wall. Nothing to the left of the WAF tile can show
+                  this — blocked clicks are excluded from those rates on purpose — so judge these stores on
+                  terminal success, not on their confirm rate.
                 </div>
               )}
 
@@ -1816,21 +1838,42 @@ export default function AdminPage() {
               )}
 
               {funnel && funnel.stores.map((s) => {
-                // The step the eye should go to first: the worst ok rate among
-                // steps that were actually attempted enough times to mean
-                // anything. This is the "which step is HEB dying on" answer.
-                const worst = s.steps
-                  .filter((st) => st.step !== 'run_summary' && st.step !== 'blocked' && st.attempted >= 5 && st.okRate != null)
-                  .reduce<StepStats | null>((acc, st) => (acc == null || st.okRate! < acc.okRate! ? st : acc), null);
-                const worstIsBad = worst != null && worst.okRate! < 0.9;
+                // The step the eye should go to first — or an explicit reason
+                // there isn't one. The rules (a 20-attempt floor, ranking by the
+                // optimistic reading rather than the raw rate, and no answer at
+                // all for a store whose per-item funnel isn't instrumented) live
+                // in lib/automation-funnel.ts with the tests that pin them.
+                const worst = worstStep(s);
+                // `?? []` only for a response served from before this deploy.
+                const reasons = s.alertReasons ?? [];
+                const blockedOnly = reasons.includes('blocked') && !reasons.includes('confirm_rate');
+                const worstNote =
+                  worst.kind === 'dying'
+                    ? `${pct(worst.okRate)} ok over ${worst.attempted}`
+                    : worst.kind === 'unmeasured'
+                      ? 'per-item steps not reported for this store'
+                      : worst.kind === 'insufficient_sample'
+                        ? 'no step with a usable sample (20+ attempts)'
+                        : 'no step convincingly below 90%';
 
                 return (
                 <div key={s.storeId} style={{ borderTop: '1px solid #f0f0f0', padding: '20px 24px' }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
                     <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700 }}>{s.storeId}</h3>
                     {s.alerting && (
-                      <span style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
-                        ALERTING
+                      <span
+                        title={
+                          reasons.includes('blocked')
+                            ? 'A large share of this store’s runs are being walled off by a WAF or robot wall.'
+                            : 'Confirm rate below threshold on a large enough sample.'
+                        }
+                        style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}
+                      >
+                        {/* Naming the reason: the two conditions are independent
+                            and a store walled off at 90% can have a flawless
+                            confirm rate, so an unlabelled badge sends someone to
+                            the wrong number. */}
+                        ALERTING{blockedOnly ? ' · BLOCKED' : ''}
                       </span>
                     )}
                     {s.coverage.partialInstrumentation && (
@@ -1856,9 +1899,9 @@ export default function AdminPage() {
                     />
                     <Metric
                       label="Dying on"
-                      value={worst ? worst.step : '—'}
-                      bad={worstIsBad}
-                      note={worst ? `${pct(worst.okRate)} ok over ${worst.attempted}` : 'no step with a usable sample'}
+                      value={worst.kind === 'dying' ? worst.step : '—'}
+                      bad={worst.kind === 'dying'}
+                      note={worstNote}
                     />
                     <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < 0.9} />
                     <Metric label="First-click confirm" value={pct(s.firstClickConfirmRate)} />
@@ -1866,11 +1909,17 @@ export default function AdminPage() {
                         rate to the left of here, because a WAF wall and a renamed
                         button need different people to fix them. */}
                     <div style={{ paddingLeft: '16px', borderLeft: '2px solid #fde68a' }}>
+                      {/* A share of RUNS, so it reads as a percentage of this
+                          store's traffic and cannot exceed 100%. The step count
+                          stays beside it as a count, which is the only honest way
+                          to show it: one walled-off run emits a blocked row per
+                          item, so steps over runs is not a percentage of
+                          anything — it rendered "WAF blocked 450.0%". */}
                       <Metric
                         label="WAF blocked"
                         value={pct(s.blockedRate)}
                         bad={!!s.blockedRate && s.blockedRate > 0.05}
-                        note={`${s.blocked.steps} blocked step${s.blocked.steps === 1 ? '' : 's'} · excluded from the rates left`}
+                        note={`${s.blocked.runs} run${s.blocked.runs === 1 ? '' : 's'} walled off · ${s.blocked.steps} blocked step${s.blocked.steps === 1 ? '' : 's'} · excluded from the rates left`}
                       />
                     </div>
                   </div>
@@ -1958,7 +2007,7 @@ export default function AdminPage() {
                               key={st.step}
                               style={{
                                 borderTop: '1px solid #f5f5f5',
-                                background: worst && st.step === worst.step && worstIsBad ? '#fff8f8' : undefined,
+                                background: worst.kind === 'dying' && st.step === worst.step ? '#fff8f8' : undefined,
                               }}
                             >
                               <td style={{ padding: '6px 8px', fontWeight: 600 }}>{st.step}</td>

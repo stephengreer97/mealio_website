@@ -15,7 +15,11 @@
 //      pulled out of every failure denominator and counted on their own.
 //   2. NO DATA IS NOT ZERO. Every rate is null when its denominator is empty.
 //      Reporting 0% for a store nobody used pages someone for nothing.
-//   3. AN UNINSTRUMENTED STORE IS NOT A HEALTHY ONE. The parallel and pre-search
+//   3. A PERCENTAGE IS A SHARE OF ONE THING. Blocks are reported as RUNS walled
+//      off over runs, never as blocked step rows over runs: a walled-off run
+//      emits a blocked row per item it tried, so the mixed-unit version was
+//      unbounded and the tile rendered "WAF blocked 500.0%".
+//   4. AN UNINSTRUMENTED STORE IS NOT A HEALTHY ONE. The parallel and pre-search
 //      add pools emit no per-item step rows at all (MEAL-122), so those stores'
 //      funnels are `login_check → (nothing) → reconcile → run_summary`. That
 //      reads as a flawless funnel unless it is called out, which is what
@@ -53,6 +57,12 @@ const BLOCK_CODE = 'waf_block';
 /** Step rows as stored (snake_case straight from Supabase). */
 export interface StepRow {
   store_id: string;
+  /**
+   * The run this step belongs to. Optional on the type only because a caller may
+   * not have selected it; when it is absent a blocked row can't be attributed to
+   * a run and is counted as a run of its own (see `blocked.runs`).
+   */
+  run_id?: string | null;
   step: string;
   outcome: string;
   duration_ms: number | null;
@@ -68,6 +78,8 @@ export interface StepRow {
 }
 
 export interface RunRow {
+  /** Run uuid. Used to count DISTINCT runs behind a WAF wall. */
+  id?: string | null;
   store_id: string;
   outcome: string | null;
   status: string;
@@ -158,8 +170,15 @@ export interface StoreFunnel {
   firstClickConfirmRate: number | null;
   /** runsSucceeded / runs. Taken from RUN rows, which every store writes. */
   terminalSuccessRate: number | null;
-  /** WAF/robot walls, kept out of every failure rate above. */
-  blocked: { steps: number; rate: number | null };
+  /**
+   * WAF/robot walls, kept out of every failure rate above.
+   *
+   * `steps` is a count of step ROWS and `runs` a count of distinct RUNS that hit
+   * a wall; `rate` is runs over runs, never steps over runs. One walled-off run
+   * emits a blocked row per item it tried, so steps/runs is not a proportion of
+   * anything — it read 450% on a heavily blocked store.
+   */
+  blocked: { steps: number; runs: number; rate: number | null };
   /** Drift-shaped failure codes across the whole store, blocks excluded. */
   failureCodes: Record<string, number>;
   /**
@@ -169,21 +188,54 @@ export interface StoreFunnel {
    * confirm_failed and hides the actionable cause.
    */
   runSummaryCodes: Record<string, number>;
-  /** Share of runs that hit a WAF/robot wall. */
+  /**
+   * Share of this store's RUNS that hit a WAF/robot wall — the same value as
+   * `blocked.rate`, kept as a top-level field because it is a headline tile.
+   *
+   * Runs over runs, so it is a genuine percentage in [0, 1]. It used to be
+   * blocked STEPS over runs, which is a ratio of two different things: two runs
+   * of five walled-off items each reported 500%.
+   */
   blockedRate: number | null;
   coverage: FunnelCoverage;
   daily: DayPoint[];
   /** Null when the window is shorter than 14 days — nothing to compare against. */
   weekOverWeek: WeekOverWeek | null;
-  /** True when confirmRate is below threshold on a large enough sample. */
+  /** True when `alertReasons` is non-empty. */
   alerting: boolean;
+  /**
+   * Why this store is alerting, so the page can name the reason instead of
+   * asserting the confirm rate is at fault. Two independent conditions, because
+   * they fail independently: a store can be walled off at 90% and still report a
+   * perfect confirm rate, since blocked clicks leave the confirm denominator.
+   * Keying the alert off confirmRate alone let exactly that store sit unflagged.
+   */
+  alertReasons: AlertReason[];
 }
+
+/** The reasons a store can be alerting. Ordered worst-first for display. */
+export type AlertReason = 'confirm_rate' | 'blocked';
 
 export interface AggregateOptions {
   /** Alert when confirmRate drops below this. Default 0.9. */
   confirmRateThreshold?: number;
   /** Don't alert on a sample this small — noise, not signal. Default 20. */
   minSampleForAlert?: number;
+  /**
+   * Alert when this share of a store's runs is walled off. Default 0.2.
+   *
+   * At-or-above, unlike the confirm-rate side: a fifth of a store's traffic
+   * hitting a robot wall is a campaign, not jitter, and there is no reading of it
+   * that improves by waiting for the next percent.
+   */
+  blockedRateThreshold?: number;
+  /**
+   * Runs needed before the blocked alert can fire. Default 5 — deliberately
+   * lower than `minSampleForAlert`, because the two samples aren't comparable. A
+   * wall is store-wide and correlated: five runs in a row all stopped is a wall,
+   * whereas five add clicks is one shopper's basket.
+   */
+  minRunsForBlockedAlert?: number;
   /** End of the window, ms since epoch. Default Date.now(). */
   now?: number;
   /** Window length in days; produces a DENSE daily series of this many buckets. */
@@ -274,6 +326,8 @@ export function aggregateFunnel(
 ): StoreFunnel[] {
   const threshold = options.confirmRateThreshold ?? 0.9;
   const minSample = options.minSampleForAlert ?? 20;
+  const blockedThreshold = options.blockedRateThreshold ?? 0.2;
+  const minRunsForBlocked = options.minRunsForBlockedAlert ?? 5;
   const now = options.now ?? Date.now();
   const days = options.days;
 
@@ -371,7 +425,36 @@ export function aggregateFunnel(
 
     const runsSucceeded = storeRuns.filter((r) => r.outcome === 'success').length;
     const runsAbandoned = storeRuns.filter((r) => r.status === 'started').length;
+
+    // ── Blocks, in run units ───────────────────────────────────────────────
+    // The operator question is "how much of this store's traffic is being walled
+    // off", so the answer has to be a share of TRAFFIC. A single walled-off run
+    // emits one blocked row per item it tried, so blocked steps over runs is not
+    // a share of anything: five items in each of two runs reported 500%.
+    //
+    // The denominator is the union of the runs we fetched and the runs that step
+    // rows point at, because a run that started just before the window still
+    // writes steps inside it and so was never fetched. Union means the numerator
+    // is always a subset of the denominator, which is what makes this a
+    // percentage that cannot exceed 100 however the two windows disagree.
+    const observedRuns = new Set<string>();
+    storeRuns.forEach((r, i) => observedRuns.add(r.id ?? `run-row:${i}`));
+    const blockedRunIds = new Set<string>();
+    storeSteps.forEach((s, i) => {
+      // No run_id (a caller that didn't select it): count the row as a run of its
+      // own rather than collapsing every unattributed block into one run or
+      // dropping it. Over-counting one wall as one run is the safe direction.
+      const key = s.run_id ?? `step-row:${i}`;
+      if (isBlockedRow(s)) {
+        blockedRunIds.add(key);
+        observedRuns.add(key);
+      } else if (s.run_id) {
+        observedRuns.add(s.run_id);
+      }
+    });
     const blockedSteps = storeSteps.filter(isBlockedRow).length;
+    const blockedRuns = blockedRunIds.size;
+    const blockedRate = rate(blockedRuns, observedRuns.size);
 
     const confirmRate = rate(confirmOk, addClickTotal);
 
@@ -407,17 +490,32 @@ export function aggregateFunnel(
       }
       return d;
     };
-    if (days && days > 0) for (const day of denseDays(now, days)) touch(day);
+    // The dense series is CALENDAR days; the fetch window is a rolling instant
+    // (`now - days*24h`), so the query legitimately returns rows from the calendar
+    // day BEFORE the first dense one — as little as a minute of it near midnight
+    // UTC. Bucketing those made an extra day that the chart drew full width and
+    // took its left-edge date label from, so one unlucky run in that sliver
+    // plotted a 0% endpoint for a day that is 99% unfetched. Rows outside the
+    // dense range stay in the store's totals (they are inside the fetched window,
+    // and week-over-week is instant-based and still counts them) and are kept out
+    // of the trend, exactly as rows with no timestamp at all are.
+    const dense = days && days > 0 ? denseDays(now, days) : null;
+    const first = dense?.[0];
+    const lastDay = dense?.[dense.length - 1];
+    const inDenseRange = (day: string) =>
+      !first || !lastDay || (day >= first && day <= lastDay);
+
+    if (dense) for (const day of dense) touch(day);
     for (const r of storeRuns) {
       const day = dayKey(r.started_at);
-      if (!day) continue;
+      if (!day || !inDenseRange(day)) continue;
       const d = touch(day);
       d.runs += 1;
       if (r.outcome === 'success') d.runsSucceeded += 1;
     }
     for (const s of storeSteps) {
       const day = dayKey(s.occurred_at);
-      if (!day) continue;
+      if (!day || !inDenseRange(day)) continue;
       const d = touch(day);
       if (isBlockedRow(s)) d.blocked += 1;
       else if (isFailureRow(s)) d.failures += 1;
@@ -455,6 +553,22 @@ export function aggregateFunnel(
       };
     }
 
+    // ── Alerting ───────────────────────────────────────────────────────────
+    // Two independent conditions. The confirm-rate one cannot see a wall at all:
+    // blocked clicks are removed from its denominator on purpose, so a store with
+    // 90% of its runs stopped by a WAF reports a 100% confirm rate on the handful
+    // that got through and used to raise nothing. The counterweight held —
+    // terminalSuccessRate comes from run rows and is not blocked-adjusted, so the
+    // store read 100% confirm against 10% terminal and an operator could see the
+    // contradiction — but a contradiction someone has to notice is not an alert.
+    const alertReasons: AlertReason[] = [];
+    if (confirmRate != null && addClickTotal >= minSample && confirmRate < threshold) {
+      alertReasons.push('confirm_rate');
+    }
+    if (blockedRate != null && observedRuns.size >= minRunsForBlocked && blockedRate >= blockedThreshold) {
+      alertReasons.push('blocked');
+    }
+
     result.push({
       storeId,
       runs: storeRuns.length,
@@ -466,17 +580,124 @@ export function aggregateFunnel(
       confirmRate,
       firstClickConfirmRate: rate(firstClickOk, addClickTotal),
       terminalSuccessRate: rate(runsSucceeded, storeRuns.length),
-      blocked: { steps: blockedSteps, rate: rate(blockedSteps, storeRuns.length) },
+      blocked: { steps: blockedSteps, runs: blockedRuns, rate: blockedRate },
       failureCodes,
       runSummaryCodes,
-      blockedRate: rate(blockedSteps, storeRuns.length),
+      blockedRate,
       coverage,
       daily,
       weekOverWeek,
-      alerting: confirmRate != null && addClickTotal >= minSample && confirmRate < threshold,
+      alerting: alertReasons.length > 0,
+      alertReasons,
     });
   }
 
   // Busiest store first — that's where a regression costs the most.
   return result.sort((a, b) => b.runs - a.runs || a.storeId.localeCompare(b.storeId));
+}
+
+// ── "Dying on": which step to point at, and when to point at nothing ─────────
+
+/**
+ * Upper end of the Wilson score interval for `ok / n`.
+ *
+ * Used instead of the raw ok rate so the dashboard only names a step it has
+ * enough evidence against. The plain minimum is unusable for ranking: 4 ok out of
+ * 5 is an 80% rate and means nothing, yet it outranks 200 attempts at 99.5%, and
+ * a 5-sample 89% outranks a 5000-sample 89.5% for no reason but noise. Ranking by
+ * this bound folds sample size into the comparison — a small sample's bound stays
+ * high, so it cannot win — and gives a threshold test that reads as a claim:
+ * "even the optimistic reading of this step is below the bar."
+ *
+ * Note this is the bound on the OK rate, so a wide interval (a small sample)
+ * makes a step look BETTER here. That is the correct direction: an uncertain step
+ * is one we have no business naming as the cause.
+ */
+export function okRateUpperBound(ok: number, n: number, z = 1.96): number {
+  if (n <= 0) return 1;
+  const p = ok / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (p + z2 / (2 * n)) / denom;
+  const half = (z / denom) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
+  return Math.min(1, center + half);
+}
+
+/** The subset of StepStats the "dying on" verdict needs. */
+export interface WorstStepInput {
+  step: string;
+  attempted: number;
+  okRate: number | null;
+  outcomes: Record<string, number>;
+}
+
+/**
+ * Which step the eye should go to, or an explicit reason there is no such step.
+ *
+ * A verdict rather than a nullable step, because the three ways there is nothing
+ * to name are three different sentences on the page and were previously all
+ * rendered as an assertion that some step was dying.
+ */
+export type WorstStepVerdict =
+  /** Confidently below the bar. `okRateUpper` is the optimistic reading. */
+  | { kind: 'dying'; step: string; okRate: number; attempted: number; okRateUpper: number }
+  /** Steps measured, none of them convincingly bad. */
+  | { kind: 'healthy' }
+  /** Steps present, none attempted enough times to say anything. */
+  | { kind: 'insufficient_sample' }
+  /** The per-item funnel is not instrumented for this store (MEAL-122). */
+  | { kind: 'unmeasured' };
+
+export interface WorstStepOptions {
+  /** Attempts a step needs before it can be named. Default 20. */
+  minSample?: number;
+  /** The bar the optimistic reading must fall below. Default 0.9. */
+  threshold?: number;
+}
+
+/**
+ * Answers "which step is this store dying on" — and, more often, refuses to.
+ *
+ * Three refusals, each of which the page previously turned into a false claim:
+ *
+ *   * A partially instrumented store gets `unmeasured`. For HEB the only steps
+ *     that exist are login_check / reconcile / run_summary; naming login_check
+ *     points at the one part of the run that is fine while the part that fails is
+ *     not measured at all.
+ *   * A store whose worst step is healthy gets `healthy`, not its least-good
+ *     step. "Dying on: search — 100.0% ok" asserts a death that did not happen.
+ *   * A step with a handful of attempts gets no say. The old floor was 5, so 4 ok
+ *     and 1 empty rendered "Dying on: search, 80.0% ok over 5" in red next to a
+ *     200-attempt step at 100%.
+ */
+export function worstStep(
+  store: { steps: WorstStepInput[]; coverage: { partialInstrumentation: boolean } },
+  options: WorstStepOptions = {},
+): WorstStepVerdict {
+  const minSample = options.minSample ?? 20;
+  const threshold = options.threshold ?? 0.9;
+
+  if (store.coverage.partialInstrumentation) return { kind: 'unmeasured' };
+
+  // run_summary is a terminal roll-up, not a step of the funnel, and `blocked` is
+  // held apart from drift everywhere else on this page.
+  const candidates = store.steps.filter(
+    (st) => st.step !== 'run_summary' && st.step !== 'blocked' && st.okRate != null && st.attempted >= minSample,
+  );
+  if (candidates.length === 0) return { kind: 'insufficient_sample' };
+
+  const ranked = candidates
+    .map((st) => ({ st, upper: okRateUpperBound(st.outcomes.ok ?? 0, st.attempted) }))
+    // Worst optimistic reading first; the raw rate only breaks ties.
+    .sort((a, b) => a.upper - b.upper || a.st.okRate! - b.st.okRate!);
+
+  const worst = ranked[0];
+  if (worst.upper >= threshold) return { kind: 'healthy' };
+  return {
+    kind: 'dying',
+    step: worst.st.step,
+    okRate: worst.st.okRate!,
+    attempted: worst.st.attempted,
+    okRateUpper: worst.upper,
+  };
 }

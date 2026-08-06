@@ -54,6 +54,12 @@ function selectFor(table: string): string {
   return String(call?.args[0] ?? '');
 }
 
+/** The column the route paged `table` by. */
+function orderFor(table: string): string {
+  const call = fakeDb.calls.find((c) => c.table === table && c.method === 'order');
+  return String(call?.args[0] ?? '');
+}
+
 describe('GET /api/admin/automation-funnel', () => {
   let token: string;
 
@@ -134,6 +140,20 @@ describe('GET /api/admin/automation-funnel', () => {
     expect(body.truncated).toBe(false);
   });
 
+  it('pages both tables by their unique primary key, not by a timestamp', async () => {
+    // OFFSET paging needs a TOTAL order. `started_at` is non-unique, and a tie
+    // group straddling a page boundary can then hand back one row twice and skip
+    // another, because the tie is broken independently per query. That runs.id is
+    // a uuid rather than a sequence is irrelevant — it is unique, so it orders.
+    asAdmin();
+    fakeDb.seed('automation_runs', []);
+    fakeDb.seed('automation_steps', []);
+    await GET(jsonRequest('/api/admin/automation-funnel', { method: 'GET', token }));
+    expect(orderFor('automation_runs')).toBe('id');
+    expect(orderFor('automation_steps')).toBe('id');
+    expect(selectFor('automation_runs')).toContain('id');
+  });
+
   it('reports truncated when the page cap is reached', async () => {
     asAdmin();
     fakeDb.queue('automation_runs', { data: [], error: null });
@@ -169,6 +189,44 @@ describe('GET /api/admin/automation-funnel', () => {
     const body = await (await GET(jsonRequest('/api/admin/automation-funnel', { method: 'GET', token }))).json();
     expect(body.stores[0].failureCodes).toEqual({ uncoded: 1 });
     expect(body.stores[0].coverage.uncodedFailures).toBe(1);
+  });
+
+  it('selects run_id, without which the blocked rate loses its denominator', async () => {
+    // The blocked tile is a share of RUNS. A walled-off run emits one blocked row
+    // per item it tried, so counting rows against runs is a ratio of two
+    // different units — it rendered "WAF blocked 450.0%" on the review's probe.
+    asAdmin();
+    fakeDb.seed('automation_runs', []);
+    fakeDb.seed('automation_steps', []);
+    await GET(jsonRequest('/api/admin/automation-funnel', { method: 'GET', token }));
+    expect(selectFor('automation_steps')).toContain('run_id');
+  });
+
+  it('reports a walled-off store as blocked-alerting, not as a confirm-rate problem', async () => {
+    // Nine of ten runs stopped by the WAF; the one that got through confirmed.
+    // The confirm rate is 100% and honestly so — blocked clicks leave that
+    // denominator — so this store used to raise nothing at all.
+    asAdmin();
+    fakeDb.seed('automation_runs', [
+      ...Array.from({ length: 9 }, (_, i) => runRow({ id: `blocked-${i}`, outcome: 'failed' })),
+      runRow({ id: 'clean' }),
+    ]);
+    fakeDb.seed('automation_steps', [
+      ...Array.from({ length: 9 }, (_, i) =>
+        stepRow({ run_id: `blocked-${i}`, step: 'add_click', outcome: 'blocked', code: 'waf_block' })),
+      stepRow({ run_id: 'clean', step: 'add_click', outcome: 'ok' }),
+      stepRow({ run_id: 'clean', step: 'confirm', outcome: 'ok' }),
+    ]);
+
+    const body = await (await GET(jsonRequest('/api/admin/automation-funnel', { method: 'GET', token }))).json();
+    const heb = body.stores.find((s: any) => s.storeId === 'heb');
+    expect(heb.confirmRate).toBe(1);
+    expect(heb.blockedRate).toBe(0.9);
+    expect(heb.alerting).toBe(true);
+    expect(heb.alertReasons).toEqual(['blocked']);
+    expect(body.blockedAlerting).toEqual(['heb']);
+    expect(body.confirmRateAlerting).toEqual([]);
+    expect(body.alerting).toEqual(['heb']);
   });
 
   // ── Caveats hoisted to the top of the response ────────────────────────────

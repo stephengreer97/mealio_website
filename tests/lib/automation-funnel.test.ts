@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateFunnel, percentile, RunRow, StepRow } from '@/lib/automation-funnel';
+import {
+  aggregateFunnel,
+  okRateUpperBound,
+  percentile,
+  worstStep,
+  RunRow,
+  StepRow,
+  WorstStepInput,
+} from '@/lib/automation-funnel';
 
 const run = (over: Partial<RunRow> = {}): RunRow => ({
   store_id: 'heb',
@@ -207,9 +215,12 @@ describe('aggregateFunnel', () => {
     expect(walmart.confirmRate).toBe(0);
   });
 
-  it('computes blockedRate from blocked steps over runs', () => {
-    const runs = [run(), run(), run(), run()];
-    const [heb] = aggregateFunnel(runs, [step({ step: 'blocked', outcome: 'blocked' })]);
+  it('computes blockedRate from blocked RUNS over runs', () => {
+    // Was "blocked steps over runs", which is two different units over each
+    // other. One of four runs walled off is 25% either way in this fixture; see
+    // "never reports more than 100%" below for the fixture where it was not.
+    const runs = [run({ id: 'r1' }), run({ id: 'r2' }), run({ id: 'r3' }), run({ id: 'r4' })];
+    const [heb] = aggregateFunnel(runs, [step({ run_id: 'r1', step: 'blocked', outcome: 'blocked' })]);
     expect(heb.blockedRate).toBe(0.25);
   });
 
@@ -280,10 +291,140 @@ describe('aggregateFunnel — blocked is held apart from drift', () => {
   });
 
   it('reports the blocked rate over runs on its own axis', () => {
-    const runs = [run(), run(), run(), run()];
-    const [heb] = aggregateFunnel(runs, [step({ step: 'blocked', outcome: 'blocked' })]);
+    const runs = [run({ id: 'r1' }), run({ id: 'r2' }), run({ id: 'r3' }), run({ id: 'r4' })];
+    const [heb] = aggregateFunnel(runs, [step({ run_id: 'r1', step: 'blocked', outcome: 'blocked' })]);
     expect(heb.blockedRate).toBe(0.25);
-    expect(heb.blocked).toEqual({ steps: 1, rate: 0.25 });
+    expect(heb.blocked).toEqual({ steps: 1, runs: 1, rate: 0.25 });
+  });
+});
+
+// ── The blocked rate is a share of RUNS, not a step count over runs ──────────
+// The units used to disagree: blocked STEPS over RUNS. A walled-off run emits one
+// blocked row per item it tried, so the "rate" was unbounded and the tile rendered
+// "WAF blocked 500.0%" — a number that tells an operator nothing except that the
+// page is broken, on the one tile whose job is to say "stop reading the rest".
+
+describe('aggregateFunnel — blockedRate is a share of runs', () => {
+  const blockedItems = (runId: string, n: number) =>
+    Array.from({ length: n }, () => step({ run_id: runId, step: 'add_click', outcome: 'blocked' }));
+
+  it('never reports more than 100%, however many items each blocked run tried', () => {
+    // Two runs, five walled-off items each. Ten blocked steps over two runs read
+    // as 500%. The truth is that every run this store made was walled off: 100%.
+    const runs = [run({ id: 'r1' }), run({ id: 'r2' })];
+    const steps = [...blockedItems('r1', 5), ...blockedItems('r2', 5)];
+    const [heb] = aggregateFunnel(runs, steps);
+    expect(heb.blocked.steps).toBe(10);
+    expect(heb.blocked.runs).toBe(2);
+    expect(heb.blockedRate).toBe(1);
+  });
+
+  it('counts one walled-off run once no matter how many steps it blocked on', () => {
+    // Nine blocked rows, all from the same run, alongside three clean runs. One
+    // run in four is behind the wall — 25%, not 225%.
+    const runs = [run({ id: 'r1' }), run({ id: 'r2' }), run({ id: 'r3' }), run({ id: 'r4' })];
+    const [heb] = aggregateFunnel(runs, blockedItems('r1', 9));
+    expect(heb.blocked.steps).toBe(9);
+    expect(heb.blockedRate).toBe(0.25);
+  });
+
+  it('keeps the numerator inside the denominator when a blocked run was not fetched', () => {
+    // A run that started just before the window still writes steps inside it, so
+    // its step rows arrive without a run row. Counting those blocked runs against
+    // the fetched runs alone would push the rate over 100% again; the denominator
+    // is the union of both sides.
+    const [heb] = aggregateFunnel([run({ id: 'r1' })], [
+      ...blockedItems('r1', 3),
+      ...blockedItems('older-run', 4),
+    ]);
+    expect(heb.blocked.runs).toBe(2);
+    expect(heb.blockedRate).toBe(1);
+  });
+
+  it('does not count a clean run as walled off', () => {
+    const runs = [run({ id: 'r1' }), run({ id: 'r2' })];
+    const steps = [
+      step({ run_id: 'r1', step: 'add_click', outcome: 'ok' }),
+      step({ run_id: 'r2', step: 'add_click', outcome: 'error', code: 'selector_miss' }),
+    ];
+    const [heb] = aggregateFunnel(runs, steps);
+    expect(heb.blocked).toEqual({ steps: 0, runs: 0, rate: 0 });
+  });
+});
+
+// ── Alerting on a wall, not just on drift ───────────────────────────────────
+// `alerting` used to key off confirmRate alone, and confirmRate deliberately
+// excludes blocked clicks — so the one store shape the page most needs to shout
+// about, a store the WAF has stopped serving, raised nothing at all.
+
+describe('aggregateFunnel — blocked-side alert', () => {
+  /** n runs, all of whose add clicks were walled off. */
+  const walledRuns = (n: number, from = 0) =>
+    Array.from({ length: n }, (_, i) => run({ id: `blocked-${from + i}` }));
+  const walledSteps = (n: number, from = 0) =>
+    Array.from({ length: n }, (_, i) => step({ run_id: `blocked-${from + i}`, step: 'add_click', outcome: 'blocked' }));
+
+  it('alerts on a store whose runs are nearly all walled off, despite a perfect confirm rate', () => {
+    // The probe: 9 of 10 runs blocked, the one that got through confirmed. The
+    // confirm rate is 100% and honestly so — blocked clicks are not missed
+    // confirms — which is exactly why it cannot be the only alert condition.
+    const runs = [...walledRuns(9), run({ id: 'clean', outcome: 'failed' })];
+    const steps = [
+      ...walledSteps(9),
+      step({ run_id: 'clean', step: 'add_click', outcome: 'ok' }),
+      step({ run_id: 'clean', step: 'confirm', outcome: 'ok' }),
+    ];
+    const [heb] = aggregateFunnel(runs, steps);
+    expect(heb.confirmRate).toBe(1);
+    expect(heb.blockedRate).toBe(0.9);
+    expect(heb.alerting).toBe(true);
+    expect(heb.alertReasons).toEqual(['blocked']);
+  });
+
+  it('does not alert when only a small share of runs is walled off', () => {
+    const runs = [...walledRuns(1), ...Array.from({ length: 19 }, (_, i) => run({ id: `ok-${i}` }))];
+    const [heb] = aggregateFunnel(runs, walledSteps(1));
+    expect(heb.blockedRate).toBe(0.05);
+    expect(heb.alerting).toBe(false);
+    expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('does not alert on a handful of runs even when every one is walled off', () => {
+    // Two runs blocked is one shopper on hotel wifi, not a campaign.
+    const [heb] = aggregateFunnel(walledRuns(2), walledSteps(2));
+    expect(heb.blockedRate).toBe(1);
+    expect(heb.alerting).toBe(false);
+  });
+
+  it('alerts at the threshold rather than waiting for the next percent', () => {
+    const runs = [...walledRuns(2), ...Array.from({ length: 8 }, (_, i) => run({ id: `ok-${i}` }))];
+    const [heb] = aggregateFunnel(runs, walledSteps(2), { blockedRateThreshold: 0.2 });
+    expect(heb.blockedRate).toBe(0.2);
+    expect(heb.alertReasons).toEqual(['blocked']);
+  });
+
+  it('names both reasons when a store is drifting AND being walled off', () => {
+    const runs = [...walledRuns(5), ...Array.from({ length: 5 }, (_, i) => run({ id: `ok-${i}` }))];
+    const steps = [
+      ...walledSteps(5),
+      // 20 real clicks, 10 confirms: drift on top of the wall.
+      ...Array.from({ length: 20 }, () => step({ run_id: 'ok-0', step: 'add_click', outcome: 'ok' })),
+      ...Array.from({ length: 10 }, () => step({ run_id: 'ok-0', step: 'confirm', outcome: 'ok' })),
+    ];
+    const [heb] = aggregateFunnel(runs, steps, { minSampleForAlert: 20 });
+    expect(heb.confirmRate).toBe(0.5);
+    expect(heb.blockedRate).toBe(0.5);
+    expect(heb.alertReasons).toEqual(['confirm_rate', 'blocked']);
+  });
+
+  it('reports the confirm-rate reason on its own when nothing is blocked', () => {
+    const steps = [
+      ...Array.from({ length: 20 }, () => step()),
+      ...Array.from({ length: 10 }, () => step({ step: 'confirm' })),
+    ];
+    const [heb] = aggregateFunnel([run()], steps, { minSampleForAlert: 20 });
+    expect(heb.alertReasons).toEqual(['confirm_rate']);
+    expect(heb.alerting).toBe(true);
   });
 });
 
@@ -410,10 +551,23 @@ describe('aggregateFunnel — daily trend', () => {
   const at = (daysAgo: number) => new Date(NOW - daysAgo * 24 * 60 * 60 * 1000).toISOString();
 
   it('produces one dense bucket per day in the window, zeros included', () => {
-    const [heb] = aggregateFunnel([run({ started_at: at(0) })], [], { now: NOW, days: 30 });
+    // Strengthened: the fixture now includes rows in the half-day the fetch
+    // window reaches into but the dense series does not cover (`since` is
+    // NOW − 30×24h = 2026-07-06T12:00, whose calendar day sits before the first
+    // dense day). With only a row at at(0) this test passed either way.
+    const runs = [
+      run({ started_at: at(0) }),
+      run({ started_at: '2026-07-06T18:00:00Z' }),   // inside the fetch window…
+      run({ started_at: '2026-07-06T23:59:00Z' }),   // …but outside the 30 dense days
+    ];
+    const steps = [step({ occurred_at: '2026-07-06T18:00:00Z', outcome: 'error', code: 'selector_miss' })];
+    const [heb] = aggregateFunnel(runs, steps, { now: NOW, days: 30 });
     expect(heb.daily).toHaveLength(30);
     expect(heb.daily[0].day).toBe('2026-07-07');
     expect(heb.daily[29].day).toBe('2026-08-05');
+    expect(heb.daily.map((d) => d.day)).not.toContain('2026-07-06');
+    // Still counted in the store's totals — they are inside the fetched window.
+    expect(heb.runs).toBe(3);
   });
 
   it('reports a day with no runs as null, not 0%', () => {
@@ -441,6 +595,55 @@ describe('aggregateFunnel — daily trend', () => {
     ];
     const [heb] = aggregateFunnel([run({ started_at: at(0) })], steps, { now: NOW, days: 1 });
     expect(heb.daily[0]).toMatchObject({ blocked: 1, failures: 1 });
+  });
+
+  it('does not invent a bucket for the sliver of the day before the window', () => {
+    // The off-by-one: the dense series walks back CALENDAR days from `now`, but
+    // the fetch window is the rolling instant `now - days*24h`, which lands inside
+    // the calendar day BEFORE the first dense one. Ten minutes before midnight
+    // UTC, that sliver is ten minutes wide — and it was drawn as a full-width
+    // point that supplied the chart's left-edge date label, so a single unlucky
+    // run in those ten minutes plotted a 0% left endpoint for a day that is
+    // 99.3% unfetched.
+    const LATE = Date.parse('2026-08-05T23:50:00Z');
+    const runs = [
+      run({ started_at: '2026-07-29T23:55:00Z', outcome: 'failed' }), // in the sliver
+      run({ started_at: '2026-08-05T10:00:00Z', outcome: 'success' }),
+    ];
+    const [heb] = aggregateFunnel(runs, [], { now: LATE, days: 7 });
+
+    expect(heb.daily).toHaveLength(7);
+    expect(heb.daily[0].day).toBe('2026-07-30');
+    expect(heb.daily[6].day).toBe('2026-08-05');
+    // The sliver run is not a day of history, and above all not a 0% one.
+    expect(heb.daily.some((d) => d.day === '2026-07-29')).toBe(false);
+    expect(heb.daily[0]).toMatchObject({ runs: 0, terminalSuccessRate: null });
+    // It is still a run this store made inside the fetched window.
+    expect(heb.runs).toBe(2);
+    expect(heb.terminalSuccessRate).toBe(0.5);
+  });
+
+  it('keeps a blocked step in the sliver out of the trend as well', () => {
+    const LATE = Date.parse('2026-08-05T23:50:00Z');
+    const steps = [
+      step({ occurred_at: '2026-07-29T23:59:00Z', step: 'blocked', outcome: 'blocked' }),
+      step({ occurred_at: '2026-08-05T01:00:00Z', step: 'add_click', outcome: 'error', code: 'selector_miss' }),
+    ];
+    const [heb] = aggregateFunnel([run({ started_at: '2026-08-05T01:00:00Z' })], steps, { now: LATE, days: 7 });
+    expect(heb.daily).toHaveLength(7);
+    expect(heb.daily.reduce((a, d) => a + d.blocked, 0)).toBe(0);
+    expect(heb.daily[6].failures).toBe(1);
+    // Counted store-wide, just not drawn on a day the chart does not cover.
+    expect(heb.blocked.steps).toBe(1);
+  });
+
+  it('does not bucket a row timestamped after the window ends', () => {
+    // Device clocks run fast, and a bucket to the right of "today" stretches the
+    // x-axis into the future and takes the last-value label with it.
+    const [heb] = aggregateFunnel([run({ started_at: '2026-08-06T04:00:00Z' })], [], { now: NOW, days: 7 });
+    expect(heb.daily).toHaveLength(7);
+    expect(heb.daily[6].day).toBe('2026-08-05');
+    expect(heb.daily.every((d) => d.runs === 0)).toBe(true);
   });
 
   it('omits rows with no timestamp from the trend but still counts them in totals', () => {
@@ -516,5 +719,128 @@ describe('aggregateFunnel — terminal success rate', () => {
   it('is null rather than zero for a store with no runs', () => {
     const out = aggregateFunnel([], [step({ store_id: 'aldi' })]);
     expect(out[0].terminalSuccessRate).toBeNull();
+  });
+});
+
+// ── "Dying on": the tile that names a step ──────────────────────────────────
+// The most quoted number on the page and the easiest to make libellous. Three
+// separate ways it used to assert a death that had not happened: a five-attempt
+// sample floor, no answer for "nothing is dying", and no exemption for a store
+// whose per-item funnel is not instrumented at all.
+
+describe('okRateUpperBound', () => {
+  it('is 1 for an empty sample — an unmeasured step is never the accused', () => {
+    expect(okRateUpperBound(0, 0)).toBe(1);
+  });
+
+  it('stays above the bar for a tiny sample, however bad the raw rate looks', () => {
+    // 4 ok of 5 is "80%", and it is also four coin flips. The optimistic reading
+    // is 96%, which is the honest thing to say about it.
+    expect(okRateUpperBound(4, 5)).toBeGreaterThan(0.9);
+    // The bound alone is not the whole guard: one attempt that failed reads as
+    // 79%, low enough to clear the bar. The 20-attempt floor is what keeps a
+    // single row from naming a step, which is why worstStep applies both.
+    expect(okRateUpperBound(0, 1)).toBeLessThan(0.9);
+  });
+
+  it('tightens onto the raw rate as the sample grows', () => {
+    expect(okRateUpperBound(4450, 5000)).toBeLessThan(0.9);   // 89.0%
+    expect(okRateUpperBound(4450, 5000)).toBeGreaterThan(0.89);
+  });
+
+  it('never exceeds 1', () => {
+    expect(okRateUpperBound(3, 3)).toBe(1);
+  });
+});
+
+describe('worstStep', () => {
+  const stat = (step: string, ok: number, attempted: number): WorstStepInput => ({
+    step,
+    attempted,
+    okRate: attempted === 0 ? null : ok / attempted,
+    outcomes: { ok, error: attempted - ok },
+  });
+  const store = (steps: WorstStepInput[], partialInstrumentation = false) =>
+    ({ steps, coverage: { partialInstrumentation } });
+
+  it('will not name a step on a five-attempt sample', () => {
+    // The probe: 4 ok and 1 empty on `search` rendered "Dying on: search, 80.0%
+    // ok over 5" in red, beside a 200-attempt add_click at 100%.
+    const v = worstStep(store([stat('search', 4, 5), stat('add_click', 200, 200)]));
+    expect(v.kind).toBe('healthy');
+  });
+
+  it('says there is no usable sample rather than naming the only small step', () => {
+    const v = worstStep(store([stat('search', 4, 5)]));
+    expect(v.kind).toBe('insufficient_sample');
+  });
+
+  it('names nothing when nothing is dying', () => {
+    // "Dying on: search — 100.0% ok over 100" asserts a death that did not
+    // happen. Not red, and still wrong.
+    const v = worstStep(store([stat('search', 100, 100), stat('add_click', 98, 100)]));
+    expect(v.kind).toBe('healthy');
+  });
+
+  it('is silent for a store whose per-item funnel is not instrumented', () => {
+    // MEAL-122/HEB: login_check, reconcile and run_summary are the only steps
+    // that exist. Naming login_check points at the one part of the run that is
+    // measured while the part that fails is invisible.
+    const v = worstStep(store([stat('login_check', 60, 100), stat('reconcile', 100, 100)], true));
+    expect(v.kind).toBe('unmeasured');
+  });
+
+  it('ranks by the optimistic reading, so volume outweighs a noisy small sample', () => {
+    // 15 ok of 20 is a worse RATE (75%) than 320 of 400 (80%), and a far weaker
+    // claim: five failures against eighty. The old reduce took the minimum rate
+    // and named the 20-attempt step.
+    const v = worstStep(store([stat('search', 15, 20), stat('add_click', 320, 400)]));
+    expect(v.kind).toBe('dying');
+    if (v.kind !== 'dying') throw new Error('unreachable');
+    expect(v.step).toBe('add_click');
+  });
+
+  it('still names a small step when the collapse is unambiguous', () => {
+    // A 20-attempt floor is not a 20-attempt excuse: half of twenty failing is
+    // outside the noise, and the verdict says so.
+    const v = worstStep(store([stat('add_click', 10, 20)]));
+    expect(v.kind).toBe('dying');
+    if (v.kind !== 'dying') throw new Error('unreachable');
+    expect(v.step).toBe('add_click');
+    expect(v.okRate).toBe(0.5);
+    expect(v.attempted).toBe(20);
+    expect(v.okRateUpper).toBeLessThan(0.9);
+  });
+
+  it('never names run_summary or blocked', () => {
+    // run_summary is a terminal roll-up carrying the run's most FREQUENT code
+    // (MEAL-123), and blocked rows are held apart from drift everywhere else.
+    const v = worstStep(store([
+      stat('search', 100, 100),
+      stat('run_summary', 0, 100),
+      stat('blocked', 0, 100),
+    ]));
+    expect(v.kind).toBe('healthy');
+  });
+
+  it('reads the shape aggregateFunnel actually returns', () => {
+    // Guards the seam: the tile is fed straight from the endpoint's step rows.
+    const steps = [
+      ...Array.from({ length: 40 }, () => step({ step: 'add_click', outcome: 'ok' })),
+      ...Array.from({ length: 60 }, () => step({ step: 'add_click', outcome: 'error', code: 'selector_miss' })),
+      ...Array.from({ length: 100 }, () => step({ step: 'search', outcome: 'ok' })),
+    ];
+    const [heb] = aggregateFunnel([run()], steps);
+    const v = worstStep(heb);
+    expect(v.kind).toBe('dying');
+    if (v.kind !== 'dying') throw new Error('unreachable');
+    expect(v.step).toBe('add_click');
+    expect(v.okRate).toBeCloseTo(0.4);
+  });
+
+  it('honours a caller-supplied floor and threshold', () => {
+    const steps = [stat('add_click', 8, 10)];
+    expect(worstStep(store(steps)).kind).toBe('insufficient_sample');
+    expect(worstStep(store(steps), { minSample: 10, threshold: 0.99 }).kind).toBe('dying');
   });
 });
