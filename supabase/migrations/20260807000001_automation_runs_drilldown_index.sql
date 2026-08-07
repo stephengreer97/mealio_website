@@ -1,13 +1,43 @@
--- MEAL-143: indexes for the per-run drilldown's "recent failing runs" list.
+-- MEAL-143: one generated column and two indexes for the per-run drilldown's
+-- "recent failing runs" list.
 --
--- OPTIONAL. The drilldown works without this migration — every query it issues is
--- correct and bounded either way, and nothing in the code checks for these indexes.
--- Applying it changes how fast one list is, not what it answers. It is written as a
--- migration rather than left as a comment because it is the one new query shape the
--- schema does not already serve, and next year's version of this question deserves
--- to find the answer in the tree rather than re-derive it.
+-- The drilldown works without this migration and degrades explicitly: the list
+-- route tries its filter with `partial_adds`, retries without it on Postgres
+-- `42703`, and restores the caveat saying so. Applying it changes WHAT ONE LIST
+-- FINDS (the column) and how fast it finds it (the indexes).
 --
 -- Run in the Supabase SQL editor. Safe to re-run.
+--
+-- ── The generated column ─────────────────────────────────────────────────────
+--
+-- The failing filter's fourth term. A run reporting `outcome = 'success'` while
+-- adding fewer items than it was asked for is a failure — a selector regression
+-- that drops one item per basket looks exactly like this — and PostgREST cannot
+-- express it: it compares a column to a VALUE, never to another column, and it
+-- cannot ORDER BY a computed difference either. So the only way to filter on it is
+-- to have a column that already holds the answer.
+--
+-- Without it the default failing list is EMPTY for that regression, and the
+-- documented workaround (filter=all, read the PARTIAL badge) reads a page of the
+-- most recent runs of any kind — so at a store doing hundreds of runs a day the
+-- broken ones are diluted into a mostly-clean sample and read as noise.
+--
+-- NULL, not FALSE, when either count is missing: `items_requested` and
+-- `items_added` are nullable, a comparison against NULL is NULL, and `is.true`
+-- therefore does not match those rows. That is the right answer — a run that never
+-- reported its counts is not evidence of a partial add — and it is why the filter
+-- term is `is.true` rather than `neq.false`.
+--
+-- STORED because Postgres has no VIRTUAL generated columns. Adding one rewrites
+-- the table and takes an ACCESS EXCLUSIVE lock for the duration; `automation_runs`
+-- is small and append-only, so this is seconds, but it is not a zero-cost DDL and
+-- is worth running when nobody is mid-run.
+--
+-- Idempotent via IF NOT EXISTS, which Postgres supports for ADD COLUMN including
+-- generated ones.
+
+ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS partial_adds boolean
+  GENERATED ALWAYS AS (items_added < items_requested) STORED;
 --
 -- ── What is already covered, and needed nothing ──────────────────────────────
 --
@@ -22,7 +52,7 @@
 -- plainly, because "add an index on run_id" was the assumed shape of this work and
 -- the index has existed since the steps table shipped.
 --
--- ── What this adds ───────────────────────────────────────────────────────────
+-- ── What the indexes add ─────────────────────────────────────────────────────
 --
 -- The LIST read is `WHERE started_at >= $1 [AND store_id = $2] ORDER BY started_at
 -- DESC LIMIT 50`. `automation_runs` currently has `(user_id, started_at)` and
@@ -44,9 +74,9 @@ CREATE INDEX IF NOT EXISTS idx_automation_runs_started
 CREATE INDEX IF NOT EXISTS idx_automation_runs_store_started
   ON automation_runs (store_id, started_at DESC);
 
--- Deliberately NOT indexed: `status` / `outcome`, the columns the failing filter
--- reads. The predicate is a three-way OR over two low-cardinality columns, which a
--- b-tree cannot help with in a way the planner would choose, and it is applied to a
--- set already narrowed by the window above. A partial index over "not a clean
--- success" would be the version worth having if this ever gets slow, and it should
--- be written then against a real plan rather than guessed at now.
+-- Deliberately NOT indexed: `status` / `outcome` / `partial_adds`, the columns the
+-- failing filter reads. The predicate is a four-way OR over low-cardinality
+-- columns, which a b-tree cannot help with in a way the planner would choose, and
+-- it is applied to a set already narrowed by the window above. A partial index over
+-- "not a clean success" would be the version worth having if this ever gets slow,
+-- and it should be written then against a real plan rather than guessed at now.

@@ -298,43 +298,94 @@ export function summarizeTrace(
 }
 
 /**
+ * How long a run may sit at `status = 'started'` before it is called ABANDONED
+ * rather than still going.
+ *
+ * `status = 'started'` alone cannot tell the two apart, and they are opposite
+ * sentences: one is "the engine wedged, go look", the other is "come back in a
+ * minute". The list orders `started_at DESC`, so without a band the in-flight
+ * runs — the newest rows there are — sort to the TOP of the failing list and read
+ * as a wave of abandonments. During a store's dinner-hour peak the first screen is
+ * then entirely runs that will complete normally, which is worse than useless: it
+ * is an outage that is not happening.
+ *
+ * WHERE 15 MINUTES COMES FROM. A run's wall clock is bounded by the timeout
+ * config, not by the basket. Under `BUNDLED_AUTOMATION_CONFIG` (mealio_app,
+ * `lib/automation-config/schema.ts`) the per-item budget is `searchMs` 15s +
+ * `addMs` 10s = 25s worst case, with `loginCheckMs` 20s and the cart probes
+ * (~32s) paid once per run; a 20-item basket walked strictly serially is
+ * therefore about 9 minutes, and `flags.parallelAdd` (3 workers, on by default)
+ * divides the per-item half of that. `NUMERIC_BOUNDS` caps every individual
+ * timeout at 120s, so a remote push cannot make the tail unbounded either.
+ *
+ * 15 minutes is ~50% headroom over that serial worst case. It errs toward calling
+ * a dead run RUNNING for a while — which delays one diagnosis — rather than
+ * toward calling a live run ABANDONED, which manufactures one. The band is only
+ * ever a LABEL: nothing is hidden from the list by it, so the cost of the wrong
+ * guess is a word on a badge and not a missing row.
+ */
+export const RUNNING_GRACE_MS = 15 * 60 * 1000;
+
+/**
  * Is this run row something an operator would want to look at?
  *
  * The definition the LIST endpoint filters on, written here so the route's
  * PostgREST predicate and the label the UI puts on a row cannot drift apart. See
  * the route for why the filter is on the run row rather than on the steps.
  *
- * Three ways a run is not a clean success, and they are genuinely different
+ * Four ways a run is not a clean success, and they are genuinely different
  * failures:
  *
- *   * `status` still 'started' — the run never reported finishing. The app was
- *     killed, or the engine wedged. There is no failing step to find for these,
- *     which is half the argument for filtering on the run row.
+ *   * `status` still 'started' and `started_at` older than `RUNNING_GRACE_MS` —
+ *     the run never reported finishing. The app was killed, or the engine wedged.
+ *     There is no failing step to find for these, which is half the argument for
+ *     filtering on the run row. Inside the grace band the same row is `running`
+ *     instead: a distinct state, because it is not a fault yet.
  *   * `outcome` null on a run that did finish, or any outcome other than
  *     'success'.
- *   * A 'success' that added fewer items than it was asked for. This one is NOT
- *     part of the server-side filter — PostgREST cannot compare two columns
- *     without a computed column or an RPC — so it is computed per row here and
- *     surfaced as a flag. A store whose partial adds all report 'success' will
- *     therefore not appear in the failing list; the list says so.
+ *   * A 'success' that added fewer items than it was asked for. Computed here per
+ *     row from the two columns, which works whether or not the `partial_adds`
+ *     generated column exists — see the list route for how the server-side term
+ *     degrades when the migration has not been applied.
  */
-export function runConcern(run: Pick<TraceRunRow, 'status' | 'outcome' | 'items_requested' | 'items_added'>): {
+export function runConcern(
+  run: Pick<TraceRunRow, 'status' | 'outcome' | 'items_requested' | 'items_added' | 'started_at' | 'completed_at'>,
+  now: number = Date.now(),
+): {
+  running: boolean;
   abandoned: boolean;
   failed: boolean;
   partialAdds: boolean;
   clean: boolean;
 } {
-  const abandoned = run.status === 'started';
+  const unterminated = run.status === 'started';
+  const startedAt = run.started_at != null ? Date.parse(run.started_at) : NaN;
+  // An unreadable or absent `started_at` means the age is unknown. `automation_runs`
+  // declares the column NOT NULL DEFAULT now(), so this is defensive — and it
+  // resolves toward ABANDONED, the direction that shows a row rather than quietly
+  // relabelling it as fine.
+  const ageKnown = Number.isFinite(startedAt);
+  const running =
+    unterminated &&
+    // A row carrying a `completed_at` DID report finishing, whatever `status` says
+    // — a half-landed completion write, not a run still going.
+    run.completed_at == null &&
+    ageKnown &&
+    now - startedAt < RUNNING_GRACE_MS;
+  const abandoned = unterminated && !running;
   const failed = run.outcome != null && run.outcome !== 'success';
-  const unfinished = run.outcome == null && !abandoned;
+  const unfinished = run.outcome == null && !unterminated;
   const partialAdds =
     typeof run.items_requested === 'number' &&
     typeof run.items_added === 'number' &&
     run.items_added < run.items_requested;
   return {
+    running,
     abandoned,
     failed,
     partialAdds,
-    clean: !abandoned && !failed && !unfinished && !partialAdds,
+    // A running run is not clean either — it has not finished, so there is nothing
+    // yet to call clean. `running` is what the UI badges it, not `OK`.
+    clean: !running && !abandoned && !failed && !unfinished && !partialAdds,
   };
 }

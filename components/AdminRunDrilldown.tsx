@@ -29,6 +29,12 @@ import { useState } from 'react';
  *     that caused them. It is shown next to "first failure", which for a complete
  *     trace is an observation rather than a ranking, and marked as the weaker of
  *     the two.
+ *   * A run still going is not a run that died. The list is newest-first, so
+ *     in-flight rows are the first thing on the screen; they are badged RUNNING in
+ *     a neutral colour rather than ABANDONED in a warning one.
+ *   * A trace the table shortened is not a short trace. `RENDER_CAP` bounds what is
+ *     DRAWN, never what was read, and the cap says the real total out loud with a
+ *     way to lift it.
  */
 
 /** A run row as the list and trace endpoints return it — stored shape, unrenamed. */
@@ -49,9 +55,11 @@ export interface RunRow {
 }
 
 export interface RunConcern {
+  /** Started inside the grace band and not yet finished — in flight, not a fault. */
+  running: boolean;
   abandoned: boolean;
   failed: boolean;
-  /** Reported, never filtered on: PostgREST cannot compare two columns. */
+  /** Computed per row from the two counts; server-side only once `partial_adds` exists. */
   partialAdds: boolean;
   clean: boolean;
 }
@@ -108,8 +116,33 @@ interface ListResponse {
   limit: number;
   runs: Array<RunRow & { concern: RunConcern }>;
   listMaybeTruncated: boolean;
+  /**
+   * Whether "success with fewer items added than requested" was part of the
+   * server-side filter. Absent or false means the `partial_adds` migration is not
+   * applied, and the empty state has to send the operator to `filter=all`.
+   */
+  partialAddsFiltered?: boolean;
+  inFlight?: number;
   caveats: string[];
 }
+
+/**
+ * Step rows this table draws before it stops and says so.
+ *
+ * `fetchAllPages` can hand back `MAX_PAGES × PAGE_ROWS` = 20,000 rows, and the
+ * route is right to fetch them: completeness is what the whole endpoint is for, and
+ * a trace silently cut at 1000 is the bug this ticket exists to prevent. Drawing
+ * them is a different question. 20,000 `<tr>`s each carrying a `JSON.stringify`ed
+ * `detail` is a frozen tab, which would make the one case the completeness was
+ * fought for — a genuinely enormous run — the one case nobody can look at.
+ *
+ * 500 is comfortably more than anyone reads by eye and an order of magnitude under
+ * where the DOM starts to hurt. The cap is on RENDERING only, it is stated on
+ * screen with the real total beside it, and it can be lifted from the screen —
+ * a display that quietly shortened a trace would be the same dishonesty in a new
+ * place.
+ */
+const RENDER_CAP = 500;
 
 const CARD: React.CSSProperties = {
   background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden',
@@ -147,6 +180,12 @@ function outcomeColor(step: TraceStep): string {
 
 /** The shortest true label for a run row, from the flags the API computed. */
 function concernLabel(concern: RunConcern): { text: string; color: string; background: string; border: string } {
+  // Before ABANDONED, and in a colour that is not a warning colour. The list is
+  // newest-first, so in-flight runs are the FIRST rows on screen — badging them
+  // ABANDONED turns a store's busiest minute into an apparent wave of wedged
+  // engines. They are also checked before `partialAdds`, which is trivially true
+  // of a run that has not finished adding yet.
+  if (concern.running) return { text: 'RUNNING', color: '#1d4ed8', background: '#eff6ff', border: '#bfdbfe' };
   if (concern.abandoned) return { text: 'ABANDONED', color: '#92400e', background: '#fffbeb', border: '#fde68a' };
   if (concern.failed) return { text: 'FAILED', color: '#b91c1c', background: '#fef2f2', border: '#fecaca' };
   if (concern.partialAdds) return { text: 'PARTIAL', color: '#92400e', background: '#fffbeb', border: '#fde68a' };
@@ -168,11 +207,19 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
   const [trace, setTrace] = useState<TraceResponse | null>(null);
   const [tracing, setTracing] = useState(false);
   const [error, setError] = useState('');
+  const [renderAll, setRenderAll] = useState(false);
 
   const loadList = async () => {
     setError('');
     setListing(true);
     const params = new URLSearchParams({ days: String(days), filter });
+    // `all` asks for the route's ceiling rather than its default. It is the view the
+    // partial-adds caveat sends people to before the `partial_adds` migration is
+    // applied, and that instruction is worthless against a 50-row sample of a store
+    // doing hundreds of runs a day. Filtering server-side is the real fix and this
+    // is the fallback; `failing` keeps the default, because it is a picker and 50
+    // recent failures is already more than anyone opens.
+    if (filter === 'all') params.set('limit', '200');
     if (storeId) params.set('storeId', storeId);
     const res = await fetch(`/api/admin/automation-runs?${params}`, {
       headers: { Authorization: `Bearer ${token()}` },
@@ -191,6 +238,9 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
     setError('');
     setTracing(true);
     setRunIdInput(runId);
+    // A per-trace decision, so opening the next run does not inherit "draw
+    // everything" from a huge one.
+    setRenderAll(false);
     const res = await fetch(`/api/admin/automation-runs/${encodeURIComponent(runId)}`, {
       headers: { Authorization: `Bearer ${token()}` },
     });
@@ -288,9 +338,14 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
           {list.runs.length === 0 ? (
             <p style={{ fontSize: '13px', color: '#888', margin: '16px 0 0' }}>
               No run in the last {list.days} day{list.days === 1 ? '' : 's'} matched.
-              {list.filter === 'failing' && ' Note that a run reporting outcome=success while adding fewer items ' +
-                'than it was asked for is not in this filter — PostgREST cannot compare two columns. Switch to ' +
-                '“Every run” and look for the PARTIAL badge.'}
+              {list.filter === 'failing' && (list.partialAddsFiltered
+                ? ' That includes runs reporting outcome=success while adding fewer items than they were ' +
+                  'asked for — those are filtered server-side, so an empty list here means there were none.'
+                : ' Note that a run reporting outcome=success while adding fewer items ' +
+                  'than it was asked for is not in this filter — PostgREST cannot compare two columns and the ' +
+                  'partial_adds column is not applied to this database yet. Switch to “Every run” and look for ' +
+                  'the PARTIAL badge, bearing in mind that is a page of recent runs of every kind rather than ' +
+                  'a search.')}
             </p>
           ) : (
             <div style={{ overflowX: 'auto', marginTop: '16px' }}>
@@ -400,6 +455,12 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                 <div style={{ fontSize: '11px', color: '#999', marginTop: '2px', maxWidth: '280px' }}>
                   The run&apos;s most frequent code, not its most severe (MEAL-123). Where the two
                   columns disagree, the ordered one on the left is the one that saw the rows.
+                  {/* The terminal row is the LAST row of the run, so on a prefix it is
+                      outside the read by definition. Marked for the same reason the
+                      counts beside it are: a dash that means "not reached" and a dash
+                      that means "the run wrote no code" are different facts. */}
+                  {trace.truncated && !trace.summary.hasRunSummary
+                    && ' · not reached — the terminal row is outside this prefix, so the dash is not a finding'}
                 </div>
               </div>
               <div>
@@ -413,6 +474,24 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                   drift-shaped rows / robot walls{trace.truncated ? ' · lower bounds' : ''}
                 </div>
               </div>
+              {/* Items the run asked for and never reported adding, and which of the
+                  per-item steps it never reported at all. Both come off the summary,
+                  and both were being computed and thrown away. */}
+              <div>
+                <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Items missed
+                </div>
+                <div style={{ fontSize: '16px', fontWeight: 700, color: (trace.summary.itemsMissed ?? 0) > 0 ? '#b91c1c' : '#333' }}>
+                  {trace.summary.itemsMissed ?? '—'}
+                </div>
+                <div style={{ fontSize: '11px', color: '#999', marginTop: '2px', maxWidth: '280px' }}>
+                  {trace.summary.itemsMissed == null
+                    ? 'the run reported neither count, so this is unknown rather than zero'
+                    : trace.summary.missingItemSteps.length > 0
+                      ? `asked for and never reported added · no ${trace.summary.missingItemSteps.join(', ')} row in this run`
+                      : 'asked for and never reported added'}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -422,7 +501,20 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
           ))}
 
           <div style={{ padding: '20px 24px' }}>
-            {trace.steps.length === 0 ? (
+            {trace.steps.length === 0 && trace.truncated ? (
+              // Zero rows out of an INCOMPLETE read says nothing about the run's
+              // instrumentation — the read never got far enough to have an opinion.
+              // The MEAL-122 sentence below would flatly contradict the banner above
+              // (count 5, read 0 is reachable: runs are pruned between the count and
+              // the read), and asserting "no steps at all" off a failed read is the
+              // exact confusion this endpoint exists to refuse.
+              <p style={{ fontSize: '13px', color: '#92400e', margin: 0, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px' }}>
+                No step rows arrived in this read, and the read was incomplete — see the banner above.
+                That is a fact about the READ, not about the run: this says nothing either way about
+                whether the run reported steps, so do not read it as the MEAL-122 blind spot and do not
+                read it as an idle run. Re-open the trace.
+              </p>
+            ) : trace.steps.length === 0 ? (
               <p style={{ fontSize: '13px', color: '#92400e', margin: 0, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px' }}>
                 This run reported no steps at all. That is a statement about instrumentation, not about
                 the run: the parallel and pre-search add pools emit no per-item rows (MEAL-122, on for
@@ -433,6 +525,28 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
               </p>
             ) : (
               <div style={{ overflowX: 'auto' }}>
+                {/* Above the table, like every other qualification on this screen: the
+                    misreading is "the last row is where the trace ends". */}
+                {trace.steps.length > RENDER_CAP && !renderAll && (
+                  <div style={{ ...WARN, margin: '0 0 12px' }}>
+                    Drawing the first {RENDER_CAP} of {trace.steps.length} step rows. The API returned all{' '}
+                    {trace.steps.length} — nothing was dropped from the read — but {trace.steps.length} rows
+                    of table would hang this tab, so the TABLE stops at seq{' '}
+                    {trace.steps[RENDER_CAP - 1]?.seq}. The rest are in the raw response:{' '}
+                    <code>GET /api/admin/automation-runs/{trace.run.id}</code>.{' '}
+                    <button
+                      onClick={() => setRenderAll(true)}
+                      style={{ ...CONTROL, cursor: 'pointer', padding: '2px 8px', fontSize: '12px' }}
+                    >
+                      Draw all {trace.steps.length} rows
+                    </button>
+                  </div>
+                )}
+                {trace.steps.length > RENDER_CAP && renderAll && (
+                  <div style={{ ...WARN, margin: '0 0 12px' }}>
+                    Drawing all {trace.steps.length} step rows at your request. Expect this tab to be slow.
+                  </div>
+                )}
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '860px' }}>
                   <thead>
                     <tr style={{ textAlign: 'left', color: '#888', fontSize: '12px' }}>
@@ -447,7 +561,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {trace.steps.map((s) => {
+                    {(renderAll ? trace.steps : trace.steps.slice(0, RENDER_CAP)).map((s) => {
                       const detail = s.detail ? JSON.stringify(s.detail) : '';
                       const isFirstBad = first?.kind === 'failed' && first.seq === s.seq;
                       return (

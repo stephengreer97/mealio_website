@@ -14,9 +14,11 @@ import { log } from '@/lib/logger';
 // Response shape:
 //   {
 //     days, since, storeId, filter, limit,
-//     runs: [ { …run row as stored…, concern: { abandoned, failed, partialAdds, clean } } ],
-//     listMaybeTruncated,   // there are more matching runs than this page shows
-//     caveats: string[],    // what this list structurally cannot show
+//     runs: [ { …run row as stored…, concern: { running, abandoned, failed, partialAdds, clean } } ],
+//     listMaybeTruncated,    // there are more matching runs than this page shows
+//     partialAddsFiltered,   // false when the `partial_adds` migration is not applied
+//     inFlight,              // runs in the grace band: RUNNING, not ABANDONED
+//     caveats: string[],     // what this list structurally cannot show
 //   }
 //
 // Admin-only: run rows carry a user_id and the trace behind them carries `detail`
@@ -61,14 +63,53 @@ const RUN_FIELDS =
  * therefore be filtered out by the very query meant to find it. `outcome.is.null`
  * is what puts it back. (`tests/helpers/supabase-mock.ts` models this correctly,
  * which is how the omission was caught rather than shipped.)
- *
- * Not included: a 'success' that added fewer items than requested. PostgREST cannot
- * compare two columns without a computed column or an RPC, so `partialAdds` is
- * computed per row after the fetch and reported in `caveats` as a gap in the
- * filter. Adding a generated column for it is a migration, and this route has to
- * work without one.
  */
-const NOT_CLEAN = 'status.eq.started,outcome.is.null,outcome.neq.success';
+const NOT_CLEAN_TERMS = ['status.eq.started', 'outcome.is.null', 'outcome.neq.success'] as const;
+
+/**
+ * The fourth term: a 'success' that added fewer items than it was asked for.
+ *
+ * PostgREST cannot compare two columns in a filter and cannot ORDER BY the
+ * difference, so this is only expressible against a column that already holds the
+ * answer — `partial_adds`, the generated column in
+ * `supabase/migrations/20260807000001_automation_runs_drilldown_index.sql`.
+ *
+ * The gap it closes is not cosmetic. Without it, a selector regression that makes
+ * every run at a store add one fewer item than requested while still reporting
+ * `outcome = 'success'` leaves the default failing list EMPTY. The documented
+ * workaround — `filter=all` plus the `PARTIAL` badge — reads a page of the most
+ * recent runs of any kind, so at a store doing hundreds of runs a day the broken
+ * ones arrive diluted into a sample of mostly-clean rows and read as noise.
+ *
+ * DEGRADES RATHER THAN 400s. Only Stephen can apply a migration, so this route
+ * must answer correctly before it has been applied: PostgREST rejects a filter
+ * over a column that does not exist with `42703`, and the retry below drops this
+ * one term and restores the pre-migration caveat instead of failing the request.
+ * `partialAdds` is computed per row from `items_added`/`items_requested` either
+ * way, so the badge is right in both worlds — the only thing the column changes is
+ * whether those rows are FOUND.
+ */
+const PARTIAL_ADDS_TERM = 'partial_adds.is.true';
+
+const NOT_CLEAN = [...NOT_CLEAN_TERMS, PARTIAL_ADDS_TERM].join(',');
+const NOT_CLEAN_WITHOUT_PARTIAL_ADDS = NOT_CLEAN_TERMS.join(',');
+
+/** Postgres `undefined_column`. What a filter over `partial_adds` returns pre-migration. */
+const UNDEFINED_COLUMN = '42703';
+
+/**
+ * Is this error PostgREST refusing a column it does not have?
+ *
+ * Narrow on purpose: the retry it gates re-runs the query, so it must not swallow
+ * anything else. The message check is a belt on the braces because the code is
+ * absent from some PostgREST error shapes, and it requires the column NAME so an
+ * unrelated `42703` still surfaces as a 500.
+ */
+function isMissingPartialAdds(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  const mentionsColumn = /partial_adds/.test(error.message ?? '');
+  return error.code === UNDEFINED_COLUMN || (mentionsColumn && /does not exist|column/i.test(error.message ?? ''));
+}
 
 export async function GET(request: NextRequest) {
   const admin = await requireAdmin(request);
@@ -98,20 +139,33 @@ export async function GET(request: NextRequest) {
     // makes a tie group at a page boundary able to repeat one row and skip
     // another, and there is no OFFSET. A tie inside one page just orders two rows
     // arbitrarily with respect to each other, which for a picker is nothing.
-    let query = supabase
-      .from('automation_runs')
-      .select(RUN_FIELDS)
-      .gte('started_at', since)
-      .order('started_at', { ascending: false })
-      .limit(limit);
-    if (storeId) query = query.eq('store_id', storeId);
-    if (filter === 'failing') query = query.or(NOT_CLEAN);
+    const runQuery = (predicate: string | null) => {
+      let query = supabase
+        .from('automation_runs')
+        .select(RUN_FIELDS)
+        .gte('started_at', since)
+        .order('started_at', { ascending: false })
+        .limit(limit);
+      if (storeId) query = query.eq('store_id', storeId);
+      if (predicate) query = query.or(predicate);
+      return query;
+    };
 
-    const { data, error } = await query;
+    // One attempt with the `partial_adds` term, and one without it if the column is
+    // not there yet. Two round trips only on a database that has not had the
+    // migration applied, and never for `filter=all`, which has no predicate at all.
+    let partialAddsFiltered = filter === 'failing';
+    let { data, error } = await runQuery(filter === 'failing' ? NOT_CLEAN : null);
+    if (error && filter === 'failing' && isMissingPartialAdds(error)) {
+      partialAddsFiltered = false;
+      ({ data, error } = await runQuery(NOT_CLEAN_WITHOUT_PARTIAL_ADDS));
+    }
     if (error) throw error;
 
     const rows = (data ?? []) as unknown as TraceRunRow[];
-    const runs = rows.map((run) => ({ ...run, concern: runConcern(run) }));
+    const now = Date.now();
+    const runs = rows.map((run) => ({ ...run, concern: runConcern(run, now) }));
+    const inFlight = runs.filter((r) => r.concern.running).length;
 
     // A full page is the only signal available that there are more: there is no
     // count here on purpose (an exact count over a 90-day window is a second
@@ -133,11 +187,23 @@ export async function GET(request: NextRequest) {
         'emit no step rows at all (MEAL-122), so filtering on a failing step would hide exactly ' +
         'the stores hardest to debug, and abandoned runs have no failing step to find.',
       );
-      caveats.push(
-        'A run that reports outcome=success while adding fewer items than requested is NOT in ' +
-        'this list — PostgREST cannot compare two columns. Use filter=all and look at the ' +
-        'partialAdds flag for those.',
-      );
+      if (!partialAddsFiltered) {
+        caveats.push(
+          'A run that reports outcome=success while adding fewer items than requested is NOT in ' +
+          'this list — PostgREST cannot compare two columns, and the `partial_adds` generated ' +
+          'column this route filters on has not been applied to this database yet. Use filter=all ' +
+          'and look at the partialAdds flag for those, and note that filter=all is a page of ' +
+          'recent runs of every kind, so at a busy store they arrive diluted.',
+        );
+      }
+      if (inFlight > 0) {
+        caveats.push(
+          `${inFlight} of these run(s) are still IN FLIGHT — started less than 15 minutes ago and ` +
+          `not yet reporting a finish. They carry concern.running, not concern.abandoned, and will ` +
+          `most likely complete normally. They sort to the top because the list is newest-first; do ` +
+          `not read them as a wave of abandonments.`,
+        );
+      }
     }
 
     return NextResponse.json({
@@ -148,6 +214,11 @@ export async function GET(request: NextRequest) {
       limit,
       runs,
       listMaybeTruncated,
+      // Whether "success with fewer items added than requested" was part of the
+      // server-side filter, or only computed per row after the fetch. False means
+      // the migration is not applied and the list has the gap the caveat describes.
+      partialAddsFiltered,
+      inFlight,
       caveats,
     });
   } catch (error) {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  RUNNING_GRACE_MS,
   isBlockedStep,
   isFailingStep,
   runConcern,
@@ -174,29 +175,87 @@ describe('what the trace says about its own coverage', () => {
 });
 
 describe('runConcern, the definition the list filters on', () => {
-  const clean = { status: 'completed', outcome: 'success', items_requested: 3, items_added: 3 };
+  const NOW = Date.parse('2026-08-01T10:05:00.000Z');
+  const clean = {
+    status: 'completed',
+    outcome: 'success',
+    items_requested: 3,
+    items_added: 3,
+    started_at: '2026-08-01T10:00:00.000Z',
+    completed_at: '2026-08-01T10:01:00.000Z',
+  };
 
   it('calls a completed full success clean and nothing else', () => {
-    expect(runConcern(clean)).toEqual({ abandoned: false, failed: false, partialAdds: false, clean: true });
+    expect(runConcern(clean, NOW))
+      .toEqual({ running: false, abandoned: false, failed: false, partialAdds: false, clean: true });
   });
 
   it('separates the three ways a run is not clean', () => {
-    expect(runConcern({ ...clean, status: 'started', outcome: null }))
+    expect(runConcern({ ...clean, status: 'started', outcome: null, completed_at: null, started_at: '2026-07-30T10:00:00.000Z' }, NOW))
       .toMatchObject({ abandoned: true, failed: false, clean: false });
-    expect(runConcern({ ...clean, outcome: 'failed' }))
+    expect(runConcern({ ...clean, outcome: 'failed' }, NOW))
       .toMatchObject({ abandoned: false, failed: true, clean: false });
-    expect(runConcern({ ...clean, items_added: 1 }))
+    expect(runConcern({ ...clean, items_added: 1 }, NOW))
       .toMatchObject({ partialAdds: true, failed: false, clean: false });
   });
 
   it('does not call a finished run with no outcome clean', () => {
     // The row PostgREST's `outcome <> 'success'` silently drops. If this returned
     // `clean: true` the UI would contradict the list it appears in.
-    expect(runConcern({ ...clean, status: 'completed', outcome: null }).clean).toBe(false);
+    expect(runConcern({ ...clean, status: 'completed', outcome: null }, NOW).clean).toBe(false);
   });
 
   it('cannot judge partial adds without both counts', () => {
-    expect(runConcern({ ...clean, items_requested: null }).partialAdds).toBe(false);
-    expect(runConcern({ ...clean, items_added: null }).partialAdds).toBe(false);
+    expect(runConcern({ ...clean, items_requested: null }, NOW).partialAdds).toBe(false);
+    expect(runConcern({ ...clean, items_added: null }, NOW).partialAdds).toBe(false);
+  });
+
+  // ── In flight is not abandoned ────────────────────────────────────────────
+  //
+  // `status = 'started'` alone says both "the engine wedged" and "come back in a
+  // minute", and the list orders newest-first, so the in-flight rows are the FIRST
+  // thing an operator sees. Calling a run that started five seconds ago ABANDONED
+  // turns a store's dinner-hour peak into an apparent wave of wedged engines —
+  // every one of which completes a minute later.
+
+  const inFlight = (secondsAgo: number) => runConcern(
+    { ...clean, status: 'started', outcome: null, completed_at: null,
+      started_at: new Date(NOW - secondsAgo * 1000).toISOString() },
+    NOW,
+  );
+
+  it('calls a run that started seconds ago running, not abandoned', () => {
+    expect(inFlight(5)).toMatchObject({ running: true, abandoned: false, clean: false });
+  });
+
+  it('calls a run still unfinished past the grace band abandoned, not running', () => {
+    expect(inFlight(RUNNING_GRACE_MS / 1000 + 60)).toMatchObject({ running: false, abandoned: true, clean: false });
+  });
+
+  it('flips at the grace band and not before it', () => {
+    // Both sides of the same boundary, so a cutoff quietly changed to zero or to
+    // infinity fails here rather than passing as "well, it's a band".
+    expect(inFlight(RUNNING_GRACE_MS / 1000 - 1).running).toBe(true);
+    expect(inFlight(RUNNING_GRACE_MS / 1000 + 1).running).toBe(false);
+  });
+
+  it('is not running once a completed_at has landed, whatever status says', () => {
+    // A half-applied completion write. It DID report finishing, so waiting on it is
+    // the wrong instruction — this is a row to look at.
+    expect(runConcern(
+      { ...clean, status: 'started', outcome: null, started_at: new Date(NOW - 5000).toISOString() },
+      NOW,
+    )).toMatchObject({ running: false, abandoned: true });
+  });
+
+  it('resolves an unknown age toward abandoned rather than toward running', () => {
+    // `started_at` is NOT NULL in the schema, so this is defensive — and it errs
+    // toward showing the row rather than relabelling it as something to wait for.
+    expect(runConcern({ ...clean, status: 'started', outcome: null, completed_at: null, started_at: null }, NOW))
+      .toMatchObject({ running: false, abandoned: true });
+  });
+
+  it('never calls a running run clean — it has not finished', () => {
+    expect(inFlight(5).clean).toBe(false);
   });
 });

@@ -128,23 +128,123 @@ describe('GET /api/admin/automation-runs', () => {
     expect(body.caveats.join(' ')).toMatch(/MEAL-122/);
   });
 
-  it('flags a success that added fewer items than requested, and admits it is not filtered on', async () => {
-    // PostgREST cannot compare two columns, so `items_added < items_requested` is
-    // computed per row rather than filtered on. A store whose partial adds all
-    // report success would be invisible in the failing list, so the response says
-    // so instead of leaving someone to discover it.
+  // ── Partial adds, before and after the migration ──────────────────────────
+  //
+  // A `success` that added fewer items than requested is a failure — a selector
+  // regression that drops one item per basket looks exactly like it — and PostgREST
+  // cannot express it, because it compares a column to a value and never to another
+  // column. `partial_adds`, the generated column in this branch's migration, is the
+  // only cheap way to filter on it. Only Stephen can apply a migration, so both
+  // worlds have to work: post-migration the rows are FOUND, pre-migration the route
+  // degrades to computing the flag per row and says the gap is there.
+
+  /** What PostgREST answers a filter over a column the database does not have. */
+  const UNDEFINED_COLUMN = {
+    data: null,
+    count: null,
+    error: { code: '42703', message: 'column automation_runs.partial_adds does not exist' },
+  };
+
+  const orPredicates = () =>
+    fakeDb.calls.filter((c) => c.table === 'automation_runs' && c.method === 'or').map((c) => String(c.args[0]));
+
+  it('finds a success that added fewer items than requested, once partial_adds exists', async () => {
+    // The regression the empty failing list used to hide entirely: every run at the
+    // store reports success and adds one fewer item than it was asked for.
+    asAdmin();
+    fakeDb.seed('automation_runs', [
+      runRow({ id: 'clean', outcome: 'success', items_requested: 4, items_added: 4, partial_adds: null }),
+      runRow({ id: 'partial', outcome: 'success', items_requested: 4, items_added: 3, partial_adds: true }),
+    ]);
+
+    const body = await (await list('', token)).json();
+    expect(ids(body)).toEqual(['partial']);
+    expect(body.partialAddsFiltered).toBe(true);
+    expect(body.runs[0].concern).toMatchObject({ partialAdds: true, failed: false, clean: false });
+    // Filtered server-side, so nothing tells the operator to go and look elsewhere.
+    expect(body.caveats.join(' ')).not.toMatch(/filter=all/);
+    expect(orPredicates()[0]).toContain('partial_adds.is.true');
+  });
+
+  it('degrades to the per-row flag and says so when partial_adds is not applied yet', async () => {
+    // The pre-migration database. A 42703 must not 500 the whole list — the other
+    // three ways a run is not clean are still findable, and only Stephen can apply
+    // the column.
+    asAdmin();
+    fakeDb.queue('automation_runs', UNDEFINED_COLUMN);
+    fakeDb.seed('automation_runs', [
+      runRow({ id: 'failed', outcome: 'failed' }),
+      runRow({ id: 'partial', outcome: 'success', items_requested: 4, items_added: 2 }),
+    ]);
+
+    const res = await list('', token);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // Still finds everything today's filter finds.
+    expect(ids(body)).toEqual(['failed']);
+    expect(body.partialAddsFiltered).toBe(false);
+    // And admits the one it cannot, rather than leaving an empty list to be read as
+    // "nothing is wrong".
+    expect(body.caveats.join(' ')).toMatch(/partialAdds/);
+    expect(body.caveats.join(' ')).toMatch(/filter=all/);
+    // Retried WITHOUT the term, not with it.
+    const predicates = orPredicates();
+    expect(predicates).toHaveLength(2);
+    expect(predicates[0]).toContain('partial_adds.is.true');
+    expect(predicates[1]).not.toContain('partial_adds');
+    expect(predicates[1]).toBe('status.eq.started,outcome.is.null,outcome.neq.success');
+  });
+
+  it('still flags partialAdds per row under filter=all, either way', async () => {
     asAdmin();
     fakeDb.seed('automation_runs', [
       runRow({ id: 'partial', outcome: 'success', items_requested: 4, items_added: 2 }),
     ]);
-
-    const failing = await (await list('', token)).json();
-    expect(ids(failing)).toEqual([]);
-    expect(failing.caveats.join(' ')).toMatch(/partialAdds/);
-
-    asAdmin();
     const all = await (await list('?filter=all', token)).json();
     expect(all.runs[0].concern).toMatchObject({ partialAdds: true, failed: false, clean: false });
+    // No predicate at all on filter=all, so the missing column cannot bite here.
+    expect(orPredicates()).toHaveLength(0);
+  });
+
+  it('500s on a column error that is not partial_adds rather than retrying blind', async () => {
+    asAdmin();
+    fakeDb.queue('automation_runs', {
+      data: null, count: null, error: { message: 'permission denied for table automation_runs' },
+    });
+    fakeDb.seed('automation_runs', [runRow({ outcome: 'failed' })]);
+    expect((await list('', token)).status).toBe(500);
+    // One attempt. A retry here would turn an authorisation failure into a list.
+    expect(orPredicates()).toHaveLength(1);
+  });
+
+  // ── In flight is not abandoned ────────────────────────────────────────────
+
+  it('calls a run that started seconds ago RUNNING, not abandoned', async () => {
+    // The list is newest-first, so in-flight runs are the FIRST rows on screen.
+    // Badging them abandoned reads as an engine wedging under load, and every one of
+    // them finishes a minute later.
+    asAdmin();
+    fakeDb.seed('automation_runs', [
+      runRow({ id: 'in-flight', status: 'started', outcome: null, completed_at: null, started_at: hoursAgo(0) }),
+      runRow({ id: 'wedged', status: 'started', outcome: null, completed_at: null, started_at: hoursAgo(3) }),
+    ]);
+
+    const body = await (await list('', token)).json();
+    expect(ids(body)).toEqual(['in-flight', 'wedged']);
+    const byId = Object.fromEntries(body.runs.map((r: any) => [r.id, r.concern]));
+    expect(byId['in-flight']).toMatchObject({ running: true, abandoned: false, clean: false });
+    expect(byId['wedged']).toMatchObject({ running: false, abandoned: true, clean: false });
+    // Counted and named, because they sort to the top.
+    expect(body.inFlight).toBe(1);
+    expect(body.caveats.join(' ')).toMatch(/IN FLIGHT/);
+  });
+
+  it('says nothing about in-flight runs when there are none', async () => {
+    asAdmin();
+    fakeDb.seed('automation_runs', [runRow({ id: 'wedged', status: 'started', outcome: null, started_at: hoursAgo(3) })]);
+    const body = await (await list('', token)).json();
+    expect(body.inFlight).toBe(0);
+    expect(body.caveats.join(' ')).not.toMatch(/IN FLIGHT/);
   });
 
   it('filter=all lists clean runs too — a good trace is the control case', async () => {
