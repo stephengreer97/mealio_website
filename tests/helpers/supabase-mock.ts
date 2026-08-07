@@ -77,6 +77,15 @@ function compareOrdered(a: any, b: any, ascending: boolean, nullsFirst: boolean)
 
 const isNull = (cell: any) => cell === null || cell === undefined;
 
+/**
+ * The values `is.` accepts in a PostgREST filter string, as the types they mean.
+ *
+ * Anything else is handed through unchanged — `is` over an arbitrary string is not
+ * a thing PostgREST does, and inventing a coercion for it would hide the mistake.
+ */
+const IS_WORDS = (raw: string): any =>
+  raw === 'null' ? null : raw === 'true' ? true : raw === 'false' ? false : raw;
+
 /** Postgres three-valued logic: a comparison against NULL never matches. */
 function matchesFilter(row: any, f: Filter): boolean {
   const cell = row[f.column];
@@ -109,7 +118,13 @@ function matchesFilter(row: any, f: Filter): boolean {
         .some((term) => {
           const [column, op, ...rest] = term.split('.');
           const raw = rest.join('.');
-          return matchesFilter(row, { op, column, value: op === 'is' && raw === 'null' ? null : raw });
+          // Inside a filter STRING every value arrives as text, so `is` needs the
+          // three words PostgREST gives it a meaning for coerced back. `is.true`
+          // over a boolean column compared as the string `'true'` never matches
+          // anything, which would make a filter term over a boolean column look
+          // like a term that finds nothing — the same class of laundered bug as the
+          // NULL sort above.
+          return matchesFilter(row, { op, column, value: op === 'is' ? IS_WORDS(raw) : raw });
         });
     default: return true;
   }

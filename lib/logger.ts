@@ -106,6 +106,13 @@ export type EventType =
   | 'ADMIN:CREATOR_VIABILITY'   // the onboarding importability measurement (MEAL-81)
   | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
   | 'ADMIN:AUTOMATION_FUNNEL'   // per-store add-to-cart reliability dashboard
+  // The per-run drilldown behind that dashboard (MEAL-143). Two events, because
+  // they fail for different reasons and only one of them means a lost trace:
+  // listing recent failing runs is a picker that can be retried, while a trace
+  // read that could not be completed is the case where someone is looking at a
+  // prefix of a run.
+  | 'ADMIN:AUTOMATION_RUNS'
+  | 'ADMIN:AUTOMATION_RUN_TRACE'
   | 'ADMIN:STATS'               // logged only when an aggregate read came back short (MEAL-127)
   | 'ADMIN:EMAIL_STATS'         // only ever logged when the funnel read came back short
   // Listing creators for the Sources tab. Kept apart from ADMIN:CREATOR_SOURCE so
