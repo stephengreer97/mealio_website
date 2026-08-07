@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   runViabilityCheck,
   SOURCE_PROBES,
+  unreadVideoReason,
   type ProbeResult,
   type SourceProbe,
 } from '@/lib/import/viability';
@@ -448,6 +449,39 @@ describe('import/viability — the YouTube probe needs a grant, and says so when
     // grant already tells us will be refused.
     expect(call.requests).toEqual([]);
     expect(calls).toEqual([CHANNELS_URL, UPLOADS_URL]);
+  });
+
+  /**
+   * MEAL-138 cold review, F4. The claim "a fact about the video" is only ever
+   * made about the video.
+   *
+   * It used to be a trailing else: every outcome that was not `missing-scope` or
+   * `unavailable` got that sentence when the text came back empty, `no-grant`
+   * included — where it is backwards, because `no-grant` means we hold no token
+   * and never looked. Correct only by accident of a guard forty lines away, so
+   * every outcome is answered outright and this is where that is checked.
+   */
+  it('never blames the video for something that is true of our access', () => {
+    // No token at all. The probe never gets here today, and the sentence must be
+    // right if it ever does.
+    expect(unreadVideoReason({ captions: 'no-grant', captionsDetail: null, text: '' })).toMatch(
+      /fact about our access/i,
+    );
+    expect(unreadVideoReason({ captions: 'no-grant', captionsDetail: null, text: '' })).not.toMatch(
+      /fact about the video/i,
+    );
+
+    // A detail-less refusal still reports rather than gates: `null` here used to
+    // fall through and let the classifier judge material we never read.
+    expect(unreadVideoReason({ captions: 'missing-scope', captionsDetail: null, text: 'short' })).toBeTruthy();
+
+    // The video's own emptiness, which is the one case the sentence is for.
+    expect(unreadVideoReason({ captions: 'none', captionsDetail: null, text: '  ' })).toMatch(
+      /fact about the video/i,
+    );
+    // And a video that was read gets no sentence at all — the gate judges it.
+    expect(unreadVideoReason({ captions: 'used', captionsDetail: null, text: 'plenty of text' })).toBeNull();
+    expect(unreadVideoReason({ captions: 'not-needed', captionsDetail: null, text: 'plenty of text' })).toBeNull();
   });
 
   it('measures the grant’s channel or none, never the one the creator’s link names', async () => {

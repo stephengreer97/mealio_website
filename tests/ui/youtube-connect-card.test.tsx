@@ -236,19 +236,32 @@ describe('YouTubeConnectCard — once connected', () => {
     fireEvent.click(await screen.findByRole('button', { name: /read my captions/i }));
 
     await waitFor(() => expect(calls.some((call) => call.url.endsWith('/connect'))).toBe(true));
-    // `captions` is its own reason and carries no consent to edit. The append
-    // value travelling with it is whatever it already was — asking to have
-    // captions read must not turn editing on, and must not turn it off either.
-    expect(calls.find((call) => call.url.endsWith('/connect'))?.body).toEqual({
-      appendOptIn: false,
-      captions: true,
-    });
+    // `captions` is its own reason and it answers *nothing* about editing: the
+    // field is absent, not `false`. Asking to have captions read must not turn
+    // editing on, and must not turn it off either — and a binary cannot say both,
+    // which is what the two versions of this assertion each got wrong in turn.
+    expect(calls.find((call) => call.url.endsWith('/connect'))?.body).toEqual({ captions: true });
   });
 
-  it('carries a granted append consent through a captions trip rather than withdrawing it', async () => {
-    // The callback withdraws append consent whenever the state cookie says
-    // false, so a captions request that forgot to carry the creator's existing
-    // `true` would silently revoke a permission they had granted.
+  /**
+   * MEAL-138 cold review, F1. **This test used to assert the bug.**
+   *
+   * It said a captions trip should carry the creator's existing `true` through,
+   * for a real reason: the callback withdrew consent whenever the cookie said
+   * `false`, so sending `false` silently revoked a permission they had granted.
+   * But the other value is worse. The captions trip is the one that grants
+   * `force-ssl`, so re-asserting `true` on it means a creator who ticked the
+   * append box on the connect form and then unticked the scope on Google's own
+   * granular screen — a state the code documents as reachable — has a button
+   * labelled "let Mealio read my captions" arm description editing on their
+   * channel. That click is the single act converting the channel from unwritable
+   * to written-to, under a panel whose small print says it does not.
+   *
+   * So the field is omitted, and the server treats absent as "not asked": no
+   * re-arming, no silent withdrawal. `tests/api/creator-youtube.test.ts` holds
+   * the other half — that the whole path leaves the append unarmed.
+   */
+  it('sends no answer about description editing on a captions trip, in either direction', async () => {
     const { calls } = harness(
       { ...CONNECTED, canWriteDescriptions: false, canReadCaptions: false, appendOptIn: true },
       (url) => (url.endsWith('/connect') ? json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' }) : null),
@@ -257,10 +270,11 @@ describe('YouTubeConnectCard — once connected', () => {
     fireEvent.click(await screen.findByRole('button', { name: /read my captions/i }));
 
     await waitFor(() => expect(calls.some((call) => call.url.endsWith('/connect'))).toBe(true));
-    expect(calls.find((call) => call.url.endsWith('/connect'))?.body).toEqual({
-      appendOptIn: true,
-      captions: true,
-    });
+    const body = calls.find((call) => call.url.endsWith('/connect'))?.body as Record<string, unknown>;
+    expect(body).toEqual({ captions: true });
+    // Spelled out, because `toEqual` treating an explicit `undefined` as absent
+    // is exactly the confusion this fix is about.
+    expect(Object.keys(body)).not.toContain('appendOptIn');
   });
 
   it('says nothing about captions once the permission is there', async () => {

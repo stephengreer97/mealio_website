@@ -1019,6 +1019,42 @@ export const MAX_CAPTION_BYTES = 512 * 1024;
 const CAPTION_CONTENT_TYPES = /text\/|application\/(octet-stream|x-subrip)/i;
 
 /**
+ * The clause that marks a caption failure the retry sweep must not repeat.
+ *
+ * Two kinds of caption failure end the same way whatever we do: a missing
+ * permission (every attempt is refused identically, and the fix is a creator
+ * granting it, not a clock) and a track we are certainly not going to be handed —
+ * a 403 that is about the video rather than the scope, or one over
+ * `MAX_CAPTION_BYTES`. Retrying either buys nothing and costs `captionsList` +
+ * `captionsDownload` quota per go, on top of a `lost` signal telling an operator
+ * a recipe is gone by hand when a permission would have fixed it.
+ *
+ * A phrase in the creator-facing sentence rather than a column, because the only
+ * thing carried as far as the poller's sweep is `creator_source_items.detail` —
+ * the same reason `CLAIM_DETAIL` is a sentinel string. `captionFailureIsFinal`
+ * is the one reader; nothing should match on this by hand.
+ */
+export const CAPTIONS_NO_AUTO_RETRY = 'is not tried again on its own';
+
+/**
+ * Whether a recorded failure detail is a caption failure another attempt cannot
+ * change (MEAL-138).
+ *
+ * Used by the poller's retry sweep, and deliberately conservative: an unmarked
+ * failure is retried, which is the direction that loses nothing.
+ */
+export function captionFailureIsFinal(detail: string | null | undefined): boolean {
+  return typeof detail === 'string' && detail.includes(CAPTIONS_NO_AUTO_RETRY);
+}
+
+/**
+ * The closing sentence on a caption failure that *is* worth another go —
+ * YouTube 5xx'd, the download timed out, the listing came back unusable.
+ */
+const CAPTIONS_RETRY_NOTE =
+  'The description was too short to read a recipe from on its own, so this one is worth another go.';
+
+/**
  * The sentence a creator reads when a video was skipped because we hold no
  * caption grant (MEAL-138).
  *
@@ -1031,8 +1067,8 @@ const CAPTION_CONTENT_TYPES = /text\/|application\/(octet-stream|x-subrip)/i;
 export const CAPTIONS_MISSING_SCOPE_DETAIL =
   'This video’s description was too short to read a recipe from, and its captions could not be read: ' +
   'this YouTube connection was not given permission to read captions. Nothing is wrong with the video. ' +
-  'Turn on “let Mealio read my captions” on the YouTube card in your creator portal and this video can ' +
-  'be imported from its transcript.';
+  'Turn on “let Mealio read my captions” on the YouTube card in your creator portal, then import this ' +
+  `video from your catalogue — it ${CAPTIONS_NO_AUTO_RETRY}.`;
 
 /** What a caption fetch ended as, and why. See `CaptionsOutcome`. */
 export type CaptionsResult =
@@ -1041,7 +1077,13 @@ export type CaptionsResult =
   | { status: 'none' }
   /** No `force-ssl` grant, so no video's captions are readable. A fact about us. */
   | { status: 'missing-scope'; detail: string }
-  /** YouTube answered, but with nothing readable. Transient or video-specific. */
+  /**
+   * YouTube answered, but with nothing readable.
+   *
+   * Two populations, and the `detail` says which: an outage worth another go, or
+   * a settled fact about the video — a non-scope 403, a track over the byte cap —
+   * marked with `CAPTIONS_NO_AUTO_RETRY` so the retry sweep leaves it alone.
+   */
   | { status: 'unavailable'; detail: string };
 
 export interface CaptionsOptions extends GoogleApiOptions {
@@ -1135,11 +1177,21 @@ export async function fetchCaptions(
         return { status: 'missing-scope', detail: CAPTIONS_MISSING_SCOPE_DETAIL };
       }
       const reason = typeof payload?.error?.message === 'string' ? ` ${payload.error.message}` : '';
+      // A 403 that is not about the scope is about the video: third-party
+      // contributions off, or a track marked non-downloadable. Deterministic, so
+      // it is marked final — the same request tomorrow is the same 403, and
+      // paying `captionsList` for it three times is 150 units to learn nothing.
+      // Every other status (5xx, 429, a network hiccup) really is worth another
+      // go, and says so.
+      const deterministic = listed.status === 403;
       return {
         status: 'unavailable',
         detail:
           `YouTube would not list the captions for this video (HTTP ${listed.status}).${reason} ` +
-          'The description was too short to read a recipe from on its own, so this one is worth another go.',
+          (deterministic
+            ? `The description was too short to read a recipe from on its own, and this answer ${CAPTIONS_NO_AUTO_RETRY}: ` +
+              'the video’s own caption settings are what refuse us, not a permission you can grant.'
+            : CAPTIONS_RETRY_NOTE),
       };
     }
 
@@ -1162,8 +1214,7 @@ export async function fetchCaptions(
       return {
         status: 'unavailable',
         detail:
-          'YouTube listed captions for this video but none of them could be downloaded. ' +
-          'The description was too short to read a recipe from on its own, so this one is worth another go.',
+          'YouTube listed captions for this video but none of them could be downloaded. ' + CAPTIONS_RETRY_NOTE,
       };
     }
 
@@ -1178,11 +1229,17 @@ export async function fetchCaptions(
       maxBytes: MAX_CAPTION_BYTES,
     });
     if (!downloaded.ok) {
+      // A track over `MAX_CAPTION_BYTES` is the same size on the next attempt.
+      // Marked final for that reason; a timeout or a network error is not.
+      const tooLarge = downloaded.reason === 'response-too-large';
       return {
         status: 'unavailable',
         detail:
           `This video’s captions could not be downloaded: ${downloaded.detail} ` +
-          'The description was too short to read a recipe from on its own, so this one is worth another go.',
+          (tooLarge
+            ? `The description was too short to read a recipe from on its own, and this video ${CAPTIONS_NO_AUTO_RETRY}: ` +
+              'the caption track is larger than Mealio will read however many times it is asked.'
+            : CAPTIONS_RETRY_NOTE),
       };
     }
 
@@ -1192,7 +1249,7 @@ export async function fetchCaptions(
       status: 'unavailable',
       detail:
         `Reading this video’s captions failed: ${err instanceof Error ? err.message : String(err)}. ` +
-        'The description was too short to read a recipe from on its own, so this one is worth another go.',
+        CAPTIONS_RETRY_NOTE,
     };
   }
 }

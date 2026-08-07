@@ -17,6 +17,7 @@ import {
   fetchOwnChannel,
   fetchVideoSnippet,
   fetchVideos,
+  captionFailureIsFinal,
   grantCanReadCaptions,
   isUploadsPageToken,
   listUploads,
@@ -816,9 +817,11 @@ describe('youtube — description first, captions second', () => {
     expect(document.text).toBe('short');
     // A bare 403 with nothing in the body is not evidence of a scope problem —
     // it could be a video whose owner disabled third-party caption access — so it
-    // reads as `unavailable`, which is retryable, rather than claiming a
-    // permission diagnosis it cannot support.
+    // reads as `unavailable` rather than claiming a permission diagnosis it
+    // cannot support. A 403 *is* deterministic, though, so it is marked as one
+    // the retry sweep should leave alone; see the retry describe below.
     expect(document.captions).toBe('unavailable');
+    expect(captionFailureIsFinal(document.captionsDetail)).toBe(true);
   });
 
   /** A caption list naming one uploaded English track, then `body` for the download. */
@@ -1067,6 +1070,98 @@ describe('youtube — a refused caption read is not a video without captions', (
     // captions, and must not throw its way into looking like one.
     expect(grantCanReadCaptions(null)).toBe(false);
     expect(grantCanReadCaptions(undefined)).toBe(false);
+  });
+});
+
+// ── Which caption failures are worth another go ──────────────────────────────
+
+/**
+ * MEAL-138 cold review, F3: a retry that cannot succeed is not a retry.
+ *
+ * The poller retries a `failed` item for three poll intervals from the first
+ * sighting of the video — 45 minutes. Every caption failure was landing in that
+ * sweep, and two kinds of them answer identically however often they are asked: a
+ * permission we were refused (fixed by a creator, on human time, long after the
+ * window) and a track we are certainly not being handed. Each go costs
+ * `captionsList` + `captionsDownload`, and the last one emits a `lost` signal
+ * telling an operator a recipe must be imported by hand — wrong for a missing
+ * permission, which one tick fixes.
+ *
+ * So the detail carries the mark, and `captionFailureIsFinal` is the only reader.
+ */
+describe('youtube — a caption failure says whether trying again could change it', () => {
+  const forbidden = (message: string, reason: string) =>
+    (async () =>
+      new Response(JSON.stringify({ error: { code: 403, message, errors: [{ reason, domain: 'youtube.caption' }] } }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+  it('marks a missing permission as one no retry can fix, and says what does', () => {
+    expect(captionFailureIsFinal(CAPTIONS_MISSING_SCOPE_DETAIL)).toBe(true);
+    // The creator is still told the fix, and now also that it will not happen by
+    // itself — the sweep used to promise a recovery it could not deliver.
+    expect(CAPTIONS_MISSING_SCOPE_DETAIL).toMatch(/read my captions/i);
+    expect(CAPTIONS_MISSING_SCOPE_DETAIL).toMatch(/import this video from your catalogue/i);
+  });
+
+  it('marks a 403 about the video as final: the same request is the same refusal', async () => {
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl: forbidden('The permissions associated with the request are not sufficient.', 'forbidden'),
+      lookup: publicLookup,
+    });
+
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(captionFailureIsFinal(result.detail)).toBe(true);
+    // 50 units a go on a shared 10,000/day budget, three goes per video, to be
+    // told the same thing about the same video settings.
+    expect(YOUTUBE_QUOTA.captionsList).toBe(50);
+  });
+
+  it('leaves an outage retryable, which is the half of `unavailable` that earns it', async () => {
+    const impl = (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(captionFailureIsFinal(result.detail)).toBe(false);
+    expect(result.detail).toMatch(/worth another go/i);
+  });
+
+  it('marks a track over the byte cap as final: it is the same size next time', async () => {
+    const { stream } = endlessBody(256 * 1024, 40);
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).includes('/captions?')) {
+        return new Response(
+          JSON.stringify({ items: [{ id: 'real-1', snippet: { trackKind: 'standard', language: 'en' } }] }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(stream, { headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl,
+      lookup: publicLookup,
+    });
+
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(captionFailureIsFinal(result.detail)).toBe(true);
+  });
+
+  it('treats an unmarked failure as retryable, because guessing wrong loses a recipe', () => {
+    expect(captionFailureIsFinal(null)).toBe(false);
+    expect(captionFailureIsFinal(undefined)).toBe(false);
+    expect(captionFailureIsFinal('The model timed out.')).toBe(false);
   });
 });
 

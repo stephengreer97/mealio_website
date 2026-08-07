@@ -5,6 +5,7 @@ import { MemoryImportCache } from '@/lib/import/cache';
 import { EXTRACTION_MODEL, GATE_MODEL, type StructuredCaller } from '@/lib/import/anthropic';
 import type { ImportTelemetry, SourceDocument } from '@/lib/import/types';
 import { formatTelemetry } from '@/lib/import/telemetry';
+import { captionFailureIsFinal, CAPTIONS_MISSING_SCOPE_DETAIL } from '@/lib/youtube';
 import {
   brokenCache,
   endlessBody,
@@ -833,7 +834,10 @@ describe('import/pipeline — a caller-supplied document', () => {
     text: 'Full recipe below!',
     recipeText: 'Full recipe below!',
     captions: 'missing-scope',
-    captionsDetail: 'This video’s captions could not be read: no permission. Turn on captions in your portal.',
+    // The real sentence, because two of the properties below are properties of
+    // it: what the creator reads, and the mark that keeps the poller's retry
+    // sweep off a refusal it cannot change (MEAL-138 cold review, F3).
+    captionsDetail: CAPTIONS_MISSING_SCOPE_DETAIL,
   });
 
   it('stops a video we were refused the captions of before the gate ever sees it', async () => {
@@ -855,7 +859,7 @@ describe('import/pipeline — a caller-supplied document', () => {
     expect(result.detail).not.toMatch(/link-in-bio/i);
   });
 
-  it('keeps it retryable, in the log and out of the cache, so granting the scope is enough', async () => {
+  it('keeps it out of the cache and out of the retry sweep, and greppable in the log', async () => {
     const call = recipeCaller();
     const first: any = await runImport(WATCH_URL, videoOptions({ call, document: refusedCaptionsDocument() }));
     expect(first.meta.cached).toBe(false);
@@ -868,6 +872,15 @@ describe('import/pipeline — a caller-supplied document', () => {
     // Once the scope is there the same URL imports, with no cache to evict.
     const granted: any = await runImport(WATCH_URL, videoOptions({ call, document: videoDocument() }));
     expect(granted.status).toBe('ok');
+
+    // And not swept. This used to claim "granting the scope is enough for the
+    // retry sweep to pick these up", which was never true: the window is three
+    // poll intervals from the first sighting of the *video*, 45 minutes, so a
+    // creator granting the permission that evening is long outside it — and
+    // inside it every attempt is the same refusal at 50 quota units, ending in a
+    // `lost` signal that tells an operator to import by hand. Granting the
+    // permission and re-importing from the catalogue is the recovery.
+    expect(captionFailureIsFinal(first.detail)).toBe(true);
 
     // Greppable, and distinct from `gate-no`. This is the log half of the
     // "a missing scope must be distinguishable" requirement.
@@ -883,13 +896,20 @@ describe('import/pipeline — a caller-supplied document', () => {
       WATCH_URL,
       videoOptions({
         call,
-        document: { ...refusedCaptionsDocument(), captions: 'unavailable', captionsDetail: 'YouTube would not list them (HTTP 503).' },
+        document: {
+          ...refusedCaptionsDocument(),
+          captions: 'unavailable',
+          captionsDetail: 'YouTube would not list them (HTTP 503). So this one is worth another go.',
+        },
       }),
     );
 
     expect(result.status).toBe('rejected');
     expect(result.stage).toBe('fetch');
     expect(result.reason).toBe('captions-unavailable');
+    // Unmarked, so this one *is* swept: an outage is the half of `unavailable`
+    // that another attempt can change.
+    expect(captionFailureIsFinal(result.detail)).toBe(false);
   });
 
   it('lets a video that genuinely has no captions be gated, which is the correct answer for it', async () => {

@@ -25,8 +25,15 @@ import { useEffect, useState } from 'react';
  *
  * What the copy has to be honest about, and is: granting captions shows the
  * creator Google's own sentence, which mentions editing. Mealio still edits
- * nothing — `youtube_append_opt_in` gates every write server-side and no consent
- * trip sets it — and the card says so at the moment the creator is deciding.
+ * nothing — `youtube_append_opt_in` gates every write server-side, and the
+ * captions trip carries no answer to that question in either direction, so it
+ * cannot set it (see `connect`, and the consent decision in the callback). The card
+ * says so at the moment the creator is deciding, and that is only true because
+ * the request omits the field: sending the stored `true` made this button the one
+ * act that armed the append.
+ *
+ * The trip that *does* ask about editing is the append tick itself, which sends
+ * `write: true` and says so on the button.
  */
 
 interface Status {
@@ -141,23 +148,33 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
    *
    * `captions` is the second reason to ask for the same scope (MEAL-138), sent on
    * its own so the server logs which question produced the consent screen. It
-   * never implies `write`: the append consent travelling with this request is
-   * whatever it already was, so asking to have captions read cannot turn
-   * description editing on, and cannot turn it off either.
+   * carries **no answer at all** about description editing: the field is omitted,
+   * not set to the stored value and not set to `false`.
+   *
+   * Both of the other two were wrong, in opposite directions. `false` withdrew a
+   * consent the creator had really given, without telling them. The stored value
+   * re-asserted it — and since this trip is what grants `force-ssl`, a creator who
+   * had ticked the box on the connect form and then unticked the scope on Google's
+   * own screen would have a button labelled "read my captions" turn description
+   * editing from impossible into live. Omitted, the callback touches the flag on
+   * neither side, and the small print in the amber panel below is true.
    */
   const connect = async (options: { write?: boolean; captions?: boolean } = {}) => {
     setBusy(true);
     setError('');
+    // The tick travels with the request that starts the round trip, so the
+    // server stores what was on screen rather than trusting a later call — but
+    // only when this trip is the one asking. A captions trip asks nothing about
+    // editing and so answers nothing.
+    const payload: { appendOptIn?: boolean; captions?: true } = {};
+    if (options.captions) payload.captions = true;
+    if (options.write !== undefined) payload.appendOptIn = options.write;
+    else if (!options.captions) payload.appendOptIn = appendConsent;
     try {
       const res = await fetch('/api/creator/youtube/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-        // The tick travels with the request that starts the round trip, so the
-        // server stores what was on screen rather than trusting a later call.
-        body: JSON.stringify({
-          appendOptIn: options.write ?? appendConsent,
-          ...(options.captions ? { captions: true } : {}),
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok || !data.url) {
@@ -237,9 +254,12 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
    * in the editor above (MEAL-94) and this appears.
    *
    * The consent tick stays part of *connecting* rather than waiting for a
-   * connection to exist: the Google screen asks for the write scope either way,
-   * so a "Connect YouTube" button with no tick beside it would acquire
-   * description-write access without ever naming it (MEAL-74).
+   * connection to exist, but the reason is no longer the one written here until
+   * this ticket. Since `8aec421` the Google screen asks for the write scope only
+   * when a tick asks for it, so a plain "Connect YouTube" acquires nothing but
+   * read — the tick is offered up front because it is the same question, asked
+   * once, before there is a connection to ask it about, and because a creator who
+   * wants the link added should not have to connect and then come back for it.
    *
    * Not applied when embedded. There the creator has just picked YouTube from a
    * dropdown, which is the same statement the link was standing in for, made
@@ -388,9 +408,19 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
                 said only "Connect YouTube" would be where that disappeared. */}
             {busy ? 'Opening Google…' : consent ? 'Connect YouTube — and edit descriptions' : 'Connect YouTube'}
           </button>
+          {/* Says which screen the creator is about to meet, and it differs by
+              the tick: unticked, Google asks only to view the account
+              (`youtube.readonly`), and the wider sentence about managing it
+              appears only when the box above has asked for the write scope.
+              Promising the wider one either way overstates what a plain connect
+              takes — which is the mistake this ticket was auditing for. */}
           <p className="text-[11px] text-gray-400 mt-2">
-            Google will ask for permission to manage your YouTube account. We use it to read your videos, and — only
-            if you ticked the box above — to add a link to a description.
+            {consent
+              ? 'Google will ask for permission to see, edit and delete your YouTube videos — that one permission is the ' +
+                'only way it lets us add a link to a description. We use it to read your videos and to add that link, ' +
+                'nothing else.'
+              : 'Google will ask for permission to view your YouTube account. We use it to read your videos’ titles and ' +
+                'descriptions.'}
           </p>
         </>
       )}

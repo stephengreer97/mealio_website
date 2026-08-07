@@ -69,11 +69,18 @@ export type Platform =
  *                        A fact about the video.
  *   - `missing-scope`  — the connection carries no `youtube.force-ssl` grant, so
  *                        `captions.list` is refused (HTTP 403) whatever the video
- *                        holds. A fact about our access, and fixable by asking.
- *   - `unavailable`    — YouTube answered, but not with a track we could read:
- *                        the owner disabled third-party caption access, the
- *                        download failed, the track exceeded its byte cap.
- *                        Transient or video-specific; worth another go.
+ *                        holds. A fact about our access, and fixable by asking —
+ *                        by asking, and by nothing else: it is not retried on a
+ *                        timer, because the creator granting the permission is
+ *                        the only thing that changes the answer.
+ *   - `unavailable`    — YouTube answered, but not with a track we could read.
+ *                        **Two populations, and only one of them earns a retry.**
+ *                        A 5xx or a timed-out download is worth another go; a
+ *                        non-scope 403 (third-party caption access off, a track
+ *                        marked non-downloadable) and a track over the byte cap
+ *                        end the same way every time and cost 250 quota units a
+ *                        go to find out. `captionFailureIsFinal` in `lib/youtube`
+ *                        is what tells the two apart downstream.
  */
 export type CaptionsOutcome = 'not-needed' | 'no-grant' | 'used' | 'none' | 'missing-scope' | 'unavailable';
 
