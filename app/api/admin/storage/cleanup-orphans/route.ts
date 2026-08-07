@@ -7,6 +7,19 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Matches the sibling storage jobs (`backfill-hashes`, `backfill-photos`), which is
+ * the ceiling this one has always needed and never declared.
+ *
+ * Realistically this is a handful of listing pages plus one paged read per
+ * reference source, well inside the default. It is declared because of WHERE a
+ * timeout would land: the delete batches run before `invalidateHashes`, so a
+ * request cut off in between has destroyed objects whose `photo_hashes` rows still
+ * point at them — MEAL-132's poisoning, in place, with no response body to say so.
+ * Re-running the sweep clears it, but only if somebody knows to.
+ */
+export const maxDuration = 300;
+
 const BASE_URL = 'https://etaracmlewdvzpcjrgru.supabase.co/storage/v1/object/public/meal-photos/';
 
 /**
@@ -761,6 +774,15 @@ export async function POST(request: NextRequest) {
      * The bucket listing was read to its end. Always true on a 200 now that the
      * listing is paged and Gate 1 refuses when it is not — it is a guarantee here
      * rather than the guess it used to be.
+     *
+     * One seam was considered and left alone: `fetchAllPages` reads
+     * `data: null, error: null` as a short page, i.e. the end of the bucket, and
+     * `lib/paged-select.ts` records that a 414 arrives in exactly that shape
+     * (MEAL-112). A 414 mid-walk would therefore end the listing early and be
+     * reported as complete. It cannot happen on this call — the URI is a constant
+     * length, with no `.in()` filter growing it — and if it somehow did, the missing
+     * objects are objects this run does not delete. Under-reclaiming, not
+     * over-deleting.
      */
     objectListComplete: listing.complete,
     // Kept, and no longer vestigial: it is now the exact negation of

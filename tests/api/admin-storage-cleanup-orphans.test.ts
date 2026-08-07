@@ -645,6 +645,25 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
       expect(bucket.removed).toEqual([]);
     });
 
+    it('refuses to read a number as a timestamp rather than guessing at its unit', async () => {
+      // `toEpochMs` takes strings only, and this is the reason. PostgREST renders a
+      // `timestamptz` as a string, so a number arriving here means something has
+      // already broken upstream — but if it were accepted, epoch SECONDS would be
+      // read as epoch milliseconds, put this object in 1970, and make a photo
+      // uploaded a moment ago the oldest thing in the bucket. Unknown age keeps the
+      // object; a guess in the wrong unit deletes it.
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/epoch-seconds.jpg', size: 10, createdAt: Math.floor(Date.now() / 1000) },
+      ];
+
+      const body = await (await run()).json();
+
+      expect(bucket.removed).toEqual([]);
+      expect(body.objectsTooNewToDelete).toBe(1);
+      expect(body.orphanCount).toBe(0);
+    });
+
     it('survives a sweep between the upload and the save, then is swept once abandoned', async () => {
       // The bug end to end, through the real upload route: the URL is handed out,
       // the sweep runs before the meal is saved, and the object must still be
@@ -703,6 +722,40 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
       expect(bucket.removed).toEqual([]);
     });
 
+    it('does not let force=true switch the grace window off along with the share ceiling', async () => {
+      // `force` is scoped to Gate 2 — a judgement call about a proportion — and the
+      // grace window is not a judgement, it is a fact about how old an object is. The
+      // two are easy to conflate because `force` is what the previous test's own
+      // error text tells an operator to reach for, and it is reached for on exactly
+      // the sweeps where MEAL-133 costs the most: the first pass over a bucket that
+      // has never been cleaned, where the share is over the ceiling and hundreds of
+      // objects go at once. Wiring `force` into `splitByAge` would reintroduce the
+      // bug silently, on the largest sweeps only, and every other test here would
+      // still pass — so this is the assertion that says the flag stops at Gate 2.
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/mid-attach.jpg', size: 100, createdAt: minutesAgo(2) },
+        ...Array.from({ length: 119 }, (_, i) => ({
+          name: `user-1/p-${String(i).padStart(3, '0')}.jpg`,
+          size: 100,
+          createdAt: minutesAgo(60 * 24 * 30),
+        })),
+      ];
+
+      const res = await run('?force=true');
+      const body = await res.json();
+
+      // The override did its job: Gate 2 stood down and the old objects went.
+      expect(res.status).toBe(200);
+      expect(body.forced).toBe(true);
+      expect(body.deleted).toBe(119);
+      // And the object uploaded two minutes ago is still there.
+      expect(bucket.removed).not.toContain('user-1/mid-attach.jpg');
+      expect(bucket.has('user-1/mid-attach.jpg')).toBe(true);
+      expect(body.objectsTooNewToDelete).toBe(1);
+      expect(body.ageFilterAvailable).toBe(true);
+    });
+
     // ── Both shapes of the RPC ──────────────────────────────────────────────
     //
     // The migration that adds `created_at` can only be applied by hand, so this
@@ -741,6 +794,33 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
       expect(bucket.removed).toEqual([]);
       expect(body.ageFilterAvailable).toBe(true);
       expect(body.objectsTooNewToDelete).toBe(1);
+      expect(body.warnings).toBeUndefined();
+    });
+
+    it('tells the two shapes apart by the column being present, not by it having a value', async () => {
+      // The migration is detected on the KEY (`'created_at' in row`), never on the
+      // value, and this is the case where the difference shows. Every object here is
+      // post-migration with a null `created_at` — a real row, since
+      // `storage.objects.created_at` is nullable. Reading the VALUE instead would
+      // conclude the column is absent, fall back to the pre-migration path, and
+      // delete the whole bucket while reporting `ageFilterAvailable: true`'s opposite
+      // as if the migration had never been applied. The other null test cannot see
+      // this, because it seeds a second object with a real timestamp, which makes the
+      // column look present under either reading.
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/a.jpg', size: 10, createdAt: null },
+        { name: 'user-1/b.jpg', size: 10, createdAt: null },
+      ];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(bucket.removed).toEqual([]);
+      // The migration IS applied — unknown age, not an unmigrated function.
+      expect(body.ageFilterAvailable).toBe(true);
+      expect(body.objectsTooNewToDelete).toBe(2);
       expect(body.warnings).toBeUndefined();
     });
   });

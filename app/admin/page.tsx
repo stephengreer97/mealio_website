@@ -692,8 +692,18 @@ export default function AdminPage() {
   // `wouldBlock`/`blockReason` are the cleanup route's own verdict on its result
   // (MEAL-126): the orphan list is only worth acting on if the route considers it
   // trustworthy, and that has to be on screen next to the number.
-  const [storageDryRunResult, setStorageDryRunResult] = useState<{ orphanCount: number; estimatedBytes: number; paths: string[]; wouldBlock?: boolean; blockReason?: string } | null>(null);
-  const [storageDeleteResult, setStorageDeleteResult] = useState<{ deleted: number; estimatedBytes: number } | null>(null);
+  //
+  // MEAL-133: `warnings`, `ageFilterAvailable` and `objectsTooNewToDelete` are on
+  // the response too, and were being dropped on the floor here. The one that
+  // matters is `ageFilterAvailable: false` — the shape of the response until the
+  // `list_storage_objects` migration is applied by hand, in which no object's age
+  // is knowable and the sweep can still take a photo a user is part-way through
+  // attaching. The route says so; this is the screen an operator reads instead.
+  const [storageDryRunResult, setStorageDryRunResult] = useState<{ orphanCount: number; estimatedBytes: number; paths: string[]; wouldBlock?: boolean; blockReason?: string; warnings?: string[]; ageFilterAvailable?: boolean; objectsTooNewToDelete?: number } | null>(null);
+  // `hashInvalidationComplete` for the same reason (MEAL-132): a sweep that
+  // destroyed objects but could not prune their dedupe rows has left those bytes
+  // pointing at a dead URL for every future upload, and must not read as clean.
+  const [storageDeleteResult, setStorageDeleteResult] = useState<{ deleted: number; estimatedBytes: number; warnings?: string[]; hashInvalidationComplete?: boolean } | null>(null);
   const [storageError, setStorageError] = useState('');
   const [backfillLoading, setBackfillLoading] = useState(false);
   /**
@@ -1786,6 +1796,30 @@ export default function AdminPage() {
                       Delete will refuse: {storageDryRunResult.blockReason}
                     </div>
                   )}
+                  {/* The route's own warnings, same amber as the block notice above.
+                      `ageFilterAvailable: false` gets a headline of its own because it
+                      is the one an operator has to act on rather than read. */}
+                  {(storageDryRunResult.ageFilterAvailable === false || (storageDryRunResult.warnings?.length ?? 0) > 0) && (
+                    <div data-testid="storage-dry-run-warnings" style={{ margin: '0 0 8px', padding: '10px 12px', background: '#fff4e5', border: '1px solid #f0b37e', borderRadius: '6px', color: '#8a4b08' }}>
+                      {storageDryRunResult.ageFilterAvailable === false && (
+                        <div style={{ fontWeight: 600 }}>
+                          Age filter unavailable — a photo uploaded moments ago cannot be told from an
+                          abandoned one, and can still be deleted by this sweep.
+                        </div>
+                      )}
+                      {storageDryRunResult.warnings?.map((w, i) => (
+                        <div key={i} style={{ marginTop: '6px' }}>{w}</div>
+                      ))}
+                    </div>
+                  )}
+                  {(storageDryRunResult.objectsTooNewToDelete ?? 0) > 0 && (
+                    <div style={{ margin: '0 0 8px', color: '#555' }}>
+                      {storageDryRunResult.objectsTooNewToDelete} unreferenced object
+                      {storageDryRunResult.objectsTooNewToDelete !== 1 ? 's' : ''} held back as too new
+                      to delete, and not listed below. A later sweep will take them if nothing ever
+                      references them.
+                    </div>
+                  )}
                   {storageDryRunResult.orphanCount === 0 ? (
                     <div style={{ color: '#16a34a' }}>No orphans — storage is clean.</div>
                   ) : (
@@ -1798,8 +1832,13 @@ export default function AdminPage() {
                 </div>
               )}
               {storageDeleteResult && (
-                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#e6f9ed', borderRadius: '8px', fontSize: '13px', color: '#1a7a3a', fontWeight: 600 }}>
+                <div style={{ marginTop: '16px', padding: '14px 16px', background: storageDeleteResult.hashInvalidationComplete === false ? '#fff4e5' : '#e6f9ed', borderRadius: '8px', fontSize: '13px', color: storageDeleteResult.hashInvalidationComplete === false ? '#8a4b08' : '#1a7a3a', fontWeight: 600 }}>
                   Deleted {storageDeleteResult.deleted} file{storageDeleteResult.deleted !== 1 ? 's' : ''} (~{(storageDeleteResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB freed)
+                  {/* A sweep that could not prune its dedupe rows is not a clean sweep
+                      (MEAL-132), and the route says which. */}
+                  {storageDeleteResult.warnings?.map((w, i) => (
+                    <div key={i} style={{ marginTop: '6px', fontWeight: 400 }}>{w}</div>
+                  ))}
                 </div>
               )}
             </div>

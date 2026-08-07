@@ -35,8 +35,15 @@ export interface FakeObject {
    * HAS the column, which the route keeps; the column being absent from the
    * listing altogether is the pre-migration function, under which no age is
    * knowable at all. `rpcHasCreatedAt` is what models the second case.
+   *
+   * `number` is in the union even though PostgREST never renders a `timestamptz`
+   * as one, because `toEpochMs` deliberately REFUSES a number rather than guessing
+   * between epoch seconds and epoch milliseconds — a wrong guess of seconds reads
+   * as 1970 and deletes a live object, which is the one error that route may not
+   * make. A double that could not put a number on a listing row would leave that
+   * refusal with nothing holding it.
    */
-  createdAt?: string | null;
+  createdAt?: string | number | null;
 }
 
 /**
