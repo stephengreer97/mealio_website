@@ -253,7 +253,17 @@ export type SourceDocumentResolver = (
  * it — and the resolver falls back to that id alone.
  */
 export function createSourceDocumentResolver(deps: SyncDeps, videoIds: string[] = []): SourceDocumentResolver {
-  let channel: Promise<{ videos: Map<string, YouTubeVideo>; accessToken: string | null }> | null = null;
+  let channel: Promise<{
+    videos: Map<string, YouTubeVideo>;
+    accessToken: string | null;
+    /**
+     * What the grant actually carries (MEAL-138). Handed to the reader so a
+     * `captions.list` that is certain to be refused is never issued — 50 quota
+     * units per thin-description video, and a `missing-scope` answer that does
+     * not have to be inferred from an error body.
+     */
+    scopes: readonly string[] | null;
+  }> | null = null;
   /** Instagram and TikTok reduce to a document per item id at listing time. */
   let instagram: Promise<Map<string, SourceDocument>> | null = null;
   let tiktok: Promise<Map<string, SourceDocument>> | null = null;
@@ -261,7 +271,7 @@ export function createSourceDocumentResolver(deps: SyncDeps, videoIds: string[] 
   return async (creator, source, item) => {
     if (source === 'youtube') {
       channel ??= (async () => {
-        const empty = { videos: new Map<string, YouTubeVideo>(), accessToken: null };
+        const empty = { videos: new Map<string, YouTubeVideo>(), accessToken: null, scopes: null };
         // A grant, not a link. `playlistItems.list` and `videos.list` are both
         // authenticated calls now, so an unconnected creator has no read path at
         // all — where the uploads feed used to give description-only import for
@@ -292,13 +302,19 @@ export function createSourceDocumentResolver(deps: SyncDeps, videoIds: string[] 
               .map((video) => [video.videoId, video] as const),
           ),
           accessToken: token,
+          scopes: connection?.scopes ?? null,
         };
       })();
 
-      const { videos, accessToken } = await channel;
+      const { videos, accessToken, scopes } = await channel;
       const video = videos.get(item.itemId);
       if (!video) return null;
-      return youtubeSourceDocument(video, { accessToken, fetchImpl: platformFetch(deps), lookup: deps.fetchOptions?.lookup });
+      return youtubeSourceDocument(video, {
+        accessToken,
+        scopes,
+        fetchImpl: platformFetch(deps),
+        lookup: deps.fetchOptions?.lookup,
+      });
     }
 
     if (source === 'instagram') {

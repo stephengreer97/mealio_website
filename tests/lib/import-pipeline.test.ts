@@ -816,4 +816,97 @@ describe('import/pipeline — a caller-supplied document', () => {
     expect(first.meta.cached).toBe(false);
     expect(second.meta.cached).toBe(true);
   });
+
+  /**
+   * MEAL-138. A thin-description video whose captions we were refused.
+   *
+   * The document is a short description and nothing else, so the gate rejects it
+   * `no-content` — "too little readable text ... link-in-bio and landing pages
+   * look like this" — at `stage: 'gate'`, which `admin-sync` records as
+   * **`rejected`**: a verdict on the post, permanent, never retried. A permission
+   * we had not asked for was being written down as a fact about a creator's
+   * video, in a sentence about landing pages, on a row nothing would look at
+   * again. So it has to stop before the gate.
+   */
+  const refusedCaptionsDocument = (): SourceDocument => ({
+    ...videoDocument(),
+    text: 'Full recipe below!',
+    recipeText: 'Full recipe below!',
+    captions: 'missing-scope',
+    captionsDetail: 'This video’s captions could not be read: no permission. Turn on captions in your portal.',
+  });
+
+  it('stops a video we were refused the captions of before the gate ever sees it', async () => {
+    const call = recipeCaller();
+    const result: any = await runImport(WATCH_URL, videoOptions({ call, document: refusedCaptionsDocument() }));
+
+    expect(result.status).toBe('rejected');
+    // Not the gate. `stage: 'gate'` is what makes a rejection permanent, and
+    // being refused a permission is not a verdict on anybody's video.
+    expect(result.stage).toBe('fetch');
+    expect(result.stage).not.toBe('gate');
+    expect(result.reason).toBe('captions-missing-scope');
+    // The classifier is never asked. There is nothing for it to judge, and
+    // paying it to say "too short" about a video we did not read is the wrong
+    // answer twice.
+    expect(call.requests).toHaveLength(0);
+    // The creator's sentence survives to the row they will read.
+    expect(result.detail).toMatch(/captions could not be read/i);
+    expect(result.detail).not.toMatch(/link-in-bio/i);
+  });
+
+  it('keeps it retryable, in the log and out of the cache, so granting the scope is enough', async () => {
+    const call = recipeCaller();
+    const first: any = await runImport(WATCH_URL, videoOptions({ call, document: refusedCaptionsDocument() }));
+    expect(first.meta.cached).toBe(false);
+
+    // Cached, this would survive the creator granting the permission: the same
+    // URL would answer from a decision taken while we could not read it.
+    const again: any = await runImport(WATCH_URL, videoOptions({ call, document: refusedCaptionsDocument() }));
+    expect(again.meta.cached).toBe(false);
+
+    // Once the scope is there the same URL imports, with no cache to evict.
+    const granted: any = await runImport(WATCH_URL, videoOptions({ call, document: videoDocument() }));
+    expect(granted.status).toBe('ok');
+
+    // Greppable, and distinct from `gate-no`. This is the log half of the
+    // "a missing scope must be distinguishable" requirement.
+    const line = formatTelemetry(events[0]);
+    expect(line).toContain('reason="captions-missing-scope"');
+    expect(line).toContain('stage=fetch');
+    expect(formatTelemetry(events[0])).not.toContain('gate-no');
+  });
+
+  it('treats a caption call that merely failed the same way, because it is no more a verdict', async () => {
+    const call = recipeCaller();
+    const result: any = await runImport(
+      WATCH_URL,
+      videoOptions({
+        call,
+        document: { ...refusedCaptionsDocument(), captions: 'unavailable', captionsDetail: 'YouTube would not list them (HTTP 503).' },
+      }),
+    );
+
+    expect(result.status).toBe('rejected');
+    expect(result.stage).toBe('fetch');
+    expect(result.reason).toBe('captions-unavailable');
+  });
+
+  it('lets a video that genuinely has no captions be gated, which is the correct answer for it', async () => {
+    const call = recipeCaller();
+    const result: any = await runImport(
+      WATCH_URL,
+      videoOptions({
+        call,
+        // `none` means we were allowed to ask and the video has no track. That is
+        // a fact about the video, the gate is entitled to it, and a permanent
+        // `rejected` is the right record.
+        document: { ...refusedCaptionsDocument(), captions: 'none', captionsDetail: null },
+      }),
+    );
+
+    expect(result.status).toBe('rejected');
+    expect(result.stage).toBe('gate');
+    expect(result.reason).toBe('gate-no');
+  });
 });

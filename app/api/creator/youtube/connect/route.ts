@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { appendOptIn?: unknown } = {};
+  let body: { appendOptIn?: unknown; captions?: unknown } = {};
   try {
     body = await request.json();
   } catch {
@@ -45,6 +45,18 @@ export async function POST(request: NextRequest) {
   // consent to have videos read (MEAL-77). Anything other than a literal `true`
   // is a no — a missing field, a null, the string "false".
   const appendOptIn = body.appendOptIn === true;
+
+  /**
+   * The creator asked us to be able to read their captions (MEAL-138).
+   *
+   * The same Google scope as `appendOptIn` and deliberately a different request.
+   * It does **not** set `youtube_append_opt_in` — nothing on this route ever has
+   * — so a creator who wants transcripts read still has nothing on their channel
+   * edited, and the card that offers this says so. Before this existed, the only
+   * way to get captions read was to tick description-editing, which coupled two
+   * unrelated permissions and quietly under-imported for everyone who declined.
+   */
+  const captions = body.captions === true;
 
   const supabase = createServerSupabaseClient();
   const { data: creator } = await supabase
@@ -58,8 +70,9 @@ export async function POST(request: NextRequest) {
   }
 
   const nonce = randomBytes(16).toString('hex');
-  // The write scope rides on the tick, not on connecting.
-  const authUrl = youtubeAuthUrl(nonce, { write: appendOptIn });
+  // `force-ssl` rides on one of the two ticks, not on connecting. Either is
+  // enough to ask for it, and neither stands in for the other.
+  const authUrl = youtubeAuthUrl(nonce, { write: appendOptIn, captions });
   if (!authUrl) {
     return NextResponse.json({ error: 'YouTube connection is not configured on this deployment.' }, { status: 500 });
   }
@@ -81,7 +94,10 @@ export async function POST(request: NextRequest) {
     status: 'pending',
     userId: user.userId,
     email: user.email,
-    detail: `platform=youtube appendOptIn=${appendOptIn}`,
+    // `captions` is logged beside `appendOptIn` because they are separate
+    // requests for one scope, and "why did this creator see that consent screen"
+    // is otherwise unanswerable from the log.
+    detail: `platform=youtube appendOptIn=${appendOptIn} captions=${captions}`,
   });
 
   const response = NextResponse.json({ url: authUrl });

@@ -23,7 +23,7 @@ import { POST as CONNECT, STATE_COOKIE } from '@/app/api/creator/youtube/connect
 import { GET as CALLBACK } from '@/app/api/creator/youtube/callback/route';
 import { GET, PATCH, DELETE } from '@/app/api/creator/youtube/route';
 import { clearRevocationCache, createAccessToken } from '@/lib/tokens';
-import { YOUTUBE_WRITE_SCOPE } from '@/lib/youtube';
+import { YOUTUBE_FORCE_SSL_SCOPE } from '@/lib/youtube';
 
 /**
  * Connecting a channel, and the consent flag that comes with it (MEAL-74).
@@ -58,7 +58,7 @@ function grantRow(overrides: Record<string, unknown> = {}) {
     external_name: 'Chef Sarah',
     access_token: 'ya29-token',
     refresh_token: '1//super-secret-refresh',
-    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_WRITE_SCOPE}`,
+    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_FORCE_SSL_SCOPE}`,
     expires_at: '2099-01-01T00:00:00.000Z',
     broken_reason: null,
     broken_at: null,
@@ -124,9 +124,8 @@ describe('POST /api/creator/youtube/connect', () => {
     const body = await res.json();
     const url = new URL(body.url);
 
-    // Asking for write later would re-prompt every creator who already
-    // connected, so it is asked for on the first screen or not at all.
-    expect(url.searchParams.get('scope')).toContain(YOUTUBE_WRITE_SCOPE);
+    // The tick is what asks for it, and this request carries the tick.
+    expect(url.searchParams.get('scope')).toContain(YOUTUBE_FORCE_SSL_SCOPE);
     expect(url.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
   });
 
@@ -151,6 +150,48 @@ describe('POST /api/creator/youtube/connect', () => {
     expect(url.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
     expect(cookie?.value.split('.')).toHaveLength(3);
     expect(claims(cookie!.value)).toMatchObject({ sub: 'u1', creatorId: 'c1' });
+  });
+
+  /**
+   * MEAL-138. Two capabilities, one Google scope, and — until this — one request.
+   *
+   * The bug was not that `force-ssl` became incremental; that was right. It was
+   * that the *only* thing that ever asked for it was the description-editing
+   * tick, so a creator who declined to have their descriptions edited also
+   * declined, without being told, to have their captions read. Asking on the
+   * caption's own behalf is what uncouples them.
+   */
+  it('asks for the caption scope on the caption’s own account, with no consent to edit', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    const res = await CONNECT(
+      jsonRequest('/api/creator/youtube/connect', { token, body: { appendOptIn: false, captions: true } }),
+    );
+    const url = new URL((await res.json()).url);
+
+    expect(url.searchParams.get('scope')).toContain(YOUTUBE_FORCE_SSL_SCOPE);
+    // And nothing about this trip claims the creator wants their descriptions
+    // edited. The state cookie carries the answer the callback writes, and it
+    // must still be no.
+    const cookie = res.cookies.get(STATE_COOKIE);
+    expect(claims(cookie!.value)).toMatchObject({ appendOptIn: false });
+    // Answerable from the log: "why did this creator see that consent screen".
+    const detail = log.mock.calls.at(-1)?.[0].detail as string;
+    expect(detail).toContain('captions=true');
+    expect(detail).toContain('appendOptIn=false');
+  });
+
+  it('keeps a plain connect plain', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    // 8aec421's win, guarded from this ticket's fix: a creator who asked for
+    // neither capability must still meet the narrow consent screen.
+    const res = await CONNECT(jsonRequest('/api/creator/youtube/connect', { token, body: {} }));
+    const url = new URL((await res.json()).url);
+
+    expect(url.searchParams.get('scope')).not.toContain(YOUTUBE_FORCE_SSL_SCOPE);
   });
 
   it('treats anything other than a literal true as no consent', async () => {
@@ -202,7 +243,7 @@ describe('GET /api/creator/youtube/callback', () => {
       grant: {
         accessToken: 'ya29-token',
         refreshToken: '1//super-secret-refresh',
-        scopes: ['https://www.googleapis.com/auth/youtube.readonly', YOUTUBE_WRITE_SCOPE],
+        scopes: ['https://www.googleapis.com/auth/youtube.readonly', YOUTUBE_FORCE_SSL_SCOPE],
         expiresAt: '2026-08-02T12:00:00.000Z',
       },
     });
@@ -227,7 +268,7 @@ describe('GET /api/creator/youtube/callback', () => {
   it('writes the append consent from the state cookie, in both directions', async () => {
     exchangeYouTubeCode.mockResolvedValue({
       ok: true,
-      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_WRITE_SCOPE], expiresAt: null },
+      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_FORCE_SSL_SCOPE], expiresAt: null },
     });
     fetchOwnChannel.mockResolvedValue({ ok: true, channel: { id: CHANNEL_ID, title: 'Chef Sarah' } });
 
@@ -247,7 +288,7 @@ describe('GET /api/creator/youtube/callback', () => {
   function googleSaidYes() {
     exchangeYouTubeCode.mockResolvedValue({
       ok: true,
-      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_WRITE_SCOPE], expiresAt: null },
+      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_FORCE_SSL_SCOPE], expiresAt: null },
     });
     fetchOwnChannel.mockResolvedValue({ ok: true, channel: { id: CHANNEL_ID, title: 'Chef Sarah' } });
   }
@@ -321,9 +362,30 @@ describe('/api/creator/youtube', () => {
       channel: { id: CHANNEL_ID, title: 'Chef Sarah' },
       appendOptIn: true,
       canWriteDescriptions: true,
+      canReadCaptions: true,
     });
     expect(JSON.stringify(body)).not.toContain('super-secret-refresh');
     expect(JSON.stringify(body)).not.toContain('ya29-token');
+  });
+
+  /**
+   * MEAL-138. The visible-consequence half: a read-only grant means every video
+   * with a description under about 250 characters is unimportable, and until this
+   * field existed nothing anywhere said so — not the card, not the log, not the
+   * row the video was written to.
+   */
+  it('says when a connection cannot read captions, which is the whole silent failure', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_url: null, youtube_append_opt_in: false } });
+    // The ordinary grant since `force-ssl` became incremental: a creator who
+    // connected without ticking description editing.
+    fakeDb.queue('creator_platform_accounts', {
+      data: grantRow({ scopes: 'https://www.googleapis.com/auth/youtube.readonly' }),
+    });
+
+    const body = await (await GET(jsonRequest('/api/creator/youtube', { method: 'GET', token }))).json();
+
+    expect(body).toMatchObject({ connected: true, canReadCaptions: false, canWriteDescriptions: false });
   });
 
   /**

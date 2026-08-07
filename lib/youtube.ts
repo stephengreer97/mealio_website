@@ -20,7 +20,10 @@
  *      ingredients in the description; it is clean text and it beats ASR on
  *      quantities, which are exactly what a recipe needs. Captions are the
  *      fallback, they cost real quota, and they are only ever fetched for a video
- *      whose description is too thin for the gate to judge.
+ *      whose description is too thin for the gate to judge. When that fallback
+ *      cannot run, **it says why** — see `CaptionsResult` and MEAL-138. A
+ *      permission we were refused and a video that has no captions are different
+ *      facts, and they were the same value here for three weeks.
  *   3. **The channel id comes from the grant, and only from the grant.** A
  *      creator is never asked to type one, and no link they supply is ever read
  *      for it. A page can say anything; a token cannot.
@@ -37,7 +40,7 @@ import { providerSignal, readJsonCapped } from '@/lib/provider-fetch';
 import { checkRobots } from '@/lib/import/robots';
 import { safeFetch, type LookupFn, type SafeFetchOptions } from '@/lib/import/ssrf';
 import { loadConnection, type PlatformConnection } from '@/lib/platform-tokens';
-import type { SourceDocument } from '@/lib/import/types';
+import type { CaptionsOutcome, SourceDocument } from '@/lib/import/types';
 
 // ── Scopes ───────────────────────────────────────────────────────────────────
 
@@ -45,30 +48,44 @@ import type { SourceDocument } from '@/lib/import/types';
 export const YOUTUBE_READ_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 
 /**
- * The write scope, asked for only when the creator turns description-appending
- * on — never at connect time.
+ * `youtube.force-ssl`, which buys **two unrelated capabilities**, and is named
+ * for the scope rather than for either of them (MEAL-138).
  *
- * It used to be requested up front, on the reasoning that adding a scope later
- * re-prompts everyone who already connected. That is true, and it was the wrong
- * trade: Google words this scope as **"See, edit, and permanently delete your
- * YouTube videos, ratings, comments and captions"**, and every creator was
- * reading that sentence in order to use a feature that is off by default and
- * that most of them never turn on. The scariest line on the consent screen was
- * being shown to the people it did not apply to.
+ * It was called `YOUTUBE_WRITE_SCOPE`, and that name is how this went wrong.
+ * Google grants two things through this one scope:
  *
- * So it is incremental now. `include_granted_scopes=true` means the second grant
- * carries the first, and the extra consent trip falls on the minority who
- * actually enable appending — at the moment they ask for it, which is also when
- * the sentence makes sense to them.
+ *   1. **Editing a video's description** — MEAL-78 / MEAL-79, the append.
+ *   2. **Reading a video's captions** — `captions.list` and `captions.download`
+ *      accept exactly two scopes, this one and `youtubepartner`, which is
+ *      CMS/content-partner only. `youtube.readonly` is accepted by *neither*
+ *      (checked against Google's own reference, 2026-08-07). So this scope is
+ *      the only realistic path to a transcript, and there is no narrower one to
+ *      ask for: Google's granularity is the constraint, not our copy.
  *
- * Holding the scope still does **not** authorise using it:
- * `creators.youtube_append_opt_in` decides that, separately, and defaults to
- * false.
+ * 8aec421 made it incremental for the right reason — Google words it as "See,
+ * edit, and permanently delete your YouTube videos, ratings, comments and
+ * captions", and every creator was reading that in order to use a feature that
+ * is off by default — and took the caption path down with it, because a constant
+ * called "the write scope" reads like it only matters to writes. It does not.
+ * Which is why the name is now the scope's own.
+ *
+ * It stays incremental, and it is now asked for **on its own two reasons**: see
+ * `youtubeAuthUrl`. Holding it still authorises nothing by itself —
+ * `creators.youtube_append_opt_in` gates every write, separately, and defaults
+ * to false (`assertAppendAllowed`). Reading captions needs no second flag: the
+ * creator consented to having their videos read when they connected, and a
+ * caption is part of the video. What they had not been asked is whether Google
+ * may hand it to us.
  */
-export const YOUTUBE_WRITE_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
+export const YOUTUBE_FORCE_SSL_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
 
 /** What a plain connection asks for: reading the creator's own channel. */
 export const YOUTUBE_SCOPES = [YOUTUBE_READ_SCOPE];
+
+/** True when a stored grant can read captions at all. The one predicate; used everywhere. */
+export function grantCanReadCaptions(scopes: readonly string[] | null | undefined): boolean {
+  return Array.isArray(scopes) && scopes.includes(YOUTUBE_FORCE_SSL_SCOPE);
+}
 
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -87,15 +104,38 @@ export function youtubeRedirectUri(): string {
  * gets an access token and no refresh token, and the connection dies an hour
  * later with nothing to renew it — which is precisely the silent failure the
  * refresh sweep exists to make visible.
+ *
+ * `force-ssl` is requested for **either** of the two capabilities it grants, and
+ * a caller has to name which one it is asking on behalf of (MEAL-138):
+ *
+ *   - `write`    — the creator ticked "add the Mealio link to my descriptions".
+ *   - `captions` — the creator asked us to be able to read their captions, so a
+ *                  video whose description is too thin to judge can still be
+ *                  imported from its transcript.
+ *
+ * They are the same scope and deliberately not the same request. Either one on
+ * its own is enough to ask for it, and neither implies the other: `write`
+ * without `captions` is a creator who only wants the link added, `captions`
+ * without `write` is a creator who wants transcripts read and nothing on their
+ * channel touched — and `youtube_append_opt_in`, which no consent trip sets on
+ * its own, is what actually permits a write.
+ *
+ * There is no way to ask Google for only one of the two. What we can do is not
+ * make a creator claim to want the other, and not make them tick the write box
+ * to get the read.
  */
-export function youtubeAuthUrl(state: string, options: { write?: boolean } = {}): string | null {
+export function youtubeAuthUrl(
+  state: string,
+  options: { write?: boolean; captions?: boolean } = {},
+): string | null {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) return null;
 
-  // Only when they have asked to have descriptions edited. `include_granted_scopes`
-  // below is what makes this additive rather than a replacement, so a creator
-  // who already granted read keeps it.
-  const scopes = options.write ? [...YOUTUBE_SCOPES, YOUTUBE_WRITE_SCOPE] : YOUTUBE_SCOPES;
+  // Only when one of the two capabilities has actually been asked for.
+  // `include_granted_scopes` below is what makes this additive rather than a
+  // replacement, so a creator who already granted read keeps it.
+  const forceSsl = Boolean(options.write || options.captions);
+  const scopes = forceSsl ? [...YOUTUBE_SCOPES, YOUTUBE_FORCE_SSL_SCOPE] : YOUTUBE_SCOPES;
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -306,6 +346,16 @@ export const YOUTUBE_QUOTA = {
   playlistItemsList: 1,
   videosList: 1,
   videosUpdate: 50,
+  /**
+   * The caption pair, named here for the first time (MEAL-138) because the
+   * numbers are the argument for checking the grant's scopes *before* calling.
+   * A `captions.list` we already know will be refused is 50 units bought for a
+   * 403, and on a forty-video sync of a channel that writes short descriptions
+   * that is 2,000 units of a shared 10,000/day budget spent learning one thing
+   * we could have read off the connection row.
+   */
+  captionsList: 50,
+  captionsDownload: 200,
 } as const;
 
 // ── The uploads playlist ─────────────────────────────────────────────────────
@@ -969,16 +1019,87 @@ export const MAX_CAPTION_BYTES = 512 * 1024;
 const CAPTION_CONTENT_TYPES = /text\/|application\/(octet-stream|x-subrip)/i;
 
 /**
- * Captions for one video, as plain text.
+ * The sentence a creator reads when a video was skipped because we hold no
+ * caption grant (MEAL-138).
+ *
+ * Exported so the reader, the pipeline, the viability probe and the portal card
+ * all quote one string rather than four that can drift — and so a test can
+ * assert the creator is told the thing that would fix it, which is the whole
+ * point of it existing. It names the fix, not the scope: "force-ssl" is not a
+ * sentence anybody outside this file can act on.
+ */
+export const CAPTIONS_MISSING_SCOPE_DETAIL =
+  'This video’s description was too short to read a recipe from, and its captions could not be read: ' +
+  'this YouTube connection was not given permission to read captions. Nothing is wrong with the video. ' +
+  'Turn on “let Mealio read my captions” on the YouTube card in your creator portal and this video can ' +
+  'be imported from its transcript.';
+
+/** What a caption fetch ended as, and why. See `CaptionsOutcome`. */
+export type CaptionsResult =
+  | { status: 'used'; text: string }
+  /** The grant can read captions and this video has none. A fact about the video. */
+  | { status: 'none' }
+  /** No `force-ssl` grant, so no video's captions are readable. A fact about us. */
+  | { status: 'missing-scope'; detail: string }
+  /** YouTube answered, but with nothing readable. Transient or video-specific. */
+  | { status: 'unavailable'; detail: string };
+
+export interface CaptionsOptions extends GoogleApiOptions {
+  /**
+   * The scopes the stored grant actually carries, when the caller knows them.
+   *
+   * Supplied, this is a pre-flight: no `force-ssl` means `captions.list` will be
+   * refused whatever the video holds, so the call is not made at all — 50 quota
+   * units not spent on a 403 (see `YOUTUBE_QUOTA.captionsList`), and, more to the
+   * point, a `missing-scope` answer that is certain rather than inferred from an
+   * error body.
+   *
+   * Omitted, the 403 is read instead. Both paths exist because the stored list
+   * can be *stale*: a creator can revoke a scope from their Google account
+   * without telling us, and then the row says force-ssl and Google says 403. The
+   * two must reach the same answer, so neither is allowed to be the only check.
+   */
+  scopes?: readonly string[] | null;
+}
+
+/**
+ * Whether a 403 from a captions call is Google saying "your token lacks the
+ * scope" rather than "this video's captions are not yours to read".
+ *
+ * Both are 403 and an operator does something different about each: the first is
+ * fixed by asking the creator for a permission, the second is a property of the
+ * video (third-party contributions off, a track marked non-downloadable) and
+ * asking would achieve nothing. Google says which, three different ways
+ * depending on the vintage of the endpoint, so all three are read.
+ */
+function isInsufficientScope(payload: Record<string, any> | null): boolean {
+  const error = payload?.error;
+  if (!error) return false;
+  if (error.status === 'PERMISSION_DENIED' && /insufficient/i.test(String(error.message ?? ''))) return true;
+  if (/insufficient (authentication scopes|permission)/i.test(String(error.message ?? ''))) return true;
+  const reasons: string[] = [
+    ...(Array.isArray(error.errors) ? error.errors.map((e: any) => String(e?.reason ?? '')) : []),
+    ...(Array.isArray(error.details) ? error.details.map((d: any) => String(d?.reason ?? '')) : []),
+  ];
+  return reasons.some((reason) => /^(insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT)$/i.test(reason));
+}
+
+/**
+ * Captions for one video.
  *
  * Owner-only: `captions.list` and `captions.download` both need the channel
- * owner's grant, which is the reason this ticket exists. An uploaded track is
- * preferred over an auto-generated one — ASR is materially worse on ingredient
- * names, which is the one thing a recipe cannot afford to get wrong.
+ * owner's grant, and both accept only `youtube.force-ssl` or the
+ * partner-programme scope — never `youtube.readonly`. That is the reason this
+ * function has to be able to say *why* it came back with nothing. An uploaded
+ * track is preferred over an auto-generated one — ASR is materially worse on
+ * ingredient names, which is the one thing a recipe cannot afford to get wrong.
  *
- * Returns null rather than throwing for every failure: a video with no captions
- * is ordinary, and a caption fetch that fails must degrade to "we have the
- * description" rather than losing the import.
+ * **It returns a reason rather than `null` (MEAL-138).** It used to return
+ * `string | null`, which made "this video has no captions" and "we are not
+ * allowed to read this video's captions" the same value — so a video skipped for
+ * want of a permission was recorded, shown and permanently marked as a video
+ * with nothing in it. Never throws, either way: a caption failure must degrade
+ * to "we have the description", never lose the import.
  *
  * The *download* goes through `safeFetch`, unlike the other Google calls in
  * this file. Not for SSRF — the host is fixed — but for the two caps it is the
@@ -990,19 +1111,43 @@ const CAPTION_CONTENT_TYPES = /text\/|application\/(octet-stream|x-subrip)/i;
 export async function fetchCaptions(
   videoId: string,
   accessToken: string,
-  options: GoogleApiOptions = {},
-): Promise<string | null> {
+  options: CaptionsOptions = {},
+): Promise<CaptionsResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
+
+  // Pre-flight, when the caller told us what the grant holds. Certain, free, and
+  // it cannot be mistaken for a verdict on the video.
+  if (options.scopes != null && !grantCanReadCaptions(options.scopes)) {
+    return { status: 'missing-scope', detail: CAPTIONS_MISSING_SCOPE_DETAIL };
+  }
 
   try {
     const listed = await fetchImpl(`${YOUTUBE_API}/captions?part=snippet&videoId=${encodeURIComponent(videoId)}`, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
-    if (!listed.ok) return null;
+
+    if (!listed.ok) {
+      const payload = (await listed.json().catch(() => null)) as Record<string, any> | null;
+      // The stored scope list said we could and Google says otherwise — a scope
+      // revoked at Google, or a grant older than the list we kept of it. Same
+      // answer as the pre-flight, reached the expensive way.
+      if (listed.status === 403 && isInsufficientScope(payload)) {
+        return { status: 'missing-scope', detail: CAPTIONS_MISSING_SCOPE_DETAIL };
+      }
+      const reason = typeof payload?.error?.message === 'string' ? ` ${payload.error.message}` : '';
+      return {
+        status: 'unavailable',
+        detail:
+          `YouTube would not list the captions for this video (HTTP ${listed.status}).${reason} ` +
+          'The description was too short to read a recipe from on its own, so this one is worth another go.',
+      };
+    }
 
     const payload = (await listed.json().catch(() => null)) as Record<string, any> | null;
     const tracks: Array<Record<string, any>> = Array.isArray(payload?.items) ? payload.items : [];
-    if (tracks.length === 0) return null;
+    // The one honest "no". We were allowed to ask, we asked, and the video has
+    // no caption track.
+    if (tracks.length === 0) return { status: 'none' };
 
     const score = (track: Record<string, any>) => {
       const snippet = track.snippet ?? {};
@@ -1011,7 +1156,16 @@ export async function fetchCaptions(
       return (snippet.trackKind === 'ASR' ? 0 : 2) + (String(snippet.language ?? '').startsWith('en') ? 1 : 0);
     };
     const best = tracks.slice().sort((a, b) => score(b) - score(a))[0];
-    if (typeof best?.id !== 'string') return null;
+    if (typeof best?.id !== 'string') {
+      // Tracks were listed but none of them names an id we can download. Not
+      // "no captions" — the video has them and we cannot reach them.
+      return {
+        status: 'unavailable',
+        detail:
+          'YouTube listed captions for this video but none of them could be downloaded. ' +
+          'The description was too short to read a recipe from on its own, so this one is worth another go.',
+      };
+    }
 
     const downloaded = await safeFetch(`${YOUTUBE_API}/captions/${encodeURIComponent(best.id)}?tfmt=srt`, {
       fetchImpl: options.fetchImpl,
@@ -1023,11 +1177,23 @@ export async function fetchCaptions(
       expected: 'a caption track',
       maxBytes: MAX_CAPTION_BYTES,
     });
-    if (!downloaded.ok) return null;
+    if (!downloaded.ok) {
+      return {
+        status: 'unavailable',
+        detail:
+          `This video’s captions could not be downloaded: ${downloaded.detail} ` +
+          'The description was too short to read a recipe from on its own, so this one is worth another go.',
+      };
+    }
 
-    return srtToText(downloaded.html);
-  } catch {
-    return null;
+    return { status: 'used', text: srtToText(downloaded.html) };
+  } catch (err) {
+    return {
+      status: 'unavailable',
+      detail:
+        `Reading this video’s captions failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        'The description was too short to read a recipe from on its own, so this one is worth another go.',
+    };
   }
 }
 
@@ -1051,7 +1217,7 @@ export function srtToText(srt: string): string {
   return lines.join('\n');
 }
 
-export interface VideoDocumentOptions extends GoogleApiOptions {
+export interface VideoDocumentOptions extends CaptionsOptions {
   /**
    * The channel owner's access token. Absent means description-only, which is
    * the free tier of this feature and works for most cooking channels.
@@ -1072,23 +1238,40 @@ export interface VideoDocumentOptions extends GoogleApiOptions {
  * judge on. That ordering is the quota control the ticket asks for: a haul video
  * with a one-line description is rejected on title and description, and its
  * captions are never downloaded.
+ *
+ * **`captions` on the result is not telemetry (MEAL-138).** For a thin-description
+ * video it is the difference between a document that was fully read and one that
+ * was not, and the pipeline stops on the second rather than gating it: a video we
+ * were refused the captions of must not be assessed as though we had them, and
+ * must not be recorded as a permanent "not a recipe". `usedCaptions` is kept
+ * beside it because it is the answer to a different question — did a transcript
+ * feed this extraction — and a boolean cannot carry a reason.
  */
 export async function youtubeSourceDocument(
   video: YouTubeVideo,
   options: VideoDocumentOptions = {},
-): Promise<SourceDocument & { usedCaptions: boolean }> {
+): Promise<SourceDocument & { usedCaptions: boolean; captions: CaptionsOutcome }> {
   const description = video.description.trim();
   let text = description;
   let usedCaptions = false;
+  let captionsDetail: string | null = null;
+
+  // A description that stands on its own is the primary path and always was, so
+  // "we never needed captions" is its own outcome — reporting `none` here would
+  // claim a fact about the video that nothing checked.
+  let captions: CaptionsOutcome = description.length < THIN_CONTENT_CHARS ? 'no-grant' : 'not-needed';
 
   if (description.length < THIN_CONTENT_CHARS && options.accessToken) {
-    const captions = await fetchCaptions(video.videoId, options.accessToken, options);
-    if (captions) {
+    const result = await fetchCaptions(video.videoId, options.accessToken, options);
+    captions = result.status;
+    if (result.status === 'used') {
       // Kept together rather than replaced. A thin description still often holds
       // the link, the yield or a "full recipe below" line, and the transcript is
       // the conversational half — both are evidence.
-      text = [description, captions].filter(Boolean).join('\n\n');
+      text = [description, result.text].filter(Boolean).join('\n\n');
       usedCaptions = true;
+    } else if (result.status !== 'none') {
+      captionsDetail = result.detail;
     }
   }
 
@@ -1111,6 +1294,8 @@ export async function youtubeSourceDocument(
     jsonLdRaw: null,
     imageUrl: video.thumbnailUrl,
     platform: 'youtube',
+    captions,
+    captionsDetail,
     usedCaptions,
   };
 }
@@ -1211,7 +1396,7 @@ export async function assertAppendAllowed(
         : 'This creator has no connected YouTube channel.',
     };
   }
-  if (!connection.scopes.includes(YOUTUBE_WRITE_SCOPE)) {
+  if (!connection.scopes.includes(YOUTUBE_FORCE_SSL_SCOPE)) {
     // A grant made before the write scope was requested, or one where the
     // creator unticked it on Google's own screen.
     return {

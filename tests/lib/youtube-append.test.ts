@@ -6,7 +6,7 @@ import { stubFetch } from '../helpers/import-stubs';
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
 import { appendMealioLink, listAppendableMeals } from '@/lib/youtube-append';
-import { MEALIO_LINK_INTRO, YOUTUBE_QUOTA, YOUTUBE_WRITE_SCOPE } from '@/lib/youtube';
+import { MEALIO_LINK_INTRO, YOUTUBE_QUOTA, YOUTUBE_FORCE_SSL_SCOPE } from '@/lib/youtube';
 
 /**
  * Writing the Mealio link into a creator's own video descriptions (MEAL-79).
@@ -42,7 +42,7 @@ function grantRow(overrides: Record<string, unknown> = {}) {
     external_name: 'Chef Sarah',
     access_token: 'ya29-token',
     refresh_token: '1//refresh',
-    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_WRITE_SCOPE}`,
+    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_FORCE_SSL_SCOPE}`,
     expires_at: '2099-01-01T00:00:00.000Z',
     broken_reason: null,
     broken_at: null,

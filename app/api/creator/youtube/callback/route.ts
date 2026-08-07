@@ -3,7 +3,7 @@ import { jwtVerify } from 'jose';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 import { saveConnection } from '@/lib/platform-tokens';
-import { exchangeYouTubeCode, fetchOwnChannel, YOUTUBE_WRITE_SCOPE } from '@/lib/youtube';
+import { exchangeYouTubeCode, fetchOwnChannel, YOUTUBE_FORCE_SSL_SCOPE } from '@/lib/youtube';
 import { STATE_COOKIE } from '../connect/route';
 import type { ConnectFailure } from '@/lib/creator-connect';
 
@@ -163,7 +163,11 @@ export async function GET(request: NextRequest) {
     // No tokens, ever. The channel id is public and is the useful half.
     detail:
       `platform=youtube creator=${creatorId} channel=${channel.channel.id} ` +
-      `appendOptIn=${appendOptIn} write=${exchanged.grant.scopes.includes(YOUTUBE_WRITE_SCOPE)}`,
+      // `forceSsl` rather than `write`: the one scope buys description editing
+      // *and* caption reading, and calling it "write" in the log is the same
+      // mislabelling that let MEAL-138 happen in the first place. False here
+      // means this creator's thin-description videos cannot be imported.
+      `appendOptIn=${appendOptIn} forceSsl=${exchanged.grant.scopes.includes(YOUTUBE_FORCE_SSL_SCOPE)}`,
   });
 
   return back('connected');

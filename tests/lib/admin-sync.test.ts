@@ -1004,6 +1004,41 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     expect(result.status).toBe('failed');
   });
 
+  /**
+   * MEAL-138. The link between the pipeline's non-gate stage and the row a
+   * creator reads.
+   *
+   * A thin-description video whose captions we were refused used to arrive here
+   * as a *gate* rejection, so this recorded `rejected`: permanent, never retried
+   * by the sweep, and shown in the catalogue as "No recipe found" — a verdict on
+   * somebody's video for a permission nobody had asked them for. `failed` is what
+   * makes granting the scope enough to fix it, and what makes the badge read
+   * "Could not read" instead.
+   */
+  it('calls a refused caption read failed, so granting the permission is all it takes', async () => {
+    const result = await processSyncItem(
+      deps({
+        importer: async () => ({
+          status: 'rejected' as const,
+          url: 'https://www.youtube.com/watch?v=vid0000000A',
+          stage: 'fetch' as const,
+          reason: 'captions-missing-scope',
+          detail: 'This video’s captions could not be read: no permission was given to read them.',
+          meta: { cached: false, platform: 'youtube' as const },
+        }),
+      }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.status).not.toBe('rejected');
+    // And the creator's sentence reaches the row, where the catalogue shows it
+    // against "Could not read" rather than "No recipe found".
+    expect(result.detail).toMatch(/captions could not be read/i);
+  });
+
   it('skips an item already imported rather than queuing it twice', async () => {
     fakeDb.queue('creator_source_items', { data: { status: 'imported' } });
     const importer = vi.fn();

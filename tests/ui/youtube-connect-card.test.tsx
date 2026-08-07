@@ -13,7 +13,7 @@ import YouTubeConnectCard from '@/components/YouTubeConnectCard';
  */
 
 /** A creator who has told us they have a channel, but has not connected it yet. */
-const NOT_CONNECTED = { hasChannel: true, connected: false, channel: null, brokenReason: null, canWriteDescriptions: false, appendOptIn: false };
+const NOT_CONNECTED = { hasChannel: true, connected: false, channel: null, brokenReason: null, canWriteDescriptions: false, canReadCaptions: false, appendOptIn: false };
 /** No channel at all: no link, no grant. Nothing about YouTube is offered. */
 const NO_CHANNEL = { ...NOT_CONNECTED, hasChannel: false };
 const CONNECTED = {
@@ -22,6 +22,9 @@ const CONNECTED = {
   channel: { id: 'UCabcdefghijklmnopqrstuv', title: 'Chef Sarah' },
   brokenReason: null,
   canWriteDescriptions: true,
+  // The same `force-ssl` grant behind both, so in a fixture they move together —
+  // a status that had one without the other could not come off a real row.
+  canReadCaptions: true,
   appendOptIn: false,
 };
 
@@ -79,6 +82,18 @@ describe('YouTubeConnectCard — connecting', () => {
     // The server stores what was on screen, rather than trusting a later call to
     // say what the creator agreed to.
     expect(calls.find((call) => call.url.endsWith('/connect'))?.body).toEqual({ appendOptIn: true });
+  });
+
+  it('no longer promises captions on a connection that cannot read them', async () => {
+    harness(NOT_CONNECTED);
+    await screen.findByRole('checkbox');
+
+    // This paragraph used to read "and their captions, which YouTube only shares
+    // with the channel owner". A creator read it, connected, and got a grant that
+    // cannot read a caption — the copy was promising a capability that had moved
+    // behind an incremental scope (MEAL-138).
+    expect(screen.getByText(/titles and descriptions, so a recipe can be imported/i)).toBeTruthy();
+    expect(screen.queryByText(/Connecting lets Mealio read.*captions/i)).toBeNull();
   });
 
   it('shows the callback failure rather than a card that looks connected', async () => {
@@ -146,7 +161,7 @@ describe('YouTubeConnectCard — once connected', () => {
     // somebody ticks this box, so disabling it would disable the only way to
     // ask — and the standing "reconnect to allow it" notice went with it,
     // because it would have shown against every connected channel.
-    harness({ ...CONNECTED, canWriteDescriptions: false });
+    harness({ ...CONNECTED, canWriteDescriptions: false, canReadCaptions: false });
     const box = await screen.findByRole('checkbox');
     expect((box as HTMLInputElement).disabled).toBe(false);
     expect(screen.queryByText(/without permission to edit descriptions/i)).toBeNull();
@@ -183,10 +198,79 @@ describe('YouTubeConnectCard — once connected', () => {
   });
 
   it('can always be switched off, even on a grant that lost the write scope', async () => {
-    harness({ ...CONNECTED, canWriteDescriptions: false, appendOptIn: true });
+    harness({ ...CONNECTED, canWriteDescriptions: false, canReadCaptions: false, appendOptIn: true });
     // Turning it on needs the scope; turning it off must work from every state
     // there is, or it is not revocation.
     expect(((await screen.findByRole('checkbox')) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  /**
+   * MEAL-138: the consequence has to be visible, and actionable where it is seen.
+   *
+   * A read-only grant cannot read a single caption, so every video whose
+   * description runs under about 250 characters silently fails to import. Before
+   * this the card said the opposite — "connecting lets Mealio read ... their
+   * captions, which YouTube only shares with the channel owner" — which stopped
+   * being true the moment the scope became incremental, and there was no control
+   * anywhere that asked for it except the description-editing tick.
+   */
+  it('says so when it cannot read captions, and offers the permission that fixes it', async () => {
+    harness({ ...CONNECTED, canWriteDescriptions: false, canReadCaptions: false });
+
+    expect(await screen.findByText(/cannot read this channel’s captions/i)).toBeTruthy();
+    // Named as a consequence, not as a scope: what a creator loses is videos.
+    expect(screen.getByText(/gets skipped/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /read my captions/i })).toBeTruthy();
+    // Google's screen will say "edit and permanently delete". A creator who was
+    // told we want to read subtitles must have been warned, and told what still
+    // governs the edit.
+    expect(screen.getByText(/its screen will mention editing your videos/i)).toBeTruthy();
+  });
+
+  it('asks for captions without turning description editing on', async () => {
+    const { calls } = harness(
+      { ...CONNECTED, canWriteDescriptions: false, canReadCaptions: false },
+      (url) => (url.endsWith('/connect') ? json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' }) : null),
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /read my captions/i }));
+
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith('/connect'))).toBe(true));
+    // `captions` is its own reason and carries no consent to edit. The append
+    // value travelling with it is whatever it already was — asking to have
+    // captions read must not turn editing on, and must not turn it off either.
+    expect(calls.find((call) => call.url.endsWith('/connect'))?.body).toEqual({
+      appendOptIn: false,
+      captions: true,
+    });
+  });
+
+  it('carries a granted append consent through a captions trip rather than withdrawing it', async () => {
+    // The callback withdraws append consent whenever the state cookie says
+    // false, so a captions request that forgot to carry the creator's existing
+    // `true` would silently revoke a permission they had granted.
+    const { calls } = harness(
+      { ...CONNECTED, canWriteDescriptions: false, canReadCaptions: false, appendOptIn: true },
+      (url) => (url.endsWith('/connect') ? json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' }) : null),
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /read my captions/i }));
+
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith('/connect'))).toBe(true));
+    expect(calls.find((call) => call.url.endsWith('/connect'))?.body).toEqual({
+      appendOptIn: true,
+      captions: true,
+    });
+  });
+
+  it('says nothing about captions once the permission is there', async () => {
+    harness(CONNECTED);
+    await screen.findByRole('checkbox');
+    // A standing notice about a permission already granted is the noise that
+    // teaches people to ignore the next one.
+    expect(screen.queryByText(/cannot read this channel’s captions/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /read my captions/i })).toBeNull();
+    expect(screen.getByText(/can also read this channel’s captions/i)).toBeTruthy();
   });
 
   it('does not claim the channel was disconnected when the delete failed', async () => {

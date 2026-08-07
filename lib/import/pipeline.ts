@@ -271,6 +271,40 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     return finish(result, { platform });
   }
 
+  /**
+   * A video whose description was too thin to judge and whose captions we could
+   * not read (MEAL-138).
+   *
+   * This has to stop *before* the gate, and the reason is the whole ticket. The
+   * document is a short description and nothing else, so `classifySource` rejects
+   * it with `no-content` — "too little readable text ... link-in-bio and landing
+   * pages look like this" — and `stage: 'gate'` is what `admin-sync` reads as
+   * **`rejected`**: a verdict on the post, permanent, never retried. So a
+   * permission we were refused was being recorded as a fact about somebody's
+   * video, in a sentence about landing pages, on a row nothing would ever look at
+   * again.
+   *
+   * `stage: 'fetch'` is not a euphemism: a fetch we needed was refused, we never
+   * saw the material, and nothing here has an opinion about the video. It maps to
+   * `failed` — retryable — so once the creator grants the caption scope the retry
+   * sweep picks these up and they import. Not cached, for the same reason.
+   *
+   * `missing-scope` and `unavailable` both land here. A caption call that 500'd on
+   * a thin-description video is no more a verdict on the video than a refused one
+   * is, and it was reaching the same permanent rejection.
+   */
+  if (document.captions === 'missing-scope' || document.captions === 'unavailable') {
+    const result = rejection(
+      url,
+      'fetch',
+      `captions-${document.captions}`,
+      document.captionsDetail ??
+        'This video’s description was too short to read a recipe from, and its captions could not be read.',
+      { platform },
+    );
+    return finish(result, { platform });
+  }
+
   // ── gate ──────────────────────────────────────────────────────────────────
   let verdict = useCache ? await cacheGet<GateVerdict>(gateKey(url, cacheScope)) : null;
   let gateUsage: StructuredUsage | null = null;
