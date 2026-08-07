@@ -20,6 +20,10 @@ import { daysSince, relativeTime } from '@/lib/relative-time';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelChart';
+// The per-run drilldown (MEAL-143). Its own component and its own fetches: the
+// funnel is a set of rates over a window and this is one run's rows, so nothing is
+// shared but the store list the picker offers.
+import AdminRunDrilldown from '@/components/AdminRunDrilldown';
 // Pure, no server imports: the "which step is this store dying on" verdict lives
 // in the same module as the aggregation it reads, and is unit-tested there.
 import { worstStep, type AlertReason } from '@/lib/automation-funnel';
@@ -2268,6 +2272,14 @@ export default function AdminPage() {
                 );
               })}
             </div>
+
+            {/* ── Per-run drilldown ──────────────────────────────────────── */}
+            {/* Directly under the funnel, because it is the next question: the
+                funnel names the step a store is dying on and cannot show you a
+                single one of the runs that died. The store list is passed from the
+                funnel response so the picker offers the stores that actually have
+                traffic rather than the full 35-store broadcast list. */}
+            <AdminRunDrilldown stores={(funnel?.stores ?? []).map((s) => s.storeId)} />
 
             {/* ── Remote config ──────────────────────────────────────────── */}
             <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
