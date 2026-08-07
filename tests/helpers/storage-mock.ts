@@ -24,11 +24,50 @@ export const STORAGE_BASE_URL =
 export interface FakeObject {
   name: string;
   size: number;
+  /**
+   * When the object was created, as `storage.objects.created_at` renders through
+   * PostgREST: an ISO 8601 string with an offset, or null (the column is
+   * nullable). Left off, it defaults to `DEFAULT_CREATED_AT` — long ago, so a test
+   * that says nothing about age is testing an object old enough to sweep.
+   *
+   * `null` and absent are NOT the same thing here, and the difference is the one
+   * MEAL-133's fix turns on: null is an object of unknown age in a listing that
+   * HAS the column, which the route keeps; the column being absent from the
+   * listing altogether is the pre-migration function, under which no age is
+   * knowable at all. `rpcHasCreatedAt` is what models the second case.
+   */
+  createdAt?: string | null;
 }
+
+/**
+ * The age an object has unless a test says otherwise: 2020, i.e. far outside any
+ * grace window. Chosen so `bucket.objects = [{ name, size }]` keeps meaning
+ * "an object a sweep may delete", which is what every test written before
+ * MEAL-133 assumed.
+ */
+export const DEFAULT_CREATED_AT = '2020-01-01T00:00:00+00:00';
 
 export class FakeStorage {
   /** The bucket's contents. Uploads add to it; a confirmed remove takes away. */
   objects: FakeObject[] = [];
+
+  /**
+   * Whether `list_storage_objects` returns a `created_at` column — i.e. whether
+   * `supabase/migrations/20260807000002_list_storage_objects_created_at.sql` has
+   * been applied.
+   *
+   * Defaults to true, the post-migration shape. Set it to false to run a test
+   * against the function as production has it until Stephen applies the migration:
+   * every row then arrives with the KEY ABSENT, exactly as `select=*` renders a
+   * function that does not declare the column, and no object's age is knowable.
+   *
+   * Modelled as a shape switch rather than as "created_at is null everywhere"
+   * because the route must tell those two apart — the first has to keep behaving
+   * as it did before MEAL-133, the second protects every object — and a double
+   * that could not express the difference would let either behaviour pass for the
+   * other.
+   */
+  rpcHasCreatedAt = true;
 
   /** Every path handed to `remove()`, whether or not it went away. */
   removed: string[] = [];
@@ -59,6 +98,7 @@ export class FakeStorage {
 
   reset(): void {
     this.objects = [];
+    this.rpcHasCreatedAt = true;
     this.removed = [];
     this.undeletable = new Set();
     this.removeError = null;
@@ -95,10 +135,20 @@ export class FakeStorage {
         return { data: gone.map((name) => ({ name })), error: null };
       },
 
+      // Stamped with the current time, because storage stamps `created_at` with
+      // `now()` and a double that back-dated a fresh upload would make MEAL-133's
+      // whole window untestable: the object this route must NOT delete is
+      // precisely the one that has just been uploaded. `Date.now()` is honoured
+      // (rather than read once) so a test holding the clock can move an object
+      // through the window.
       upload: async (path: string, buffer: Buffer) => {
         this.uploaded.push(path);
         if (this.uploadError) return { data: null, error: this.uploadError };
-        this.objects.push({ name: path, size: buffer.length });
+        this.objects.push({
+          name: path,
+          size: buffer.length,
+          createdAt: new Date(Date.now()).toISOString(),
+        });
         return { data: { path }, error: null };
       },
 
@@ -149,14 +199,41 @@ export const fakeStorage = new FakeStorage();
  * query builder from `supabase-mock`, and this bucket.
  *
  * `rpc` answers with the bucket listing, which is what `list_storage_objects`
- * returns for the cleanup route.
+ * returns for the cleanup route — and it answers THROUGH `FakeSupabase`, as a real
+ * query builder over the pseudo-table `rpc:list_storage_objects`, not as a resolved
+ * array.
+ *
+ * That mattered. This double used to be `async () => ({ data: objects })`, which
+ * silently disagreed with PostgREST about two things at once. It served every
+ * object however many there were — so it could not have failed a route that read
+ * the bucket in one unbounded call, which is MEAL-134 — and it accepted no
+ * `.select()`, `.order()` or `.range()`, so a route that paged the RPC could not
+ * be driven through it at all. `FakeSupabase.rpc()` already models a set-returning
+ * function as a table subject to `DEFAULT_PAGE_ROWS` (see its comment), and this is
+ * the same model rather than a second one; the seed happens per call because tests
+ * assign `bucket.objects` after `beforeEach` and uploads mutate it mid-request.
+ *
+ * `fakeDb.queue('rpc:list_storage_objects', …)` still overrides one page, which is
+ * how a failed page read is staged.
  */
 export async function mockSupabaseWithStorage() {
   const { fakeDb } = await import('./supabase-mock');
   return {
     createServerSupabaseClient: () => ({
       from: (table: string) => fakeDb.from(table),
-      rpc: async () => ({ data: fakeStorage.objects, error: null }),
+      rpc: (fn: string, args?: Record<string, unknown>) => {
+        // The rows the function would return, in the shape the migration decides:
+        // `created_at` present (post-migration, value defaulted when the test does
+        // not care) or the key absent altogether (pre-migration).
+        fakeDb.seed(`rpc:${fn}`, fakeStorage.objects.map((o) => ({
+          name: o.name,
+          size: o.size,
+          ...(fakeStorage.rpcHasCreatedAt
+            ? { created_at: o.createdAt === undefined ? DEFAULT_CREATED_AT : o.createdAt }
+            : {}),
+        })));
+        return fakeDb.rpc(fn, args);
+      },
       storage: { from: () => fakeStorage.bucket() },
     }),
     createAnonSupabaseClient: () => ({ auth: { signInWithPassword: vi.fn() } }),

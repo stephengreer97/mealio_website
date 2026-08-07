@@ -29,9 +29,12 @@ import ts from 'typescript';
  *
  * `.rpc()` is not checked, and set-returning RPCs are subject to the same
  * ceiling: PostgREST caps a function's result at `db-max-rows` exactly as it caps
- * a table read. `app/api/admin/storage/cleanup-orphans/route.ts` already says so
- * out loud and reports `objectListMaybeTruncated`, so this is a known property of
- * this codebase rather than a theory.
+ * a table read. That is a measured property of this codebase rather than a theory —
+ * `list_storage_objects` was read in one call by both storage routes and returned
+ * an arbitrary, unordered 1000 objects (MEAL-129, MEAL-134). Both now page it with
+ * `.select().order('name').range()`, which is all a set-returning function needs:
+ * `limit`/`offset` apply to the outer select over the function's result, so paging
+ * one takes no SQL and no `LIMIT` parameter of its own.
  *
  * The live exposure at the time of writing is `get_preset_meals_with_trending`,
  * which has no `LIMIT` in its SQL body (`supabase/update-trending-hot-algorithm
