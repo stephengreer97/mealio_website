@@ -290,12 +290,19 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
 
       // Nothing ever referenced it — the meal was abandoned before saving — so the
       // sweep is right to take the object. The bug is in what it leaves behind.
+      //
+      // The clock moves past MEAL-133's grace window first, and that is not
+      // bookkeeping: an object uploaded a moment ago is one the user may still be
+      // part-way through attaching, and the sweep now leaves it alone. "Abandoned"
+      // is a claim about elapsed time, so the test has to let time elapse.
+      const anHourLater = t0 + 2 * 60 * 60 * 1000;
+      clock.mockReturnValue(anHourLater);
       const sweep = await run();
       const body = await sweep.json();
       expect(sweep.status).toBe(200);
       expect(bucket.removed).toEqual([deadPath]);
 
-      clock.mockReturnValue(t0 + 9_999);
+      clock.mockReturnValue(anHourLater + 9_999);
       const second = await upload(imageData);
       const secondUrl = (await second.json()).url as string;
 
@@ -578,14 +585,403 @@ describe('/api/admin/storage/cleanup-orphans — the keep-set must be complete b
     expect(bucket.removed).toEqual(['user-1/only.jpg']);
   });
 
-  it('flags a bucket listing that may itself have been truncated', async () => {
-    const live = mealsWithPhotos(DEFAULT_PAGE_ROWS, 'trunc');
-    fakeDb.seed('meals', live);
-    bucket.objects = objectsFor(live);
+  // ── MEAL-133: the upload/save window ──────────────────────────────────────
+  //
+  // `/api/images/upload` returns a public URL BEFORE anything references it — the
+  // meal, profile or draft that will point at it is saved in a later request. For
+  // those seconds a live photo is referenced by no row anywhere, and a sweep
+  // landing in the window deleted it. Neither gate can see one object: the
+  // keep-set reconciles perfectly and one photo is nowhere near half the bucket.
+  describe('an object may be mid-way through being attached', () => {
+    /** Minutes ago, as PostgREST renders `storage.objects.created_at`. */
+    const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
 
-    const body = await (await run('?dryRun=true')).json();
-    expect(body.objectListMaybeTruncated).toBe(true);
-    expect(body.objectsListed).toBe(DEFAULT_PAGE_ROWS);
+    it('does not delete an object uploaded minutes ago, but does delete an old one', async () => {
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/just-uploaded.jpg', size: 10, createdAt: minutesAgo(3) },
+        { name: 'user-1/abandoned-long-ago.jpg', size: 10, createdAt: minutesAgo(60 * 24 * 30) },
+      ];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      // The whole bug: against the unfixed route both are deleted, and the save
+      // that follows the upload lands on a URL with nothing behind it.
+      expect(bucket.removed).toEqual(['user-1/abandoned-long-ago.jpg']);
+      expect(body.objectsTooNewToDelete).toBe(1);
+      expect(body.orphanCount).toBe(1);
+      // Reported as unreferenced all the same — held back, not overlooked.
+      expect(body.unreferencedCount).toBe(2);
+      expect(body.ageFilterAvailable).toBe(true);
+      expect(body.graceWindowMinutes).toBe(60);
+    });
+
+    it('keeps an object whose created_at is null — unknown age is never treated as old', async () => {
+      // `storage.objects.created_at` is nullable, so this is a real row and not a
+      // hypothetical. A missing age must resolve toward keeping the object; the
+      // opposite reading turns every such row back into the bug.
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/no-timestamp.jpg', size: 10, createdAt: null },
+        { name: 'user-1/old.jpg', size: 10 },
+      ];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(bucket.removed).toEqual(['user-1/old.jpg']);
+      expect(body.objectsTooNewToDelete).toBe(1);
+    });
+
+    it('keeps an object whose created_at is not a timestamp at all', async () => {
+      // An unexpected shape may not widen the delete set either.
+      fakeDb.seed('meals', []);
+      bucket.objects = [{ name: 'user-1/garbled.jpg', size: 10, createdAt: 'not a date' }];
+
+      expect((await run()).status).toBe(200);
+      expect(bucket.removed).toEqual([]);
+    });
+
+    it('refuses to read a number as a timestamp rather than guessing at its unit', async () => {
+      // `toEpochMs` takes strings only, and this is the reason. PostgREST renders a
+      // `timestamptz` as a string, so a number arriving here means something has
+      // already broken upstream — but if it were accepted, epoch SECONDS would be
+      // read as epoch milliseconds, put this object in 1970, and make a photo
+      // uploaded a moment ago the oldest thing in the bucket. Unknown age keeps the
+      // object; a guess in the wrong unit deletes it.
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/epoch-seconds.jpg', size: 10, createdAt: Math.floor(Date.now() / 1000) },
+      ];
+
+      const body = await (await run()).json();
+
+      expect(bucket.removed).toEqual([]);
+      expect(body.objectsTooNewToDelete).toBe(1);
+      expect(body.orphanCount).toBe(0);
+    });
+
+    it('survives a sweep between the upload and the save, then is swept once abandoned', async () => {
+      // The bug end to end, through the real upload route: the URL is handed out,
+      // the sweep runs before the meal is saved, and the object must still be
+      // there afterwards. Then time passes, nothing ever referenced it, and the
+      // same sweep is right to take it — the fix is a delay, not an exemption.
+      fakeDb.seed('meals', []);
+      fakeDb.seed('photo_hashes', []);
+
+      const clock = vi.spyOn(Date, 'now');
+      const t0 = new Date().getTime();
+      clock.mockReturnValue(t0);
+
+      const uploaded = await uploadImage(jsonRequest('/api/images/upload', {
+        method: 'POST',
+        body: { imageData: `data:image/png;base64,${Buffer.from('mid-attach').toString('base64')}` },
+        token,
+      }));
+      expect(uploaded.status).toBe(201);
+      const path = ((await uploaded.json()).url as string).slice(BASE_URL.length);
+
+      // Twelve seconds later: the user is still on the form.
+      clock.mockReturnValue(t0 + 12_000);
+      const during = await run();
+      expect(during.status).toBe(200);
+      expect(bucket.removed).toEqual([]);
+      expect(bucket.has(path)).toBe(true);
+      expect((await during.json()).objectsTooNewToDelete).toBe(1);
+
+      // Two hours later the save never happened, so it really is an orphan.
+      clock.mockReturnValue(t0 + 2 * 60 * 60 * 1000);
+      const after = await run();
+      expect(after.status).toBe(200);
+      expect(bucket.removed).toEqual([path]);
+      clock.mockRestore();
+    });
+
+    it('does not let young objects dilute the orphan-share ceiling', async () => {
+      // Gate 2 is scored on UNREFERENCED objects, not on the delete set. Every one
+      // of these 120 is unreferenced — the shape a BASE_URL drift produces — and
+      // half of them being new must not drop the share under the ceiling and turn
+      // a refusal into a partial sweep.
+      fakeDb.seed('meals', []);
+      bucket.objects = Array.from({ length: 120 }, (_, i) => ({
+        name: `user-1/p-${i}.jpg`,
+        size: 100,
+        createdAt: i % 2 === 0 ? minutesAgo(1) : minutesAgo(60 * 24 * 30),
+      }));
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(body.blocked).toBe(true);
+      expect(body.orphanShare).toBe(1);
+      expect(body.unreferencedCount).toBe(120);
+      expect(bucket.removed).toEqual([]);
+    });
+
+    it('does not let force=true switch the grace window off along with the share ceiling', async () => {
+      // `force` is scoped to Gate 2 — a judgement call about a proportion — and the
+      // grace window is not a judgement, it is a fact about how old an object is. The
+      // two are easy to conflate because `force` is what the previous test's own
+      // error text tells an operator to reach for, and it is reached for on exactly
+      // the sweeps where MEAL-133 costs the most: the first pass over a bucket that
+      // has never been cleaned, where the share is over the ceiling and hundreds of
+      // objects go at once. Wiring `force` into `splitByAge` would reintroduce the
+      // bug silently, on the largest sweeps only, and every other test here would
+      // still pass — so this is the assertion that says the flag stops at Gate 2.
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/mid-attach.jpg', size: 100, createdAt: minutesAgo(2) },
+        ...Array.from({ length: 119 }, (_, i) => ({
+          name: `user-1/p-${String(i).padStart(3, '0')}.jpg`,
+          size: 100,
+          createdAt: minutesAgo(60 * 24 * 30),
+        })),
+      ];
+
+      const res = await run('?force=true');
+      const body = await res.json();
+
+      // The override did its job: Gate 2 stood down and the old objects went.
+      expect(res.status).toBe(200);
+      expect(body.forced).toBe(true);
+      expect(body.deleted).toBe(119);
+      // And the object uploaded two minutes ago is still there.
+      expect(bucket.removed).not.toContain('user-1/mid-attach.jpg');
+      expect(bucket.has('user-1/mid-attach.jpg')).toBe(true);
+      expect(body.objectsTooNewToDelete).toBe(1);
+      expect(body.ageFilterAvailable).toBe(true);
+    });
+
+    // ── Both shapes of the RPC ──────────────────────────────────────────────
+    //
+    // The migration that adds `created_at` can only be applied by hand, so this
+    // code runs against the old two-column function until it is. Pre-migration
+    // behaviour has to be today's behaviour: no age is knowable, so nothing is
+    // protected — and the response has to say that plainly, because a sweep with
+    // no age filter is a sweep that can still hit MEAL-133.
+    it('falls back to the old behaviour, loudly, when the RPC returns no created_at', async () => {
+      bucket.rpcHasCreatedAt = false;
+      fakeDb.seed('meals', []);
+      bucket.objects = [{ name: 'user-1/just-uploaded.jpg', size: 10, createdAt: minutesAgo(1) }];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      // Today's behaviour, not an error and not a silent no-op that would report
+      // zero orphans and look like success.
+      expect(bucket.removed).toEqual(['user-1/just-uploaded.jpg']);
+      expect(body.ageFilterAvailable).toBe(false);
+      expect(body.objectsTooNewToDelete).toBe(0);
+      expect(body.warnings.join(' ')).toContain('created_at');
+      expect(body.warnings.join(' ')).toContain('MEAL-133');
+    });
+
+    it('protects the same object once the migration has been applied', async () => {
+      // The pair. Same bucket, same sweep, only the function's shape differs — so
+      // this pins the protection to the migration rather than to anything else in
+      // the fixture, and shows the two shapes are told apart by the column being
+      // absent rather than by its value.
+      fakeDb.seed('meals', []);
+      bucket.objects = [{ name: 'user-1/just-uploaded.jpg', size: 10, createdAt: minutesAgo(1) }];
+
+      const body = await (await run()).json();
+
+      expect(bucket.removed).toEqual([]);
+      expect(body.ageFilterAvailable).toBe(true);
+      expect(body.objectsTooNewToDelete).toBe(1);
+      expect(body.warnings).toBeUndefined();
+    });
+
+    it('tells the two shapes apart by the column being present, not by it having a value', async () => {
+      // The migration is detected on the KEY (`'created_at' in row`), never on the
+      // value, and this is the case where the difference shows. Every object here is
+      // post-migration with a null `created_at` — a real row, since
+      // `storage.objects.created_at` is nullable. Reading the VALUE instead would
+      // conclude the column is absent, fall back to the pre-migration path, and
+      // delete the whole bucket while reporting `ageFilterAvailable: true`'s opposite
+      // as if the migration had never been applied. The other null test cannot see
+      // this, because it seeds a second object with a real timestamp, which makes the
+      // column look present under either reading.
+      fakeDb.seed('meals', []);
+      bucket.objects = [
+        { name: 'user-1/a.jpg', size: 10, createdAt: null },
+        { name: 'user-1/b.jpg', size: 10, createdAt: null },
+      ];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(bucket.removed).toEqual([]);
+      // The migration IS applied — unknown age, not an unmigrated function.
+      expect(body.ageFilterAvailable).toBe(true);
+      expect(body.objectsTooNewToDelete).toBe(2);
+      expect(body.warnings).toBeUndefined();
+    });
+  });
+
+  // ── MEAL-134: the bucket listing is a paged read like any other ────────────
+  //
+  // `list_storage_objects` is a set-returning function, and PostgREST caps one of
+  // those at `db-max-rows` exactly as it caps a table. The route asked for the
+  // bucket in a single call, so it saw the first 1000 objects and nothing said so.
+  // Under-deleting is the safe direction, but the function has no ORDER BY, so
+  // WHICH 1000 was arbitrary: an operator sweeping to reclaim space watched the
+  // total plateau while most of the bucket had never been looked at.
+  describe('the bucket listing past 1000 objects', () => {
+    it('considers every object in a bucket larger than one page', async () => {
+      // 1200 objects, 1199 of them live. The single orphan sorts LAST by name, so
+      // it is on the second page and the unpaged read could never reach it — this
+      // is the assertion that fails when the paging is reverted.
+      const live = mealsWithPhotos(1199, 'big');
+      fakeDb.seed('meals', live);
+      const orphan = { name: 'zz-user-9/past-the-ceiling.jpg', size: 77 };
+      bucket.objects = [...objectsFor(live), orphan];
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.objectsListed).toBe(1200);
+      expect(body.objectListComplete).toBe(true);
+      expect(bucket.removed).toEqual([orphan.name]);
+      expect(body.estimatedBytes).toBe(77);
+    });
+
+    it('says the listing is complete rather than guessing from its length', async () => {
+      // The old flag was `length >= 1000`, so a bucket of exactly 1000 objects was
+      // reported as "maybe truncated" forever. Paging turns that into a fact.
+      const live = mealsWithPhotos(DEFAULT_PAGE_ROWS, 'trunc');
+      fakeDb.seed('meals', live);
+      bucket.objects = objectsFor(live);
+
+      const body = await (await run('?dryRun=true')).json();
+
+      expect(body.objectsListed).toBe(DEFAULT_PAGE_ROWS);
+      expect(body.objectListComplete).toBe(true);
+      expect(body.objectListMaybeTruncated).toBe(false);
+    });
+
+    it('deletes nothing when a page of the listing fails', async () => {
+      // A page that errors is fatal to the whole listing, exactly as it is for the
+      // keep-set: `data ?? []` would make a failed page and an exhausted bucket the
+      // same value, and everything the missing page held would be absent from the
+      // list — which for the OBJECT side is only an under-delete, but leaves every
+      // number in the response describing a fraction of the bucket.
+      fakeDb.seed('meals', []);
+      bucket.objects = [{ name: 'user-9/orphan.jpg', size: 1 }];
+      // A full first page, so the read is partial rather than empty, then a failure.
+      fakeDb.queue('rpc:list_storage_objects', {
+        data: Array.from({ length: DEFAULT_PAGE_ROWS }, (_, i) => ({
+          name: `user-1/page-one-${i}.jpg`, size: 1, created_at: '2020-01-01T00:00:00+00:00',
+        })),
+      });
+      fakeDb.queue('rpc:list_storage_objects', { data: null, error: { message: 'connection reset' } });
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(500);
+      expect(body.error).toContain('connection reset');
+      expect(bucket.removed).toEqual([]);
+    });
+
+    it('refuses when the listing hits its page ceiling', async () => {
+      // A bucket that never ends — a paging bug, or 200,000 real objects. Either
+      // way the listing is a prefix, so Gate 1 refuses rather than sweeping the
+      // part it happens to have seen.
+      fakeDb.seed('meals', []);
+      const fullPage = Array.from({ length: DEFAULT_PAGE_ROWS }, (_, i) => ({
+        name: `user-1/endless-${i}.jpg`, size: 1, created_at: '2020-01-01T00:00:00+00:00',
+      }));
+      for (let page = 0; page < 200; page++) {
+        fakeDb.queue('rpc:list_storage_objects', { data: fullPage });
+      }
+
+      const res = await run();
+      const body = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(body.blocked).toBe(true);
+      expect(body.reason).toContain('page ceiling');
+      expect(body.objectListComplete).toBe(false);
+      expect(body.objectListMaybeTruncated).toBe(true);
+      expect(bucket.removed).toEqual([]);
+    });
+
+    it('refuses the DRY RUN on an incomplete listing too', async () => {
+      // Same reasoning as Gate 1's existing refusal of a dry run: the numbers a dry
+      // run prints are the whole point of running one, and these ones would be
+      // computed over an unknown fraction of the bucket.
+      fakeDb.seed('meals', []);
+      const fullPage = Array.from({ length: DEFAULT_PAGE_ROWS }, (_, i) => ({
+        name: `user-1/endless-${i}.jpg`, size: 1, created_at: '2020-01-01T00:00:00+00:00',
+      }));
+      for (let page = 0; page < 200; page++) {
+        fakeDb.queue('rpc:list_storage_objects', { data: fullPage });
+      }
+
+      const res = await run('?dryRun=true');
+      const body = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(body.paths).toBeUndefined();
+      expect(body.orphanCount).toBeUndefined();
+    });
+
+    it('does not let force=true override an incomplete listing', async () => {
+      // `force` overrules Gate 2's judgement call, never Gate 1's defect report.
+      fakeDb.seed('meals', []);
+      const fullPage = Array.from({ length: DEFAULT_PAGE_ROWS }, (_, i) => ({
+        name: `user-1/endless-${i}.jpg`, size: 1, created_at: '2020-01-01T00:00:00+00:00',
+      }));
+      for (let page = 0; page < 200; page++) {
+        fakeDb.queue('rpc:list_storage_objects', { data: fullPage });
+      }
+
+      expect((await run('?force=true')).status).toBe(409);
+      expect(bucket.removed).toEqual([]);
+    });
+
+    it('does not count or delete the same object twice when the walk repeats one', async () => {
+      // An OFFSET walk over a bucket that is being uploaded to can hand one object
+      // back on two pages, because an upload sorting earlier shifts everything after
+      // it forward. Names are unique in a bucket, so a repeat is always the walk.
+      fakeDb.seed('meals', []);
+      const page = Array.from({ length: DEFAULT_PAGE_ROWS }, (_, i) => ({
+        name: `user-9/gone-${String(i).padStart(4, '0')}.jpg`, size: 1,
+        created_at: '2020-01-01T00:00:00+00:00',
+      }));
+      fakeDb.queue('rpc:list_storage_objects', { data: page });
+      // The shifted page: one object seen again, then the end of the bucket.
+      fakeDb.queue('rpc:list_storage_objects', { data: [page[0]] });
+      bucket.objects = page.map((o) => ({ name: o.name, size: o.size }));
+
+      const body = await (await run('?force=true')).json();
+
+      expect(body.objectsListed).toBe(DEFAULT_PAGE_ROWS);
+      expect(bucket.removed.filter((p) => p === page[0].name)).toEqual([page[0].name]);
+      expect(body.estimatedBytes).toBe(DEFAULT_PAGE_ROWS);
+    });
+
+    it('orders the listing so the pages partition the bucket', async () => {
+      // An OFFSET walk with no ORDER BY may return one row twice and skip another,
+      // and a skipped object is one no sweep ever considers however often it runs —
+      // MEAL-134's "the total plateaus for no visible reason".
+      fakeDb.seed('meals', []);
+      bucket.objects = [{ name: 'user-1/only.jpg', size: 1 }];
+
+      await run();
+
+      const listCalls = fakeDb.calls.filter((c) => c.table === 'rpc:list_storage_objects');
+      expect(listCalls.some((c) => c.method === 'order' && c.args[0] === 'name')).toBe(true);
+      expect(listCalls.some((c) => c.method === 'range')).toBe(true);
+    });
   });
 
   it('still requires an admin', async () => {

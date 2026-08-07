@@ -2,9 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAdmin } from '@/lib/requireAdmin';
+import { fetchAllPages } from '@/lib/paged-select';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Matches the sibling storage jobs (`backfill-hashes`, `backfill-photos`), which is
+ * the ceiling this one has always needed and never declared.
+ *
+ * Realistically this is a handful of listing pages plus one paged read per
+ * reference source, well inside the default. It is declared because of WHERE a
+ * timeout would land: the delete batches run before `invalidateHashes`, so a
+ * request cut off in between has destroyed objects whose `photo_hashes` rows still
+ * point at them — MEAL-132's poisoning, in place, with no response body to say so.
+ * Re-running the sweep clears it, but only if somebody knows to.
+ */
+export const maxDuration = 300;
 
 const BASE_URL = 'https://etaracmlewdvzpcjrgru.supabase.co/storage/v1/object/public/meal-photos/';
 
@@ -22,6 +36,82 @@ const PAGE_ROWS = 1000;
  * Hitting it is treated as an INCOMPLETE read, never as "that's all of them".
  */
 const MAX_PAGES = 2000;
+
+/**
+ * One page of the bucket listing.
+ *
+ * MEAL-134. `list_storage_objects` is a set-returning function, and PostgREST
+ * applies `db-max-rows` to a function's result exactly as it does to a table — so
+ * the single `.rpc()` call this route used to make returned the first 1000 objects
+ * of the bucket and said nothing about the rest.
+ *
+ * That direction is safe on its own: an object never listed is an object never
+ * deleted, so the bug UNDER-deletes. What it is not is honest. The function has no
+ * ORDER BY, so *which* 1000 came back was arbitrary and could differ between two
+ * runs a minute apart, and an operator sweeping a large bucket to reclaim space
+ * watched the reclaimed total plateau while most of the bucket had never been
+ * looked at once. Ordering the walk on `name` makes the pages a partition of the
+ * bucket rather than three arbitrary samples of it.
+ *
+ * NO SQL WAS REQUIRED FOR THIS HALF. PostgREST's `limit`/`offset` (which is what
+ * supabase-js `.range()` sends) applies to the outer select over the function's
+ * result, so the function can be paged from the client with no `LIMIT`/`OFFSET`
+ * parameter of its own — `app/api/admin/storage/backfill-hashes/route.ts` has
+ * paged this same function that way since MEAL-129. The migration in
+ * `supabase/migrations/20260807000002_list_storage_objects_created_at.sql` is for
+ * MEAL-133's `created_at` only.
+ */
+const OBJECT_PAGE_ROWS = 1000;
+
+/**
+ * Page ceiling for the bucket listing — 200,000 objects.
+ *
+ * Two orders of magnitude past this bucket, and deliberately far higher than
+ * `lib/paged-select`'s default of 20 pages, because hitting it is now FATAL (see
+ * Gate 1): a ceiling low enough to reach in practice would refuse the sweep in
+ * exactly the situation where an operator most wants it, a bucket that has grown
+ * too large. It exists so a paging bug cannot spin forever, not as a policy about
+ * how many photos there may be.
+ */
+const MAX_OBJECT_PAGES = 200;
+
+/**
+ * How old an unreferenced object must be before it may be deleted.
+ *
+ * MEAL-133. `/api/images/upload` and `storeImageBuffer` hand back a public URL
+ * BEFORE anything references it: the client is given the URL and the meal, the
+ * creator profile or the import draft that will point at it is saved in a later
+ * request, or not at all. For the seconds or minutes in between, a perfectly live
+ * photo is genuinely unreferenced by every table in REFERENCE_SOURCES — and a
+ * sweep landing in that window saw an orphan and destroyed it, leaving the user's
+ * save pointing at nothing. Neither gate can see it: one keep-set row is not
+ * missing, so the reconciliation is clean, and one object is nowhere near half the
+ * bucket. Unlikely per sweep, unrecoverable when it happens, and likelier the more
+ * often the sweep runs.
+ *
+ * An hour is not tuned; it is chosen to be much longer than any upload-then-save
+ * flow (the mobile picker, the web editor, and the import pipeline's
+ * download-store-draft sequence are all seconds) and much shorter than the age of
+ * anything a sweep is actually trying to reclaim. Nothing is lost by waiting: an
+ * object that really is abandoned is still abandoned an hour later, and the next
+ * sweep takes it.
+ *
+ * WHY THIS AND NOT A PROVISIONAL REFERENCE ROW. The alternative MEAL-133 offers is
+ * for the upload to write a placeholder reference that the save promotes and a TTL
+ * job clears. It is strictly more machinery — a table, a write on the hot upload
+ * path, a promotion step in every save path that can forget to promote (which is
+ * MEAL-131's failure mode again), and a second sweep to clear what never got
+ * promoted — for the same protection this gets from a column the storage layer
+ * already maintains.
+ *
+ * WHY NOT `photo_hashes.created_at`, which needs no migration at all: every upload
+ * does write a row there, but `onConflict: 'hash', ignoreDuplicates: true` means a
+ * re-upload of already-seen bytes leaves the ORIGINAL row's timestamp in place, so
+ * a brand-new object can inherit a year-old `created_at`. That is a wrong answer in
+ * the deleting direction, which is the one direction this route may not be wrong
+ * in. Objects predating the hash cache have no row at all.
+ */
+const MIN_OBJECT_AGE_MS = 60 * 60 * 1000;
 
 /**
  * One place a live photo reference is stored.
@@ -155,6 +245,162 @@ function toStoragePath(url: string | null | undefined): string | null {
   if (!url) return null;
   if (url.startsWith(BASE_URL)) return url.slice(BASE_URL.length);
   return null;
+}
+
+/** One object in the bucket, as this route needs it. */
+interface StorageObject {
+  name: string;
+  size: number;
+  /**
+   * Creation time in epoch milliseconds, or null when it could not be
+   * established from what the RPC returned. Null means AGE UNKNOWN, and age
+   * unknown is never treated as old — see `splitByAge`.
+   */
+  createdAt: number | null;
+}
+
+/**
+ * Reads `created_at` off one listing row.
+ *
+ * Strings only, because that is what PostgREST renders a `timestamptz` as, and
+ * every other shape is something this route does not understand. A number is
+ * rejected rather than guessed at: epoch seconds and epoch milliseconds differ by
+ * a factor of a thousand and picking the wrong one makes a young object look
+ * decades old, which is the one error this must not make. Anything unparseable
+ * therefore lands on null — age unknown, keep the object.
+ *
+ * `storage.objects.created_at` is a `timestamptz`, so PostgREST emits an explicit
+ * offset and `Date.parse` needs no help. (A naive timestamp with no offset would
+ * be read as server-local; on Vercel that is UTC, and any drift from a
+ * behind-UTC server makes objects look YOUNGER, which keeps them.)
+ */
+function toEpochMs(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** The bucket listing, plus what is known about how trustworthy it is. */
+interface ObjectListing {
+  objects: StorageObject[];
+  /** True only when a short page proved the end of the bucket was reached. */
+  complete: boolean;
+  /**
+   * True when the RPC answered with a `created_at` column at all — i.e. the
+   * migration has been applied. False is the PRE-MIGRATION shape, in which no
+   * object's age is knowable and the grace window cannot be applied to any of
+   * them.
+   */
+  ageColumn: boolean;
+  /** Set when `complete` is false: which page, and why it stopped there. */
+  reason?: string;
+  /** A page that failed outright, reported the way the old single call was. */
+  error: { message?: string } | null;
+}
+
+/**
+ * Every object in the bucket, paged to exhaustion and ordered on `name`.
+ *
+ * TOLERATING BOTH SHAPES OF THE RPC, which it has to: the migration that adds
+ * `created_at` can only be applied by hand, so this code runs against the old
+ * two-column function until somebody does, and pre-migration behaviour must be
+ * today's behaviour rather than an error.
+ *
+ * That is why the select is `*` rather than `name, size, created_at`. Asking for a
+ * column the old function does not return is a 42703 from Postgres — the whole
+ * listing fails, and the route stops working the moment it deploys. `*` returns
+ * whatever the function declares, so the shape is discovered from the rows instead
+ * of asserted at them: `created_at` present on a row means the migration is in,
+ * absent means it is not. There is no error to classify and no second round trip,
+ * and the same code path serves both shapes.
+ *
+ * The presence test is on the KEY, not the value. `select=*` renders every declared
+ * column, so a post-migration row always carries the key even when the value is
+ * null (`storage.objects.created_at` is nullable), and that distinction is
+ * load-bearing: a null value on a listing that HAS the column is one object of
+ * unknown age, which is kept, while the column being absent altogether is the old
+ * function, under which nothing's age is known and the window is simply not
+ * available. Collapsing the two would turn the pre-migration deploy into a sweep
+ * that deletes nothing and reports zero orphans, which looks like success.
+ */
+async function listAllObjects(supabase: SupabaseClient): Promise<ObjectListing> {
+  const read = await fetchAllPages<Record<string, unknown>>(
+    (from, to) =>
+      supabase
+        .rpc('list_storage_objects', { bucket: 'meal-photos' })
+        .select('*')
+        .order('name', { ascending: true })
+        .range(from, to),
+    { pageRows: OBJECT_PAGE_ROWS, maxPages: MAX_OBJECT_PAGES },
+  );
+
+  const objects: StorageObject[] = [];
+  const seen = new Set<string>();
+  let ageColumn = false;
+
+  for (const row of read.rows) {
+    if (row && typeof row === 'object' && 'created_at' in row) ageColumn = true;
+    const name = row?.name;
+    // A row with no usable name names no object, so there is nothing to delete
+    // and nothing to protect. Dropped rather than coerced: leaving it in would put
+    // `undefined` into a `remove()` batch, and counting it would move the Gate 2
+    // denominator for an object that does not exist.
+    if (typeof name !== 'string' || name === '') continue;
+    // An OFFSET walk over a bucket being written to can hand the same object back
+    // twice, because an upload landing earlier in the `name` ordering shifts every
+    // later object one place forward. Names are unique within a bucket, so a repeat
+    // is always the walk and never two objects — deduplicated here so it cannot
+    // double-count `objectsListed`, inflate `estimatedBytes`, or ask storage to
+    // remove one path twice and then report the second attempt as unconfirmed.
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const size = typeof row.size === 'number' ? row.size : 0;
+    objects.push({ name, size, createdAt: toEpochMs(row.created_at) });
+  }
+
+  return {
+    objects,
+    complete: read.complete,
+    ageColumn,
+    error: read.error,
+    reason: read.complete
+      ? undefined
+      : read.error
+        ? `object list: page read failed after ${objects.length} object(s): ${read.error.message ?? 'unknown error'}`
+        : `object list: hit the ${MAX_OBJECT_PAGES}-page ceiling (${MAX_OBJECT_PAGES * OBJECT_PAGE_ROWS} objects) without reaching the end of the bucket`,
+  };
+}
+
+/** How the grace window split the unreferenced objects. */
+interface AgeSplit {
+  /** Unreferenced AND old enough to delete. */
+  deletable: StorageObject[];
+  /** Unreferenced but too new, or of unknown age. Kept. */
+  tooNew: StorageObject[];
+}
+
+/**
+ * Splits unreferenced objects into what may be deleted and what is protected by
+ * the grace window.
+ *
+ * Every branch that cannot establish an age keeps the object, with the single
+ * documented exception of the pre-migration RPC shape (`ageColumn` false), where
+ * no age exists to establish for any object and the route must go on behaving as
+ * it did before this change rather than turning itself off.
+ *
+ * A future-dated `created_at` — a clock ahead of this server's — gives a negative
+ * age, which is below the window and therefore kept. That is the right way round.
+ */
+function splitByAge(unreferenced: StorageObject[], ageColumn: boolean, now: number): AgeSplit {
+  if (!ageColumn) return { deletable: unreferenced, tooNew: [] };
+
+  const deletable: StorageObject[] = [];
+  const tooNew: StorageObject[] = [];
+  for (const object of unreferenced) {
+    if (object.createdAt === null || now - object.createdAt < MIN_OBJECT_AGE_MS) tooNew.push(object);
+    else deletable.push(object);
+  }
+  return { deletable, tooNew };
 }
 
 /** Per-table result of the keep-set read, reported so a refusal names the table. */
@@ -436,16 +682,19 @@ export async function POST(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
 
-  // List all storage objects via RPC
-  const { data: objects, error: listError } = await supabase
-    .rpc('list_storage_objects', { bucket: 'meal-photos' });
+  // Every object in the bucket, paged — see OBJECT_PAGE_ROWS for why one `.rpc()`
+  // call was never the whole bucket.
+  const listing = await listAllObjects(supabase);
 
-  if (listError) {
-    log({ event: 'STORAGE:CLEANUP', status: 'error', userId: admin.userId, error: listError });
-    return NextResponse.json({ error: listError.message }, { status: 500 });
+  // A page that failed outright is reported as the single call always was: a 5xx,
+  // because the request failed rather than the route declining to act on it. It
+  // does not reach either gate, so nothing is deleted either way.
+  if (listing.error) {
+    log({ event: 'STORAGE:CLEANUP', status: 'error', userId: admin.userId, error: listing.error });
+    return NextResponse.json({ error: listing.error.message }, { status: 500 });
   }
 
-  const storageObjects: { name: string; size: number }[] = objects ?? [];
+  const storageObjects = listing.objects;
 
   // Every referenced photo_url, paged to exhaustion.
   // Soft-deleted meals (is_active=false) are included — their photos are NOT
@@ -459,40 +708,117 @@ export async function POST(request: NextRequest) {
   // not catch MEAL-126 precisely because it printed a confident, plausible list
   // computed from the same truncated keep-set. A number that cannot be trusted
   // must not be rendered as a number.
-  if (!keepSet.complete) {
+  //
+  // The OBJECT LIST is held to the same standard, because once it is paged
+  // "everything was read" has two halves and the gate has to assert both. A short
+  // listing is not dangerous the way a short keep-set is — an object never listed
+  // is never deleted — but every number this route reports is computed from it:
+  // `objectsListed`, `orphanCount`, `estimatedBytes` and, most importantly,
+  // `orphanShare`, whose denominator IS the listing. Gate 2 is a proportion, and a
+  // proportion measured over an unknown fraction of an unordered bucket is not the
+  // proportion it claims to be. Letting the sweep proceed on a partial listing
+  // would leave Gate 2 nominally intact and quietly measuring something else,
+  // which is the same trade MEAL-126 made when it printed a confident dry run.
+  //
+  // What it does NOT do is reconcile the listing against an exact count the way
+  // `readTable` reconciles each table, and that asymmetry is deliberate rather than
+  // an omission. A row skipped by the keep-set walk is a live photo that turns into
+  // an orphan, so it must be caught; an object skipped by the bucket walk is an
+  // object this run does not delete, which costs one deferred reclaim. And the
+  // bucket is written to continuously by every upload in the product, so a count
+  // taken before the walk would disagree with the rows after it as a matter of
+  // routine — reconciling here would refuse most sweeps to guard the one direction
+  // that is already safe. Completeness of the listing is therefore "the pages
+  // reached the end", which is exactly what a short page proves.
+  const gate1 = [listing.reason, keepSet.reason].filter(Boolean).join('; ');
+  if (gate1) {
     log({
       event: 'STORAGE:CLEANUP', status: 'error', userId: admin.userId,
-      reason: 'incomplete keep-set', detail: keepSet.reason,
+      reason: 'incomplete read', detail: gate1,
     });
     return NextResponse.json({
       blocked: true,
-      reason: keepSet.reason,
-      error: `Refusing to compute orphans: the reference read was incomplete (${keepSet.reason}). Nothing was deleted.`,
+      reason: gate1,
+      error: `Refusing to compute orphans: the read was incomplete (${gate1}). Nothing was deleted.`,
       tables: keepSet.tables,
+      objectsListed: storageObjects.length,
+      objectListComplete: listing.complete,
+      objectListMaybeTruncated: !listing.complete,
     }, { status: 409 });
   }
 
-  // Find orphans
-  const orphanObjects = storageObjects.filter(obj => !keepSet.paths.has(obj.name));
+  // Unreferenced by every source in REFERENCE_SOURCES. NOT yet the delete set:
+  // MEAL-133's grace window comes off it below.
+  const unreferenced = storageObjects.filter(obj => !keepSet.paths.has(obj.name));
+
+  const { deletable: orphanObjects, tooNew } =
+    splitByAge(unreferenced, listing.ageColumn, Date.now());
   const orphanPaths = orphanObjects.map(o => o.name);
   const estimatedBytes = orphanObjects.reduce((sum, o) => sum + (o.size ?? 0), 0);
 
-  const orphanShare = storageObjects.length > 0 ? orphanObjects.length / storageObjects.length : 0;
+  // ── The Gate 2 numerator is UNREFERENCED, not deletable ───────────────────
+  // Measured before the grace window rather than after, so MEAL-133's fix cannot
+  // talk MEAL-126's backstop down. Gate 2 exists to catch a keep-set that is
+  // complete but useless — BASE_URL drifting, so every row reads as a non-path and
+  // the keep-set comes out empty — and that corruption shows up as objects being
+  // unreferenced, whatever their age. Scoring the share on the post-grace delete
+  // set would let a bucket of fresh uploads dilute exactly the signal the gate
+  // watches for, and would make the gate's verdict depend on when the sweep ran.
+  const orphanShare = storageObjects.length > 0 ? unreferenced.length / storageObjects.length : 0;
   const shareTooHigh =
     storageObjects.length >= MIN_OBJECTS_FOR_SHARE_CHECK && orphanShare > MAX_ORPHAN_SHARE;
 
   const stats = {
     objectsListed: storageObjects.length,
-    // `list_storage_objects` is a set-returning RPC, so PostgREST caps IT at
-    // db-max-rows as well. Truncation there is not destructive — an object we
-    // never saw is an object we never delete — but it does mean the counts below
-    // describe only part of the bucket, and the operator should know that.
-    objectListMaybeTruncated: storageObjects.length >= PAGE_ROWS,
+    /**
+     * The bucket listing was read to its end. Always true on a 200 now that the
+     * listing is paged and Gate 1 refuses when it is not — it is a guarantee here
+     * rather than the guess it used to be.
+     *
+     * One seam was considered and left alone: `fetchAllPages` reads
+     * `data: null, error: null` as a short page, i.e. the end of the bucket, and
+     * `lib/paged-select.ts` records that a 414 arrives in exactly that shape
+     * (MEAL-112). A 414 mid-walk would therefore end the listing early and be
+     * reported as complete. It cannot happen on this call — the URI is a constant
+     * length, with no `.in()` filter growing it — and if it somehow did, the missing
+     * objects are objects this run does not delete. Under-reclaiming, not
+     * over-deleting.
+     */
+    objectListComplete: listing.complete,
+    // Kept, and no longer vestigial: it is now the exact negation of
+    // `objectListComplete`, so it can only be true on Gate 1's 409, where it says
+    // WHICH half of the read came up short. Before paging it meant "this listing
+    // was 1000 objects long, which is suspiciously exactly the ceiling"; it now
+    // means "the pages did not reach the end of the bucket", which is a fact
+    // rather than a suspicion. A consumer that only ever checked this field still
+    // gets a correct answer.
+    objectListMaybeTruncated: !listing.complete,
     keepSetSize: keepSet.paths.size,
     referenceRowsRead: keepSet.tables.reduce((sum, t) => sum + t.read, 0),
+    /** Objects no table references — the Gate 2 numerator, before the grace window. */
+    unreferencedCount: unreferenced.length,
+    /** Unreferenced objects held back because they are new, or of unknown age. */
+    objectsTooNewToDelete: tooNew.length,
+    graceWindowMinutes: MIN_OBJECT_AGE_MS / 60_000,
+    /**
+     * False against the pre-migration `list_storage_objects`, which returns no
+     * `created_at`: no object's age is knowable, so MEAL-133's window protects
+     * nothing and the sweep behaves exactly as it did before. This field is how an
+     * operator can tell that the migration is still outstanding.
+     */
+    ageFilterAvailable: listing.ageColumn,
     orphanShare: Number(orphanShare.toFixed(4)),
     tables: keepSet.tables,
   };
+
+  /** Said on every response, because a sweep with no age filter is the old sweep. */
+  const ageWarning = listing.ageColumn ? [] : [
+    'The bucket listing carried no created_at, so `list_storage_objects` has not been migrated yet ' +
+    '(supabase/migrations/20260807000002_list_storage_objects_created_at.sql). Objects uploaded seconds ' +
+    'ago cannot be told from abandoned ones, so a photo a user is part-way through attaching can still ' +
+    'be deleted (MEAL-133). Apply the migration to enable the ' +
+    `${MIN_OBJECT_AGE_MS / 60_000}-minute grace window.`,
+  ];
 
   if (dryRun) {
     log({
@@ -507,6 +833,10 @@ export async function POST(request: NextRequest) {
       orphanCount: orphanPaths.length,
       estimatedBytes,
       paths: orphanPaths,
+      // Listed, not just counted: "why is this object still here" is a question a
+      // dry run should answer, and the grace window is now one of the answers.
+      tooNewPaths: tooNew.map((o) => o.name),
+      ...(ageWarning.length > 0 ? { warnings: ageWarning } : {}),
       wouldBlock: shareTooHigh,
       ...(shareTooHigh ? {
         blockReason:
@@ -522,18 +852,20 @@ export async function POST(request: NextRequest) {
     log({
       event: 'STORAGE:CLEANUP', status: 'error', userId: admin.userId,
       reason: 'orphan share over ceiling',
-      detail: `orphans=${orphanPaths.length}/${storageObjects.length} share=${stats.orphanShare}`,
+      detail: `unreferenced=${unreferenced.length}/${storageObjects.length} share=${stats.orphanShare}`
+        + ` deletable=${orphanPaths.length} tooNew=${tooNew.length}`,
     });
     return NextResponse.json({
       blocked: true,
       reason: `orphan share ${(orphanShare * 100).toFixed(1)}% exceeds the ${MAX_ORPHAN_SHARE * 100}% ceiling`,
       error:
-        `Refusing to delete ${orphanPaths.length} of ${storageObjects.length} objects ` +
-        `(${(orphanShare * 100).toFixed(1)}%): that is more of the bucket than a cleanup should ever ` +
-        `remove. Check the dry-run list, then re-run with force=true if it is genuinely correct. ` +
-        `Nothing was deleted.`,
+        `Refusing to delete: ${unreferenced.length} of ${storageObjects.length} objects ` +
+        `(${(orphanShare * 100).toFixed(1)}%) are referenced by nothing, which is more of the bucket than a ` +
+        `cleanup should ever remove. Check the dry-run list, then re-run with force=true if it is genuinely ` +
+        `correct. Nothing was deleted.`,
       orphanCount: orphanPaths.length,
       estimatedBytes,
+      ...(ageWarning.length > 0 ? { warnings: ageWarning } : {}),
       ...stats,
     }, { status: 409 });
   }
@@ -565,7 +897,7 @@ export async function POST(request: NextRequest) {
   // paths write no rows either — a dry run that pruned a cache would not be one.
   const hashes = await invalidateHashes(supabase, removedForCertain);
 
-  const warnings: string[] = [];
+  const warnings: string[] = [...ageWarning];
   if (removalsUnconfirmed > 0) {
     warnings.push(
       `${removalsUnconfirmed} of ${orphanPaths.length} object(s) were asked for but storage did not ` +
@@ -588,6 +920,8 @@ export async function POST(request: NextRequest) {
     event: 'STORAGE:CLEANUP', status: 'success', userId: admin.userId,
     detail:
       `deleted=${deleted} estimatedBytes=${estimatedBytes} keep=${keepSet.paths.size}` +
+      ` objects=${storageObjects.length} unreferenced=${unreferenced.length} tooNew=${tooNew.length}` +
+      ` ageFilter=${listing.ageColumn ? 'on' : 'UNAVAILABLE'}` +
       ` hashRowsDeleted=${hashes.deleted} hashDeletesFailed=${hashes.failed}` +
       ` unconfirmed=${removalsUnconfirmed}${force ? ' forced' : ''}`,
   });
