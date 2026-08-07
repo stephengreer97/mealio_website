@@ -13,21 +13,26 @@ import {
   channelIdForCreator,
   videoIdFromUrl,
   exchangeYouTubeCode,
+  fetchCaptions,
   fetchOwnChannel,
   fetchVideoSnippet,
   fetchVideos,
+  captionFailureIsFinal,
+  grantCanReadCaptions,
   isUploadsPageToken,
   listUploads,
   srtToText,
   updateVideoDescription,
   withMealioLink,
+  CAPTIONS_MISSING_SCOPE_DETAIL,
   MAX_CAPTION_BYTES,
   MEALIO_LINK_INTRO,
   YOUTUBE_DESCRIPTION_MAX,
   YOUTUBE_QUOTA,
+  YOUTUBE_READ_SCOPE,
   youtubeAuthUrl,
   youtubeSourceDocument,
-  YOUTUBE_WRITE_SCOPE,
+  YOUTUBE_FORCE_SSL_SCOPE,
   type VideoSnippet,
   type YouTubeVideo,
 } from '@/lib/youtube';
@@ -90,16 +95,41 @@ describe('youtube — the consent screen asks for what it is using', () => {
     // never turn on — the scariest line on the consent screen, shown to the
     // people it did not apply to.
     expect(scopes).toContain('https://www.googleapis.com/auth/youtube.readonly');
-    expect(scopes).not.toContain(YOUTUBE_WRITE_SCOPE);
+    expect(scopes).not.toContain(YOUTUBE_FORCE_SSL_SCOPE);
   });
 
   it('adds the write scope when description editing is what was asked for', () => {
     const url = new URL(youtubeAuthUrl('nonce-1', { write: true })!);
     const scopes = (url.searchParams.get('scope') ?? '').split(' ');
 
-    expect(scopes).toContain(YOUTUBE_WRITE_SCOPE);
+    expect(scopes).toContain(YOUTUBE_FORCE_SSL_SCOPE);
     // Still carries read: dropping it here would trade one grant for the other.
     expect(scopes).toContain('https://www.googleapis.com/auth/youtube.readonly');
+  });
+
+  /**
+   * MEAL-138. `force-ssl` is one scope and two capabilities, and before this the
+   * only thing that ever asked for it was the description-editing tick — so
+   * caption reading was only ever available to a creator who agreed to have their
+   * descriptions edited, two permissions that have nothing to do with each other.
+   */
+  it('asks for force-ssl for captions alone, without asking to edit anything', () => {
+    const url = new URL(youtubeAuthUrl('nonce-1', { captions: true })!);
+    const scopes = (url.searchParams.get('scope') ?? '').split(' ');
+
+    // Google sells captions through no narrower scope, so this is the same
+    // string the append asks for. What must not be true is that a creator has to
+    // *claim to want the append* in order to get here.
+    expect(scopes).toContain(YOUTUBE_FORCE_SSL_SCOPE);
+    expect(scopes).toContain(YOUTUBE_READ_SCOPE);
+  });
+
+  it('asks for nothing extra when neither capability was asked for', () => {
+    // The regression guard on 8aec421's win: a plain connect must stay plain, so
+    // the fix for the caption path cannot have quietly widened the connect
+    // screen back to what it was.
+    const scopes = (new URL(youtubeAuthUrl('nonce-1', {})!).searchParams.get('scope') ?? '').split(' ');
+    expect(scopes).toEqual([YOUTUBE_READ_SCOPE]);
   });
 
   it('makes the second grant additive rather than a replacement', () => {
@@ -785,6 +815,13 @@ describe('youtube — description first, captions second', () => {
     });
     expect(document.usedCaptions).toBe(false);
     expect(document.text).toBe('short');
+    // A bare 403 with nothing in the body is not evidence of a scope problem —
+    // it could be a video whose owner disabled third-party caption access — so it
+    // reads as `unavailable` rather than claiming a permission diagnosis it
+    // cannot support. A 403 *is* deterministic, though, so it is marked as one
+    // the retry sweep should leave alone; see the retry describe below.
+    expect(document.captions).toBe('unavailable');
+    expect(captionFailureIsFinal(document.captionsDetail)).toBe(true);
   });
 
   /** A caption list naming one uploaded English track, then `body` for the download. */
@@ -868,6 +905,266 @@ describe('youtube — description first, captions second', () => {
   });
 });
 
+// ── Why there are no captions ────────────────────────────────────────────────
+
+/**
+ * MEAL-138: "this video has no captions" and "we are not allowed to read this
+ * video's captions" must not be the same answer.
+ *
+ * Both used to be `null` out of `fetchCaptions`, which made a thin-description
+ * video that we were *refused* indistinguishable from one that genuinely has
+ * nothing in it. The consequences of that collapse are what these tests defend
+ * against, in order: the reader has to say which it was, the pre-flight has to
+ * mean the refused call is never even paid for, and a stale scope list must reach
+ * the same answer the expensive way.
+ */
+describe('youtube — a refused caption read is not a video without captions', () => {
+  /** `captions.list` answers `items`, and nothing else is ever reached. */
+  function listOnly(items: unknown[], init?: ResponseInit) {
+    const calls: string[] = [];
+    const impl = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ items }), {
+        headers: { 'content-type': 'application/json' },
+        ...init,
+      });
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  /** Google's own shape for a token that lacks a scope. */
+  const INSUFFICIENT_SCOPE = {
+    error: {
+      code: 403,
+      message: 'Request had insufficient authentication scopes.',
+      errors: [{ message: 'Insufficient Permission', domain: 'global', reason: 'insufficientPermissions' }],
+      status: 'PERMISSION_DENIED',
+    },
+  };
+
+  it('is the whole point: a genuine no-captions video and a missing scope are different answers', async () => {
+    const none = listOnly([]);
+    const genuine = await youtubeSourceDocument(video({ description: 'Full recipe below!' }), {
+      accessToken: 'ya29-token',
+      // The grant *can* read captions, so the empty list is a fact about the video.
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl: none.impl,
+      lookup: publicLookup,
+    });
+
+    const refused = await youtubeSourceDocument(video({ description: 'Full recipe below!' }), {
+      accessToken: 'ya29-token',
+      scopes: [YOUTUBE_READ_SCOPE],
+      fetchImpl: none.impl,
+      lookup: publicLookup,
+    });
+
+    // Identical `text` on both — that is exactly why the difference had to be
+    // carried somewhere other than the text, and the reason a gate verdict could
+    // never tell them apart.
+    expect(genuine.text).toBe(refused.text);
+
+    expect(genuine.captions).toBe('none');
+    expect(genuine.captionsDetail).toBeNull();
+
+    expect(refused.captions).toBe('missing-scope');
+    // Names the fix, in words a creator can act on. "force-ssl" is not one.
+    expect(refused.captionsDetail).toBe(CAPTIONS_MISSING_SCOPE_DETAIL);
+    expect(refused.captionsDetail).toMatch(/read my captions/i);
+    expect(refused.captionsDetail).toMatch(/Nothing is wrong with the video/i);
+  });
+
+  it('spends no quota on a call it already knows will be refused', async () => {
+    const { impl, calls } = listOnly([]);
+
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE],
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+
+    // `captions.list` is 50 units of a shared 10,000/day budget. Forty
+    // thin-description videos in one sync is 2,000 units bought entirely to be
+    // told something the connection row already said.
+    expect(calls).toEqual([]);
+    expect(YOUTUBE_QUOTA.captionsList).toBe(50);
+    expect(result).toEqual({ status: 'missing-scope', detail: CAPTIONS_MISSING_SCOPE_DETAIL });
+  });
+
+  it('reaches the same answer when the stored scope list is stale', async () => {
+    // A creator can revoke a scope from their Google account without telling us,
+    // so the row says force-ssl and Google says 403. The pre-flight cannot be the
+    // only check, and the two paths must not disagree.
+    const impl = (async () =>
+      new Response(JSON.stringify(INSUFFICIENT_SCOPE), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+
+    expect(result).toEqual({ status: 'missing-scope', detail: CAPTIONS_MISSING_SCOPE_DETAIL });
+  });
+
+  it('reads a 403 that is not about scopes as the video-specific refusal it is', async () => {
+    // Third-party caption contributions turned off, or a track marked
+    // non-downloadable. Also a 403, also from `captions.list`, and asking the
+    // creator for a permission would achieve nothing — so it must not be
+    // reported as a missing permission.
+    const impl = (async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 403,
+            message: 'The permissions associated with the request are not sufficient to download the caption track.',
+            errors: [{ reason: 'forbidden', domain: 'youtube.caption' }],
+          },
+        }),
+        { status: 403, headers: { 'content-type': 'application/json' } },
+      )) as unknown as typeof fetch;
+
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    // Google's own sentence is the useful half — an operator does something
+    // different about this than about a scope.
+    expect(result.detail).toContain('not sufficient to download the caption track');
+  });
+
+  it('does not claim a video has no captions when it never looked', async () => {
+    const impl = (async () => new Response('{}')) as unknown as typeof fetch;
+
+    // A substantial description: the fallback never runs, so nothing here knows
+    // anything about this video's captions and `none` would be an invention.
+    const long = `${DESCRIPTION}\n${'Serve with tortilla chips and a cold drink. '.repeat(8)}`;
+    const plenty = await youtubeSourceDocument(video({ description: long }), {
+      accessToken: 'ya29-token',
+      scopes: [YOUTUBE_READ_SCOPE],
+      fetchImpl: impl,
+    });
+    expect(plenty.captions).toBe('not-needed');
+
+    // No token at all — the description-only tier, which is ordinary and is not a
+    // permission problem to report at anybody.
+    const noGrant = await youtubeSourceDocument(video({ description: 'short' }), {
+      accessToken: null,
+      fetchImpl: impl,
+    });
+    expect(noGrant.captions).toBe('no-grant');
+    expect(noGrant.captionsDetail).toBeNull();
+  });
+
+  it('answers the one question every surface asks, off the stored scope list', () => {
+    expect(grantCanReadCaptions([YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE])).toBe(true);
+    expect(grantCanReadCaptions([YOUTUBE_READ_SCOPE])).toBe(false);
+    // A grant row that carries no scopes at all is not a grant that can read
+    // captions, and must not throw its way into looking like one.
+    expect(grantCanReadCaptions(null)).toBe(false);
+    expect(grantCanReadCaptions(undefined)).toBe(false);
+  });
+});
+
+// ── Which caption failures are worth another go ──────────────────────────────
+
+/**
+ * MEAL-138 cold review, F3: a retry that cannot succeed is not a retry.
+ *
+ * The poller retries a `failed` item for three poll intervals from the first
+ * sighting of the video — 45 minutes. Every caption failure was landing in that
+ * sweep, and two kinds of them answer identically however often they are asked: a
+ * permission we were refused (fixed by a creator, on human time, long after the
+ * window) and a track we are certainly not being handed. Each go costs
+ * `captionsList` + `captionsDownload`, and the last one emits a `lost` signal
+ * telling an operator a recipe must be imported by hand — wrong for a missing
+ * permission, which one tick fixes.
+ *
+ * So the detail carries the mark, and `captionFailureIsFinal` is the only reader.
+ */
+describe('youtube — a caption failure says whether trying again could change it', () => {
+  const forbidden = (message: string, reason: string) =>
+    (async () =>
+      new Response(JSON.stringify({ error: { code: 403, message, errors: [{ reason, domain: 'youtube.caption' }] } }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+  it('marks a missing permission as one no retry can fix, and says what does', () => {
+    expect(captionFailureIsFinal(CAPTIONS_MISSING_SCOPE_DETAIL)).toBe(true);
+    // The creator is still told the fix, and now also that it will not happen by
+    // itself — the sweep used to promise a recovery it could not deliver.
+    expect(CAPTIONS_MISSING_SCOPE_DETAIL).toMatch(/read my captions/i);
+    expect(CAPTIONS_MISSING_SCOPE_DETAIL).toMatch(/import this video from your catalogue/i);
+  });
+
+  it('marks a 403 about the video as final: the same request is the same refusal', async () => {
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl: forbidden('The permissions associated with the request are not sufficient.', 'forbidden'),
+      lookup: publicLookup,
+    });
+
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(captionFailureIsFinal(result.detail)).toBe(true);
+    // 50 units a go on a shared 10,000/day budget, three goes per video, to be
+    // told the same thing about the same video settings.
+    expect(YOUTUBE_QUOTA.captionsList).toBe(50);
+  });
+
+  it('leaves an outage retryable, which is the half of `unavailable` that earns it', async () => {
+    const impl = (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl: impl,
+      lookup: publicLookup,
+    });
+
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(captionFailureIsFinal(result.detail)).toBe(false);
+    expect(result.detail).toMatch(/worth another go/i);
+  });
+
+  it('marks a track over the byte cap as final: it is the same size next time', async () => {
+    const { stream } = endlessBody(256 * 1024, 40);
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).includes('/captions?')) {
+        return new Response(
+          JSON.stringify({ items: [{ id: 'real-1', snippet: { trackKind: 'standard', language: 'en' } }] }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(stream, { headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    const result = await fetchCaptions('vid0000000A', 'ya29-token', {
+      scopes: [YOUTUBE_READ_SCOPE, YOUTUBE_FORCE_SSL_SCOPE],
+      fetchImpl,
+      lookup: publicLookup,
+    });
+
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(captionFailureIsFinal(result.detail)).toBe(true);
+  });
+
+  it('treats an unmarked failure as retryable, because guessing wrong loses a recipe', () => {
+    expect(captionFailureIsFinal(null)).toBe(false);
+    expect(captionFailureIsFinal(undefined)).toBe(false);
+    expect(captionFailureIsFinal('The model timed out.')).toBe(false);
+  });
+});
+
 // ── The append consent flag ──────────────────────────────────────────────────
 
 describe('youtube — youtube_append_opt_in is enforced server-side', () => {
@@ -879,7 +1176,7 @@ describe('youtube — youtube_append_opt_in is enforced server-side', () => {
     external_name: 'Chef Sarah',
     access_token: 'ya29-token',
     refresh_token: '1//refresh',
-    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_WRITE_SCOPE}`,
+    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_FORCE_SSL_SCOPE}`,
     expires_at: '2099-01-01T00:00:00.000Z',
     broken_reason: null,
     broken_at: null,
@@ -979,7 +1276,7 @@ describe('youtube — the channel to list comes from the grant and nowhere else'
     externalName: 'Chef Sarah',
     accessToken: 'ya29-token',
     refreshToken: '1//refresh',
-    scopes: [YOUTUBE_WRITE_SCOPE],
+    scopes: [YOUTUBE_FORCE_SSL_SCOPE],
     expiresAt: '2099-01-01T00:00:00.000Z',
     brokenReason: null,
     brokenAt: null,

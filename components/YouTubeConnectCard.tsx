@@ -5,18 +5,35 @@ import { useEffect, useState } from 'react';
 /**
  * Connect a YouTube channel, from the creator portal (MEAL-74).
  *
- * Two decisions on one card, and they are deliberately not the same decision.
- * Connecting lets Mealio **read** the channel — titles, descriptions and, for a
- * video whose description is thin, captions. The tickbox beside it is consent to
- * **write**: to add the Mealio link to a video's description once a recipe from
- * it is live. MEAL-77 forbids conflating those, so the box is separate, off by
- * default, and switchable in one click afterwards.
+ * Three decisions on one card, and they are deliberately not the same decision.
  *
- * Both are named on the button itself. The consent screen asks for the write
- * scope either way — asking for it later would re-prompt every creator who had
- * already connected — and a "Connect YouTube" button that quietly acquires
- * description-write access is the sort of thing that reads as a bait-and-switch
- * when a creator notices later.
+ *   1. **Connecting** lets Mealio read the channel — the video list, titles and
+ *      descriptions.
+ *   2. **Reading captions**, for a video whose description is too short to read a
+ *      recipe from. Its own control, because Google will not sell it on its own
+ *      and it needs `youtube.force-ssl` (MEAL-138).
+ *   3. **Editing descriptions** — adding the Mealio link to a video once a recipe
+ *      from it is live. MEAL-77 forbids conflating this with reading, so it is
+ *      separate, off by default, and switchable in one click.
+ *
+ * 2 and 3 are the *same Google scope* and not the same question, and this card is
+ * where that stops being a trap. Until MEAL-138 there was one tick — description
+ * editing — and it was the only thing that ever asked for `force-ssl`, so a
+ * creator who declined it got a read-only grant and every thin-description video
+ * on their channel silently failed to import. Ticking a box about editing
+ * somebody's descriptions must not be the price of reading their subtitles.
+ *
+ * What the copy has to be honest about, and is: granting captions shows the
+ * creator Google's own sentence, which mentions editing. Mealio still edits
+ * nothing — `youtube_append_opt_in` gates every write server-side, and the
+ * captions trip carries no answer to that question in either direction, so it
+ * cannot set it (see `connect`, and the consent decision in the callback). The card
+ * says so at the moment the creator is deciding, and that is only true because
+ * the request omits the field: sending the stored `true` made this button the one
+ * act that armed the append.
+ *
+ * The trip that *does* ask about editing is the append tick itself, which sends
+ * `write: true` and says so on the button.
  */
 
 interface Status {
@@ -25,6 +42,8 @@ interface Status {
   channel: { id: string | null; title: string | null } | null;
   brokenReason: string | null;
   canWriteDescriptions: boolean;
+  /** The grant carries `force-ssl`, so a thin-description video can be read from its captions. */
+  canReadCaptions: boolean;
   appendOptIn: boolean;
 }
 
@@ -126,17 +145,36 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
    * description editing on a connection that only has read. Otherwise it
    * follows the tick on the connect form, which is the same question asked
    * before there is any connection at all.
+   *
+   * `captions` is the second reason to ask for the same scope (MEAL-138), sent on
+   * its own so the server logs which question produced the consent screen. It
+   * carries **no answer at all** about description editing: the field is omitted,
+   * not set to the stored value and not set to `false`.
+   *
+   * Both of the other two were wrong, in opposite directions. `false` withdrew a
+   * consent the creator had really given, without telling them. The stored value
+   * re-asserted it — and since this trip is what grants `force-ssl`, a creator who
+   * had ticked the box on the connect form and then unticked the scope on Google's
+   * own screen would have a button labelled "read my captions" turn description
+   * editing from impossible into live. Omitted, the callback touches the flag on
+   * neither side, and the small print in the amber panel below is true.
    */
-  const connect = async (options: { write?: boolean } = {}) => {
+  const connect = async (options: { write?: boolean; captions?: boolean } = {}) => {
     setBusy(true);
     setError('');
+    // The tick travels with the request that starts the round trip, so the
+    // server stores what was on screen rather than trusting a later call — but
+    // only when this trip is the one asking. A captions trip asks nothing about
+    // editing and so answers nothing.
+    const payload: { appendOptIn?: boolean; captions?: true } = {};
+    if (options.captions) payload.captions = true;
+    if (options.write !== undefined) payload.appendOptIn = options.write;
+    else if (!options.captions) payload.appendOptIn = appendConsent;
     try {
       const res = await fetch('/api/creator/youtube/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-        // The tick travels with the request that starts the round trip, so the
-        // server stores what was on screen rather than trusting a later call.
-        body: JSON.stringify({ appendOptIn: options.write ?? appendConsent }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok || !data.url) {
@@ -216,9 +254,12 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
    * in the editor above (MEAL-94) and this appears.
    *
    * The consent tick stays part of *connecting* rather than waiting for a
-   * connection to exist: the Google screen asks for the write scope either way,
-   * so a "Connect YouTube" button with no tick beside it would acquire
-   * description-write access without ever naming it (MEAL-74).
+   * connection to exist, but the reason is no longer the one written here until
+   * this ticket. Since `8aec421` the Google screen asks for the write scope only
+   * when a tick asks for it, so a plain "Connect YouTube" acquires nothing but
+   * read — the tick is offered up front because it is the same question, asked
+   * once, before there is a connection to ask it about, and because a creator who
+   * wants the link added should not have to connect and then come back for it.
    *
    * Not applied when embedded. There the creator has just picked YouTube from a
    * dropdown, which is the same statement the link was standing in for, made
@@ -274,11 +315,55 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
         </p>
       )}
 
+      {/* This paragraph used to promise captions on a plain connection, which
+          stopped being true when the scope that reads them became incremental
+          (MEAL-138): a creator read that sentence, connected, and got a grant
+          that cannot read a single caption. Captions have their own control
+          below, so this says only what connecting actually does. */}
       <p className="text-sm text-gray-600 leading-relaxed mb-4">
         {needsConnect
-          ? 'Connecting lets Mealio read your videos’ titles and descriptions — and their captions, which YouTube only shares with the channel owner — so a recipe can be imported from a video instead of typed out again.'
+          ? 'Connecting lets Mealio read your videos’ titles and descriptions, so a recipe can be imported from a video instead of typed out again.'
           : 'Mealio can read this channel’s videos to import recipes from them.'}
       </p>
+
+      {/* ── Captions (MEAL-138) ───────────────────────────────────────────────
+          The consequence of not having this is otherwise invisible: a video whose
+          description is under about 250 characters simply never becomes a recipe,
+          and every screen that could have said why said "no recipe found". So it
+          is stated here, to the one person who can fix it, with the button that
+          fixes it. */}
+      {hasConnection && !status.canReadCaptions && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-sm text-amber-900 leading-relaxed">
+            <span className="font-semibold">Mealio cannot read this channel’s captions.</span> Any video where
+            the recipe is spoken rather than written out in the description gets skipped — there is nothing for
+            us to read. YouTube shares captions only with the channel owner, and only through a permission this
+            connection was not given.
+          </p>
+          <button
+            onClick={() => { void connect({ captions: true }); }}
+            disabled={busy}
+            className="mt-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl px-4 py-2 transition-colors"
+          >
+            {busy ? 'Opening Google…' : 'Let Mealio read my captions'}
+          </button>
+          {/* Google's screen says "See, edit, and permanently delete…" because
+              this is the only scope it sells captions through. A creator meeting
+              that sentence having been told we want to read subtitles deserves
+              to have been warned, and to be told what still governs the edit. */}
+          <p className="text-[11px] text-amber-800/80 mt-2 leading-relaxed">
+            Google has no permission for captions alone, so its screen will mention editing your videos. Mealio
+            still edits nothing unless you tick the box below — that is a separate setting, off unless you turn
+            it on, and this does not turn it on.
+          </p>
+        </div>
+      )}
+      {hasConnection && status.canReadCaptions && (
+        <p className="text-sm text-gray-600 leading-relaxed mb-4">
+          Mealio can also read this channel’s captions, so a video whose description is too short still gets its
+          recipe read from what you say in it.
+        </p>
+      )}
 
       {/* One control, whichever state the card is in. On a connection that
           exists it writes through immediately, so consent can be withdrawn
@@ -323,9 +408,19 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
                 said only "Connect YouTube" would be where that disappeared. */}
             {busy ? 'Opening Google…' : consent ? 'Connect YouTube — and edit descriptions' : 'Connect YouTube'}
           </button>
+          {/* Says which screen the creator is about to meet, and it differs by
+              the tick: unticked, Google asks only to view the account
+              (`youtube.readonly`), and the wider sentence about managing it
+              appears only when the box above has asked for the write scope.
+              Promising the wider one either way overstates what a plain connect
+              takes — which is the mistake this ticket was auditing for. */}
           <p className="text-[11px] text-gray-400 mt-2">
-            Google will ask for permission to manage your YouTube account. We use it to read your videos, and — only
-            if you ticked the box above — to add a link to a description.
+            {consent
+              ? 'Google will ask for permission to see, edit and delete your YouTube videos — that one permission is the ' +
+                'only way it lets us add a link to a description. We use it to read your videos and to add that link, ' +
+                'nothing else.'
+              : 'Google will ask for permission to view your YouTube account. We use it to read your videos’ titles and ' +
+                'descriptions.'}
           </p>
         </>
       )}

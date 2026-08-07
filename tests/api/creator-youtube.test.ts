@@ -23,7 +23,8 @@ import { POST as CONNECT, STATE_COOKIE } from '@/app/api/creator/youtube/connect
 import { GET as CALLBACK } from '@/app/api/creator/youtube/callback/route';
 import { GET, PATCH, DELETE } from '@/app/api/creator/youtube/route';
 import { clearRevocationCache, createAccessToken } from '@/lib/tokens';
-import { YOUTUBE_WRITE_SCOPE } from '@/lib/youtube';
+import { assertAppendAllowed, YOUTUBE_FORCE_SSL_SCOPE } from '@/lib/youtube';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 /**
  * Connecting a channel, and the consent flag that comes with it (MEAL-74).
@@ -58,7 +59,7 @@ function grantRow(overrides: Record<string, unknown> = {}) {
     external_name: 'Chef Sarah',
     access_token: 'ya29-token',
     refresh_token: '1//super-secret-refresh',
-    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_WRITE_SCOPE}`,
+    scopes: `https://www.googleapis.com/auth/youtube.readonly ${YOUTUBE_FORCE_SSL_SCOPE}`,
     expires_at: '2099-01-01T00:00:00.000Z',
     broken_reason: null,
     broken_at: null,
@@ -124,9 +125,8 @@ describe('POST /api/creator/youtube/connect', () => {
     const body = await res.json();
     const url = new URL(body.url);
 
-    // Asking for write later would re-prompt every creator who already
-    // connected, so it is asked for on the first screen or not at all.
-    expect(url.searchParams.get('scope')).toContain(YOUTUBE_WRITE_SCOPE);
+    // The tick is what asks for it, and this request carries the tick.
+    expect(url.searchParams.get('scope')).toContain(YOUTUBE_FORCE_SSL_SCOPE);
     expect(url.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
   });
 
@@ -151,6 +151,72 @@ describe('POST /api/creator/youtube/connect', () => {
     expect(url.searchParams.get('state')).toMatch(/^[0-9a-f]{32}$/);
     expect(cookie?.value.split('.')).toHaveLength(3);
     expect(claims(cookie!.value)).toMatchObject({ sub: 'u1', creatorId: 'c1' });
+  });
+
+  /**
+   * MEAL-138. Two capabilities, one Google scope, and — until this — one request.
+   *
+   * The bug was not that `force-ssl` became incremental; that was right. It was
+   * that the *only* thing that ever asked for it was the description-editing
+   * tick, so a creator who declined to have their descriptions edited also
+   * declined, without being told, to have their captions read. Asking on the
+   * caption's own behalf is what uncouples them.
+   */
+  it('asks for the caption scope on the caption’s own account, with no consent to edit', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    const res = await CONNECT(
+      jsonRequest('/api/creator/youtube/connect', { token, body: { appendOptIn: false, captions: true } }),
+    );
+    const url = new URL((await res.json()).url);
+
+    expect(url.searchParams.get('scope')).toContain(YOUTUBE_FORCE_SSL_SCOPE);
+    // And nothing about this trip claims the creator wants their descriptions
+    // edited. The state cookie carries the answer the callback writes, and it
+    // must still be no.
+    const cookie = res.cookies.get(STATE_COOKIE);
+    expect(claims(cookie!.value)).toMatchObject({ appendOptIn: false });
+    // Answerable from the log: "why did this creator see that consent screen".
+    const detail = log.mock.calls.at(-1)?.[0].detail as string;
+    expect(detail).toContain('captions=true');
+    expect(detail).toContain('appendOptIn=false');
+  });
+
+  it('sends no append answer at all when only captions were asked for', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    // What the card sends when the creator clicks "let Mealio read my captions":
+    // the append field is absent, because that question was not on the screen.
+    const res = await CONNECT(jsonRequest('/api/creator/youtube/connect', { token, body: { captions: true } }));
+    const url = new URL((await res.json()).url);
+
+    expect(url.searchParams.get('scope')).toContain(YOUTUBE_FORCE_SSL_SCOPE);
+    // Absent, not `false`. The callback reads the claim's absence as "this trip
+    // did not ask", and writes the flag on neither side — which is the only
+    // answer that neither re-arms the append nor withdraws a real consent.
+    const claim = claims(res.cookies.get(STATE_COOKIE)!.value);
+    expect('appendOptIn' in claim).toBe(false);
+    // And the audit line says which of the three it was.
+    expect(log.mock.calls.at(-1)?.[0].detail).toContain('appendOptIn=unasked');
+  });
+
+  it('keeps a plain connect plain', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1' } });
+
+    // 8aec421's win, guarded from this ticket's fix: a creator who asked for
+    // neither capability must still meet the narrow consent screen.
+    const res = await CONNECT(jsonRequest('/api/creator/youtube/connect', { token, body: {} }));
+    const url = new URL((await res.json()).url);
+
+    expect(url.searchParams.get('scope')).not.toContain(YOUTUBE_FORCE_SSL_SCOPE);
+    // And an empty body is still an explicit `false`, not the third answer: only
+    // a captions trip may leave the append question unanswered. A connect that
+    // stopped withdrawing would leave last month's `true` standing over a fresh
+    // grant that `include_granted_scopes` had just carried `force-ssl` into.
+    expect(claims(res.cookies.get(STATE_COOKIE)!.value)).toMatchObject({ appendOptIn: false });
   });
 
   it('treats anything other than a literal true as no consent', async () => {
@@ -202,7 +268,7 @@ describe('GET /api/creator/youtube/callback', () => {
       grant: {
         accessToken: 'ya29-token',
         refreshToken: '1//super-secret-refresh',
-        scopes: ['https://www.googleapis.com/auth/youtube.readonly', YOUTUBE_WRITE_SCOPE],
+        scopes: ['https://www.googleapis.com/auth/youtube.readonly', YOUTUBE_FORCE_SSL_SCOPE],
         expiresAt: '2026-08-02T12:00:00.000Z',
       },
     });
@@ -227,7 +293,7 @@ describe('GET /api/creator/youtube/callback', () => {
   it('writes the append consent from the state cookie, in both directions', async () => {
     exchangeYouTubeCode.mockResolvedValue({
       ok: true,
-      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_WRITE_SCOPE], expiresAt: null },
+      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_FORCE_SSL_SCOPE], expiresAt: null },
     });
     fetchOwnChannel.mockResolvedValue({ ok: true, channel: { id: CHANNEL_ID, title: 'Chef Sarah' } });
 
@@ -247,7 +313,7 @@ describe('GET /api/creator/youtube/callback', () => {
   function googleSaidYes() {
     exchangeYouTubeCode.mockResolvedValue({
       ok: true,
-      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_WRITE_SCOPE], expiresAt: null },
+      grant: { accessToken: 'ya29', refreshToken: '1//r', scopes: [YOUTUBE_FORCE_SSL_SCOPE], expiresAt: null },
     });
     fetchOwnChannel.mockResolvedValue({ ok: true, channel: { id: CHANNEL_ID, title: 'Chef Sarah' } });
   }
@@ -255,6 +321,11 @@ describe('GET /api/creator/youtube/callback', () => {
   it('withdraws the append consent even when the grant cannot be stored', async () => {
     googleSaidYes();
     fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', youtube_url: null, youtube_append_opt_in: true }]);
+    // The callback reads the grant it is about to replace before it writes
+    // anything — that read is how it knows whether a standing `true` was ever
+    // actionable (MEAL-138). Queued first, so the error below lands on the
+    // *write* it is written for; queue results are FIFO per table.
+    fakeDb.queue('creator_platform_accounts', { data: null });
     fakeDb.queue('creator_platform_accounts', { error: { message: 'connection refused' } });
 
     const res = await CALLBACK(callbackRequest({ code: 'c', state: 'nonce-1' }, await stateCookie({ appendOptIn: false })));
@@ -285,6 +356,9 @@ describe('GET /api/creator/youtube/callback', () => {
 
   it('does not report a connection when the consent write failed', async () => {
     googleSaidYes();
+    // The pre-write read of the grant, then the write itself. See the FIFO note
+    // above.
+    fakeDb.queue('creator_platform_accounts', { data: null });
     fakeDb.queue('creator_platform_accounts', { error: null });
     fakeDb.queue('creators', { error: { message: 'permission denied' } });
 
@@ -295,6 +369,118 @@ describe('GET /api/creator/youtube/callback', () => {
     // asserting a permission change that never happened.
     expect(res.headers.get('location')).toContain('youtube=failed');
     expect(JSON.stringify(log.mock.calls)).not.toContain('appendOptIn=true');
+  });
+
+  /**
+   * MEAL-138 cold review, F1: the state the whole fix is about.
+   *
+   * A creator ticks "also let Mealio add the link" on the connect form and then
+   * unticks `force-ssl` on Google's granular consent screen. The callback stored
+   * `youtube_append_opt_in = true` beside a read-only grant — a consent flag
+   * standing over a channel Google had refused us — and the card rendered it as a
+   * ticked box for someone who had visibly declined.
+   */
+  it('refuses to record append consent on a grant that came back without the scope', async () => {
+    exchangeYouTubeCode.mockResolvedValue({
+      ok: true,
+      grant: {
+        accessToken: 'ya29',
+        refreshToken: '1//r',
+        // They unticked it on Google's screen. Read is all we have.
+        scopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+        expiresAt: null,
+      },
+    });
+    fetchOwnChannel.mockResolvedValue({ ok: true, channel: { id: CHANNEL_ID, title: 'Chef Sarah' } });
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', youtube_append_opt_in: true }]);
+
+    const res = await CALLBACK(callbackRequest({ code: 'c', state: 'nonce-1' }, await stateCookie({ appendOptIn: true })));
+
+    expect(res.headers.get('location')).toContain('youtube=connected');
+    // Not stored, and the stale `true` from a previous attempt is cleared with
+    // it: nothing can be written under this grant, so a `true` here is not a
+    // permission — it is a box the card would tick on the creator's behalf.
+    expect(fakeDb.row('creators', 'c1')?.youtube_append_opt_in).toBe(false);
+    expect(JSON.stringify(log.mock.calls)).toContain('appendOptIn=withdrawn');
+  });
+
+  it('leaves a standing consent alone when the trip did not ask about it', async () => {
+    googleSaidYes();
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', youtube_append_opt_in: true }]);
+    // The grant this one replaces could already write, so the consent standing
+    // over it is real and this trip has no business touching it.
+    fakeDb.seed('creator_platform_accounts', [grantRow()]);
+
+    // No `appendOptIn` claim: a captions trip.
+    const res = await CALLBACK(callbackRequest({ code: 'c', state: 'nonce-1' }, await stateCookie({ appendOptIn: undefined })));
+
+    expect(res.headers.get('location')).toContain('youtube=connected');
+    // Not withdrawn — sending `false` on a captions trip revoked a permission
+    // the creator had granted, without telling them.
+    expect(fakeDb.row('creators', 'c1')?.youtube_append_opt_in).toBe(true);
+    expect(fakeDb.calls.some((c) => c.table === 'creators' && c.method === 'update')).toBe(false);
+    expect(JSON.stringify(log.mock.calls)).toContain('appendOptIn=unchanged');
+  });
+
+  /**
+   * The composition, end to end, because neither half is the bug on its own
+   * (MEAL-138 cold review, F1).
+   *
+   * State S: `youtube_append_opt_in = true` beside a grant with no `force-ssl`.
+   * The card shows the amber "cannot read this channel's captions" panel *and* a
+   * ticked append box, and the button under the panel says "Let Mealio read my
+   * captions". Clicking it used to send the stored `true` along, so the trip that
+   * grants `force-ssl` also re-asserted the append consent — and the next
+   * published recipe edited the creator's video description. A test that checked
+   * only the cookie field would not have seen it: the bug is in the composition.
+   */
+  it('a captions trip on a stale consent flag leaves description editing unarmed', async () => {
+    asUser();
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'u1', youtube_url: null, youtube_append_opt_in: true }]);
+    fakeDb.seed('creator_platform_accounts', [
+      grantRow({ scopes: 'https://www.googleapis.com/auth/youtube.readonly' }),
+    ]);
+
+    // 1. The creator clicks "Let Mealio read my captions".
+    const started = await CONNECT(jsonRequest('/api/creator/youtube/connect', { token, body: { captions: true } }));
+    const cookie = started.cookies.get(STATE_COOKIE)!.value;
+    const nonce = String(claims(cookie).nonce);
+
+    // 2. Google grants `force-ssl` this time, because that is what was asked for.
+    exchangeYouTubeCode.mockResolvedValue({
+      ok: true,
+      grant: {
+        accessToken: 'ya29',
+        refreshToken: '1//r',
+        scopes: ['https://www.googleapis.com/auth/youtube.readonly', YOUTUBE_FORCE_SSL_SCOPE],
+        expiresAt: null,
+      },
+    });
+    fetchOwnChannel.mockResolvedValue({ ok: true, channel: { id: CHANNEL_ID, title: 'Chef Sarah' } });
+    const back = await CALLBACK(callbackRequest({ code: 'c', state: nonce }, cookie));
+    expect(back.headers.get('location')).toContain('youtube=connected');
+
+    // The captions did become readable — that is what the creator asked for, and
+    // it is what makes the next assertion mean something.
+    const stored = fakeDb.row('creator_platform_accounts', 'pa1');
+    expect(String(stored?.scopes)).toContain(YOUTUBE_FORCE_SSL_SCOPE);
+
+    // 3. And the one gate every append goes through still says no — on the
+    //    consent, which is the only refusal that means the flag was handled
+    //    right: a 409 would mean it had been armed and stopped by something else.
+    const permission = await assertAppendAllowed(fakeDb as unknown as SupabaseClient, 'c1');
+    expect(permission).toMatchObject({ ok: false, status: 403 });
+    expect(fakeDb.row('creators', 'c1')?.youtube_append_opt_in).toBe(false);
+    // Nothing anywhere on this path wrote a `true`.
+    expect(
+      fakeDb.calls.filter((c) => c.table === 'creators' && c.method === 'update').map((c) => c.args[0]),
+    ).not.toContainEqual({ youtube_append_opt_in: true });
+
+    // 4. And the box the creator comes back to is unticked, so the state that
+    //    made the amber panel's small print false is gone rather than hidden.
+    asUser();
+    const status = await (await GET(jsonRequest('/api/creator/youtube', { token, method: 'GET' }))).json();
+    expect(status).toMatchObject({ canReadCaptions: true, appendOptIn: false });
   });
 
   it('stores nothing when the creator cancels on Google’s screen', async () => {
@@ -321,9 +507,30 @@ describe('/api/creator/youtube', () => {
       channel: { id: CHANNEL_ID, title: 'Chef Sarah' },
       appendOptIn: true,
       canWriteDescriptions: true,
+      canReadCaptions: true,
     });
     expect(JSON.stringify(body)).not.toContain('super-secret-refresh');
     expect(JSON.stringify(body)).not.toContain('ya29-token');
+  });
+
+  /**
+   * MEAL-138. The visible-consequence half: a read-only grant means every video
+   * with a description under about 250 characters is unimportable, and until this
+   * field existed nothing anywhere said so — not the card, not the log, not the
+   * row the video was written to.
+   */
+  it('says when a connection cannot read captions, which is the whole silent failure', async () => {
+    asUser();
+    fakeDb.queue('creators', { data: { id: 'c1', youtube_url: null, youtube_append_opt_in: false } });
+    // The ordinary grant since `force-ssl` became incremental: a creator who
+    // connected without ticking description editing.
+    fakeDb.queue('creator_platform_accounts', {
+      data: grantRow({ scopes: 'https://www.googleapis.com/auth/youtube.readonly' }),
+    });
+
+    const body = await (await GET(jsonRequest('/api/creator/youtube', { method: 'GET', token }))).json();
+
+    expect(body).toMatchObject({ connected: true, canReadCaptions: false, canWriteDescriptions: false });
   });
 
   /**

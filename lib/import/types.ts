@@ -49,6 +49,41 @@ export type Platform =
   | 'tiktok'
   | 'unknown';
 
+/**
+ * What became of a video's captions (MEAL-138).
+ *
+ * Captions are the fallback for a video whose description is too thin for the
+ * gate to judge on, and there are five ways that can end. The distinction the
+ * whole type exists for is between the last two and `none`: **"this video has no
+ * captions" and "we were not allowed to read this video's captions" are
+ * different facts about different things**, the first about the creator's video
+ * and the second about our grant. Collapsing them — which is what returning
+ * `null` for both did — makes a permission problem look like a content problem,
+ * and a permission problem looking like a content problem is one nobody fixes.
+ *
+ *   - `not-needed`     — the description was substantial. Nothing was fetched.
+ *   - `no-grant`       — no access token at hand, so no caption call is possible.
+ *                        Description-only import, which is ordinary.
+ *   - `used`           — a track was read and merged into `text`.
+ *   - `none`           — the grant *can* read captions and this video has none.
+ *                        A fact about the video.
+ *   - `missing-scope`  — the connection carries no `youtube.force-ssl` grant, so
+ *                        `captions.list` is refused (HTTP 403) whatever the video
+ *                        holds. A fact about our access, and fixable by asking —
+ *                        by asking, and by nothing else: it is not retried on a
+ *                        timer, because the creator granting the permission is
+ *                        the only thing that changes the answer.
+ *   - `unavailable`    — YouTube answered, but not with a track we could read.
+ *                        **Two populations, and only one of them earns a retry.**
+ *                        A 5xx or a timed-out download is worth another go; a
+ *                        non-scope 403 (third-party caption access off, a track
+ *                        marked non-downloadable) and a track over the byte cap
+ *                        end the same way every time and cost 250 quota units a
+ *                        go to find out. `captionFailureIsFinal` in `lib/youtube`
+ *                        is what tells the two apart downstream.
+ */
+export type CaptionsOutcome = 'not-needed' | 'no-grant' | 'used' | 'none' | 'missing-scope' | 'unavailable';
+
 /** Cleaned, source-agnostic view of a page. Blogs and videos both reduce to this. */
 export interface SourceDocument {
   /** Normalised URL the content was finally read from (post-redirect). */
@@ -76,6 +111,25 @@ export interface SourceDocument {
   jsonLdRaw: string | null;
   /** og:image / structured image, if any. Candidate for `photoUrl`. */
   imageUrl: string | null;
+  /**
+   * What became of the caption fallback (MEAL-138). Video sources only; absent
+   * for a blog, which has no such thing.
+   *
+   * **This field exists because its absence was a bug.** A video whose
+   * description was too thin to judge and whose captions we were refused
+   * produced a document identical to one for a video that genuinely has no
+   * captions — same short `text`, same everything — so the gate rejected both
+   * with "too little readable text", the sync marked both `rejected`
+   * (permanent, never retried), and nothing anywhere recorded that we had been
+   * refused rather than answered. See `captionsDetail` and `CaptionsOutcome`.
+   */
+  captions?: CaptionsOutcome;
+  /**
+   * The sentence behind a `captions` value that names a failure. Creator-facing
+   * — it reaches `creator_source_items.detail` and the catalogue — so it says
+   * what happened and what would fix it, and never quotes a token.
+   */
+  captionsDetail?: string | null;
   /** Detected publishing platform, for telemetry. */
   platform: Platform;
 }

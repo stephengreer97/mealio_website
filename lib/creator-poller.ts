@@ -56,6 +56,7 @@ import {
 import { isPlatformSource, SOURCE_LABELS, type PlatformSource } from '@/lib/creator-sources';
 import { sendCreatorDraftsReadyEmail, type DraftedRecipe } from '@/lib/email';
 import { log } from '@/lib/logger';
+import { captionFailureIsFinal } from '@/lib/youtube';
 import type { ConditionalValidators } from '@/lib/import/ssrf';
 
 // ── The schedule, in one place ───────────────────────────────────────────────
@@ -371,9 +372,18 @@ function emptyResult() {
  * so the retries end, and leased off when it was last touched (`CLAIM_LEASE_MS`,
  * the same lease `processSyncItem` claims under) so an overlapping pass does not
  * queue up behind an extraction that is still running.
+ *
+ * And one exception that is not a clock (MEAL-138). A caption failure marked
+ * final — a permission we were refused, a 403 about the video, a track over the
+ * byte cap — answers the same way on every attempt inside the window, so the
+ * three goes buy nothing and cost `captionsList` + `captionsDownload` quota each.
+ * A read-only channel with forty thin-description videos is 120 refusals and
+ * forty `lost` signals in 45 minutes, and the thing that actually fixes it — the
+ * creator granting the permission — happens on human time, long past the window.
  */
 function retryable(record: CatalogEntry['record'], at: number): boolean {
   if (!record || record.status !== 'failed') return false;
+  if (captionFailureIsFinal(record.detail)) return false;
   const firstSeen = Date.parse(record.firstSeenAt ?? '');
   const touched = Date.parse(record.at ?? '');
   // A row carrying neither date cannot be bounded, and an unbounded retry is the
@@ -652,7 +662,13 @@ export async function pollCreator(
       result.deferred += 1;
     } else {
       result.failed += 1;
-      if (outOfAttempts(entry.record, now())) {
+      // `lost` says one specific thing — nothing will try this again and a human
+      // has to do it — and for a final caption failure the second half is wrong:
+      // a permission plus a re-import is the fix, and the row's own detail says
+      // so to the creator who can grant it. Paging an operator to hand-import
+      // forty videos that one tick would bring in is the wrong signal, and one
+      // of them in a pass flips the cron line to `error` (MEAL-138).
+      if (!captionFailureIsFinal(processed.detail) && outOfAttempts(entry.record, now())) {
         // The end of the road for one post. Nothing else in the system will ever
         // mention it again, so this is the only chance to say a recipe was lost.
         result.signals.push({

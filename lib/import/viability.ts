@@ -62,7 +62,7 @@ import {
   TIKTOK_NO_DESCRIPTION_DETAIL,
 } from '@/lib/tiktok';
 import type { FeedEntry } from './feed';
-import type { GateVerdictValue } from './types';
+import type { CaptionsOutcome, GateVerdictValue } from './types';
 
 /** How many recent items a check reads. "~10" from the ticket. */
 export const VIABILITY_SAMPLE_SIZE = 10;
@@ -157,6 +157,16 @@ export interface ProbeGrant {
   externalId: string | null;
   /** A token good right now, or null when the creator has not connected. */
   accessToken: string | null;
+  /**
+   * The scopes the grant carries (MEAL-138).
+   *
+   * A YouTube connection made without `youtube.force-ssl` cannot read captions,
+   * so a video with a thin description is unreadable for a reason that has
+   * nothing to do with the creator — and a viability measurement that does not
+   * know this reports it as "no recipe here", which is a verdict on them.
+   * Optional so the other probes, which have no such distinction, need not care.
+   */
+  scopes?: readonly string[] | null;
 }
 
 export interface ProbeContext {
@@ -337,6 +347,58 @@ export const websiteProbe: SourceProbe = {
  * channel id comes from the OAuth grant, and offering a `youtube.com` URL to a
  * button that writes `creators.feed_url` would only invite an error.
  */
+/**
+ * Why a video was reported to the operator instead of gated, or `null` when it
+ * was fully read and the gate should judge it (MEAL-138).
+ *
+ * **The sentence has to say which of two things happened.** It used to say one
+ * thing for both: "no captions were available. Connecting the channel lets us
+ * read captions for videos like this one." For a connected channel whose grant
+ * has no `force-ssl` that is simply false — the channel *is* connected, and
+ * connecting it again changes nothing — so an operator sizing up a creator read a
+ * viability number depressed by a permission we had never asked for, with a
+ * sentence telling them the fix was one already applied.
+ *
+ * Every outcome is answered here rather than left to a trailing else, which is the
+ * cold review's F4. That else-branch asserts "a fact about the video, not about
+ * our access" whenever the text is empty, and for `no-grant` — we hold no token,
+ * so no caption call was possible — it is backwards. It happens not to arise
+ * today, because `youtubeProbe` returns `notConnectedYet` before there is a
+ * document to describe, but a sentence whose truth rests on a guard forty lines
+ * away with nothing tying them together is one refactor from being a lie. Tying
+ * them together means answering it, so it is answered.
+ */
+export function unreadVideoReason(document: {
+  captions?: CaptionsOutcome;
+  captionsDetail?: string | null;
+  text: string;
+}): string | null {
+  switch (document.captions) {
+    case 'missing-scope':
+    case 'unavailable':
+    case 'no-grant':
+      // A named failure carries its own sentence. The fallback is for a
+      // `captionsDetail` that came back null: reporting the item rather than
+      // gating it is the point, and `null` here would have gated it.
+      return (
+        document.captionsDetail ??
+        'Not gated: this video’s description was too short to read a recipe from, and Mealio could not read its ' +
+          'captions. That is a fact about our access to the channel, not about the video.'
+      );
+    // Fully read, one way or another. `none` on a video with a description is a
+    // video with no captions and no need of any.
+    case 'used':
+    case 'none':
+    case 'not-needed':
+    default:
+      if (document.text.trim()) return null;
+      return (
+        'Not gated: this video has no description, and it has no captions either — there was nothing to read. ' +
+        'That is a fact about the video, not about our access to the channel.'
+      );
+  }
+}
+
 export const youtubeProbe: SourceProbe = {
   source: 'youtube',
 
@@ -369,9 +431,13 @@ export const youtubeProbe: SourceProbe = {
     const items = await mapWithConcurrency(videos, FETCH_CONCURRENCY, async (video): Promise<ProbedItem> => {
       const document = await youtubeSourceDocument(video, {
         accessToken,
+        scopes: context.grant?.scopes,
         fetchImpl: context.fetchOptions?.fetchImpl as typeof fetch | undefined,
         lookup: context.fetchOptions?.lookup,
       });
+
+      const unread = unreadVideoReason(document);
+
       return {
         url: document.url,
         title: document.title || video.url,
@@ -379,16 +445,10 @@ export const youtubeProbe: SourceProbe = {
         // There is no JSON-LD on YouTube. Title, description and captions are
         // the only material the gate gets for a video.
         hasRecipeJsonLd: false,
-        // A video with neither a description nor captions was never read, so it
-        // is reported rather than gated — counting it as "not a recipe" would
-        // measure our access, not the creator.
-        ...(document.text.trim()
-          ? {}
-          : {
-              error:
-                'Not gated: this video has no description, and no captions were available. ' +
-                'Connecting the channel lets us read captions for videos like this one.',
-            }),
+        // A video we could not fully read was never assessed, so it is reported
+        // rather than gated — counting it as "not a recipe" would measure our
+        // access, not the creator.
+        ...(unread ? { error: unread } : {}),
       };
     });
 

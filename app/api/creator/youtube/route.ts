@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAuth } from '@/lib/requireAuth';
 import { log } from '@/lib/logger';
 import { deleteConnection, describeConnection, loadConnection } from '@/lib/platform-tokens';
-import { YOUTUBE_WRITE_SCOPE } from '@/lib/youtube';
+import { grantCanReadCaptions, YOUTUBE_FORCE_SSL_SCOPE } from '@/lib/youtube';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /**
@@ -61,8 +61,23 @@ export async function GET(request: NextRequest) {
     channel: summary ? { id: summary.externalId, title: summary.externalName } : null,
     /** Non-null means the creator has to reconnect before anything reads or writes. */
     brokenReason: summary?.brokenReason ?? null,
-    /** False on a grant made without the write scope — the append offer must not appear. */
-    canWriteDescriptions: Boolean(summary?.scopes.includes(YOUTUBE_WRITE_SCOPE)),
+    /** False on a grant made without `force-ssl` — the append offer must not appear. */
+    canWriteDescriptions: grantCanReadCaptions(summary?.scopes),
+    /**
+     * Whether captions on this channel are readable at all (MEAL-138).
+     *
+     * The **same** scope as `canWriteDescriptions`, and reported separately
+     * because it is a different question with a different consequence. Google
+     * sells both through `youtube.force-ssl`; what differs is which Mealio-side
+     * consent authorises using it — `youtube_append_opt_in` for a write, and for
+     * a caption read, the fact that the creator connected the channel to have its
+     * videos read in the first place.
+     *
+     * False means every video whose description runs under 250 characters is
+     * unimportable for this creator, silently until this ticket. The card shows
+     * it and offers the consent trip that fixes it.
+     */
+    canReadCaptions: grantCanReadCaptions(summary?.scopes),
     appendOptIn: creator.youtube_append_opt_in === true,
   });
 }
@@ -94,7 +109,7 @@ export async function PATCH(request: NextRequest) {
     if (!connection) {
       return NextResponse.json({ error: 'Connect your YouTube channel before turning this on.' }, { status: 400 });
     }
-    if (!connection.scopes.includes(YOUTUBE_WRITE_SCOPE)) {
+    if (!connection.scopes.includes(YOUTUBE_FORCE_SSL_SCOPE)) {
       // Flagged rather than only described, so the card can act on it instead
       // of matching the sentence. The write scope is asked for at this moment
       // by design — it is the only moment it means anything to the creator.

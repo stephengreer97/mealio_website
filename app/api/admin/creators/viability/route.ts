@@ -74,7 +74,15 @@ export async function POST(request: NextRequest) {
     ? await loadConnection(supabase, id, source)
     : null;
   const grant = connection
-    ? { externalId: connection.externalId, accessToken: await usableAccessToken({ supabase }, connection) }
+    ? {
+        externalId: connection.externalId,
+        accessToken: await usableAccessToken({ supabase }, connection),
+        // Carried so the YouTube probe can tell a video with no captions from a
+        // video whose captions this grant is not permitted to read (MEAL-138).
+        // Without it a measurement is depressed by a permission we never asked
+        // for and reads as a verdict on the creator.
+        scopes: connection.scopes,
+      }
     : null;
 
   // The link comes from the creator's row, never from the request body: this

@@ -6,6 +6,7 @@ import { publicLookup, stubFetch } from '../helpers/import-stubs';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 import type { ImportResult, ImportSuccess } from '@/lib/import/types';
 import type { RunImportOptions } from '@/lib/import/pipeline';
+import { CAPTIONS_MISSING_SCOPE_DETAIL } from '@/lib/youtube';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
@@ -626,6 +627,59 @@ describe('a failed item is retried, and its loss is said out loud', () => {
     expect(result.failed).toBe(1);
     expect(result.signals.map((signal) => signal.kind)).toEqual(['lost']);
     expect(result.signals[0].detail).toContain('https://chefsarah.test/post-0');
+  });
+
+  /**
+   * MEAL-138 cold review, F3.
+   *
+   * The window is three intervals from the *first sighting of the video*, so a
+   * creator granting the caption permission that evening was never inside it —
+   * and inside it every attempt is the identical refusal at 50 quota units.
+   * A read-only channel with forty thin-description videos was 120 refusals.
+   */
+  it('does not retry a caption failure that would be refused identically', async () => {
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    fakeDb.seed('creator_source_items', [
+      { ...failedItem(INTERVAL, INTERVAL), detail: CAPTIONS_MISSING_SCOPE_DETAIL },
+    ]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    // Well inside the window, and still not tried: the clock is not what decides
+    // this one. The row keeps its detail, which is the sentence naming the
+    // permission, so the creator's catalogue still says how to fix it.
+    expect(result.retried).toBe(0);
+    expect(importer).not.toHaveBeenCalled();
+    expect(items()[0]).toMatchObject({ status: 'failed', detail: CAPTIONS_MISSING_SCOPE_DETAIL });
+  });
+
+  it('does not call a recipe lost when a permission is what is missing', async () => {
+    // `lost` says one thing: nothing will try this again and a human has to
+    // import it by hand. For a missing caption permission the second half is
+    // false — one tick on the portal card fixes it — and forty of these in one
+    // pass flipped the whole cron line to `error`.
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async (url: string): Promise<ImportResult> => ({
+      status: 'rejected', url, stage: 'fetch', reason: 'captions-missing-scope',
+      detail: CAPTIONS_MISSING_SCOPE_DETAIL, meta: { cached: false },
+    }));
+    // Retryable when the pass picked it up — it had failed on something else —
+    // and out of attempts, so this failure is the one that would raise `lost`.
+    fakeDb.seed('creator_source_items', [failedItem(2.5 * INTERVAL, INTERVAL)]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.failed).toBe(1);
+    expect(result.signals).toEqual([]);
   });
 });
 

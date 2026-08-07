@@ -114,13 +114,31 @@ export default function AboutPage() {
               that was connected, and nothing else. Every recipe found this way is shown to the creator to
               approve, edit or decline before it appears anywhere.
             </li>
+            <li style={{ marginBottom: '10px' }}>
+              <strong>Permission to read that channel&rsquo;s captions</strong> &mdash; because a great many
+              recipe videos say the ingredients out loud instead of listing them in the description, and without
+              the captions there is nothing for Mealio to read. <strong>We only ask for this if a creator asks
+              us to read their captions</strong>, from the YouTube card in their creator portal; connecting a
+              channel by itself asks to read titles and descriptions and nothing more. Captions are read only
+              for videos on the channel that was connected, and only for a video whose description is too short
+              to hold the recipe.
+            </li>
             <li>
               <strong>Permission to edit that channel&rsquo;s video descriptions</strong> &mdash; so that a
               creator can have Mealio add a link to their recipe at the end of the description of the video it
-              came from. <strong>We only ask for this if a creator turns that feature on</strong>; connecting a
-              channel by itself asks to read it and nothing more. It only ever adds our link and changes
-              nothing else, and it applies only to videos on the channel they connected. A creator can turn it
-              off, disconnect the channel in Mealio, or revoke access from their Google account at any time.
+              came from. <strong>We only ask for this if a creator turns that feature on.</strong> It only ever
+              adds our link and changes nothing else, and it applies only to videos on the channel they
+              connected. A creator can turn it off, disconnect the channel in Mealio, or revoke access from
+              their Google account at any time.
+              <br />
+              <em>
+                Google grants these last two through one permission
+                (&ldquo;youtube.force-ssl&rdquo;), so a creator who asks for either will see Google&rsquo;s own
+                wording, which mentions both. Mealio treats them as two separate decisions and asks for the
+                permission on whichever one the creator made: editing a description additionally requires a
+                setting the creator turns on themselves, which is off by default, is checked on our server
+                before every edit, and which asking to have captions read does not change.
+              </em>
             </li>
           </ul>
           <p style={p}>

@@ -271,6 +271,54 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     return finish(result, { platform });
   }
 
+  /**
+   * A video whose description was too thin to judge and whose captions we could
+   * not read (MEAL-138).
+   *
+   * This has to stop *before* the gate, and the reason is the whole ticket. The
+   * document is a short description and nothing else, so `classifySource` rejects
+   * it with `no-content` — "too little readable text ... link-in-bio and landing
+   * pages look like this" — and `stage: 'gate'` is what `admin-sync` reads as
+   * **`rejected`**: a verdict on the post, permanent, never retried. So a
+   * permission we were refused was being recorded as a fact about somebody's
+   * video, in a sentence about landing pages, on a row nothing would ever look at
+   * again.
+   *
+   * `stage: 'fetch'` is not a euphemism: a fetch we needed was refused, we never
+   * saw the material, and nothing here has an opinion about the video. It maps to
+   * `failed` rather than `rejected`, and it is not cached, so the video is still
+   * importable the moment the permission exists.
+   *
+   * **It is not picked up by a sweep, and this comment used to say it was.** The
+   * poller's retry window is three poll intervals from the *first sighting of the
+   * video* — 45 minutes — so a creator who grants the scope that evening was never
+   * going to be inside it, and inside it every attempt is the identical refusal at
+   * 50 quota units, ending in a `lost` signal that tells an operator the recipe
+   * has to be imported by hand when a permission fixes it. So the detail carries
+   * `CAPTIONS_NO_AUTO_RETRY` and the sweep skips these (see `retryable` in
+   * `lib/creator-poller.ts`): granting the permission and re-importing from the
+   * catalogue is the recovery, which is exactly what a `rejected` row allowed too.
+   * What this ticket buys is that the row says *why*, to the person who can fix
+   * it, instead of calling somebody's video contentless.
+   *
+   * `missing-scope` and `unavailable` both land here. A caption call that 500'd on
+   * a thin-description video is no more a verdict on the video than a refused one
+   * is, and it was reaching the same permanent rejection. Those two are not the
+   * same about retrying, and they do not have to be: `unavailable` marks its own
+   * deterministic half the same way, and the transient half is retried.
+   */
+  if (document.captions === 'missing-scope' || document.captions === 'unavailable') {
+    const result = rejection(
+      url,
+      'fetch',
+      `captions-${document.captions}`,
+      document.captionsDetail ??
+        'This video’s description was too short to read a recipe from, and its captions could not be read.',
+      { platform },
+    );
+    return finish(result, { platform });
+  }
+
   // ── gate ──────────────────────────────────────────────────────────────────
   let verdict = useCache ? await cacheGet<GateVerdict>(gateKey(url, cacheScope)) : null;
   let gateUsage: StructuredUsage | null = null;
