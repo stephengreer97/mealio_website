@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
     const runsPage = await fetchAllPages<RunRow>((from, to) => {
       let q = supabase
         .from('automation_runs')
-        .select('id, store_id, outcome, status, items_requested, items_added, started_at')
+        .select('id, store_id, outcome, status, items_requested, items_added, started_at, completed_at')
         .gte('started_at', since)
         .order('id', { ascending: true })
         .range(from, to);

@@ -25,6 +25,8 @@
 //      reads as a flawless funnel unless it is called out, which is what
 //      `coverage.partialInstrumentation` is for.
 
+import { runConcern } from './automation-trace';
+
 export type StepName =
   | 'login_check' | 'search' | 'candidates' | 'add_click'
   | 'confirm' | 'reconcile' | 'blocked' | 'run_summary';
@@ -87,6 +89,10 @@ export interface RunRow {
   items_added: number | null;
   /** Optional for the same reason as StepRow.occurred_at. */
   started_at?: string | null;
+  /** Needed to tell a run still going from one that never reported finishing —
+   *  see `runsAbandoned` below. A row carrying this DID report completing,
+   *  whatever `status` says. */
+  completed_at?: string | null;
 }
 
 export interface StepStats {
@@ -424,7 +430,29 @@ export function aggregateFunnel(
     }).length;
 
     const runsSucceeded = storeRuns.filter((r) => r.outcome === 'success').length;
-    const runsAbandoned = storeRuns.filter((r) => r.status === 'started').length;
+    // Abandoned means "never reported finishing", not "has not finished yet".
+    // Counting every `status: 'started'` row swept in whatever was running at the
+    // moment the query ran, so a busy window inflated this number with healthy
+    // traffic — a run three seconds old counted against the store.
+    //
+    // `runConcern` is the same predicate the run drilldown labels rows with
+    // (MEAL-143 fixed the identical overstatement there, where it was worse: those
+    // rows sort newest first, so in-flight runs were the first thing on screen).
+    // Reused rather than restated, so the funnel's number and the badge on a row
+    // cannot come to disagree about what abandoned means.
+    //
+    // A run with no readable `started_at` still counts as abandoned — runConcern
+    // resolves an unknown age that way deliberately, toward showing a row rather
+    // than quietly calling it fine.
+    // `started_at` / `completed_at` are optional on RunRow and required by
+    // runConcern. Normalising to null here rather than widening runConcern keeps
+    // the stricter shape on the side that decides, and null is the value
+    // runConcern already handles as "age unknown".
+    const runsAbandoned = storeRuns.filter((r) => runConcern({
+      ...r,
+      started_at: r.started_at ?? null,
+      completed_at: r.completed_at ?? null,
+    }).abandoned).length;
 
     // ── Blocks, in run units ───────────────────────────────────────────────
     // The operator question is "how much of this store's traffic is being walled

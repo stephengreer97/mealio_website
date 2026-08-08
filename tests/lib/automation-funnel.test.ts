@@ -8,6 +8,7 @@ import {
   StepRow,
   WorstStepInput,
 } from '@/lib/automation-funnel';
+import { RUNNING_GRACE_MS } from '@/lib/automation-trace';
 
 const run = (over: Partial<RunRow> = {}): RunRow => ({
   store_id: 'heb',
@@ -143,7 +144,59 @@ describe('aggregateFunnel', () => {
     const [heb] = aggregateFunnel(runs, []);
     expect(heb.runs).toBe(3);
     expect(heb.runsSucceeded).toBe(1);
+    // No `started_at` on these, so the age is unknown — which runConcern resolves
+    // toward abandoned on purpose, the direction that shows a row rather than
+    // quietly calling it fine. That is why this pre-existing case is unchanged.
     expect(heb.runsAbandoned).toBe(2);
+  });
+
+  it('does not count a run that is still going as abandoned', () => {
+    // MEAL-145. This counted every `status: 'started'` row, so whatever happened to
+    // be running when the query fired was reported as an abandoned run. At peak,
+    // healthy traffic inflated the number that is supposed to say the engine is
+    // wedging.
+    const runs = [
+      run({ status: 'completed', outcome: 'success' }),
+      run({ status: 'started', outcome: null, started_at: new Date(Date.now() - 30_000).toISOString() }),
+    ];
+    const [heb] = aggregateFunnel(runs, []);
+    expect(heb.runs).toBe(2);
+    expect(heb.runsAbandoned).toBe(0);
+  });
+
+  it('counts a run that stopped reporting as abandoned once the grace band passes', () => {
+    // The other side of the same line: past RUNNING_GRACE_MS a run that never
+    // reported finishing is exactly what this number is for.
+    const runs = [
+      run({
+        status: 'started',
+        outcome: null,
+        started_at: new Date(Date.now() - RUNNING_GRACE_MS - 60_000).toISOString(),
+      }),
+    ];
+    const [heb] = aggregateFunnel(runs, []);
+    expect(heb.runsAbandoned).toBe(1);
+  });
+
+  it('counts a half-landed completion write as abandoned even inside the grace band', () => {
+    // This is what `completed_at` buys, and it is the reason it had to be added to
+    // the funnel's select rather than reusing runConcern on the columns already
+    // there. A row with `completed_at` set and `status` still 'started' is a
+    // completion write that landed partway. runConcern refuses to call that
+    // `running` — it is not a run still going — so it lands as abandoned
+    // immediately, without waiting out the grace band.
+    //
+    // Same age as the "still going" case above; the only difference is this column.
+    const halfLanded = run({
+      status: 'started',
+      outcome: null,
+      started_at: new Date(Date.now() - 30_000).toISOString(),
+      completed_at: new Date().toISOString(),
+    });
+    expect(aggregateFunnel([halfLanded], [])[0].runsAbandoned).toBe(1);
+
+    const { completed_at: _dropped, ...stillGoing } = halfLanded;
+    expect(aggregateFunnel([stillGoing], [])[0].runsAbandoned).toBe(0);
   });
 
   it('includes a store that has steps but no run rows', () => {
