@@ -239,6 +239,26 @@ describe('runConcern, the definition the list filters on', () => {
     expect(inFlight(RUNNING_GRACE_MS / 1000 + 1).running).toBe(false);
   });
 
+  it('puts the band at fifteen minutes, and treats the instant itself as past it', () => {
+    // Everything above builds its fixtures FROM the constant, so it moves with it:
+    // set RUNNING_GRACE_MS to 60 seconds and every one of those tests still passes
+    // while the funnel starts calling four-minute-old runs abandoned. They pin that
+    // a band exists, never how wide.
+    //
+    // A literal is the only thing that can pin the width, so this is the one place
+    // the number is written twice on purpose. Changing the band is a reporting
+    // decision — it moves what every operator sees — and it should have to be made
+    // here as well as there.
+    expect(RUNNING_GRACE_MS).toBe(15 * 60 * 1000);
+
+    // And the boundary is strict: `now - startedAt < RUNNING_GRACE_MS`. A run aged
+    // EXACTLY the band is past it, not inside it. Relaxing the comparison to `<=`
+    // passes every other test in this file, because the nearest one probes ±1s and
+    // never equality.
+    expect(inFlight(15 * 60).running).toBe(false);
+    expect(inFlight(15 * 60 - 1).running).toBe(true);
+  });
+
   it('is not running once a completed_at has landed, whatever status says', () => {
     // A half-applied completion write. It DID report finishing, so waiting on it is
     // the wrong instruction — this is a row to look at.
