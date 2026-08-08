@@ -177,6 +177,11 @@ describe('GET /api/admin/automation-funnel', () => {
     expect(selectFor('automation_steps')).toContain('code');
     expect(selectFor('automation_steps')).toContain('occurred_at');
     expect(selectFor('automation_runs')).toContain('started_at');
+    // MEAL-145: without this column every `status:'started'` row looks like it
+    // never reported finishing, so a half-landed completion write reads as
+    // abandoned. RunRow.completed_at is optional, so dropping it from the select
+    // is silent — the whole suite passed with it removed until this line existed.
+    expect(selectFor('automation_runs')).toContain('completed_at');
   });
 
   it('carries a null code through as an uncoded failure rather than dropping it', async () => {
