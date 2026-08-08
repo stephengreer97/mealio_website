@@ -444,15 +444,27 @@ export function aggregateFunnel(
     // A run with no readable `started_at` still counts as abandoned — runConcern
     // resolves an unknown age that way deliberately, toward showing a row rather
     // than quietly calling it fine.
+    // `now` is passed explicitly and that is not optional. `runConcern` defaults it
+    // to Date.now(), which would be read ONCE PER ROW, after up to 50 pages of
+    // Supabase reads have already gone by — so the abandonment boundary would sit
+    // at a later instant than the `now` this response reports, and two rows with
+    // identical timestamps could land on opposite sides of the band. Judging runs
+    // against a clock that is not the window's is the error this whole ticket
+    // exists to remove; leaving the default here would have reintroduced it at
+    // small scale.
+    //
     // `started_at` / `completed_at` are optional on RunRow and required by
-    // runConcern. Normalising to null here rather than widening runConcern keeps
-    // the stricter shape on the side that decides, and null is the value
-    // runConcern already handles as "age unknown".
+    // runConcern. These two lines are a TYPE-LEVEL widening with no runtime effect:
+    // `...r` already carries both fields, and runConcern's guards (`== null`,
+    // `Number.isFinite(Date.parse(...))`) treat undefined exactly as they treat
+    // null. Without them tsc rejects the call; removing them changes no behaviour
+    // and no test. Said plainly because an earlier version of this comment credited
+    // them with the null-handling that runConcern does on its own.
     const runsAbandoned = storeRuns.filter((r) => runConcern({
       ...r,
       started_at: r.started_at ?? null,
       completed_at: r.completed_at ?? null,
-    }).abandoned).length;
+    }, now).abandoned).length;
 
     // ── Blocks, in run units ───────────────────────────────────────────────
     // The operator question is "how much of this store's traffic is being walled

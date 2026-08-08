@@ -178,6 +178,31 @@ describe('aggregateFunnel', () => {
     expect(heb.runsAbandoned).toBe(1);
   });
 
+  it('judges the grace band against the window\'s clock, not wall time', () => {
+    // MEAL-145, and the mistake this ticket is about, made once more inside the fix
+    // for it. aggregateFunnel takes a `now` and every other time-dependent figure
+    // honours it; runConcern defaults to Date.now() if you let it. Left defaulted,
+    // a run that is 30 seconds old *relative to the reported window* gets measured
+    // against the wall clock instead — here, a fixed NOW well in the past, so it
+    // reads as hours-abandoned.
+    //
+    // The other tests in this file cannot see it: they build fixtures from
+    // Date.now(), which is exactly what makes them agree with the bug.
+    const WINDOW_NOW = Date.parse('2026-08-05T12:00:00Z');
+    const runs = [
+      run({
+        status: 'started',
+        outcome: null,
+        started_at: new Date(WINDOW_NOW - 30_000).toISOString(),
+      }),
+    ];
+    expect(aggregateFunnel(runs, [], { now: WINDOW_NOW, days: 7 })[0].runsAbandoned).toBe(0);
+
+    // And the same row IS abandoned once the window's clock has moved past the band.
+    const later = WINDOW_NOW + RUNNING_GRACE_MS + 60_000;
+    expect(aggregateFunnel(runs, [], { now: later, days: 7 })[0].runsAbandoned).toBe(1);
+  });
+
   it('counts a half-landed completion write as abandoned even inside the grace band', () => {
     // This is what `completed_at` buys, and it is the reason it had to be added to
     // the funnel's select rather than reusing runConcern on the columns already
