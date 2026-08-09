@@ -4,6 +4,7 @@ import {
   median,
   okRateUpperBound,
   percentile,
+  unavailableItemsByRun,
   worstStep,
   DEFAULT_BLOCKED_RATE_THRESHOLD,
   DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD,
@@ -1146,5 +1147,205 @@ describe('aggregateFunnel — item success trend', () => {
     // A dense bucket nobody shopped in reports null, not a 0% outage.
     const quiet = heb.daily.find((d) => d.itemsRequested === 0);
     expect(quiet?.itemSuccessRate ?? null).toBeNull();
+  });
+
+  // ── MEAL-29 ────────────────────────────────────────────────────────────────
+  // An item the store does not have is not our automation failing, and until now
+  // it was counted as one: it is in items_requested and not in items_added, so it
+  // dragged the rate down whatever its step row said. That was cosmetic while the
+  // rate only drew a chart. It stops being cosmetic here, on this branch, because
+  // this is where that rate starts emailing every admin.
+  describe('out-of-stock items leave the denominator', () => {
+    /** `count` items this run asked for and the store did not have. */
+    const oosSteps = (
+      runId: string,
+      count: number,
+      over: { path?: string; startIndex?: number; occurredAt?: string } = {},
+    ): StepRow[] =>
+      Array.from({ length: count }, (_, i) => ({
+        store_id: 'heb',
+        run_id: runId,
+        step: 'confirm',
+        outcome: 'error',
+        code: 'out_of_stock',
+        duration_ms: null,
+        item_index: (over.startIndex ?? 0) + i,
+        detail: { path: over.path ?? 'parallel_add' },
+        occurred_at: over.occurredAt ?? new Date(NOW - 6 * HOUR).toISOString(),
+      }));
+
+    it('counts distinct items, not rows', () => {
+      // The same item reported twice — once in the parallel pass, once when the
+      // top-up looked at it again. One item, and a row count would say two.
+      const dupes = [
+        ...oosSteps('r1', 1),
+        ...oosSteps('r1', 1),
+      ];
+      expect(unavailableItemsByRun(dupes).get('r1')).toBe(1);
+    });
+
+    it('keeps the same index in different passes apart', () => {
+      // The reconcile re-points the active-items array at its retry subset and
+      // restarts the index, so index 0 of the top-up is a DIFFERENT item from
+      // index 0 of the first pass. Keying on item_index alone merges them and
+      // under-counts; the path is what separates them.
+      const twoPasses = [
+        ...oosSteps('r1', 1, { path: 'parallel_add' }),
+        ...oosSteps('r1', 1, { path: 'fused' }),
+      ];
+      expect(unavailableItemsByRun(twoPasses).get('r1')).toBe(2);
+    });
+
+    it('ignores the run-level row that carries the same code', () => {
+      // `out_of_stock` is ranked mid-table in the app's severity list, so a run
+      // whose worst outcome is an empty shelf writes the code onto its
+      // run_summary row too — with no item_index, because it is about the run and
+      // not about an item. Counting it would invent an item nobody asked for.
+      const withSummary: StepRow[] = [
+        ...oosSteps('r1', 2),
+        {
+          store_id: 'heb', run_id: 'r1', step: 'run_summary', outcome: 'error',
+          code: 'out_of_stock', duration_ms: null, item_index: null, detail: null,
+        },
+      ];
+      expect(unavailableItemsByRun(withSummary).get('r1')).toBe(2);
+    });
+
+    it('ignores other codes and rows it cannot attribute to a run', () => {
+      const noise: StepRow[] = [
+        ...oosSteps('r1', 1),
+        { store_id: 'heb', run_id: 'r1', step: 'confirm', outcome: 'error', code: 'match_rejected', duration_ms: null, item_index: 7, detail: null },
+        { store_id: 'heb', run_id: null, step: 'confirm', outcome: 'error', code: 'out_of_stock', duration_ms: null, item_index: 8, detail: null },
+      ];
+      const counts = unavailableItemsByRun(noise);
+      expect(counts.get('r1')).toBe(1);
+      expect(counts.size).toBe(1);
+    });
+
+    it('takes them out of the store total and reports what it took out', () => {
+      // 4 runs × 10 items, 5 added each. Half the shortfall was the store's shelf.
+      const runs = today(0.5);
+      const steps = runs.flatMap((r) => oosSteps(r.id!, 5));
+      const [heb] = aggregateFunnel([...baseline(1), ...runs], steps, { now: NOW });
+
+      // Raw counts are untouched — the adjustment is visible, not baked in.
+      // 21 baseline runs of 10 plus today's 4, all added except today's shortfall.
+      expect(heb.itemsRequested).toBe(250);
+      expect(heb.itemsAdded).toBe(230);
+      expect(heb.itemsUnavailable).toBe(20);
+      // Every item either store could supply, we added. The window-wide rate says
+      // so; before this it said 92%, and the missing 8% was somebody's shelf.
+      expect(heb.itemSuccessRate).toBe(1);
+      // Of the 20 items today's runs could have supplied, all 20 arrived.
+      expect(heb.itemSuccess.recent).toBe(1);
+      expect(heb.itemSuccess.recentItemsRequested).toBe(40);
+      expect(heb.itemSuccess.recentItemsUnavailable).toBe(20);
+      expect(heb.itemSuccess.recentItemsJudged).toBe(20);
+    });
+
+    it('does not page anyone about a store that simply ran out of things', () => {
+      // The scenario the ticket was filed about. Without the subtraction this is
+      // a 50% day against a 100% median — a 50-point drop, five times over the
+      // threshold, an email to every admin — and nothing is wrong with our code.
+      const runs = today(0.5);
+      const steps = runs.flatMap((r) => oosSteps(r.id!, 5));
+
+      const unadjusted = aggregateFunnel([...baseline(1), ...runs], [], { now: NOW })[0];
+      expect(unadjusted.alertReasons).toContain('success_drop');
+
+      const [heb] = aggregateFunnel([...baseline(1), ...runs], steps, { now: NOW });
+      expect(heb.itemSuccess.drop).toBe(0);
+      expect(heb.alertReasons).toEqual([]);
+    });
+
+    it('still pages when the store is out of stock AND we are broken', () => {
+      // The other half of the same claim, and the one that matters more: this
+      // must not become a way for a real regression to hide behind an inventory
+      // problem. 10 items a run, 3 off the shelf, and of the 7 we could have got
+      // we got 3 — 43% against a 100% median, still far past the threshold.
+      const runs = Array.from({ length: 4 }, (_, i) => at(6, 10, 3, { id: `mixed-${i}` }));
+      const steps = runs.flatMap((r) => oosSteps(r.id!, 3));
+      const [heb] = aggregateFunnel([...baseline(1), ...runs], steps, { now: NOW });
+
+      expect(heb.itemSuccess.recent).toBeCloseTo(3 / 7);
+      expect(heb.alertReasons).toContain('success_drop');
+    });
+
+    it('clamps to the items the run did not add, so a rate can never exceed 100%', () => {
+      // More out-of-stock rows than there were misses. Nothing should produce
+      // this — but a duplicate the key above does not catch, or step rows from a
+      // run the run-row query did not return, would, and the failure mode is a
+      // denominator smaller than the numerator: a store reporting 250% success,
+      // or a negative denominator reading as "no data" for a store that is fine.
+      const runs = today(0.5);
+      const steps = runs.flatMap((r) => oosSteps(r.id!, 9));
+      const [heb] = aggregateFunnel([...baseline(1), ...runs], steps, { now: NOW });
+
+      expect(heb.itemsUnavailable).toBe(20);
+      expect(heb.itemSuccess.recent).toBe(1);
+      expect(heb.itemSuccessRate).toBeLessThanOrEqual(1);
+    });
+
+    it('reports no rate at all when the store had none of what was asked for', () => {
+      // Denominator zero. Null, not 0% and not 100% — the same rule as every
+      // other rate on this page. We learned nothing about our automation here.
+      const runs = Array.from({ length: 4 }, (_, i) => at(6, 10, 0, { id: `empty-${i}` }));
+      const steps = runs.flatMap((r) => oosSteps(r.id!, 10));
+      const [heb] = aggregateFunnel([...baseline(1), ...runs], steps, { now: NOW });
+
+      expect(heb.itemSuccess.recent).toBeNull();
+      expect(heb.itemSuccess.drop).toBeNull();
+      expect(heb.alertReasons).toEqual([]);
+    });
+
+    it('judges the alert sample on items judged, not items asked for', () => {
+      // 25 items requested clears the 20-item sample bar; 5 items judged does
+      // not. A rate over five items is noise, and reading the raw request count
+      // here would let the store with an inventory problem — precisely the store
+      // whose two numbers differ most — be the one that pages someone on it.
+      const runs = Array.from({ length: 5 }, (_, i) => at(6, 5, 1, { id: `thin-${i}` }));
+      const steps = runs.flatMap((r) => oosSteps(r.id!, 4));
+      const [heb] = aggregateFunnel([...baseline(1), ...runs], steps, { now: NOW });
+
+      expect(heb.itemSuccess.recentItemsRequested).toBe(25);
+      expect(heb.itemSuccess.recentItemsJudged).toBe(5);
+      expect(heb.itemSuccess.recent).toBe(1);
+      expect(heb.alertReasons).toEqual([]);
+
+      // And with the same five-item sample sitting at 20%, still nothing: the
+      // gate is what is holding it, not the rate happening to be good.
+      const bad = Array.from({ length: 5 }, (_, i) => at(6, 5, 0, { id: `thinbad-${i}` }));
+      const badSteps = bad.flatMap((r) => oosSteps(r.id!, 4));
+      const [hebBad] = aggregateFunnel([...baseline(1), ...bad], badSteps, { now: NOW });
+      expect(hebBad.itemSuccess.recentItemsJudged).toBe(5);
+      expect(hebBad.itemSuccess.recent).toBe(0);
+      expect(hebBad.alertReasons).toEqual([]);
+    });
+
+    it('subtracts on the run\'s day, not the step row\'s', () => {
+      const runs = today(0.5);
+      const steps = runs.flatMap((r) => oosSteps(r.id!, 5));
+      const [heb] = aggregateFunnel([...baseline(1), ...runs], steps, { now: NOW, days: 9 });
+
+      const day = heb.daily.find((d) => d.day === '2026-03-08')!;
+      expect(day.itemsRequested).toBe(40);
+      expect(day.itemsAdded).toBe(20);
+      expect(day.itemsUnavailable).toBe(20);
+      expect(day.itemSuccessRate).toBe(1);
+    });
+
+    it('leaves every store that reports no out-of-stock rows exactly as it was', () => {
+      // Kroger is the case: it runs server-side through the Kroger API, which has
+      // no out-of-stock signal to give us, so it emits none of these rows. The
+      // subtraction has to be a no-op for it rather than a source of zeroes, which
+      // is also what option A would have written into its column.
+      const runs = today(0.5).map((r) => ({ ...r, store_id: 'kroger' }));
+      const base = baseline(1).map((r) => ({ ...r, store_id: 'kroger' }));
+      const [kroger] = aggregateFunnel([...base, ...runs], [], { now: NOW });
+
+      expect(kroger.itemsUnavailable).toBe(0);
+      expect(kroger.itemSuccess.recent).toBe(0.5);
+      expect(kroger.alertReasons).toContain('success_drop');
+    });
   });
 });

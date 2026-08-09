@@ -454,6 +454,15 @@ export interface StoreAlertLine {
   runs: number;
   itemsRequested: number;
   itemsAdded: number;
+  /**
+   * Requested items the store said it did not have (MEAL-29).
+   *
+   * Rendered because without it the card contradicts itself: unavailable items
+   * are out of the rate's denominator, so "8 added of 20 asked for" sits next to
+   * "Item success 80%" and the reader is left to guess which number lied. Naming
+   * the twelve is what makes both true.
+   */
+  itemsUnavailable: number;
   /** Item success over the last 24h and the store's trailing 7-day median. */
   itemSuccessRecent: number | null;
   itemSuccessMedian: number | null;
@@ -529,7 +538,13 @@ export async function sendFunnelAlertEmail(opts: {
     const rows: Array<[string, string]> = [
       ['Store', `<strong>${label}</strong> <span style="color:#999;">(${escapeHtml(store.storeId)})</span>`],
       ['Runs', String(store.runs)],
-      ['Items', `${store.itemsAdded} added of ${store.itemsRequested} asked for`],
+      [
+        'Items',
+        `${store.itemsAdded} added of ${store.itemsRequested} asked for`
+          + (store.itemsUnavailable > 0
+            ? ` — ${store.itemsUnavailable} the store was out of, not counted against it`
+            : ''),
+      ],
     ];
     if (store.reasons.includes('success_drop') || store.itemSuccessRecent != null) {
       const drop = store.itemSuccessMedian != null && store.itemSuccessRecent != null

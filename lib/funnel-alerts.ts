@@ -202,6 +202,7 @@ function line(entry: Judged): StoreAlertLine {
     runs: store.runs,
     itemsRequested: store.itemsRequested,
     itemsAdded: store.itemsAdded,
+    itemsUnavailable: store.itemsUnavailable,
     itemSuccessRecent: store.itemSuccess.recent,
     itemSuccessMedian: store.itemSuccess.median,
     confirmRate: store.confirmRate,
