@@ -34,9 +34,16 @@ export type StepName =
 export type StepOutcome = 'ok' | 'empty' | 'timeout' | 'error' | 'blocked' | 'skipped';
 
 /**
- * MEAL-4's failure taxonomy, as the app emits it. Listed for documentation and
- * for ordering the dashboard's breakdown — NOT as a filter. An unrecognized code
- * from a newer client is counted under its own name rather than discarded.
+ * MEAL-4's failure taxonomy, as the app emits it. Documentation only — NOT a
+ * filter: an unrecognized code from a newer client is counted under its own name
+ * rather than discarded.
+ *
+ * It used to say it also ordered the dashboard's breakdown. It does not and never
+ * did: nothing imports this, and both renderers sort by count descending. Said
+ * plainly because MEAL-29 repeated the claim in the app's copy of the list as a
+ * reason a new code had to be appended rather than inserted. Appending is still
+ * the rule — the code is a raw string on rows that already exist — but the reason
+ * is the stored rows, not this array's index.
  */
 export const FAILURE_CODES = [
   'selector_miss', 'waf_block', 'auth_required', 'no_candidates',
@@ -65,6 +72,17 @@ const BLOCK_CODE = 'waf_block';
  * code cannot change, and averaging it into a reliability number makes that
  * number mean something nobody wants it to mean. A store that ran out of eggs
  * did not develop a selector bug.
+ *
+ * The one code on this page whose over-reporting makes a store look BETTER, and
+ * worth knowing before trusting it. The app does not simply read a flag: it
+ * reports this when the page says out of stock AND the item is an exact match for
+ * what was asked for, and the second half is its own judgement. A regression that
+ * loosens that match — which has shipped once, see `hasExactOos` in the app's
+ * instacart.ts — arrives here as a store quietly improving rather than as a
+ * failure. Nothing on this page can detect that from the inside, which is why
+ * `itemsUnavailable` is reported next to the rate it adjusted instead of being
+ * folded silently into it: a store that suddenly claims a third of its items are
+ * off the shelf is the visible symptom.
  */
 const UNAVAILABLE_CODE = 'out_of_stock';
 
