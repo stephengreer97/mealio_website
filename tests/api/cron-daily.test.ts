@@ -21,6 +21,9 @@ vi.mock('@/lib/platform-tokens', () => ({ refreshExpiringTokens: () => refreshEx
 const runPollHealthAlerts = vi.fn();
 vi.mock('@/lib/poll-health-alerts', () => ({ runPollHealthAlerts: () => runPollHealthAlerts() }));
 
+const runFunnelAlerts = vi.fn();
+vi.mock('@/lib/funnel-alerts', () => ({ runFunnelAlerts: () => runFunnelAlerts() }));
+
 import { GET } from '@/app/api/cron/daily/route';
 
 /**
@@ -42,6 +45,10 @@ beforeEach(() => {
   runPollHealthAlerts.mockReset();
   runPollHealthAlerts.mockResolvedValue({
     examined: 4, unhealthy: 2, alerted: 1, suppressed: 1, recovered: 1, emailsSent: 1,
+  });
+  runFunnelAlerts.mockReset();
+  runFunnelAlerts.mockResolvedValue({
+    storesExamined: 6, alerting: 3, alerted: 1, suppressed: 2, recovered: 1, emailsSent: 1, truncated: false,
   });
 });
 
@@ -98,5 +105,41 @@ describe('/api/cron/daily', () => {
 
     expect(res.status).toBe(200);
     expect(refreshExpiringTokens).toHaveBeenCalled();
+  });
+
+  /**
+   * The cart automation regression alert (MEAL-6) rides here for the same reason
+   * the poll digest does, and is asserted at the ROUTE and not only in
+   * `lib/funnel-alerts.ts`: a sweep with perfect unit tests that nothing calls
+   * detects nothing. This is the only test that fails if the pass is dropped
+   * from the cron.
+   */
+  it('sweeps store regressions and reports what it raised', async () => {
+    const body = await (await GET(cronRequest())).json();
+
+    expect(runFunnelAlerts).toHaveBeenCalledTimes(1);
+    // `alerting` and `alerted` are reported side by side because the pair is the
+    // story: three stores broken, one of them worth saying out loud, and the gap
+    // between them is the suppression working rather than a sweep that did
+    // nothing.
+    expect(body).toMatchObject({ storesAlerting: 3, storesAlerted: 1, storesRecovered: 1 });
+  });
+
+  it('does not sweep store regressions unauthenticated', async () => {
+    expect((await GET(cronRequest('wrong'))).status).toBe(401);
+    expect(runFunnelAlerts).not.toHaveBeenCalled();
+  });
+
+  it('keeps the other passes when the store regression sweep throws', async () => {
+    // `lastAlerted` throws by design when the suppression table is missing —
+    // code deployed ahead of `add-automation-alert-state.sql`. That must cost
+    // the alert email, not the token refresh or the drip.
+    runFunnelAlerts.mockRejectedValue(new Error('cannot read what has already been reported'));
+
+    const res = await GET(cronRequest());
+
+    expect(res.status).toBe(200);
+    expect(refreshExpiringTokens).toHaveBeenCalled();
+    expect(runPollHealthAlerts).toHaveBeenCalled();
   });
 });

@@ -6,6 +6,7 @@ import { refreshExpiringTokens } from '@/lib/platform-tokens';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { checkPushReceipts } from '@/lib/push';
 import { runPollHealthAlerts } from '@/lib/poll-health-alerts';
+import { runFunnelAlerts } from '@/lib/funnel-alerts';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,6 +66,9 @@ export async function GET(request: NextRequest) {
     pollHealthAlerted: 0,
     pollHealthDeferred: 0,
     pollHealthRecovered: 0,
+    storesAlerting: 0,
+    storesAlerted: 0,
+    storesRecovered: 0,
   };
 
   // Isolate the passes so one failing doesn't drop the other.
@@ -134,6 +138,25 @@ export async function GET(request: NextRequest) {
     results.pollHealthRecovered = sweep.recovered;
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'pollHealthAlerts', reason: err.message });
+  }
+
+  // Per-store cart automation regressions, told rather than displayed (MEAL-6).
+  // The admin funnel already computes this; a dashboard nobody opens is not
+  // detection, and a store whose selectors were renamed overnight produces no
+  // error anywhere — a shopper just gets fewer items than they asked for. It
+  // reuses `aggregateFunnel` with its default thresholds, so it and the funnel
+  // page can never disagree about which stores are broken.
+  try {
+    const sweep = await runFunnelAlerts({ supabase: createServerSupabaseClient() });
+    // Reported beside each other because the pair is the story: `alerting` is
+    // how many stores are broken right now and `alerted` how many of those were
+    // worth saying out loud. A big gap is the suppression working, not a sweep
+    // that did nothing.
+    results.storesAlerting = sweep.alerting;
+    results.storesAlerted = sweep.alerted;
+    results.storesRecovered = sweep.recovered;
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'funnelAlerts', reason: err.message });
   }
 
   log({ event: 'CRON:DAILY', status: 'success', detail: JSON.stringify(results) });

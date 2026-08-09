@@ -26,7 +26,13 @@ import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelCha
 import AdminRunDrilldown from '@/components/AdminRunDrilldown';
 // Pure, no server imports: the "which step is this store dying on" verdict lives
 // in the same module as the aggregation it reads, and is unit-tested there.
-import { worstStep, type AlertReason } from '@/lib/automation-funnel';
+import {
+  DEFAULT_BLOCKED_RATE_THRESHOLD,
+  DEFAULT_CONFIRM_RATE_THRESHOLD,
+  DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD,
+  worstStep,
+  type AlertReason,
+} from '@/lib/automation-funnel';
 
 type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email' | 'automation';
 
@@ -85,6 +91,18 @@ interface FunnelCoverage {
   uncodedFailures: number;
 }
 
+/** The item rate now against this store's own trailing median (MEAL-6). */
+interface ItemSuccessTrend {
+  recent: number | null;
+  recentItemsRequested: number;
+  recentItemsUnavailable: number;
+  /** The rate's real denominator: requested minus what the store did not have. */
+  recentItemsJudged: number;
+  median: number | null;
+  baselineWindows: number;
+  drop: number | null;
+}
+
 interface StoreFunnel {
   storeId: string;
   runs: number;
@@ -92,6 +110,11 @@ interface StoreFunnel {
   runsAbandoned: number;
   itemsRequested: number;
   itemsAdded: number;
+  /** Requested items the store reported it did not have — out of the rate below. */
+  itemsUnavailable: number;
+  itemSuccessRate: number | null;
+  /** The number `success_drop` fires on, so the page can show what the email said. */
+  itemSuccess: ItemSuccessTrend;
   steps: StepStats[];
   confirmRate: number | null;
   firstClickConfirmRate: number | null;
@@ -119,6 +142,7 @@ interface FunnelResponse {
   stores: StoreFunnel[];
   alerting: string[];
   confirmRateAlerting: string[];
+  successDropAlerting: string[];
   blockedAlerting: string[];
   partialInstrumentation: string[];
 }
@@ -151,6 +175,30 @@ function delta(v: number | null): string {
   if (Math.abs(pp) < 0.05) return 'no change';
   return `${pp > 0 ? '+' : '−'}${Math.abs(pp).toFixed(1)} pts`;
 }
+
+/**
+ * The badge's word for each alert reason, and the sentence behind it.
+ *
+ * Keyed by `AlertReason`, so the compiler asks for an entry when the funnel
+ * grows a reason. The conditions are independent — a store walled off at 90% can
+ * have a flawless confirm rate, and one whose item rate has fallen away from its
+ * own median can have both — so a badge that names the wrong one, or names none,
+ * sends someone to a number that is fine.
+ */
+const ALERT_REASON_BADGE: Record<AlertReason, { tag: string; title: string }> = {
+  confirm_rate: {
+    tag: 'CONFIRM RATE',
+    title: 'Confirm rate below threshold on a large enough sample.',
+  },
+  success_drop: {
+    tag: 'SUCCESS DROP',
+    title: `Item success is more than ${DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD * 100} points below this store’s own trailing 7-day median.`,
+  },
+  blocked: {
+    tag: 'BLOCKED',
+    title: 'A large share of this store’s runs are being walled off by a WAF or robot wall.',
+  },
+};
 
 function Metric({ label, value, bad, note }: { label: string; value: string; bad?: boolean; note?: string }) {
   return (
@@ -2040,6 +2088,20 @@ export default function AdminPage() {
                 </div>
               )}
 
+              {/* Its own banner for the same reason the email gives it its own
+                  line: this is not "these stores are bad" but "these stores got
+                  worse", which is the shape a renamed selector makes and the one
+                  an absolute floor cannot see. It is also the only condition that
+                  can see the stores with no per-item step rows at all
+                  (MEAL-122) — it is read off run rows every store writes. */}
+              {funnel && funnel.successDropAlerting?.length > 0 && (
+                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                  <strong>Item success has fallen away from normal:</strong> {funnel.successDropAlerting.join(', ')}. More
+                  than {DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD * 100} points below each store&apos;s own trailing 7-day
+                  median. Compare the Item success tile with its median, not with the other stores.
+                </div>
+              )}
+
               {/* Its own banner, because it is its own failure and the confirm
                   rate cannot see it: blocked clicks leave that denominator, so a
                   store with nearly all of its runs walled off reports a healthy
@@ -2091,7 +2153,7 @@ export default function AdminPage() {
                 const worst = worstStep(s);
                 // `?? []` only for a response served from before this deploy.
                 const reasons = s.alertReasons ?? [];
-                const blockedOnly = reasons.includes('blocked') && !reasons.includes('confirm_rate');
+                const badges = reasons.map((r) => ALERT_REASON_BADGE[r]).filter(Boolean);
                 const worstNote =
                   worst.kind === 'dying'
                     ? `${pct(worst.okRate)} ok over ${worst.attempted}`
@@ -2102,23 +2164,21 @@ export default function AdminPage() {
                         : 'no step convincingly below 90%';
 
                 return (
-                <div key={s.storeId} style={{ borderTop: '1px solid #f0f0f0', padding: '20px 24px' }}>
+                <div key={s.storeId} data-testid={`funnel-store-${s.storeId}`} style={{ borderTop: '1px solid #f0f0f0', padding: '20px 24px' }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
                     <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700 }}>{s.storeId}</h3>
                     {s.alerting && (
                       <span
-                        title={
-                          reasons.includes('blocked')
-                            ? 'A large share of this store’s runs are being walled off by a WAF or robot wall.'
-                            : 'Confirm rate below threshold on a large enough sample.'
-                        }
+                        title={badges.map((b) => b.title).join(' ')}
                         style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}
                       >
-                        {/* Naming the reason: the two conditions are independent
-                            and a store walled off at 90% can have a flawless
-                            confirm rate, so an unlabelled badge sends someone to
-                            the wrong number. */}
-                        ALERTING{blockedOnly ? ' · BLOCKED' : ''}
+                        {/* Every reason, named. An unlabelled badge sends someone
+                            to the wrong number, and so does a labelled one that
+                            leaves a reason out: a store already known to be
+                            walled off and now also drifting is a second problem
+                            with a second fix. `reasons` is empty only for a
+                            response served from before this deploy. */}
+                        ALERTING{badges.map((b) => ` · ${b.tag}`).join('')}
                       </span>
                     )}
                     {s.coverage.partialInstrumentation && (
@@ -2131,6 +2191,10 @@ export default function AdminPage() {
                     </span>
                     <span style={{ fontSize: '13px', color: '#666', marginLeft: 'auto' }}>
                       {s.itemsAdded}/{s.itemsRequested} items added
+                      {/* Named rather than left implicit: these are subtracted
+                          from the Item success denominator below (MEAL-29), so a
+                          reader who cannot see them cannot make the two agree. */}
+                      {s.itemsUnavailable > 0 && ` · ${s.itemsUnavailable} out of stock`}
                     </span>
                   </div>
 
@@ -2148,7 +2212,30 @@ export default function AdminPage() {
                       bad={worst.kind === 'dying'}
                       note={worstNote}
                     />
-                    <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < 0.9} />
+                    {/* The number `success_drop` fires on, shown the way the
+                        alert reads it: the last 24h against this store's own
+                        trailing median, not against a bar every store shares. An
+                        email naming a store the page has no tile for is an
+                        operator with nothing to check. */}
+                    <Metric
+                      label="Item success"
+                      value={pct(s.itemSuccess?.recent ?? null)}
+                      bad={s.itemSuccess?.drop != null && s.itemSuccess.drop > DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD}
+                      note={
+                        (s.itemSuccess?.median != null
+                          ? `24h · median ${pct(s.itemSuccess.median)} over ${s.itemSuccess.baselineWindows}d`
+                          : '24h · too little history for a median')
+                        // The sample the alert gates on, shown only when the
+                        // subtraction actually moved it. Otherwise an operator
+                        // reading a quiet tile has no way to tell a store with a
+                        // real 24h sample from one whose sample is five items
+                        // because the other twenty were off the shelf.
+                        + (s.itemSuccess?.recentItemsUnavailable
+                          ? ` · over ${s.itemSuccess.recentItemsJudged} of ${s.itemSuccess.recentItemsRequested} items`
+                          : '')
+                      }
+                    />
+                    <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < DEFAULT_CONFIRM_RATE_THRESHOLD} />
                     <Metric label="First-click confirm" value={pct(s.firstClickConfirmRate)} />
                     {/* Blocks sit apart on purpose: they are excluded from every
                         rate to the left of here, because a WAF wall and a renamed
@@ -2160,10 +2247,13 @@ export default function AdminPage() {
                           to show it: one walled-off run emits a blocked row per
                           item, so steps over runs is not a percentage of
                           anything — it rendered "WAF blocked 450.0%". */}
+                      {/* Red at the alert's threshold, not at a second one of its
+                          own: a tile that colours at a number the email does not
+                          use is how a page and an inbox come to disagree. */}
                       <Metric
                         label="WAF blocked"
                         value={pct(s.blockedRate)}
-                        bad={!!s.blockedRate && s.blockedRate > 0.05}
+                        bad={s.blockedRate != null && s.blockedRate >= DEFAULT_BLOCKED_RATE_THRESHOLD}
                         note={`${s.blocked.runs} run${s.blocked.runs === 1 ? '' : 's'} walled off · ${s.blocked.steps} blocked step${s.blocked.steps === 1 ? '' : 's'} · excluded from the rates left`}
                       />
                     </div>

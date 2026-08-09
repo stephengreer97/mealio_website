@@ -22,6 +22,7 @@ import {
   sendCreatorSyncPublishedEmail,
   sendCreatorDraftsReadyEmail,
   sendCreatorSourceMovedEmail,
+  sendFunnelAlertEmail,
   sendOtpEmail,
   sendPollHealthAlertEmail,
 } from '@/lib/email';
@@ -102,6 +103,33 @@ const senders: Array<{ name: string; call: () => Promise<unknown> }> = [
           consecutiveFailures: 0,
           lastFailedAt: null,
           lastError: null,
+        }],
+      }),
+  },
+  {
+    // Durable in exactly the same way as the poll-health digest above: the
+    // MEAL-6 sweep records a store as reported only once this returns, and
+    // nothing but a full recovery clears that. A refusal read as a send retires
+    // the store from the alert until it happens to come good and break again.
+    name: 'sendFunnelAlertEmail',
+    call: () =>
+      sendFunnelAlertEmail({
+        adminEmails: ['admin@mealio.co'],
+        stores: [{
+          storeId: 'heb',
+          storeLabel: 'H-E-B',
+          reasons: ['success_drop'],
+          newReasons: ['success_drop'],
+          runs: 12,
+          itemsRequested: 120,
+          itemsAdded: 48,
+          itemsUnavailable: 0,
+          itemSuccessRecent: 0.4,
+          itemSuccessMedian: 0.98,
+          confirmRate: 0.41,
+          blockedRate: 0,
+          blockedRuns: 0,
+          failureCodes: [{ code: 'selector_miss', count: 30 }],
         }],
       }),
   },

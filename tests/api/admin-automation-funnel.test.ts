@@ -176,6 +176,11 @@ describe('GET /api/admin/automation-funnel', () => {
     await GET(jsonRequest('/api/admin/automation-funnel', { method: 'GET', token }));
     expect(selectFor('automation_steps')).toContain('code');
     expect(selectFor('automation_steps')).toContain('occurred_at');
+    // MEAL-29: silent in exactly the way `completed_at` is below. Without it
+    // every row arrives with item_index undefined, the unavailable count comes
+    // out zero for every run, and the funnel goes on reporting the pre-MEAL-29
+    // numbers while every unit test of the counting still passes.
+    expect(selectFor('automation_steps')).toContain('item_index');
     expect(selectFor('automation_runs')).toContain('started_at');
     // MEAL-145: without this column every `status:'started'` row looks like it
     // never reported finishing, so a half-landed completion write reads as

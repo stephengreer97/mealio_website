@@ -177,6 +177,12 @@ export type EventType =
   // nobody to address it, or a mark that did not stick. The email is the signal;
   // the counts a successful sweep produces ride out on CRON:DAILY.
   | 'POLL:HEALTH_ALERT'
+  // The operator digest about stores whose cart automation has regressed
+  // (MEAL-6). Same discipline as POLL:HEALTH_ALERT: logged only when the alert
+  // does NOT happen — a refused send, nobody to address it, a mark that did not
+  // stick, or a window too large to read in full. The counts a successful sweep
+  // produces ride out on CRON:DAILY.
+  | 'CRON:FUNNEL_ALERT'
   // ── Storage ───────────────────────────────────────────────────────────────
   | 'STORAGE:CLEANUP'
   | 'STORAGE:BACKFILL'
