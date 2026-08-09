@@ -47,8 +47,12 @@ export const PITCH_SUBHEAD =
  * available in the Mealio mobile app" when they pick one. Naming all of them
  * beside "your ingredients go into your cart" on the web front door promises
  * something that surface cannot do, which is a worse first impression than a
- * Enumerated on `/about`, where someone has gone looking for the answer. The
- * three-step pitch deliberately does NOT interpolate this — see `PITCH_STEPS`.
+ * Nothing on the WEBSITE renders this any more — `/about` used to, and now says
+ * "most major grocery retailers" like the pitch does. It stays because this file
+ * is a hand-mirrored copy of `mealio_app/src/constants/pitch.ts`, where Help's
+ * FAQ answers "which stores can Mealio fill?" with it directly. There the list
+ * IS the answer; deleting it here would re-open the divergence between the two
+ * files that removing it from `PITCH_STEPS` just closed.
  *
  * There used to be a second, shorter `PITCH_STORES_WEB` for the website, because
  * cart automation for everything except Kroger runs in the RN app. Its only

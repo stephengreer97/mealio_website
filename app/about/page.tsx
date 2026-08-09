@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import AppHeader from '@/components/AppHeader';
 import AppFooter from '@/components/AppFooter';
-import { PITCH_STORES } from '@/lib/pitch';
 
 /**
  * What Mealio is, for someone who has never seen it.
@@ -55,8 +54,8 @@ export default function AboutPage() {
               <strong>Browse meals</strong> published by cooks and creators, or save your own.
             </li>
             <li style={{ marginBottom: '8px' }}>
-              <strong>Send the ingredients to your grocery cart</strong> in one step. Mealio supports{' '}
-              {PITCH_STORES}.
+              <strong>Send the ingredients to your grocery cart</strong> in one step. Mealio supports most
+              major grocery retailers — you&apos;ll see the full list when you pick your store.
             </li>
             <li style={{ marginBottom: '8px' }}>
               <strong>Adjust before you buy.</strong> Nothing is ordered — the items land in your own cart at
