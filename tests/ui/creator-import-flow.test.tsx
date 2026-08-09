@@ -568,7 +568,8 @@ describe('creator portal — an import never destroys the creator’s own work',
     fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
 
     await waitFor(() => expect(published).not.toBeNull());
-    expect(published!.ingredients[0].prep).toBe('halved and pitted');
+    const publishedRows = published!.ingredients as Array<Record<string, unknown>>;
+    expect(publishedRows[0].prep).toBe('halved and pitted');
   });
 
   it('publishes no prep key when the creator clears the box', async () => {
@@ -587,7 +588,8 @@ describe('creator portal — an import never destroys the creator’s own work',
     fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
 
     await waitFor(() => expect(published).not.toBeNull());
-    expect('prep' in published!.ingredients[0]).toBe(false);
+    const publishedRows = published!.ingredients as Array<Record<string, unknown>>;
+    expect('prep' in publishedRows[0]).toBe(false);
   });
 
   it('leaves a field the creator filled that the import has nothing for', async () => {
