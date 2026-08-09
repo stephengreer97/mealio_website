@@ -66,6 +66,14 @@ export interface DraftFormIngredient {
   unit: string;
   searchTerm: string | null;
   qty: number;
+  /**
+   * Preparation, carried into the form so publishing keeps it (MEAL-102).
+   *
+   * No input is bound to it — that decision is still open — but the import
+   * fills the publish form and the publish form is what gets POSTed, so a prep
+   * the extraction captured would be thrown away here on its way to the meal.
+   */
+  prep?: string | null;
 }
 
 /**
@@ -89,6 +97,9 @@ export function draftIngredientToForm(ing: DraftIngredient): DraftFormIngredient
     unit: countable ? 'qty' : ing.unit,
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
+    // Omitted rather than nulled, so a row with no preparation produces the
+    // same form row it produced before the field existed.
+    ...(ing.prep ? { prep: ing.prep } : {}),
   };
 }
 

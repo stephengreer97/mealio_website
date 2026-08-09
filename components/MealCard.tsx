@@ -29,8 +29,29 @@ export interface Ingredient {
   qty: number;
   unit: string;
   measure?: string | null;
+  /** How many of the product to buy. Carried by the two editable pages only. */
+  productQty?: number;
+  /**
+   * Preparation — "finely diced" (MEAL-102). Display only, and deliberately not
+   * read by anything that builds a search term. See `fmtMeasurement`.
+   */
+  prep?: string | null;
 }
 
+/**
+ * The one normaliser for an ingredient row read back from storage.
+ *
+ * Four pages kept private copies of this, character for character. They are now
+ * all this function, because a copy is where the next divergence goes: one of
+ * those copies wrote `prep: null` and its page POSTed the normalised array
+ * straight back to `/api/meals`, which is how a field documented as "absent
+ * stays absent" ended up stored as null on every meal saved from a preset page.
+ *
+ * `prep` is OMITTED when there is none — never `null`. That is the whole
+ * additivity contract, and it is load-bearing beyond tidiness: `stripEditedConfidence`
+ * (`lib/import-drafts.ts`) compares draft rows by `JSON.stringify`, so a null
+ * where there was no key flips every ingredient's badge to "edited".
+ */
 export function normIng(raw: any): Ingredient {
   return {
     ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
@@ -38,6 +59,27 @@ export function normIng(raw: any): Ingredient {
     qty: raw.qty ?? raw.quantity ?? 1,
     unit: raw.unit ?? 'qty',
     measure: raw.measure ?? null,
+    // One spelling, unlike the name's four: `prep` is a single word, so
+    // camelCase and snake_case are the same six characters and every writer
+    // already agrees. See `readPrep` in `lib/import/ingredients.ts`.
+    // Whitespace-only is no prep, which is what `withPrep` below and
+    // `canonicalPrep` on the import side both already say. Trimmed here too, so
+    // the three agree on the value and not merely on whether there is one.
+    ...(typeof raw.prep === 'string' && raw.prep.trim() ? { prep: raw.prep.trim() } : {}),
+  };
+}
+
+/**
+ * The same row, plus `productQty` — how many of the product to buy, which the
+ * two editable pages (the creator portal and My Meals) carry and the read-only
+ * pages do not. Kept as a separate function rather than a flag so neither page
+ * can quietly acquire the other's shape: an extra key on the read-only pages
+ * would be written back by the preset page exactly the way `prep: null` was.
+ */
+export function normIngWithProductQty(raw: any): Ingredient {
+  return {
+    ...normIng(raw),
+    productQty: raw.productQty ?? raw.qty ?? raw.quantity ?? 1,
   };
 }
 
@@ -52,8 +94,36 @@ export function normIng(raw: any): Ingredient {
  *
  * The unit is spelled for the number beside it (`unitLabel`), because units are
  * stored plural and "1 cans" is the storage decision showing through.
+ *
+ * Preparation trails the whole line, comma-separated, exactly where the recipe
+ * put it — "1 onion, finely diced" (MEAL-102). Appended once, at the end,
+ * because the ingredient name ends every branch below. A row with no `prep`
+ * returns the same string it returned before the field existed, character for
+ * character, which is what lets the field be added without touching a single
+ * imported meal.
+ *
+ * This is the *only* thing prep is used for. It is never fed to
+ * `buildSearchTerm`, never concatenated into `ingredientName`, and no caller
+ * derives a store query from this string — the Kroger route reads
+ * `searchTerm ?? productName` off the row itself, never a rendered line.
  */
 export function fmtMeasurement(ing: Ingredient): string {
+  return withPrep(measurementLine(ing), ing.prep);
+}
+
+/**
+ * Trails the preparation after a rendered line.
+ *
+ * The comma is added here rather than stored, so the data holds the phrase a
+ * cook wrote ("finely diced") and not the punctuation joining it to something
+ * else. Whitespace-only prep is no prep.
+ */
+function withPrep(line: string, prep: string | null | undefined): string {
+  const trailer = (prep ?? '').trim();
+  return trailer ? `${line}, ${trailer}` : line;
+}
+
+function measurementLine(ing: Ingredient): string {
   // Countables answer to `measure` like everything else.
   //
   // The old rule read `qty` and hid any count of one, because an unquantified

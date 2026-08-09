@@ -223,6 +223,79 @@ function formatAmount(value: number): string {
   return whole ? `${whole} ${match[1]}` : match[1];
 }
 
+// ── Preparation (MEAL-102) ───────────────────────────────────────────────────
+
+/**
+ * The longest preparation we will carry. Beyond this the row is treated as
+ * having none.
+ *
+ * A prep is a phrase off the end of one ingredient line — "finely diced",
+ * "drained and rinsed", "softened to room temperature". The failure this bounds
+ * is a model handing back the whole method, or the rest of the page, in a field
+ * that renders on every ingredient row of a public meal page.
+ *
+ * Over the bound the prep is **dropped, not truncated.** Truncating picks a cut
+ * point nobody wrote and renders half a sentence as though it were the whole
+ * instruction; dropping falls back precisely to how the row read before this
+ * field existed, which is the direction this module is already wrong in
+ * everywhere else — an empty field costs a creator a keystroke, a confident
+ * wrong one costs them a reader.
+ *
+ * SCOPE, so this is not read as a guarantee it does not make: the cap is applied
+ * by `canonicalPrep`, which runs inside `canonicalizeIngredient` — the IMPORT
+ * path. It bounds what the model can put in the field, which is the failure it
+ * was written for. It does not bound the hand-written writers: `publishCreatorMeal`,
+ * `POST`/`PUT /api/meals` and `/api/shared/[token]/save` all pass ingredients
+ * through unvalidated. That matches how `ingredientName` has always been
+ * treated on those routes, so it is not a regression — but a length rule that
+ * has to hold everywhere belongs in the API schemas, not here.
+ */
+export const MAX_PREP_CHARS = 120;
+
+/**
+ * Reads the preparation off an ingredient however its writer spelled the key.
+ *
+ * The name needs four spellings folded together — `ingredientName`,
+ * `productName`, `product_name`, `name` — because it has been written by
+ * seeds, by the app and by the API across three years. **`prep` needs one, and
+ * that is a reason to keep the ticket's name rather than a lucky accident.**
+ * The tolerance elsewhere exists to reconcile camelCase with snake_case
+ * (`searchTerm` / `search_term`); a single-word field is spelled identically in
+ * both, so `prep` is `prep` to every writer that will ever touch it. Anything
+ * with a second word in it — `prepNote`, `prep_note` — would have re-opened
+ * exactly the problem `normIng` exists to paper over.
+ *
+ * Kept as a named export anyway, so the day a fifth writer appears there is one
+ * place to teach rather than nine.
+ */
+export function readPrep(raw: unknown): string | null {
+  const value = (raw as { prep?: unknown } | null | undefined)?.prep;
+  return typeof value === 'string' ? value : null;
+}
+
+/**
+ * Normalises a preparation, as a spreadable so "none" stays *absent*.
+ *
+ * Returning `{}` rather than `{ prep: null }` is what makes the field additive:
+ * a row with nothing to say serialises byte-for-byte the way it did before
+ * MEAL-102, so the entire imported catalogue is untouched and no migration is
+ * owed. See `DraftIngredient.prep`.
+ *
+ * The leading comma goes because the source writes one — "1 onion, finely
+ * diced" — and the renderer puts it back. Carrying it in the data would mean a
+ * row that reads "1 onion, , finely diced" the moment both agree.
+ */
+export function canonicalPrep(raw: string | null | undefined): { prep?: string } {
+  if (typeof raw !== 'string') return {};
+  const prep = raw
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s,;:–—-]+/, '')
+    .replace(/[\s,;:]+$/, '')
+    .trim();
+  if (!prep || prep.length > MAX_PREP_CHARS) return {};
+  return { prep };
+}
+
 /**
  * Forces one model-produced ingredient into the canonical `Ingredient` shape.
  *
@@ -239,6 +312,7 @@ export function canonicalizeIngredient(input: ExtractedIngredient): DraftIngredi
 
   const amount = parseAmount(input.measure);
   const unit = canonicalUnit(input.unit);
+  const prep = canonicalPrep(input.prep);
 
   // Measured units keep the amount as display text; qty stays 1, matching
   // `fromFormIng` in IngredientEditor.
@@ -250,6 +324,7 @@ export function canonicalizeIngredient(input: ExtractedIngredient): DraftIngredi
       unit,
       measure: amount != null ? formatAmount(amount) : (input.measure?.trim() || null),
       searchTerm: null,
+      ...prep,
     };
   }
 
@@ -270,6 +345,7 @@ export function canonicalizeIngredient(input: ExtractedIngredient): DraftIngredi
     unit: COUNT_UNIT,
     measure: amount != null ? formatAmount(amount) : null,
     searchTerm: null,
+    ...prep,
   };
 }
 

@@ -27,7 +27,7 @@ export interface FullPresetMeal {
   creator_id?: string | null;
   creator_name?: string | null;
   creator_social?: string | null;
-  ingredients: { ingredientName?: string; productName?: string; product_name?: string; name?: string; searchTerm?: string; qty?: number; quantity?: number; unit?: string; measure?: string }[];
+  ingredients: { ingredientName?: string; productName?: string; product_name?: string; name?: string; searchTerm?: string; qty?: number; quantity?: number; unit?: string; measure?: string; prep?: string }[];
   source?: string | null;
   story?: string | null;
   recipe?: string | null;

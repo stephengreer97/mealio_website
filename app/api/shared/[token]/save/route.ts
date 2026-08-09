@@ -73,6 +73,11 @@ export async function POST(
     unit: ing.unit ?? 'qty',
     ...(ing.measure != null ? { measure: ing.measure } : {}),
     ...(ing.searchTerm != null ? { searchTerm: ing.searchTerm } : {}),
+    // Preparation is the creator's cooking instruction, not store-specific
+    // product data, so it survives the copy — "1 onion, finely diced" is the
+    // line the saver was looking at when they pressed Save, and it should be
+    // the line they get. Omitted when absent, like every field above it.
+    ...(typeof ing.prep === 'string' && ing.prep ? { prep: ing.prep } : {}),
   }));
 
   // Tags are **trimmed** here rather than refused, which is the opposite of what
