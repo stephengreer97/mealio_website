@@ -107,6 +107,14 @@ const units = () =>
   screen.getAllByLabelText(/^Ingredient \d+.* unit$/) as HTMLSelectElement[];
 const notices = () => screen.queryAllByTestId('import-notice');
 
+/** The guacamole extraction with a preparation on its first ingredient row. */
+function withPrepOnFirstRow(prep: string): Record<string, unknown> {
+  const base = guacamoleExtraction() as Record<string, unknown>;
+  const rows = base.ingredients as Record<string, unknown>[];
+  return { ...base, ingredients: [{ ...rows[0], prep }, ...rows.slice(1)] };
+}
+
+
 /**
  * A notice's text with the span we read revealed.
  *
@@ -536,6 +544,50 @@ describe('creator portal — an import never destroys the creator’s own work',
 
     await waitFor(() => expect(published).not.toBeNull());
     expect(published!.name).toBe('Guacamole');
+  });
+
+  it('shows an imported preparation, and publishes the creator\'s correction of it (MEAL-165)', async () => {
+    // The failure this closes: `prep` was carried through the publish form with
+    // no input bound to it, so a preparation the model invented was published
+    // with no way for the creator to see or correct it. That is the ticket's
+    // own complaint, on the one screen that publishes.
+    // `guacamoleExtraction()` takes no arguments, so the preparation goes on by
+    // rebuilding its first row rather than by passing an override that would be
+    // silently ignored.
+    const success = await importedGuacamole(withPrepOnFirstRow('julienned on a mandoline'));
+    stubApi({ import: () => json(success, 200) });
+    await openPublishForm();
+
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    const prep = screen.getByLabelText(/^Ingredient 1.* preparation$/) as HTMLInputElement;
+    expect(prep.value).toBe('julienned on a mandoline');
+
+    fireEvent.change(prep, { target: { value: 'halved and pitted' } });
+    fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
+
+    await waitFor(() => expect(published).not.toBeNull());
+    expect(published!.ingredients[0].prep).toBe('halved and pitted');
+  });
+
+  it('publishes no prep key when the creator clears the box', async () => {
+    // Absent, not empty — the additive rule the whole field rests on.
+    const success = await importedGuacamole(withPrepOnFirstRow('julienned on a mandoline'));
+    stubApi({ import: () => json(success, 200) });
+    await openPublishForm();
+
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    // Guard: the box really did arrive filled, so clearing it means something.
+    const prep = screen.getByLabelText(/^Ingredient 1.* preparation$/) as HTMLInputElement;
+    expect(prep.value).toBe('julienned on a mandoline');
+    fireEvent.change(prep, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /^publish meal$/i }));
+
+    await waitFor(() => expect(published).not.toBeNull());
+    expect('prep' in published!.ingredients[0]).toBe(false);
   });
 
   it('leaves a field the creator filled that the import has nothing for', async () => {

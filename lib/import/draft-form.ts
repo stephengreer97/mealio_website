@@ -69,9 +69,10 @@ export interface DraftFormIngredient {
   /**
    * Preparation, carried into the form so publishing keeps it (MEAL-102).
    *
-   * No input is bound to it — that decision is still open — but the import
-   * fills the publish form and the publish form is what gets POSTed, so a prep
-   * the extraction captured would be thrown away here on its way to the meal.
+   * The publish form binds an input to it as of MEAL-165. Carrying it here is
+   * what makes that possible: the import fills the publish form and the publish
+   * form is what gets POSTed, so a prep the extraction captured would otherwise
+   * be thrown away on its way to the meal.
    */
   prep?: string | null;
 }

@@ -27,6 +27,7 @@ import {
 } from '@/lib/import/draft-form';
 import PublishedLinkModal from '@/components/PublishedLinkModal';
 import CreatorReviewQueue from '@/components/CreatorReviewQueue';
+import { MAX_PREP_CHARS } from '@/lib/import/ingredients';
 import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, tagCapError, toggleTag } from '@/lib/import/vocab';
 // One copy, in `components/MealCard.tsx`. Five pages carried their own
 // byte-identical version of this, so "chopped tomatoes, 2 cans" was five places
@@ -2524,6 +2525,29 @@ export default function CreatorPortal() {
                             >
                               {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                             </select>
+                            {/*
+                              What the line asks be DONE to the product (MEAL-165).
+                              An imported prep used to arrive here with no box bound
+                              to it: carried through the form, published, and
+                              invisible — so a preparation the model invented reached
+                              a live meal with no way for the creator to see or
+                              correct it. That is the failure the ticket names, on
+                              the one screen that publishes.
+
+                              No flag is retired when it changes. `touchIngredient`
+                              is told `false` for every field but the name, which is
+                              right here for the same reason prep is exempt from
+                              `stripEditedConfidence`: the row's assessment grades
+                              the product name, never the preparation.
+                            */}
+                            <input
+                              value={ing.prep ?? ''}
+                              onChange={e => updateIngredientForm(i, 'prep', e.target.value)}
+                              placeholder="finely diced"
+                              aria-label={`${rowName} preparation`}
+                              maxLength={MAX_PREP_CHARS}
+                              className={`${pInputCls} !w-28`}
+                            />
                             {mealIngredients.length > 1 && (
                               <button type="button" onClick={() => removeIngredientRow(i)} aria-label={`Remove ${rowName}`} className="text-gray-300 hover:text-red-400 text-lg leading-none cursor-pointer transition-colors bg-none border-none px-1">×</button>
                             )}

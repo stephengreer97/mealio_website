@@ -20,8 +20,13 @@ export interface IngredientForm {
   /**
    * Carried through the edit form untouched, with no input bound to it.
    *
-   * There is nothing to type into yet — how a creator *enters* prep is still
-   * open — but the round trip has to preserve it regardless: this form is
+   * Deliberately still read-only HERE, unlike the creator's publish form and the
+   * draft review card, which MEAL-165 gave a prep box. Those two are where an
+   * extracted preparation is reviewed before it goes live; this is a shopper's
+   * own saved meal, where the prep came from a recipe they chose to save and
+   * there is no model output to correct.
+   *
+   * The round trip has to preserve it regardless: this form is
    * `Ingredient -> IngredientForm -> Ingredient`, and a field the form does not
    * carry is a field that opening the edit modal and pressing Save deletes.
    */

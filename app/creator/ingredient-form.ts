@@ -18,13 +18,15 @@ export interface IngredientForm {
   searchTerm: string | null;
   qty: number;
   /**
-   * Carried through the form with no input bound to it (MEAL-102).
+   * What the line asks be DONE to the product — "finely diced" (MEAL-102).
    *
-   * Whether a creator gets a prep box of its own, or types it after a comma and
-   * we split the line, is still open. Until it is settled this field is only
-   * ever *preserved*: the edit modal is `Ingredient -> IngredientForm ->
-   * Ingredient`, so anything the form drops is deleted by the act of opening a
-   * meal and saving it — an imported prep would not survive its first edit.
+   * Bound to its own input as of MEAL-165. It was carried-but-invisible before
+   * that, which meant an imported preparation the model invented was published
+   * with no way for the creator to see or correct it.
+   *
+   * Preserving it is still load-bearing on top of that: the edit modal is
+   * `Ingredient -> IngredientForm -> Ingredient`, so anything the form drops is
+   * deleted by the act of opening a meal and saving it.
    */
   prep?: string | null;
 }
