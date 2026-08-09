@@ -47,21 +47,17 @@ export const PITCH_SUBHEAD =
  * available in the Mealio mobile app" when they pick one. Naming all of them
  * beside "your ingredients go into your cart" on the web front door promises
  * something that surface cannot do, which is a worse first impression than a
- * shorter list. Use `PITCH_STORES_WEB` on the website; this constant is the
- * right one for the RN app (MEAL-84), where all of them genuinely work.
+ * Enumerated on `/about`, where someone has gone looking for the answer. The
+ * three-step pitch deliberately does NOT interpolate this — see `PITCH_STEPS`.
+ *
+ * There used to be a second, shorter `PITCH_STORES_WEB` for the website, because
+ * cart automation for everything except Kroger runs in the RN app. Its only
+ * consumer was step 2; once that stopped naming stores there was nothing left
+ * for it to be right about.
  */
 export const PITCH_STORES =
   'H-E-B, Walmart, Kroger and its banners, Albertsons, Safeway, ALDI, Amazon '
   + 'Fresh and Wegmans';
-
-/**
- * The same claim, true of the website. Phrased as `/help` phrases it, so a
- * visitor who reads both is not told two different things.
- */
-export const PITCH_STORES_WEB =
-  'Kroger and its sister banners on the web — Ralphs, Fred Meyer, King Soopers, '
-  + 'Harris Teeter and more — and H-E-B, Walmart, Amazon Fresh, ALDI, Wegmans '
-  + 'and the Albertsons family in the mobile app';
 
 /**
  * The mechanism in three steps. Ordered; a surface with room for one shows the
@@ -73,10 +69,22 @@ export const PITCH_STEPS: ReadonlyArray<{ title: string; body: string }> = [
     body: 'Browse recipes from cooks and creators. No account needed to look.',
   },
   {
-    // Web-accurate by default: this array is rendered by the website. The RN
-    // app should substitute PITCH_STORES, which is true there.
+    // Deliberately names no store.
+    //
+    // It used to interpolate a list, and the list had to differ per surface —
+    // the web build could only honestly promise Kroger, while the app supports
+    // all 35 banners — which is why this module carried two constants and a
+    // docblock explaining when to use which. A step in a three-step
+    // introduction is the wrong place to litigate that: someone meeting the
+    // product wants to know a store like theirs is covered, and the honest
+    // answer to "is MY store here" is the picker, which shows exactly the
+    // stores that surface supports.
+    //
+    // So the sentence points at the list instead of reciting it, and is true
+    // read from either surface. `/about` still enumerates them, which is where
+    // someone goes to check.
     title: 'Pick the store you shop at',
-    body: `Mealio works with ${PITCH_STORES_WEB}.`,
+    body: 'Mealio supports most major grocery retailers — you\'ll see the full list when you pick yours.',
   },
   {
     title: 'Mealio fills your cart',
