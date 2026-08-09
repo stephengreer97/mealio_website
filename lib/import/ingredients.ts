@@ -260,13 +260,22 @@ function formatAmount(value: number): string {
  * answer **200 OK with the preparation silently gone**. Measured: `ok: true`,
  * and the returned row has no `prep` key at all.
  *
- * That is residual rather than live — a browser is the only client of those
- * routes today, and `mealio_app` has no review-queue screen — but it is the
- * shape to fix if the cap ever has to be a guarantee: refuse the write, the way
- * the tag cap and `serves` are refused, rather than silently canonicalising it
- * away. An earlier version of this comment said the input meant the text "can
- * never get long enough to be dropped", which was the same over-claim the
- * previous version made, moved one layer down.
+ * No client can currently produce an over-cap value, because every prep input
+ * carries `maxLength`. But note what that safety now rests on: **two clients in
+ * two repositories both remembering a cap that is duplicated by hand**, rather
+ * than on the route. `mealio_app`'s `CreatorReviewQueueScreen` posts to this
+ * exact endpoint and keeps its own copy of the number (MEAL-170).
+ *
+ * An earlier version of this comment justified leaving it with "a browser is the
+ * only client of those routes today, and `mealio_app` has no review-queue
+ * screen". Both halves were false — that screen has existed since MEAL-89 — and
+ * that sentence was the entire argument for not hardening the route, so it is
+ * worth being exact about why it is still open: because nothing can reach it
+ * today, not because nothing else calls it.
+ *
+ * The fix is to refuse the write the way the tag cap and `serves` are refused,
+ * with a `publishBlockers` sentence and a 400, rather than silently
+ * canonicalising it away. Filed as MEAL-171.
  *
  * Never bounded at all: `publishCreatorMeal`, `POST`/`PUT /api/meals` and
  * `/api/shared/[token]/save` pass ingredients through unvalidated. That matches
