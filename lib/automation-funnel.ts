@@ -125,6 +125,18 @@ export interface DayPoint {
   terminalSuccessRate: number | null;
   blocked: number;
   failures: number;
+  itemsRequested: number;
+  itemsAdded: number;
+  /**
+   * itemsAdded / itemsRequested, null on a day that requested nothing.
+   *
+   * The ITEM rate, not the run rate beside it, and the two answer different
+   * questions: a run that added nine of ten items is a failed run and a 90% day
+   * for the shopper. Every store writes both numbers on its run row, including
+   * the four that emit no per-item step rows at all (MEAL-122) — which is why
+   * this, and not `confirmRate`, is what MEAL-6's regression alert watches.
+   */
+  itemSuccessRate: number | null;
 }
 
 /** One side of the week-over-week comparison. */
@@ -142,6 +154,38 @@ export interface WeekOverWeek {
   /** current - previous, null unless BOTH sides have a denominator. */
   terminalSuccessRateDelta: number | null;
   runsDelta: number;
+}
+
+/**
+ * A store's item success rate right now against what is normal FOR IT (MEAL-6).
+ *
+ * A drop against the store's own recent history rather than an absolute floor,
+ * because a floor is wrong in both directions at once: a store that legitimately
+ * sits at 82% alarms every single day until somebody either fixes physics or
+ * turns the alert off, and a store that normally runs at 99% and has fallen to
+ * 93% — a real, sudden, selector-shaped break — never trips it at all.
+ *
+ * **The windows are aligned to `now`, not to UTC midnight.** The daily series
+ * above is calendar days because a chart needs date labels; this cannot be,
+ * because the sweep that reads it runs at 14:00 UTC and comparing fourteen hours
+ * of traffic against seven complete days manufactures whatever the morning
+ * happened to look like. Eight equal windows ending at the same instant compare
+ * like with like.
+ */
+export interface ItemSuccessTrend {
+  /** itemsAdded / itemsRequested over the most recent window. Null if nothing was requested. */
+  recent: number | null;
+  /** The recent window's denominator — what `minSampleForAlert` is judged against. */
+  recentItemsRequested: number;
+  /**
+   * Median of the preceding windows' rates. Null until `baselineWindows` reaches
+   * `minBaselineWindows`: a "median" of one quiet Sunday is not a normal week.
+   */
+  median: number | null;
+  /** How many preceding windows had a denominator at all. */
+  baselineWindows: number;
+  /** median - recent, in rate units, positive when things got worse. Null unless both sides exist. */
+  drop: number | null;
 }
 
 /**
@@ -169,6 +213,8 @@ export interface StoreFunnel {
   runsAbandoned: number;
   itemsRequested: number;
   itemsAdded: number;
+  /** itemsAdded / itemsRequested across the whole window, null when nothing was requested. */
+  itemSuccessRate: number | null;
   steps: StepStats[];
   /** confirm:ok / add_click attempts — the headline reliability number. */
   confirmRate: number | null;
@@ -204,6 +250,8 @@ export interface StoreFunnel {
    */
   blockedRate: number | null;
   coverage: FunnelCoverage;
+  /** The item rate now against this store's own trailing median (MEAL-6). */
+  itemSuccess: ItemSuccessTrend;
   daily: DayPoint[];
   /** Null when the window is shorter than 14 days — nothing to compare against. */
   weekOverWeek: WeekOverWeek | null;
@@ -219,20 +267,47 @@ export interface StoreFunnel {
   alertReasons: AlertReason[];
 }
 
-/** The reasons a store can be alerting. Ordered worst-first for display. */
-export type AlertReason = 'confirm_rate' | 'blocked';
+/** The reasons a store can be alerting. */
+export type AlertReason = 'confirm_rate' | 'success_drop' | 'blocked';
+
+/**
+ * The thresholds, as decided on MEAL-6, exported so nothing has to restate them.
+ *
+ * They are `aggregateFunnel` defaults rather than arguments the caller passes,
+ * which is the whole point: the admin page and the daily alert email both call
+ * this function and neither overrides them, so the page and the inbox cannot
+ * come to disagree about which stores are broken. That disagreement is the
+ * failure `lib/poll-health-alerts.ts` was written to avoid, and it is cheaper to
+ * make impossible here than to remember not to cause.
+ */
+export const DEFAULT_CONFIRM_RATE_THRESHOLD = 0.9;
+/**
+ * 3% of a store's runs walled off, down from the 20% this shipped with.
+ *
+ * Twenty percent was a guess made before there was any traffic to calibrate
+ * against. Three is Stephen's number (MEAL-6, 2026-08-09) and it is the right
+ * order of magnitude: a WAF wall is correlated and store-wide, so a few percent
+ * is already a campaign rather than one shopper on hotel wifi — and the
+ * `minRunsForBlockedAlert` floor, not this threshold, is what keeps a tiny
+ * sample from shouting.
+ */
+export const DEFAULT_BLOCKED_RATE_THRESHOLD = 0.03;
+/** Ten percentage points below the store's own trailing median (MEAL-6). */
+export const DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD = 0.1;
+export const DEFAULT_MIN_SAMPLE_FOR_ALERT = 20;
 
 export interface AggregateOptions {
-  /** Alert when confirmRate drops below this. Default 0.9. */
+  /** Alert when confirmRate drops below this. Default `DEFAULT_CONFIRM_RATE_THRESHOLD`. */
   confirmRateThreshold?: number;
   /** Don't alert on a sample this small — noise, not signal. Default 20. */
   minSampleForAlert?: number;
   /**
-   * Alert when this share of a store's runs is walled off. Default 0.2.
+   * Alert when this share of a store's runs is walled off. Default
+   * `DEFAULT_BLOCKED_RATE_THRESHOLD`.
    *
-   * At-or-above, unlike the confirm-rate side: a fifth of a store's traffic
-   * hitting a robot wall is a campaign, not jitter, and there is no reading of it
-   * that improves by waiting for the next percent.
+   * At-or-above, unlike the confirm-rate side: a store's traffic hitting a robot
+   * wall is a campaign, not jitter, and there is no reading of it that improves
+   * by waiting for the next percent.
    */
   blockedRateThreshold?: number;
   /**
@@ -242,6 +317,23 @@ export interface AggregateOptions {
    * whereas five add clicks is one shopper's basket.
    */
   minRunsForBlockedAlert?: number;
+  /**
+   * How far the item success rate must fall below the store's trailing median
+   * before it alerts, in rate units. Default `DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD`.
+   * Strictly greater than, so a drop of exactly the threshold does not fire.
+   */
+  itemSuccessDropThreshold?: number;
+  /** Length of each item-trend window, in hours. Default 24. */
+  itemTrendWindowHours?: number;
+  /** How many windows before the current one form the baseline. Default 7. */
+  itemTrendBaselineWindows?: number;
+  /**
+   * How many of those windows must have had traffic before their median is
+   * allowed to trigger anything. Default 3 — below that it is one or two days
+   * standing in for "normal", and a store that is only busy at weekends would
+   * alert every Tuesday.
+   */
+  minBaselineWindows?: number;
   /** End of the window, ms since epoch. Default Date.now(). */
   now?: number;
   /** Window length in days; produces a DENSE daily series of this many buckets. */
@@ -274,6 +366,21 @@ export function percentile(sorted: number[], p: number): number | null {
 function rate(numerator: number, denominator: number): number | null {
   if (denominator <= 0) return null;
   return numerator / denominator;
+}
+
+/**
+ * The middle value, averaging the two middles on an even sample.
+ *
+ * A median and not a mean, and that is the load-bearing choice in MEAL-6's
+ * alert: one catastrophic day inside the baseline drags a mean down far enough
+ * that the following week of the same catastrophe reads as an improvement. The
+ * median is what "a normal day for this store" means when some days are not.
+ */
+export function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 /** UTC calendar day of a timestamp, or null when it is absent/unparseable. */
@@ -314,6 +421,22 @@ function denseDays(now: number, days: number): string[] {
   return out;
 }
 
+/** Items requested and added by the runs that STARTED inside `[from, to)`. */
+function itemWindow(runs: RunRow[], from: number, to: number): { requested: number; added: number; rate: number | null } {
+  let requested = 0;
+  let added = 0;
+  for (const r of runs) {
+    // A run with no readable `started_at` belongs to no window. It still counts
+    // in the store's totals; it just cannot be placed on a timeline, and putting
+    // it in the current window by default would let a backfill read as today.
+    const t = r.started_at ? Date.parse(r.started_at) : NaN;
+    if (!Number.isFinite(t) || t < from || t >= to) continue;
+    requested += r.items_requested ?? 0;
+    added += r.items_added ?? 0;
+  }
+  return { requested, added, rate: rate(added, requested) };
+}
+
 function summarize(runs: RunRow[], steps: StepRow[]): WindowSummary {
   const runsSucceeded = runs.filter((r) => r.outcome === 'success').length;
   return {
@@ -330,10 +453,14 @@ export function aggregateFunnel(
   steps: StepRow[],
   options: AggregateOptions = {},
 ): StoreFunnel[] {
-  const threshold = options.confirmRateThreshold ?? 0.9;
-  const minSample = options.minSampleForAlert ?? 20;
-  const blockedThreshold = options.blockedRateThreshold ?? 0.2;
+  const threshold = options.confirmRateThreshold ?? DEFAULT_CONFIRM_RATE_THRESHOLD;
+  const minSample = options.minSampleForAlert ?? DEFAULT_MIN_SAMPLE_FOR_ALERT;
+  const blockedThreshold = options.blockedRateThreshold ?? DEFAULT_BLOCKED_RATE_THRESHOLD;
   const minRunsForBlocked = options.minRunsForBlockedAlert ?? 5;
+  const dropThreshold = options.itemSuccessDropThreshold ?? DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD;
+  const trendWindowMs = (options.itemTrendWindowHours ?? 24) * 60 * 60 * 1000;
+  const trendBaselineWindows = options.itemTrendBaselineWindows ?? 7;
+  const minBaselineWindows = options.minBaselineWindows ?? 3;
   const now = options.now ?? Date.now();
   const days = options.days;
 
@@ -525,7 +652,10 @@ export function aggregateFunnel(
     const touch = (day: string): DayPoint => {
       let d = dayBuckets.get(day);
       if (!d) {
-        d = { day, runs: 0, runsSucceeded: 0, terminalSuccessRate: null, blocked: 0, failures: 0 };
+        d = {
+          day, runs: 0, runsSucceeded: 0, terminalSuccessRate: null, blocked: 0, failures: 0,
+          itemsRequested: 0, itemsAdded: 0, itemSuccessRate: null,
+        };
         dayBuckets.set(day, d);
       }
       return d;
@@ -552,6 +682,8 @@ export function aggregateFunnel(
       const d = touch(day);
       d.runs += 1;
       if (r.outcome === 'success') d.runsSucceeded += 1;
+      d.itemsRequested += r.items_requested ?? 0;
+      d.itemsAdded += r.items_added ?? 0;
     }
     for (const s of storeSteps) {
       const day = dayKey(s.occurred_at);
@@ -561,7 +693,31 @@ export function aggregateFunnel(
       else if (isFailureRow(s)) d.failures += 1;
     }
     const daily = [...dayBuckets.values()].sort((a, b) => a.day.localeCompare(b.day));
-    for (const d of daily) d.terminalSuccessRate = rate(d.runsSucceeded, d.runs);
+    for (const d of daily) {
+      d.terminalSuccessRate = rate(d.runsSucceeded, d.runs);
+      d.itemSuccessRate = rate(d.itemsAdded, d.itemsRequested);
+    }
+
+    // ── Item success against this store's own trailing median (MEAL-6) ─────
+    // Windows aligned to `now`, not to UTC midnight — see `ItemSuccessTrend`.
+    // Window 0 is the last `trendWindowMs`; 1..N are the baseline, oldest last.
+    const recentWindow = itemWindow(storeRuns, now - trendWindowMs, now);
+    const baselineRates: number[] = [];
+    for (let k = 1; k <= trendBaselineWindows; k++) {
+      const w = itemWindow(storeRuns, now - (k + 1) * trendWindowMs, now - k * trendWindowMs);
+      // A window with no items requested is a quiet day, not a 0% one. Dropping
+      // it rather than scoring it zero is the same rule as everywhere else on
+      // this page: no data is not zero.
+      if (w.rate != null) baselineRates.push(w.rate);
+    }
+    const baselineMedian = baselineRates.length >= minBaselineWindows ? median(baselineRates) : null;
+    const itemSuccess: ItemSuccessTrend = {
+      recent: recentWindow.rate,
+      recentItemsRequested: recentWindow.requested,
+      median: baselineMedian,
+      baselineWindows: baselineRates.length,
+      drop: baselineMedian != null && recentWindow.rate != null ? baselineMedian - recentWindow.rate : null,
+    };
 
     // ── Week over week ─────────────────────────────────────────────────────
     // Only when the fetched window genuinely covers both weeks. Comparing seven
@@ -605,17 +761,36 @@ export function aggregateFunnel(
     if (confirmRate != null && addClickTotal >= minSample && confirmRate < threshold) {
       alertReasons.push('confirm_rate');
     }
+    // The regression, as distinct from the floor above it. `confirm_rate` asks
+    // whether this store is good enough; this asks whether it just got worse,
+    // and the two catch different breaks. A store that has always sat at 82%
+    // trips the floor forever and this never; a store that fell from 99% to 93%
+    // overnight — which is what a renamed selector looks like — trips this and
+    // never the floor. It is also the only one of the two that can see the four
+    // stores with no per-item step rows at all (MEAL-122), because it is read off
+    // run rows that every store writes.
+    if (
+      itemSuccess.drop != null
+      && itemSuccess.recentItemsRequested >= minSample
+      && itemSuccess.drop > dropThreshold
+    ) {
+      alertReasons.push('success_drop');
+    }
     if (blockedRate != null && observedRuns.size >= minRunsForBlocked && blockedRate >= blockedThreshold) {
       alertReasons.push('blocked');
     }
+
+    const itemsRequested = storeRuns.reduce((a, r) => a + (r.items_requested ?? 0), 0);
+    const itemsAdded = storeRuns.reduce((a, r) => a + (r.items_added ?? 0), 0);
 
     result.push({
       storeId,
       runs: storeRuns.length,
       runsSucceeded,
       runsAbandoned,
-      itemsRequested: storeRuns.reduce((a, r) => a + (r.items_requested ?? 0), 0),
-      itemsAdded: storeRuns.reduce((a, r) => a + (r.items_added ?? 0), 0),
+      itemsRequested,
+      itemsAdded,
+      itemSuccessRate: rate(itemsAdded, itemsRequested),
       steps: stepStats,
       confirmRate,
       firstClickConfirmRate: rate(firstClickOk, addClickTotal),
@@ -625,6 +800,7 @@ export function aggregateFunnel(
       runSummaryCodes,
       blockedRate,
       coverage,
+      itemSuccess,
       daily,
       weekOverWeek,
       alerting: alertReasons.length > 0,

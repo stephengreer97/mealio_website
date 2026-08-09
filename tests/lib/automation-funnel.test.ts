@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   aggregateFunnel,
+  median,
   okRateUpperBound,
   percentile,
   worstStep,
+  DEFAULT_BLOCKED_RATE_THRESHOLD,
+  DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD,
   RunRow,
   StepRow,
   WorstStepInput,
@@ -460,11 +463,28 @@ describe('aggregateFunnel — blocked-side alert', () => {
   });
 
   it('does not alert when only a small share of runs is walled off', () => {
-    const runs = [...walledRuns(1), ...Array.from({ length: 19 }, (_, i) => run({ id: `ok-${i}` }))];
+    // 1 in 50 = 2%, under the 3% MEAL-6 settled on. This used to read 1 in 20
+    // and pass at the 20% the module shipped with; a fifth of a store's traffic
+    // walled off is not "a small share" by any reading, which is most of why the
+    // number moved.
+    const runs = [...walledRuns(1), ...Array.from({ length: 49 }, (_, i) => run({ id: `ok-${i}` }))];
     const [heb] = aggregateFunnel(runs, walledSteps(1));
-    expect(heb.blockedRate).toBe(0.05);
+    expect(heb.blockedRate).toBe(0.02);
     expect(heb.alerting).toBe(false);
     expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('alerts at the 3% MEAL-6 decided on, not the 20% this shipped with', () => {
+    // The threshold is asserted through the DEFAULT rather than by passing it,
+    // because the default is what the admin page and the alert email both get.
+    // A test that passed `blockedRateThreshold: 0.03` would keep passing after
+    // the two callers had drifted apart, which is the thing MEAL-6 is trying to
+    // make impossible.
+    expect(DEFAULT_BLOCKED_RATE_THRESHOLD).toBe(0.03);
+    const runs = [...walledRuns(2), ...Array.from({ length: 48 }, (_, i) => run({ id: `ok-${i}` }))];
+    const [heb] = aggregateFunnel(runs, walledSteps(2));
+    expect(heb.blockedRate).toBe(0.04);
+    expect(heb.alertReasons).toEqual(['blocked']);
   });
 
   it('does not alert on a handful of runs even when every one is walled off', () => {
@@ -920,5 +940,186 @@ describe('worstStep', () => {
     const steps = [stat('add_click', 8, 10)];
     expect(worstStep(store(steps)).kind).toBe('insufficient_sample');
     expect(worstStep(store(steps), { minSample: 10, threshold: 0.99 }).kind).toBe('dying');
+  });
+});
+
+// ── MEAL-6: the item rate against the store's own trailing median ───────────
+// The regression alert, as distinct from the absolute floor beside it. The
+// distinction is the whole ticket: a floor alarms forever on a store that has
+// always been middling and stays silent through the break that matters, which is
+// a store falling away from what IT normally does.
+
+describe('median', () => {
+  it('returns null for an empty sample', () => {
+    expect(median([])).toBeNull();
+  });
+
+  it('takes the middle of an odd sample and averages the two middles of an even one', () => {
+    expect(median([3, 1, 2])).toBe(2);
+    expect(median([4, 1, 3, 2])).toBe(2.5);
+  });
+
+  it('is unmoved by one catastrophic day, which a mean would not be', () => {
+    // The reason this is a median. Six good days and one total outage: the mean
+    // is 0.84, low enough that a second day of outage reads as an improvement.
+    const week = [0.98, 0.99, 0.97, 0.98, 1, 0.99, 0];
+    expect(median(week)).toBe(0.98);
+  });
+});
+
+describe('aggregateFunnel — item success trend', () => {
+  const NOW = Date.parse('2026-03-08T14:00:00.000Z');
+  const HOUR = 3_600_000;
+
+  /**
+   * A run that started `hoursAgo` before NOW, asking for `requested` items and
+   * getting `added`. Hours rather than days so a test can place a run precisely
+   * inside or outside a 24h window boundary.
+   */
+  const at = (hoursAgo: number, requested: number, added: number, over: Partial<RunRow> = {}): RunRow => ({
+    store_id: 'heb',
+    outcome: 'success',
+    status: 'completed',
+    items_requested: requested,
+    items_added: added,
+    started_at: new Date(NOW - hoursAgo * HOUR).toISOString(),
+    ...over,
+  });
+
+  /** `perDay` runs of 10 items in each of the 7 baseline windows, at `rate`. */
+  function baseline(rate: number, perDay = 3): RunRow[] {
+    const runs: RunRow[] = [];
+    for (let day = 1; day <= 7; day++) {
+      for (let i = 0; i < perDay; i++) {
+        // Mid-window, so a boundary is never what a test is really asserting.
+        runs.push(at(day * 24 + 12, 10, Math.round(10 * rate), { id: `base-${day}-${i}` }));
+      }
+    }
+    return runs;
+  }
+
+  /** Today's traffic: `runs` runs of 10 items at `rate`. */
+  function today(rate: number, count = 4): RunRow[] {
+    return Array.from({ length: count }, (_, i) => at(6, 10, Math.round(10 * rate), { id: `today-${i}` }));
+  }
+
+  it('measures the recent window against the median of the seven before it', () => {
+    const [heb] = aggregateFunnel([...baseline(1), ...today(0.5)], [], { now: NOW });
+    expect(heb.itemSuccess.recent).toBe(0.5);
+    expect(heb.itemSuccess.median).toBe(1);
+    expect(heb.itemSuccess.baselineWindows).toBe(7);
+    expect(heb.itemSuccess.drop).toBe(0.5);
+    expect(heb.alertReasons).toEqual(['success_drop']);
+  });
+
+  it('says nothing about a store holding steady at a rate a floor would condemn', () => {
+    // 70% every day for a week and 70% today. This is the case an absolute floor
+    // gets wrong forever: nothing has changed, so there is nothing to tell
+    // anyone, and a daily email saying "still 70%" is how the alert gets muted.
+    const [heb] = aggregateFunnel([...baseline(0.7), ...today(0.7)], [], { now: NOW });
+    expect(heb.itemSuccess.recent).toBeCloseTo(0.7);
+    expect(heb.itemSuccess.median).toBeCloseTo(0.7);
+    expect(heb.itemSuccess.drop).toBeCloseTo(0);
+    expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('catches a store that fell from excellent to merely good', () => {
+    // 99% → 88%. No floor set anywhere near 88% would see this, and it is
+    // exactly what a renamed selector on one of several product tiles looks
+    // like.
+    const dipped = Array.from({ length: 4 }, (_, i) => at(6, 25, 22, { id: `today-${i}` }));
+    const [heb] = aggregateFunnel([...baseline(1), ...dipped], [], { now: NOW });
+    expect(heb.itemSuccess.recent).toBe(0.88);
+    expect(heb.itemSuccess.drop).toBeCloseTo(0.12);
+    expect(heb.alertReasons).toEqual(['success_drop']);
+  });
+
+  it('does not fire on a drop of exactly the threshold', () => {
+    // "More than 10 percentage points" is strict — 90% against a median of 100%
+    // is the boundary and not over it.
+    const [heb] = aggregateFunnel([...baseline(1), ...today(0.9)], [], { now: NOW });
+    expect(heb.itemSuccess.drop).toBeCloseTo(DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD);
+    expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('does not alert on a recent window too small to mean anything', () => {
+    // One run of 10 items, all of them missed. A single shopper on bad wifi is
+    // not a store regression, and `minSampleForAlert` is counted in ITEMS —
+    // the denominator of the rate being judged.
+    const [heb] = aggregateFunnel([...baseline(1), at(6, 10, 0, { id: 'lonely' })], [], { now: NOW });
+    expect(heb.itemSuccess.recent).toBe(0);
+    expect(heb.itemSuccess.recentItemsRequested).toBe(10);
+    expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('refuses to judge against a baseline of one or two days', () => {
+    // Two days of history is not "normal for this store". A store that is only
+    // busy at weekends would otherwise alert every Tuesday.
+    const sparse = [at(36, 10, 10, { id: 'b1' }), at(60, 10, 10, { id: 'b2' })];
+    const [heb] = aggregateFunnel([...sparse, ...today(0)], [], { now: NOW });
+    expect(heb.itemSuccess.baselineWindows).toBe(2);
+    expect(heb.itemSuccess.median).toBeNull();
+    expect(heb.itemSuccess.drop).toBeNull();
+    expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('drops a quiet baseline day rather than scoring it zero', () => {
+    // No data is not zero, here as everywhere else on this page. Three busy days
+    // and four with no traffic gives a median of the three, not a median dragged
+    // to 0 by four phantom outages.
+    const partial = [1, 3, 5].flatMap((day) => [
+      at(day * 24 + 12, 10, 10, { id: `b-${day}` }),
+      at(day * 24 + 13, 10, 10, { id: `b2-${day}` }),
+    ]);
+    const [heb] = aggregateFunnel([...partial, ...today(0.5)], [], { now: NOW });
+    expect(heb.itemSuccess.baselineWindows).toBe(3);
+    expect(heb.itemSuccess.median).toBe(1);
+    expect(heb.alertReasons).toEqual(['success_drop']);
+  });
+
+  it('ignores runs with no readable start time entirely', () => {
+    // They still count in the store's totals — they just cannot be placed on a
+    // timeline, and defaulting them into the current window would let a backfill
+    // read as this morning's outage.
+    const orphan: RunRow = { store_id: 'heb', outcome: 'failed', status: 'completed', items_requested: 500, items_added: 0 };
+    const [heb] = aggregateFunnel([...baseline(1), ...today(1), orphan], [], { now: NOW });
+    expect(heb.itemsRequested).toBe(750);
+    expect(heb.itemSuccess.recent).toBe(1);
+    expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('reports the drop but stays quiet when the store recovers', () => {
+    const broken = aggregateFunnel([...baseline(1), ...today(0.4)], [], { now: NOW })[0];
+    expect(broken.alertReasons).toEqual(['success_drop']);
+    // The same store a day later, back to normal. The baseline now contains the
+    // bad day, and the median shrugs it off — which is what lets a fixed store
+    // stop alerting immediately instead of a week later.
+    const fixed = aggregateFunnel(
+      [...baseline(1), ...today(0.4).map((r) => ({ ...r, started_at: new Date(Date.parse(r.started_at!) - 24 * HOUR).toISOString() })), ...today(1)],
+      [],
+      { now: NOW },
+    )[0];
+    expect(fixed.alertReasons).toEqual([]);
+  });
+
+  it('names the drop alongside a wall when a store is doing both', () => {
+    const walled = Array.from({ length: 4 }, (_, i) => at(6, 10, 5, { id: `walled-${i}` }));
+    const blockedSteps: StepRow[] = walled.map((r) => ({
+      store_id: 'heb', run_id: r.id!, step: 'add_click', outcome: 'blocked',
+      duration_ms: null, detail: null, occurred_at: r.started_at,
+    }));
+    const [heb] = aggregateFunnel([...baseline(1), ...walled], blockedSteps, { now: NOW });
+    expect(heb.alertReasons).toEqual(['success_drop', 'blocked']);
+  });
+
+  it('carries the item rate onto the daily series too', () => {
+    const [heb] = aggregateFunnel([...baseline(0.8), ...today(0.5)], [], { now: NOW, days: 9 });
+    const day = heb.daily.find((d) => d.day === '2026-03-08')!;
+    expect(day.itemsRequested).toBe(40);
+    expect(day.itemsAdded).toBe(20);
+    expect(day.itemSuccessRate).toBe(0.5);
+    // A dense bucket nobody shopped in reports null, not a 0% outage.
+    const quiet = heb.daily.find((d) => d.itemsRequested === 0);
+    expect(quiet?.itemSuccessRate ?? null).toBeNull();
   });
 });

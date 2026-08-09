@@ -423,6 +423,176 @@ export async function sendPollHealthAlertEmail(opts: {
   throwIfRefused(sent, 'poll health alert');
 }
 
+// ── Cart automation regression alert (MEAL-6) ────────────────────────────────
+
+/** One failure code and how many rows carried it, for the breakdown. */
+export interface FailureCodeCount {
+  code: string;
+  count: number;
+}
+
+/**
+ * One store in the cart-automation alert: why it is being raised, and enough
+ * numbers to tell which kind of broken it is without opening anything.
+ *
+ * Everything here is read off a `StoreFunnel` by the sweep and passed as plain
+ * values, so this module keeps knowing nothing about `lib/automation-funnel.ts`.
+ * The *judgement* lives there and has exactly one definition; the wording lives
+ * here.
+ */
+export interface StoreAlertLine {
+  storeId: string;
+  /** The catalog's name for the store, or its id when it has no catalog row. */
+  storeLabel: string;
+  /** Every reason this store is alerting right now. */
+  reasons: Array<'confirm_rate' | 'success_drop' | 'blocked'>;
+  /**
+   * The subset of `reasons` that is new since the last email about this store.
+   * The mail exists because of these; the rest is context.
+   */
+  newReasons: Array<'confirm_rate' | 'success_drop' | 'blocked'>;
+  runs: number;
+  itemsRequested: number;
+  itemsAdded: number;
+  /** Item success over the last 24h and the store's trailing 7-day median. */
+  itemSuccessRecent: number | null;
+  itemSuccessMedian: number | null;
+  confirmRate: number | null;
+  /** Share of the store's RUNS walled off, and how many that is. */
+  blockedRate: number | null;
+  blockedRuns: number;
+  /**
+   * MEAL-4's failure codes, commonest first, blocks excluded (they are their own
+   * row above). "Store is down" is not actionable; "62 selector_miss on
+   * add_click" is somebody's afternoon, and the acceptance criterion for MEAL-6
+   * is that the email carries this and not just the store name.
+   */
+  failureCodes: FailureCodeCount[];
+}
+
+const REASON_HEADLINE: Record<StoreAlertLine['reasons'][number], string> = {
+  success_drop: 'Item success has fallen away from normal',
+  confirm_rate: 'Adds are not confirming',
+  blocked: 'Runs are being walled off',
+};
+
+/** How many codes the breakdown lists before it stops being a breakdown. */
+const ALERT_CODE_ROWS = 6;
+
+function pct(value: number | null): string {
+  return value == null ? '—' : `${(value * 100).toFixed(1)}%`;
+}
+
+function points(value: number | null): string {
+  return value == null ? '—' : `${(value * 100).toFixed(1)} pts`;
+}
+
+/**
+ * "These stores' cart automation has regressed" (MEAL-6).
+ *
+ * The admin funnel made per-store reliability visible; visible means somebody
+ * has already decided to look, and the break this is really for — a store whose
+ * selectors were renamed overnight — is silent from every other angle. Users
+ * just get fewer items in the cart than they asked for, and nothing says so.
+ *
+ * **A digest, and only of escalations.** At most one of these a day, and only
+ * about stores that are broken in a way we have not already said. A standing
+ * problem is not re-sent. An operator who gets the same message every morning
+ * stops reading it, at which point the alert is worse than nothing because
+ * everyone believes it is working.
+ *
+ * The three reasons are kept apart rather than averaged into one "success rate",
+ * for the same reason the dashboard keeps them apart: a WAF wall and a renamed
+ * button need different people to do different things, and a number that mixes
+ * them tells you only that something is wrong.
+ */
+export async function sendFunnelAlertEmail(opts: {
+  adminEmails: string[];
+  stores: StoreAlertLine[];
+  now?: number;
+}) {
+  if (opts.adminEmails.length === 0 || opts.stores.length === 0) return;
+
+  const first = opts.stores[0];
+  const subject = opts.stores.length === 1
+    ? `Cart automation: ${first.storeLabel} — ${REASON_HEADLINE[first.newReasons[0] ?? first.reasons[0]].toLowerCase()}`
+    : `Cart automation: ${opts.stores.length} stores have regressed`;
+
+  const cards = opts.stores.map((store) => {
+    const label = escapeHtml(store.storeLabel);
+    // The reason this mail exists leads. A store already reported for drift and
+    // now also walled off must not open with the drift line an operator has
+    // already read and acted on.
+    const lead = store.newReasons[0] ?? store.reasons[0];
+    const alsoRaised = store.reasons.filter((r) => r !== lead);
+
+    const rows: Array<[string, string]> = [
+      ['Store', `<strong>${label}</strong> <span style="color:#999;">(${escapeHtml(store.storeId)})</span>`],
+      ['Runs', String(store.runs)],
+      ['Items', `${store.itemsAdded} added of ${store.itemsRequested} asked for`],
+    ];
+    if (store.reasons.includes('success_drop') || store.itemSuccessRecent != null) {
+      const drop = store.itemSuccessMedian != null && store.itemSuccessRecent != null
+        ? store.itemSuccessMedian - store.itemSuccessRecent
+        : null;
+      rows.push([
+        'Item success',
+        `${pct(store.itemSuccessRecent)} in the last 24h, against a 7-day median of ${pct(store.itemSuccessMedian)}`
+          + (drop != null ? ` — <strong>down ${points(drop)}</strong>` : ''),
+      ]);
+    }
+    if (store.confirmRate != null) rows.push(['Confirm rate', pct(store.confirmRate)]);
+    if (store.blockedRuns > 0) {
+      rows.push(['Walled off', `${pct(store.blockedRate)} of runs (${store.blockedRuns})`]);
+    }
+    if (alsoRaised.length > 0) {
+      rows.push(['Also raised', alsoRaised.map((r) => escapeHtml(REASON_HEADLINE[r].toLowerCase())).join('; ')]);
+    }
+
+    const listed = store.failureCodes.slice(0, ALERT_CODE_ROWS);
+    const codeRows = listed.length > 0
+      ? listed.map((c) => `<tr><td style="padding: 3px 0; color: #666;">${escapeHtml(c.code)}</td><td style="padding: 3px 0; color: #222; text-align: right; font-weight: 600;">${c.count}</td></tr>`).join('')
+      : `<tr><td style="padding: 3px 0; color: #999;" colspan="2">No coded failures — the loss is not drift-shaped. Look at the wall and the run outcomes.</td></tr>`;
+
+    return `
+      <div style="border: 1px solid #f0f0f0; border-left: 4px solid ${lead === 'blocked' ? '#dc2626' : '#f59e0b'}; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; background: #fcfcfc;">
+        <p style="margin: 0 0 10px; font-size: 15px; font-weight: 700; color: ${lead === 'blocked' ? '#c40029' : '#92400e'};">${escapeHtml(REASON_HEADLINE[lead])}</p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          ${rows.map(([k, v]) => `<tr><td style="padding: 4px 0; color: #999; width: 110px;">${k}</td><td style="padding: 4px 0; color: #222; word-break: break-word;">${v}</td></tr>`).join('')}
+        </table>
+        <p style="margin: 12px 0 4px; font-size: 12px; color: #999; text-transform: uppercase; letter-spacing: 0.4px;">Failure codes</p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">${codeRows}</table>
+      </div>
+    `;
+  }).join('');
+
+  const sent = await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to: opts.adminEmails,
+    subject,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">${opts.stores.length === 1 ? "A store's cart automation has regressed" : `${opts.stores.length} stores' cart automation has regressed`}</h2>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
+          These got worse since the last check. <strong>Item success</strong> is measured against each store's own
+          trailing 7-day median rather than a fixed bar, so this is a store that changed — not one that has always
+          been middling. Nobody sees this happen otherwise: a shopper just gets fewer items in the cart than they
+          asked for.
+        </p>
+        ${cards}
+        <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Open the automation funnel</a>
+        <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 20px 0 0;">
+          One of these per store per problem. Nothing further is sent while it stays broken the same way — only a
+          store that is healthy again on every count re-arms the alert, and a store that breaks in a NEW way earns
+          one more.
+        </p>
+      </div>
+    `,
+  });
+  throwIfRefused(sent, 'cart automation alert');
+}
+
 function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
