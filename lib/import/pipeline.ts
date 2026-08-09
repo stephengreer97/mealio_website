@@ -391,6 +391,21 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     // The canonicalised row, not the raw one: it is what reaches the cart, so it
     // is what has to be traceable back into the evidence span — the amount as
     // much as the product name.
+    //
+    // `prep` is deliberately NOT assessed, and that is a decision rather than an
+    // oversight (MEAL-165). It is the one extracted field with no verification
+    // behind it, so a row whose name and amount both check out can still carry a
+    // preparation nobody confirmed.
+    //
+    // Downgrading the row on a prep that fails a span check was the alternative
+    // and was rejected: a wrong prep is usually the model rewording the line
+    // rather than inventing a dish, and flagging an otherwise-correct row for it
+    // teaches creators to skim past the badge — which is the exact failure the
+    // exceptions-only design exists to prevent. The remedy is on the other side:
+    // the prep is editable on the review card (`DraftEditor`), so a creator who
+    // spots a wrong one fixes that field instead of deleting the whole row, and
+    // the prompt is explicit that a prep which cannot be copied out of the line
+    // must be null.
     const row = extraction.draft.ingredients[position];
     return assessField(row.ingredientName, item.evidence, item.derivation, source, cartAmount(row, item));
   });

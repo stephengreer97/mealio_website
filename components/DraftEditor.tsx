@@ -119,6 +119,41 @@ export default function DraftEditor({
       ingredients: prev.ingredients.map((row, i) => (i === index ? { ...row, ...patch } : row)),
     }));
 
+  /**
+   * The preparation, which is the one extracted field a creator could see and
+   * not correct (MEAL-165).
+   *
+   * `prep` is free text the model writes, and unlike the product name and the
+   * amount it is never checked against the evidence span it claims to come from
+   * — so a row whose name and amount both verify can still carry an instruction
+   * nobody confirmed. The decision was to leave the badge alone and let the
+   * creator fix the text, rather than downgrade a row that is otherwise right:
+   * a wrong prep is usually the model rewording the line, and downgrading on
+   * that would teach creators to ignore the badge, which is the failure the
+   * exceptions-only design exists to avoid.
+   *
+   * Before this, the only way to remove a wrong preparation was to delete the
+   * whole ingredient row.
+   *
+   * Written as its own setter rather than through `setIngredient` because the
+   * field is ABSENT-or-string, never empty: `canonicalPrep` returns `{}` rather
+   * than `{ prep: null }` so a row with nothing to say serialises exactly as it
+   * did before the field existed. Clearing the box has to delete the key, not
+   * write `''` — otherwise `stripEditedConfidence`, which compares rows by
+   * `JSON.stringify`, sees a change on a row the creator only looked at.
+   */
+  const setPrep = (index: number, value: string) =>
+    setForm(prev => ({
+      ...prev,
+      ingredients: prev.ingredients.map((row, i) => {
+        if (i !== index) return row;
+        const next = { ...row };
+        if (value.trim()) next.prep = value;
+        else delete next.prep;
+        return next;
+      }),
+    }));
+
   const removeIngredient = (index: number) =>
     setForm(prev => ({ ...prev, ingredients: prev.ingredients.filter((_, i) => i !== index) }));
 
@@ -253,6 +288,20 @@ export default function DraftEditor({
               <option value={COUNT_UNIT}>{COUNT_UNIT}</option>
               {ALL_UNITS.map(unit => <option key={unit} value={unit}>{unit}</option>)}
             </select>
+            {/*
+              What the line asks be DONE to the product — "finely diced".
+              Editable because nothing verifies it: see `setPrep`. Placeholder
+              rather than a label, because prep is null far more often than not
+              and a labelled empty box on every row would read as something
+              missing.
+            */}
+            <input
+              style={{ ...input, flex: '1 1 130px' }}
+              aria-label={`Ingredient ${i + 1} preparation`}
+              placeholder="finely diced"
+              value={row.prep ?? ''}
+              onChange={e => setPrep(i, e.target.value)}
+            />
             <button type="button" onClick={() => removeIngredient(i)} style={{ ...secondaryButton, padding: '6px 10px' }}>×</button>
           </div>
         ))}

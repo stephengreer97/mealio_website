@@ -256,6 +256,20 @@ Do not rewrite "finely diced" as "dice finely". prep needs no evidence span of i
 off the same line as the rest of the row, so the row's existing evidence span already covers it,
 and that span must still be the whole original line.
 
+**The test prep must pass before you write it: point at the words.** Every word of prep has to
+appear in that row's evidence span. If you cannot copy it straight out of the line, prep is null —
+there is no case where the right answer is a preparation the line does not contain. This is
+stricter than it sounds and it is meant to be: prep is the ONE field nothing downstream checks
+against the evidence, so an invented one reaches the creator's review card looking exactly as
+confirmed as the product name beside it. A null costs a creator one keystroke to fill in. A
+plausible invention is one they may not notice, on their own recipe.
+
+Concretely, all of these are null, not a guess:
+- The line names a product and nothing else — "200g chicken thighs".
+- You know the dish and the dish usually wants it chopped. The line still did not say so.
+- The preparation appears in the METHOD but not on the ingredient line. Method steps are not
+  evidence for a row; only the ingredient line is.
+
 ### One line can name more than one product — split it
 
 "salt and pepper to taste" is two products and must produce two rows, "salt" and "pepper". Nobody
