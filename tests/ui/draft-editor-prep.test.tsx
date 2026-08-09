@@ -18,9 +18,13 @@
 // The additive rule from MEAL-102 is what most of this file is about. `prep` is
 // absent-or-string, never `''` and never null: `canonicalPrep` returns `{}` so a
 // row with nothing to say serialises exactly as it did before the field existed.
-// That matters beyond tidiness — `stripEditedConfidence` compares rows by
-// `JSON.stringify`, so an empty string where there was no key marks a row as
-// edited that the creator only looked at.
+//
+// These tests assert what `onSave` is HANDED, which is the component's own
+// output and not the wire — `editableDraft` canonicalises after this, and would
+// strip a `prep: ''` on its own. That is worth stating because an earlier
+// version of this header justified the rule with a hazard the server already
+// neutralises. The rule stands on its own ground: the shape should be right
+// where it is decided, not tidied up two stages later.
 
 import React from 'react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -88,12 +92,19 @@ describe('the preparation is on screen and editable', () => {
   });
 
   it('edits the right row when there are several', () => {
-    const { box, save } = mount([ing({ ingredientName: 'onion' }), ing({ ingredientName: 'garlic', prep: 'minced' })]);
-    fireEvent.change(box(1), { target: { value: 'diced' } });
+    // Deliberately edits the SECOND row. The first version of this test typed
+    // into row 0 and asserted row 1 was untouched, so hardcoding the setter to
+    // row zero passed it — a cold review found that mutant surviving. Any bug
+    // that collapses toward the first row has to fail here.
+    const { box, save } = mount([
+      ing({ ingredientName: 'onion', prep: 'finely diced' }),
+      ing({ ingredientName: 'garlic' }),
+    ]);
+    fireEvent.change(box(2), { target: { value: 'minced' } });
 
     const saved = save().ingredients;
-    expect(saved[0].prep).toBe('diced');
     expect(saved[1].prep).toBe('minced');
+    expect(saved[0].prep).toBe('finely diced');
   });
 });
 

@@ -241,14 +241,27 @@ function formatAmount(value: number): string {
  * everywhere else — an empty field costs a creator a keystroke, a confident
  * wrong one costs them a reader.
  *
- * SCOPE, so this is not read as a guarantee it does not make: the cap is applied
- * by `canonicalPrep`, which runs inside `canonicalizeIngredient` — the IMPORT
- * path. It bounds what the model can put in the field, which is the failure it
- * was written for. It does not bound the hand-written writers: `publishCreatorMeal`,
- * `POST`/`PUT /api/meals` and `/api/shared/[token]/save` all pass ingredients
- * through unvalidated. That matches how `ingredientName` has always been
- * treated on those routes, so it is not a regression — but a length rule that
- * has to hold everywhere belongs in the API schemas, not here.
+ * SCOPE, so this is not read as a guarantee it does not make. The cap is applied
+ * by `canonicalPrep`, which runs inside `canonicalizeIngredient`. That is TWO
+ * paths, not one:
+ *
+ *   • the import, where it bounds what the model can put in the field — the
+ *     failure it was written for;
+ *   • **`editableDraft`**, which canonicalises every row an operator saves. So
+ *     it also bounds what a human can type into the review card's prep box.
+ *
+ * The second one matters because the cap DROPS rather than truncates. An earlier
+ * version of this comment listed only the import path, and a cold review used
+ * that to conclude a creator could paste a whole method step and lose it on save
+ * with a 200 OK and no message — which was exactly right. The input now carries
+ * `maxLength={MAX_PREP_CHARS}` so the text can never get long enough to be
+ * dropped, in the same prevent-rather-than-report style as the tag picker.
+ *
+ * Still NOT bounded: `publishCreatorMeal`, `POST`/`PUT /api/meals` and
+ * `/api/shared/[token]/save` pass ingredients through unvalidated. That matches
+ * how `ingredientName` has always been treated on those routes, so it is not a
+ * regression — but a length rule that has to hold everywhere belongs in the API
+ * schemas, not here.
  */
 export const MAX_PREP_CHARS = 120;
 

@@ -221,6 +221,69 @@ describe('MEAL-102 — prep never reaches a name or a search term', () => {
     // stops being filled and nothing else in this suite would notice.
     expect(SYSTEM_PROMPT).not.toMatch(/Drop amounts, units, and preparation notes/);
     expect(SYSTEM_PROMPT).toMatch(/search/i);
+
+    // MEAL-165. The anti-invention rule, which is the whole of that ticket's
+    // prompt half — deleting the block left the entire suite green until this
+    // existed. It has to be the CHECKABLE form ("point at the words in the
+    // line"), not the old advisory one ("do not add a preparation"), because a
+    // prep is the one extracted field nothing downstream verifies.
+    expect(SYSTEM_PROMPT).toMatch(/point at the words/i);
+    expect(SYSTEM_PROMPT).toMatch(/appear in that row's evidence span/i);
+    expect(SYSTEM_PROMPT).toMatch(/Method steps are not\s+evidence for a row/i);
+  });
+
+  describe('MEAL-165 — a preparation is never graded', () => {
+    // The row assessment reads the product name and the amount. `prep` is model-
+    // written free text with no evidence span of its own, so it is deliberately
+    // NOT checked — and the decision was to leave the badge alone and let the
+    // creator correct the text instead of downgrading a row that is otherwise
+    // right.
+    //
+    // That decision lived only in a comment. A cold review changed the pipeline to
+    // start grading rows on their prep and the entire suite stayed green, because
+    // nothing asserted the confidence of a prep-bearing row at all. Running the
+    // same import with and without the preparation pins it: identical rows in,
+    // identical assessment out.
+    const ingredient = (prep?: string) => ({
+      productName: 'avocados', measure: '4', unit: 'qty', qty: 4,
+      ...(prep ? { prep } : {}),
+      evidence: '4 medium ripe avocados, halved and pitted',
+      derivation: 'json-ld',
+    });
+
+    // A FRESH cache per import. The suite's `cache` is per-test, so two imports
+    // of the same URL inside one test hit it — the second returns the first's
+    // result and the comparison below becomes a result against itself, which is
+    // how the first version of this test "passed" while proving nothing.
+    const importWith = async (prep?: string) => {
+      const call = stubCaller(() => extractionFixture({ ingredients: [ingredient(prep)] }));
+      return (await runImport(GUAC_URL, options({ call, cache: new MemoryImportCache() }))) as any;
+    };
+
+    it('assesses a row the same whether or not it carries one', async () => {
+      const bare = await importWith();
+      const prepped = await importWith('halved and pitted');
+
+      expect(bare.status).toBe('ok');
+      expect(prepped.status).toBe('ok');
+      // The preparation really did arrive — otherwise this compares two identical
+      // imports and proves nothing.
+      expect(prepped.draft.ingredients[0].prep).toBe('halved and pitted');
+      expect(bare.draft.ingredients[0].prep).toBeUndefined();
+
+      expect(prepped.confidence.ingredients).toEqual(bare.confidence.ingredients);
+    });
+
+    it('does not let an unverifiable preparation drag the row down', async () => {
+      // The specific shape the ticket is about: a prep that appears nowhere in the
+      // evidence span. The row's name and amount are still verbatim, so the row
+      // must still read as verified.
+      const invented = await importWith('julienned on a mandoline');
+      const bare = await importWith();
+
+      expect(invented.draft.ingredients[0].prep).toBe('julienned on a mandoline');
+      expect(invented.confidence.ingredients).toEqual(bare.confidence.ingredients);
+    });
   });
 });
 

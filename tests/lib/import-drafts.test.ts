@@ -1255,6 +1255,57 @@ describe('stripEditedConfidence', () => {
     expect(cleared.name).toEqual(guacamole.confidence.name);
   });
 
+  it('does not clear a row because its preparation was corrected (MEAL-165)', async () => {
+    // The whole point of making prep editable is that a creator can delete one
+    // the model invented. Doing so used to mark the row "an operator changed
+    // this" — taking the green off its NAME and AMOUNT, which nobody touched,
+    // dropping the draft out of "all verified", and moving it under the
+    // creator's cursor in the queue's sort order. Fixing the field we asked
+    // them to fix punished them for it.
+    //
+    // Sound because the assessment never read `prep` in the first place: the row
+    // is graded on its product name and its amount (`pipeline.ts`), so an edit
+    // to prep cannot invalidate a check that never covered it.
+    const before: CreatorMealDraft = {
+      ...guacamole.draft,
+      ingredients: guacamole.draft.ingredients.map((row, i) =>
+        (i === 1 ? { ...row, prep: 'julienned on a mandoline' } : row)),
+    };
+    const corrected: CreatorMealDraft = {
+      ...before,
+      ingredients: before.ingredients.map((row, i) => {
+        if (i !== 1) return row;
+        const { prep: _dropped, ...rest } = row;
+        return rest;
+      }),
+    };
+
+    const cleared = stripEditedConfidence(before, corrected, guacamole.confidence)!;
+
+    expect(cleared.ingredients[1]).toEqual(guacamole.confidence.ingredients[1]);
+    expect(cleared.ingredients[1].reason).not.toMatch(/operator changed this/i);
+  });
+
+  it('still clears a row when something the check DID cover changed', async () => {
+    // The other side of the same line: prep is exempt because it is ungraded,
+    // not because ingredient edits stopped mattering. A measure change on the
+    // same row, with the prep edited too, must still clear it.
+    const before: CreatorMealDraft = {
+      ...guacamole.draft,
+      ingredients: guacamole.draft.ingredients.map((row, i) =>
+        (i === 1 ? { ...row, prep: 'finely diced' } : row)),
+    };
+    const after: CreatorMealDraft = {
+      ...before,
+      ingredients: before.ingredients.map((row, i) =>
+        (i === 1 ? { ...row, prep: 'roughly chopped', measure: '2' } : row)),
+    };
+
+    const cleared = stripEditedConfidence(before, after, guacamole.confidence)!;
+
+    expect(cleared.ingredients[1].reason).toMatch(/operator changed this/i);
+  });
+
   it('follows the ingredient rows that actually changed, by index', async () => {
     const before = guacamole.draft;
     const after: CreatorMealDraft = {

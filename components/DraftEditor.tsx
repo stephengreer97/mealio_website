@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ALL_UNITS, COUNT_UNIT } from '@/lib/import/ingredients';
+import { ALL_UNITS, COUNT_UNIT, MAX_PREP_CHARS } from '@/lib/import/ingredients';
 import { canonicalizeTags, MAX_MEAL_TAGS, MEAL_TAGS, tagCapError, toggleTag } from '@/lib/import/vocab';
 import type { ImportSummary } from '@/lib/import/draft-form';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
@@ -138,9 +138,16 @@ export default function DraftEditor({
    * Written as its own setter rather than through `setIngredient` because the
    * field is ABSENT-or-string, never empty: `canonicalPrep` returns `{}` rather
    * than `{ prep: null }` so a row with nothing to say serialises exactly as it
-   * did before the field existed. Clearing the box has to delete the key, not
-   * write `''` — otherwise `stripEditedConfidence`, which compares rows by
-   * `JSON.stringify`, sees a change on a row the creator only looked at.
+   * did before the field existed.
+   *
+   * To be accurate about WHY, because an earlier version of this comment was
+   * not: the server would cope either way. `editableDraft` canonicalises before
+   * anything compares rows, so a `prep: ''` from this component is stripped
+   * before it reaches storage. Deleting the key here keeps the component's own
+   * output honest — what `onSave` hands over is what a save means — rather than
+   * relying on a later stage to tidy up after it. Do not "simplify" this to
+   * `next.prep = value` on the grounds that the server fixes it; the point is
+   * that the shape is right at the boundary where it is decided.
    */
   const setPrep = (index: number, value: string) =>
     setForm(prev => ({
@@ -299,6 +306,12 @@ export default function DraftEditor({
               style={{ ...input, flex: '1 1 130px' }}
               aria-label={`Ingredient ${i + 1} preparation`}
               placeholder="finely diced"
+              // Capped in the box rather than reported after the fact. `editableDraft`
+              // canonicalises every saved row through `canonicalPrep`, which DROPS an
+              // over-cap prep instead of truncating it — so without this a creator
+              // could paste a method step, get a 200, and watch it vanish with no
+              // message. Same prevent-don't-report style as the tag picker.
+              maxLength={MAX_PREP_CHARS}
               value={row.prep ?? ''}
               onChange={e => setPrep(i, e.target.value)}
             />
