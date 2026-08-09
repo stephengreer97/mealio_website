@@ -1034,12 +1034,37 @@ describe('aggregateFunnel — item success trend', () => {
     expect(heb.alertReasons).toEqual(['success_drop']);
   });
 
+  it('is ten points, and ten points is the decided number', () => {
+    expect(DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD).toBe(0.1);
+  });
+
   it('does not fire on a drop of exactly the threshold', () => {
-    // "More than 10 percentage points" is strict — 90% against a median of 100%
-    // is the boundary and not over it.
-    const [heb] = aggregateFunnel([...baseline(1), ...today(0.9)], [], { now: NOW });
-    expect(heb.itemSuccess.drop).toBeCloseTo(DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD);
+    // "More than 10 percentage points" is strict, so a drop of exactly the
+    // threshold is the boundary and not over it.
+    //
+    // The threshold is passed here rather than left at its default, and the
+    // numbers are quarters, because THE COMPARISON IS THE ASSERTION and floating
+    // point will quietly stop it being made. `1 - 0.9` is 0.09999999999999998,
+    // which is under 0.1 whichever way the operator points — so the obvious
+    // version of this test passes just as well against `>=` and proves nothing.
+    // 1 - 0.75 is exactly 0.25.
+    const threeQuarters = Array.from({ length: 4 }, (_, i) => at(6, 20, 15, { id: `today-${i}` }));
+    const [heb] = aggregateFunnel([...baseline(1), ...threeQuarters], [], {
+      now: NOW, itemSuccessDropThreshold: 0.25,
+    });
+    expect(heb.itemSuccess.recent).toBe(0.75);
+    expect(heb.itemSuccess.drop).toBe(0.25);
     expect(heb.alertReasons).toEqual([]);
+  });
+
+  it('fires one item past that boundary', () => {
+    // The other side of the same line, so "does not fire" above is a threshold
+    // and not a dead branch.
+    const [heb] = aggregateFunnel([...baseline(1), ...today(0.7)], [], {
+      now: NOW, itemSuccessDropThreshold: 0.25,
+    });
+    expect(heb.itemSuccess.drop).toBeCloseTo(0.3);
+    expect(heb.alertReasons).toEqual(['success_drop']);
   });
 
   it('does not alert on a recent window too small to mean anything', () => {

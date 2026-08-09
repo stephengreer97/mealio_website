@@ -191,6 +191,47 @@ describe('a store regressing', () => {
 
     expect(pass).toMatchObject({ alerting: 1, suppressed: 1, emailsSent: 0 });
   });
+
+  it('remembers a reason that has since resolved, so its return is not news', async () => {
+    // Three sweeps, and the third is the whole test. Writing only the CURRENT
+    // reasons on the second sweep would forget that day one's drop was already
+    // reported — so day three's identical drop reads as new and mails again,
+    // about a store nobody has fixed and everybody has been told about.
+    //
+    // The store is never healthy in between, so nothing re-arms it. That is what
+    // makes the mark's growth, and not the recovery path, the thing under test.
+
+    // Day 1: item success has fallen away. No wall.
+    db.seed('automation_runs', [...healthyBaseline(), ...brokenToday()]);
+    expect(await sweep()).toMatchObject({ emailsSent: 1 });
+    expect(stored()!.alerted_reasons).toEqual(['success_drop']);
+
+    // Day 2: the drop is gone, and a WAF wall has appeared instead. 46 clean
+    // runs and 4 walled ones, against a 9-day window of 71 runs in all — over
+    // the 3% blocked threshold, while the item rate is back within 8 points of
+    // its median. (The blocked share is a share of every run in the WINDOW, not
+    // of today's, which is why four are needed and not two.)
+    const walled = Array.from({ length: 4 }, () => runRow(6, 10, 0));
+    const clean = Array.from({ length: 46 }, () => runRow(6, 10, 10));
+    db.seed('automation_runs', [...healthyBaseline(), ...clean, ...walled]);
+    db.seed('automation_steps', walled.map((r) => stepRow({
+      run_id: r.id, step: 'add_click', outcome: 'blocked', occurred_at: r.started_at,
+    })));
+    notifier.mockClear();
+    expect(await sweep()).toMatchObject({ emailsSent: 1 });
+    expect(digest()[0].newReasons).toEqual(['blocked']);
+    // Both, not just the one that is true today.
+    expect(stored()!.alerted_reasons).toEqual(['blocked', 'success_drop']);
+
+    // Day 3: the drop is back, alongside the wall that never went away.
+    db.seed('automation_runs', [...healthyBaseline(), ...brokenToday(), ...walled]);
+    notifier.mockClear();
+
+    const third = await sweep();
+
+    expect(third).toMatchObject({ alerting: 1, suppressed: 1, alerted: 0, emailsSent: 0 });
+    expect(notifier).not.toHaveBeenCalled();
+  });
 });
 
 describe('recovery', () => {
