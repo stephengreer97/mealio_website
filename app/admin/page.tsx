@@ -95,6 +95,9 @@ interface FunnelCoverage {
 interface ItemSuccessTrend {
   recent: number | null;
   recentItemsRequested: number;
+  recentItemsUnavailable: number;
+  /** The rate's real denominator: requested minus what the store did not have. */
+  recentItemsJudged: number;
   median: number | null;
   baselineWindows: number;
   drop: number | null;
@@ -107,6 +110,8 @@ interface StoreFunnel {
   runsAbandoned: number;
   itemsRequested: number;
   itemsAdded: number;
+  /** Requested items the store reported it did not have — out of the rate below. */
+  itemsUnavailable: number;
   itemSuccessRate: number | null;
   /** The number `success_drop` fires on, so the page can show what the email said. */
   itemSuccess: ItemSuccessTrend;
@@ -2186,6 +2191,10 @@ export default function AdminPage() {
                     </span>
                     <span style={{ fontSize: '13px', color: '#666', marginLeft: 'auto' }}>
                       {s.itemsAdded}/{s.itemsRequested} items added
+                      {/* Named rather than left implicit: these are subtracted
+                          from the Item success denominator below (MEAL-29), so a
+                          reader who cannot see them cannot make the two agree. */}
+                      {s.itemsUnavailable > 0 && ` · ${s.itemsUnavailable} out of stock`}
                     </span>
                   </div>
 
@@ -2213,9 +2222,17 @@ export default function AdminPage() {
                       value={pct(s.itemSuccess?.recent ?? null)}
                       bad={s.itemSuccess?.drop != null && s.itemSuccess.drop > DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD}
                       note={
-                        s.itemSuccess?.median != null
+                        (s.itemSuccess?.median != null
                           ? `24h · median ${pct(s.itemSuccess.median)} over ${s.itemSuccess.baselineWindows}d`
-                          : '24h · too little history for a median'
+                          : '24h · too little history for a median')
+                        // The sample the alert gates on, shown only when the
+                        // subtraction actually moved it. Otherwise an operator
+                        // reading a quiet tile has no way to tell a store with a
+                        // real 24h sample from one whose sample is five items
+                        // because the other twenty were off the shelf.
+                        + (s.itemSuccess?.recentItemsUnavailable
+                          ? ` · over ${s.itemSuccess.recentItemsJudged} of ${s.itemSuccess.recentItemsRequested} items`
+                          : '')
                       }
                     />
                     <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < DEFAULT_CONFIRM_RATE_THRESHOLD} />

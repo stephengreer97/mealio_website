@@ -123,6 +123,7 @@ const senders: Array<{ name: string; call: () => Promise<unknown> }> = [
           runs: 12,
           itemsRequested: 120,
           itemsAdded: 48,
+          itemsUnavailable: 0,
           itemSuccessRecent: 0.4,
           itemSuccessMedian: 0.98,
           confirmRate: 0.41,

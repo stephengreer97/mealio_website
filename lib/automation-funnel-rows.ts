@@ -83,7 +83,15 @@ export async function fetchFunnelRows(
       // `run_id` is what makes the blocked rate a share of RUNS: a walled-off run
       // emits one blocked row per item, so counting rows over runs is a ratio of
       // two different units and read 450% on a blocked store.
-      .select('store_id, run_id, step, outcome, code, duration_ms, detail, occurred_at')
+      // `item_index` is how MEAL-29 counts unavailable ITEMS rather than
+      // out-of-stock ROWS. Dropping it fails nothing on its own: every row would
+      // arrive with the field undefined, every count would come out zero, and the
+      // funnel would go on reporting the pre-MEAL-29 numbers as if the
+      // subtraction were happening. `unavailableItemsByRun`'s own tests hand it
+      // rows directly and would not notice, which is why the alert sweep test
+      // ('does not email anyone about a store that only ran out of stock') drives
+      // the whole path through the database fake instead.
+      .select('store_id, run_id, step, outcome, code, duration_ms, detail, item_index, occurred_at')
       .gte('occurred_at', opts.since)
       .order('id', { ascending: true })
       .range(from, to);

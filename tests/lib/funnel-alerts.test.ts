@@ -138,6 +138,65 @@ describe('a store regressing', () => {
     expect(heb.failureCodes).toContainEqual({ code: 'no_candidates', count: 1 });
   });
 
+  // ── MEAL-29 ──────────────────────────────────────────────────────────────
+  // The whole sweep, not the aggregator: rows out of the database, through the
+  // SELECT, into the judgement, into an inbox. `aggregateFunnel` is unit-tested
+  // and would go on passing with `item_index` missing from the steps query —
+  // every row would arrive without it, every count would be zero, and the alert
+  // would fire exactly as it did before. This is the test that reads the column.
+  it('does not email anyone about a store that only ran out of stock', async () => {
+    const today = brokenToday();
+    db.seed('automation_runs', [...healthyBaseline(), ...today]);
+    // Six of the ten items in each run, which is the entire shortfall: the store
+    // did not have them. Nothing about our automation moved.
+    db.seed('automation_steps', today.flatMap((r) =>
+      Array.from({ length: 6 }, (_, i) => stepRow({
+        run_id: r.id,
+        step: 'confirm',
+        outcome: 'error',
+        code: 'out_of_stock',
+        item_index: i,
+        detail: { path: 'parallel_add' },
+      })),
+    ));
+
+    const pass = await sweep();
+
+    expect(pass).toMatchObject({ alerting: 0, alerted: 0, emailsSent: 0 });
+    expect(notifier).not.toHaveBeenCalled();
+  });
+
+  it('still emails when the shortfall is only partly the store\'s shelf', async () => {
+    // The guard on the test above. Four of the six missing items were out of
+    // stock; the other two were us. Of the six items the store could have
+    // supplied we added four — 67% against a 100% median, still a regression,
+    // and an operator still hears about it.
+    const today = brokenToday();
+    db.seed('automation_runs', [...healthyBaseline(), ...today]);
+    db.seed('automation_steps', today.flatMap((r) =>
+      Array.from({ length: 4 }, (_, i) => stepRow({
+        run_id: r.id,
+        step: 'confirm',
+        outcome: 'error',
+        code: 'out_of_stock',
+        item_index: i,
+        detail: { path: 'parallel_add' },
+      })),
+    ));
+
+    const pass = await sweep();
+
+    expect(pass).toMatchObject({ alerting: 1, alerted: 1, emailsSent: 1 });
+    const heb = digest()[0];
+    expect(heb.reasons).toContain('success_drop');
+    expect(heb.itemSuccessRecent).toBeCloseTo(4 / 6);
+    // The email says how many it took out, or the reader cannot make
+    // "20 added of 50 asked for" agree with the 67% two rows below it.
+    expect(heb.itemsUnavailable).toBe(20);
+    expect(heb.itemsRequested).toBe(260);
+    expect(heb.itemsAdded).toBe(230);
+  });
+
   it('says nothing the next day while it is broken the same way', async () => {
     db.seed('automation_runs', [...healthyBaseline(), ...brokenToday()]);
     await sweep();

@@ -39,8 +39,12 @@ const store = (over: Store = {}): Store => ({
   runsAbandoned: 0,
   itemsRequested: 600,
   itemsAdded: 594,
+  itemsUnavailable: 0,
   itemSuccessRate: 0.99,
-  itemSuccess: { recent: 0.99, recentItemsRequested: 90, median: 0.99, baselineWindows: 7, drop: 0 },
+  itemSuccess: {
+    recent: 0.99, recentItemsRequested: 90, recentItemsUnavailable: 0, recentItemsJudged: 90,
+    median: 0.99, baselineWindows: 7, drop: 0,
+  },
   steps: [],
   confirmRate: 0.99,
   firstClickConfirmRate: 0.97,
@@ -122,6 +126,40 @@ describe('the funnel page on a store the alert email raised', () => {
     expect(card.textContent).toContain('Item success');
     expect(card.textContent).toContain('84.0%');
     expect(card.textContent).toMatch(/median 99\.0%/);
+  });
+
+  // ── MEAL-29 ──────────────────────────────────────────────────────────────
+  // Unavailable items come out of the Item success denominator. That number is
+  // now doing arithmetic the page does not otherwise show, and a rate an operator
+  // cannot reconcile against the counts beside it is a rate they will not trust.
+  it('names the out-of-stock items the item rate was computed without', async () => {
+    const card = await openFunnel([store({
+      itemsRequested: 600,
+      itemsAdded: 540,
+      itemsUnavailable: 60,
+      itemSuccessRate: 1,
+      itemSuccess: {
+        recent: 1, recentItemsRequested: 90, recentItemsUnavailable: 30, recentItemsJudged: 60,
+        median: 0.99, baselineWindows: 7, drop: -0.01,
+      },
+    })]);
+
+    // Without this the header reads "540/600 items added" next to "Item success
+    // 100.0%" and the two look like a bug in one of them.
+    expect(card.textContent).toContain('540/600 items added');
+    expect(card.textContent).toContain('60 out of stock');
+    // And the sample the alert would have gated on, which is 60 and not 90.
+    expect(card.textContent).toContain('over 60 of 90 items');
+  });
+
+  it('does not clutter a store with nothing out of stock', async () => {
+    // The common case. A store that had everything in stock should read exactly
+    // as it did before MEAL-29 — no zero to parse, no denominator to reconcile.
+    const card = await openFunnel([store()]);
+
+    expect(card.textContent).toContain('594/600 items added');
+    expect(card.textContent).not.toContain('out of stock');
+    expect(card.textContent).not.toMatch(/over \d+ of \d+ items/);
   });
 
   it('says so when there is not enough history to have a median', async () => {
