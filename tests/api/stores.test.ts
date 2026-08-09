@@ -66,8 +66,6 @@ describe('GET /api/stores', () => {
       name: 'H-E-B',
       color: '#dd0031',
       slug: 'heb',
-      bannerGroup: 'H-E-B',
-      platform: 'heb',
       host: 'heb.com',
       servingArea: 'Texas',
     });
@@ -81,16 +79,45 @@ describe('GET /api/stores', () => {
     seedCatalog();
     const body = await (await get()).json();
     expect(Object.keys(body.stores[0]).sort()).toEqual([
-      'bannerGroup', 'color', 'host', 'id', 'name', 'platform', 'servingArea', 'slug',
+      'color', 'host', 'id', 'name', 'servingArea', 'slug',
     ]);
   });
 
-  it('nulls an absent optional field rather than dropping the key', async () => {
-    seedCatalog([{ ...ROWS[0], banner_group: null, platform: null, host: null, serving_area: null }]);
+  it('never serves platform or banner_group, which reconstruct the capability sets', async () => {
+    // Measured, not assumed: `platform = 'kroger'` is EXACTLY KROGER_BRAND_IDS
+    // and its complement is exactly WEBVIEW_STORE_IDS; `banner_group = 'Kroger'`
+    // partitions the same way. Either one on the wire is a complete free
+    // reimplementation of the split this ticket exists to keep in the binary.
+    // Sentinel values rather than the real ones, so the leak check cannot be
+    // confused by a platform name that is also a store name ('ALDI' is both).
+    seedCatalog([{
+      ...ROWS[0],
+      platform: 'PLATFORM-LEAK-SENTINEL',
+      banner_group: 'BANNERGROUP-LEAK-SENTINEL',
+    }]);
     const body = await (await get()).json();
-    expect(body.stores[0]).toMatchObject({
-      bannerGroup: null, platform: null, host: null, servingArea: null,
-    });
+    for (const store of body.stores) {
+      expect(store).not.toHaveProperty('platform');
+      expect(store).not.toHaveProperty('bannerGroup');
+      expect(store).not.toHaveProperty('banner_group');
+    }
+    // Under any spelling, anywhere in the serialised body — a key renamed on its
+    // way out is still the same leak.
+    expect(JSON.stringify(body)).not.toContain('LEAK-SENTINEL');
+  });
+
+  it('does not ask the database for the columns it must not serve', async () => {
+    seedCatalog();
+    await get();
+    const selects = fakeDb.calls.filter((c) => c.table === 'stores' && c.method === 'select');
+    expect(selects).toHaveLength(1);
+    expect(selects[0].args[0]).not.toMatch(/platform|banner_group/);
+  });
+
+  it('nulls an absent optional field rather than dropping the key', async () => {
+    seedCatalog([{ ...ROWS[0], host: null, serving_area: null }]);
+    const body = await (await get()).json();
+    expect(body.stores[0]).toMatchObject({ host: null, servingArea: null });
   });
 
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -141,7 +168,7 @@ describe('GET /api/stores', () => {
   // ── The row ceiling ───────────────────────────────────────────────────────
 
   it('pages the read, so it stays correct past db-max-rows', async () => {
-    // 36 rows is nowhere near 1000 — but an unbounded select truncates silently,
+    // 35 rows is nowhere near 1000 — but an unbounded select truncates silently,
     // and the symptom here would be stores missing from the picker with nothing
     // on screen to say why.
     seedCatalog();
@@ -216,6 +243,15 @@ describe('GET /api/stores', () => {
     expect(res.status).toBe(304);
   });
 
+  it('carries the ETag on the 304, as RFC 9110 §15.4.5 requires', async () => {
+    // Low impact for our own app, which keys off `version` — but a 304 with no
+    // validator is a response an intermediary cache cannot refresh its entry
+    // from, and this route is deliberately public and CDN-cacheable.
+    seedCatalog();
+    const res = await get({ 'if-none-match': '"store-catalog-v12"' });
+    expect(res.headers.get('etag')).toBe('"store-catalog-v12"');
+  });
+
   it('does not even read the rows on a 304', async () => {
     // The app polls on every cold start; the unchanged case must cost nothing.
     seedCatalog();
@@ -241,9 +277,14 @@ describe('GET /api/stores', () => {
     expect(tables.indexOf('store_catalog_version')).toBeLessThan(tables.indexOf('stores'));
   });
 
-  it('marks the response publicly cacheable', async () => {
+  it('marks the response publicly cacheable, with the max-age pinned', async () => {
+    // The number, not just the word. This route is explicitly CDN-cacheable, so
+    // `max-age` is the single value deciding whether a newly added store reaches
+    // users in minutes — the entire point of MEAL-23 — or is held at the edge
+    // for a year. `toContain('public')` alone passes a `max-age=31536000` typo.
     seedCatalog();
-    expect((await get()).headers.get('cache-control')).toContain('public');
+    expect((await get()).headers.get('cache-control'))
+      .toBe('public, max-age=300, stale-while-revalidate=3600');
   });
 
   // ── Failure modes: every one leaves the client on its bundled list ────────
@@ -252,6 +293,22 @@ describe('GET /api/stores', () => {
     fakeDb.seed('store_catalog_version', []);
     fakeDb.seed('stores', ROWS);
     expect((await get()).status).toBe(503);
+  });
+
+  it('503s on a non-numeric version rather than serving it', async () => {
+    // `version` is a bigint. PostgREST serialises most bigints as JSON numbers,
+    // but a string is exactly the shape a driver or column-type change could
+    // start producing — and it would be silent: the ETag is built by
+    // interpolation, so `"store-catalog-v12"` is IDENTICAL either way while the
+    // body carries `version: "12"`. The client's monotonic comparison would
+    // quietly become lexicographic, and "9" > "12" is where it bites.
+    fakeDb.seed('store_catalog_version', [
+      { id: 1, version: '12', updated_at: '2026-08-08T00:00:00Z' },
+    ]);
+    fakeDb.seed('stores', ROWS);
+    const res = await get();
+    expect(res.status).toBe(503);
+    expect((await res.json()).stores).toBeUndefined();
   });
 
   it('503s on an empty catalog rather than a 200 the app could apply', async () => {

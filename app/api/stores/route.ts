@@ -15,9 +15,26 @@ import { log } from '@/lib/logger';
 // DISPLAY DATA ONLY. Nothing here says a store can be automated. Whether this
 // build can add to a store's cart is answered by KROGER_BRAND_IDS and
 // WEBVIEW_STORE_IDS in the app, because those sets assert "this binary contains
-// automation code for this store" and no database row can make that true. The
-// `platform` field is descriptive lineage — which storefront stack the banner
-// runs on — and must not be used to gate automation.
+// automation code for this store" and no database row can make that true.
+//
+// WHY `platform` AND `banner_group` ARE COLUMNS BUT NOT FIELDS
+//
+// Both are on the `stores` table — they are useful to a human reading the table
+// and to ops queries — and neither is on the wire. Measured, not assumed: today
+// `platform = 'kroger'` is EXACTLY `KROGER_BRAND_IDS` (set equality, empty
+// symmetric difference) and its complement is exactly `WEBVIEW_STORE_IDS`, and
+// `banner_group = 'Kroger'` partitions identically. Serving either one hands the
+// client a complete, free reimplementation of the capability split this whole
+// ticket exists to keep in the binary — and a prose warning is a weak defence
+// against a field that is right there in the payload.
+//
+// The equivalence is also about to break rather than hold: the first Instacart
+// banner added as a database row has `platform = 'instacart'` and no adapter in
+// any shipped build, so a client that had learned to read it would be wrong on
+// exactly the row this ticket was written to make cheap.
+//
+// Neither field is used by any client today. Add one back when something
+// concrete needs it, as one line here plus one in `toEntry`.
 //
 // PUBLIC, unlike /api/automation/config. That endpoint is authenticated because
 // it publishes our store selectors; this one publishes brand names, tile colours
@@ -39,8 +56,6 @@ export type StoreCatalogEntry = {
   /** `#RRGGBB`. */
   color: string;
   slug: string;
-  bannerGroup: string | null;
-  platform: string | null;
   /** Storefront hostname, no scheme, no `www.`. */
   host: string | null;
   servingArea: string | null;
@@ -51,8 +66,6 @@ type StoreRow = {
   name: unknown;
   color: unknown;
   slug: unknown;
-  banner_group: unknown;
-  platform: unknown;
   host: unknown;
   serving_area: unknown;
 };
@@ -90,8 +103,6 @@ function toEntry(row: StoreRow): StoreCatalogEntry | null {
     name,
     color,
     slug,
-    bannerGroup: text(row.banner_group),
-    platform: text(row.platform),
     host: text(row.host),
     servingArea: text(row.serving_area),
   };
@@ -146,7 +157,10 @@ export async function GET(request: NextRequest) {
   const read = await fetchAllPages<StoreRow>((from, to) =>
     supabase
       .from('stores')
-      .select('id, name, color, slug, banner_group, platform, host, serving_area')
+      // `platform` and `banner_group` are deliberately NOT selected — see the
+      // header. Not selecting them means there is no path from the column to the
+      // response at all, rather than a mapping someone can re-enable by reflex.
+      .select('id, name, color, slug, host, serving_area')
       .eq('is_listed', true)
       .order('id', { ascending: true })
       .range(from, to));

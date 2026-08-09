@@ -13,10 +13,10 @@
 -- store's cart. That question is answered by KROGER_BRAND_IDS and
 -- WEBVIEW_STORE_IDS in the app, and it has to stay there: those sets assert
 -- "this binary contains automation code for this store", and no row in Postgres
--- can make that true. `platform` below is descriptive lineage — which
--- e-commerce stack the banner's site runs on — and MUST NOT be used to gate
--- automation. Today it happens to partition the same way the capability sets do;
--- the moment an Instacart banner ships without app support, it will not.
+-- can make that true. `platform` and `banner_group` below are descriptive
+-- columns that GET /api/stores deliberately does NOT serve, because each of
+-- them reconstructs those capability sets exactly as the seed stands today.
+-- See the note on the columns themselves.
 --
 -- WHAT IT CONTAINS
 --
@@ -45,11 +45,18 @@ CREATE TABLE IF NOT EXISTS stores (
   -- `king-soopers`) so it can appear in a path without escaping.
   slug          text NOT NULL,
   -- The corporate family this banner belongs to ("Albertsons Companies" for
-  -- Acme, Safeway, Vons…). Descriptive; nothing dispatches on it.
+  -- Acme, Safeway, Vons…).
+  --
+  -- NOT SERVED BY GET /api/stores, and neither is `platform` below. Both are
+  -- here for humans reading this table and for ops queries. Measured on the
+  -- seed: `platform = 'kroger'` is EXACTLY KROGER_BRAND_IDS and its complement
+  -- is exactly WEBVIEW_STORE_IDS, and `banner_group = 'Kroger'` partitions
+  -- identically — so putting either on the wire would hand the app a complete
+  -- reimplementation of the capability split this ticket exists to keep in the
+  -- binary. Query them freely here; the endpoint does not select them.
   banner_group  text,
   -- Which e-commerce stack the banner's storefront runs on: 'kroger',
-  -- 'albertsons', 'instacart', 'heb', 'walmart', 'amazon', 'wegmans'. See the
-  -- warning in the header — this is NOT a capability claim.
+  -- 'albertsons', 'instacart', 'heb', 'walmart', 'amazon', 'wegmans'.
   platform      text,
   -- Primary storefront hostname, no scheme and no `www.`. Transcribed from the
   -- app's DOMAIN_MAP / INSTACART_TENANTS and mealio_central's STORE_URLS, which

@@ -104,7 +104,9 @@ describe('the store catalog seed', () => {
   });
 
   it('seeds the 35 stores the app ships today', () => {
-    // Not 36. See the mockstore assertion below.
+    // Thirty-five, not thirty-six. The `STORES` literal in the app has 35
+    // entries; the 36th is `mockstore`, pushed conditionally under
+    // MOCK_STORE_ENABLED. See the mockstore assertion below.
     expect(rows).toHaveLength(35);
   });
 
@@ -157,11 +159,15 @@ describe('the store catalog seed', () => {
     expect(rows.find((r) => r.id === 'united')?.host).toBe('shopunitedsupermarkets.com');
   });
 
-  it('uses only platform values an adapter exists for', () => {
-    // Descriptive lineage, not a capability claim — but a typo here would still
-    // be a value nothing recognises.
-    const known = new Set(['kroger', 'albertsons', 'instacart', 'heb', 'walmart', 'amazon', 'wegmans']);
-    for (const r of rows) expect(known.has(r.platform), `${r.id}: ${r.platform}`).toBe(true);
+  it('spells the storefront-stack column consistently across the seed', () => {
+    // A spelling check on a column nobody dispatches on, and the name says so
+    // deliberately. `platform` is NOT served by GET /api/stores — it
+    // reconstructs KROGER_BRAND_IDS exactly, so it stays off the wire — and it
+    // exists for humans reading the table and for ops queries. Naming this test
+    // after adapters or support, as an earlier version did, is exactly how the
+    // column starts being read as a capability claim again.
+    const spellings = new Set(['kroger', 'albertsons', 'instacart', 'heb', 'walmart', 'amazon', 'wegmans']);
+    for (const r of rows) expect(spellings.has(r.platform), `${r.id}: ${r.platform}`).toBe(true);
   });
 
   it('leaves serving_area unset, because there is no source to transcribe it from', () => {
