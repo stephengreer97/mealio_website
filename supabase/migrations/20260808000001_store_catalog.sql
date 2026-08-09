@@ -48,12 +48,14 @@ CREATE TABLE IF NOT EXISTS stores (
   -- Acme, Safeway, Vons…).
   --
   -- NOT SERVED BY GET /api/stores, and neither is `platform` below. Both are
-  -- here for humans reading this table and for ops queries. Measured on the
-  -- seed: `platform = 'kroger'` is EXACTLY KROGER_BRAND_IDS and its complement
-  -- is exactly WEBVIEW_STORE_IDS, and `banner_group = 'Kroger'` partitions
-  -- identically — so putting either on the wire would hand the app a complete
-  -- reimplementation of the capability split this ticket exists to keep in the
-  -- binary. Query them freely here; the endpoint does not select them.
+  -- here for humans reading this table and for ops queries. The reason they
+  -- stay off the wire is not that they correlate with the app's capability sets
+  -- on these 35 rows, but that a client would read them as a RULE and apply it
+  -- to rows the binary has never seen — and only the binary knows what
+  -- automation code it contains. Measured on the seed: `platform = 'kroger'` is
+  -- EXACTLY KROGER_BRAND_IDS, `banner_group = 'Kroger'` partitions identically,
+  -- and the complement is WEBVIEW_STORE_IDS MINUS `mockstore` (a dev/test store
+  -- with no row here). Query them freely; the endpoint does not select them.
   banner_group  text,
   -- Which e-commerce stack the banner's storefront runs on: 'kroger',
   -- 'albertsons', 'instacart', 'heb', 'walmart', 'amazon', 'wegmans'.

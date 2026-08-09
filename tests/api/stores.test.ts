@@ -84,10 +84,12 @@ describe('GET /api/stores', () => {
   });
 
   it('never serves platform or banner_group, which reconstruct the capability sets', async () => {
-    // Measured, not assumed: `platform = 'kroger'` is EXACTLY KROGER_BRAND_IDS
-    // and its complement is exactly WEBVIEW_STORE_IDS; `banner_group = 'Kroger'`
-    // partitions the same way. Either one on the wire is a complete free
-    // reimplementation of the split this ticket exists to keep in the binary.
+    // The objection is not that these correlate with the capability sets on the
+    // seed — it is that a client reads either as a RULE and applies it to rows
+    // the binary has never seen, which is the one question only the binary can
+    // answer. Measured: `platform = 'kroger'` is EXACTLY KROGER_BRAND_IDS and
+    // `banner_group = 'Kroger'` partitions the same way; the complement is
+    // WEBVIEW_STORE_IDS minus the dev-only `mockstore`, which has no row here.
     // Sentinel values rather than the real ones, so the leak check cannot be
     // confused by a platform name that is also a store name ('ALDI' is both).
     seedCatalog([{
@@ -111,7 +113,11 @@ describe('GET /api/stores', () => {
     await get();
     const selects = fakeDb.calls.filter((c) => c.table === 'stores' && c.method === 'select');
     expect(selects).toHaveLength(1);
-    expect(selects[0].args[0]).not.toMatch(/platform|banner_group/);
+    // Pinned as a literal, not as `not.toMatch(/platform|banner_group/)`. That
+    // check passes for `select('*')` — which names neither column and fetches
+    // both — so the one rewrite most likely to reintroduce the leak is the one
+    // it cannot see. An exact list fails on any change, including that one.
+    expect(selects[0].args[0]).toBe('id, name, color, slug, host, serving_area');
   });
 
   it('nulls an absent optional field rather than dropping the key', async () => {
@@ -249,6 +255,9 @@ describe('GET /api/stores', () => {
     // from, and this route is deliberately public and CDN-cacheable.
     seedCatalog();
     const res = await get({ 'if-none-match': '"store-catalog-v12"' });
+    // Both halves: a 200 that carries the ETag would satisfy the header
+    // assertion alone while being the opposite of what this test is named for.
+    expect(res.status).toBe(304);
     expect(res.headers.get('etag')).toBe('"store-catalog-v12"');
   });
 

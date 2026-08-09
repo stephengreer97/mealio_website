@@ -90,6 +90,9 @@ describe('GET /api/automation/config', () => {
     const res = await GET(jsonRequest('/api/automation/config', {
       method: 'GET', token, headers: { 'if-none-match': '"automation-config-v7"' },
     }));
+    // Both halves: a 200 that carries the ETag would satisfy the header
+    // assertion alone while being the opposite of what this test is named for.
+    expect(res.status).toBe(304);
     expect(res.headers.get('etag')).toBe('"automation-config-v7"');
   });
 

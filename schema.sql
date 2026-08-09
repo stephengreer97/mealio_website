@@ -210,10 +210,12 @@ CREATE TABLE store_catalog_version (
 );
 
 -- stores (MEAL-23: the store catalog served by GET /api/stores. DISPLAY DATA
--- ONLY. `platform` and `banner_group` are NOT served: each reconstructs the
--- app's KROGER_BRAND_IDS / WEBVIEW_STORE_IDS exactly, and capability stays in
--- the binary because only the binary knows what automation code it contains.
--- Both columns are here for humans and ops queries.)
+-- ONLY. `platform` and `banner_group` are NOT served: a client would read either
+-- as a rule and apply it to rows the binary has never seen, and capability stays
+-- in the binary because only the binary knows what automation code it contains.
+-- On the seed both track KROGER_BRAND_IDS exactly, the complement being
+-- WEBVIEW_STORE_IDS minus the dev-only `mockstore`. Both columns are here for
+-- humans and ops queries.)
 CREATE TABLE stores (
   id           text NOT NULL,
   name         text NOT NULL,

@@ -20,18 +20,35 @@ import { log } from '@/lib/logger';
 // WHY `platform` AND `banner_group` ARE COLUMNS BUT NOT FIELDS
 //
 // Both are on the `stores` table — they are useful to a human reading the table
-// and to ops queries — and neither is on the wire. Measured, not assumed: today
-// `platform = 'kroger'` is EXACTLY `KROGER_BRAND_IDS` (set equality, empty
-// symmetric difference) and its complement is exactly `WEBVIEW_STORE_IDS`, and
-// `banner_group = 'Kroger'` partitions identically. Serving either one hands the
-// client a complete, free reimplementation of the capability split this whole
-// ticket exists to keep in the binary — and a prose warning is a weak defence
-// against a field that is right there in the payload.
+// and to ops queries — and neither is on the wire.
 //
-// The equivalence is also about to break rather than hold: the first Instacart
-// banner added as a database row has `platform = 'instacart'` and no adapter in
-// any shipped build, so a client that had learned to read it would be wrong on
-// exactly the row this ticket was written to make cheap.
+// The test to apply is NOT "can a client reconstruct today's capability sets
+// from this payload?" Plenty of fields correlate with capability on 35 seeded
+// rows; correlation on a fixed table is cheap and proves little. The test is:
+// DOES THE PAYLOAD CARRY A RULE THAT GENERALIZES TO ROWS THE BINARY HAS NEVER
+// SEEN? A field fails it when a client can apply it to a brand-new row and get
+// an answer about automation — because that is precisely the answer only the
+// binary holds, and the row is exactly what this endpoint makes cheap to add.
+//
+// `platform` fails that test. It reads as the rule "this is the stack we drive",
+// so a client would apply it to the next row bearing a familiar value and
+// conclude the build can drive it. Nothing about a database row makes that true.
+//
+// Measured on the seed, so the correlation is stated accurately rather than
+// overstated: `platform = 'kroger'` is EXACTLY `KROGER_BRAND_IDS` (set equality,
+// empty symmetric difference), and `banner_group = 'Kroger'` partitions
+// identically. The complement is `WEBVIEW_STORE_IDS` MINUS `mockstore` — the
+// dev/test store has no row here and never will, so the two are equal on all 35
+// rows and unequal as sets. That off-by-one is worth stating exactly, because
+// "reconstructs it perfectly" is the kind of claim that gets a field served once
+// someone finds the counterexample and concludes the warning was overblown.
+//
+// Note what `platform` is NOT evidence of: `aldi` is `platform = 'instacart'`,
+// is in `WEBVIEW_STORE_IDS`, and its adapter (`src/lib/webview-scripts/
+// instacart.ts`) ships today. So a value's presence here says nothing either way
+// about whether a build can drive it — which is the point. The next Instacart
+// banner added as a row will carry the same value as ALDI and have no adapter,
+// and a client reading the field could not tell those two rows apart.
 //
 // Neither field is used by any client today. Add one back when something
 // concrete needs it, as one line here plus one in `toEntry`.
