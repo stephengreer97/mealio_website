@@ -250,14 +250,25 @@ function formatAmount(value: number): string {
  *   • **`editableDraft`**, which canonicalises every row an operator saves. So
  *     it also bounds what a human can type into the review card's prep box.
  *
- * The second one matters because the cap DROPS rather than truncates. An earlier
- * version of this comment listed only the import path, and a cold review used
- * that to conclude a creator could paste a whole method step and lose it on save
- * with a 200 OK and no message — which was exactly right. The input now carries
- * `maxLength={MAX_PREP_CHARS}` so the text can never get long enough to be
- * dropped, in the same prevent-rather-than-report style as the tag picker.
+ * The second one matters because the cap DROPS rather than truncates: an
+ * over-cap prep does not arrive shortened, it arrives missing.
  *
- * Still NOT bounded: `publishCreatorMeal`, `POST`/`PUT /api/meals` and
+ * Both prep inputs carry `maxLength={MAX_PREP_CHARS}`, which closes that for the
+ * browser — typing, pasting and autofill all stop at the cap. **It does not make
+ * the route safe.** `PATCH /api/creator/import-drafts` and its admin twin still
+ * accept an over-cap prep, run it through `editableDraft` → `canonicalPrep`, and
+ * answer **200 OK with the preparation silently gone**. Measured: `ok: true`,
+ * and the returned row has no `prep` key at all.
+ *
+ * That is residual rather than live — a browser is the only client of those
+ * routes today, and `mealio_app` has no review-queue screen — but it is the
+ * shape to fix if the cap ever has to be a guarantee: refuse the write, the way
+ * the tag cap and `serves` are refused, rather than silently canonicalising it
+ * away. An earlier version of this comment said the input meant the text "can
+ * never get long enough to be dropped", which was the same over-claim the
+ * previous version made, moved one layer down.
+ *
+ * Never bounded at all: `publishCreatorMeal`, `POST`/`PUT /api/meals` and
  * `/api/shared/[token]/save` pass ingredients through unvalidated. That matches
  * how `ingredientName` has always been treated on those routes, so it is not a
  * regression — but a length rule that has to hold everywhere belongs in the API

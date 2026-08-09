@@ -69,7 +69,7 @@ export function fromFormIng(form: IngredientForm): Ingredient {
       productQty: q,
       // Omitted rather than written as null, so a row that never had a
       // preparation is saved back exactly as it was loaded.
-      ...(form.prep ? { prep: form.prep } : {}),
+      ...(form.prep?.trim() ? { prep: form.prep.trim() } : {}),
     };
   }
   return {
@@ -79,7 +79,7 @@ export function fromFormIng(form: IngredientForm): Ingredient {
     measure: form.measure.trim() || null,
     searchTerm: form.searchTerm ?? null,
     productQty: 1,
-    ...(form.prep ? { prep: form.prep } : {}),
+    ...(form.prep?.trim() ? { prep: form.prep.trim() } : {}),
   };
 }
 

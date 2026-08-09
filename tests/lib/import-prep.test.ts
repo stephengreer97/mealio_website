@@ -274,6 +274,12 @@ describe('MEAL-102 — prep never reaches a name or a search term', () => {
       expect(prepped.confidence.ingredients).toEqual(bare.confidence.ingredients);
     });
 
+    // NOT redundant with the test above, and the difference is the whole point.
+    // That one's preparation ("halved and pitted") is a substring of the
+    // evidence span, so a mutant that folded prep into the graded value would
+    // still verify and that test would still pass. This one's appears nowhere in
+    // the span, so it is the only one of the pair that dies. Deleting it as a
+    // near-duplicate would silently unpin the decision.
     it('does not let an unverifiable preparation drag the row down', async () => {
       // The specific shape the ticket is about: a prep that appears nowhere in the
       // evidence span. The row's name and amount are still verbatim, so the row

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { ImportRejection, ImportSuccess } from '@/lib/import/types';
 import { FLAGGED_FIELD_STYLE } from '@/components/ImportFieldNotice';
+import { MAX_PREP_CHARS } from '@/lib/import/ingredients';
 import {
   guacamoleExtraction,
   importedBlackBeanSoup,
@@ -570,6 +571,20 @@ describe('creator portal — an import never destroys the creator’s own work',
     await waitFor(() => expect(published).not.toBeNull());
     const publishedRows = published!.ingredients as Array<Record<string, unknown>>;
     expect(publishedRows[0].prep).toBe('halved and pitted');
+  });
+
+  it('stops the publish form\'s prep box at the cap too', async () => {
+    // Same reason as the review card: over the cap a save deletes the text
+    // rather than shortening it. Pinned because a cold review removed the
+    // attribute from both boxes and nothing failed.
+    const success = await importedGuacamole(withPrepOnFirstRow('julienned on a mandoline'));
+    stubApi({ import: () => json(success, 200) });
+    await openPublishForm();
+    await importFrom('https://cookieandkate.com/best-guacamole-recipe');
+    await screen.findByTestId('import-summary');
+
+    const prep = screen.getByLabelText(/^Ingredient 1.* preparation$/) as HTMLInputElement;
+    expect(prep.maxLength).toBe(MAX_PREP_CHARS);
   });
 
   it('publishes no prep key when the creator clears the box', async () => {

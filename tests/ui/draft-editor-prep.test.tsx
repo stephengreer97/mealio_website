@@ -35,6 +35,7 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 afterEach(cleanup);
 import DraftEditor from '@/components/DraftEditor';
 import type { CreatorMealDraft, DraftIngredient } from '@/lib/import/types';
+import { MAX_PREP_CHARS } from '@/lib/import/ingredients';
 
 const ing = (over: Partial<DraftIngredient> = {}): DraftIngredient => ({
   ingredientName: 'onion',
@@ -76,6 +77,16 @@ describe('the preparation is on screen and editable', () => {
   it('shows the one the import extracted', () => {
     const { box } = mount([ing({ prep: 'finely diced' })]);
     expect(box(1).value).toBe('finely diced');
+  });
+
+  it('stops typing at the cap, because over the cap the save DELETES it', () => {
+    // `editableDraft` canonicalises every saved row and `canonicalPrep` drops an
+    // over-cap prep rather than truncating it — so without this a creator could
+    // paste a method step, get a 200, and watch the text vanish. A cold review
+    // deleted this attribute from both prep boxes and the whole suite stayed
+    // green, so the fix existed and nothing held it in place.
+    const { box } = mount([ing({ prep: 'finely diced' })]);
+    expect(box(1).maxLength).toBe(MAX_PREP_CHARS);
   });
 
   it('saves a correction', () => {

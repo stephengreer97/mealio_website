@@ -155,7 +155,7 @@ export default function DraftEditor({
       ingredients: prev.ingredients.map((row, i) => {
         if (i !== index) return row;
         const next = { ...row };
-        if (value.trim()) next.prep = value;
+        if (value.trim()) next.prep = value.trim();
         else delete next.prep;
         return next;
       }),
