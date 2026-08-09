@@ -7,7 +7,7 @@ import { mealIdFromParam } from '@/lib/sourcePlatform';
 // byte-identical version of this, so "chopped tomatoes, 2 cans" was five places
 // to fix and the amount-first rewrite would have made My Meals disagree with
 // Discover about the same ingredient.
-import { fmtMeasurement } from '@/components/MealCard';
+import { fmtMeasurement, normIng } from '@/components/MealCard';
 
 const STORES = [
   { id: 'acme',          label: 'Acme Markets' },
@@ -57,16 +57,6 @@ interface Ingredient {
   prep?: string | null;
 }
 
-function normIng(raw: any): Ingredient {
-  return {
-    ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
-    searchTerm: raw.searchTerm ?? raw.search_term ?? null,
-    qty: raw.qty ?? raw.quantity ?? 1,
-    unit: raw.unit ?? 'qty',
-    measure: raw.measure ?? null,
-    prep: raw.prep ?? null,
-  };
-}
 
 
 interface PresetMeal {

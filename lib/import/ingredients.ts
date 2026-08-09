@@ -240,6 +240,15 @@ function formatAmount(value: number): string {
  * field existed, which is the direction this module is already wrong in
  * everywhere else — an empty field costs a creator a keystroke, a confident
  * wrong one costs them a reader.
+ *
+ * SCOPE, so this is not read as a guarantee it does not make: the cap is applied
+ * by `canonicalPrep`, which runs inside `canonicalizeIngredient` — the IMPORT
+ * path. It bounds what the model can put in the field, which is the failure it
+ * was written for. It does not bound the hand-written writers: `publishCreatorMeal`,
+ * `POST`/`PUT /api/meals` and `/api/shared/[token]/save` all pass ingredients
+ * through unvalidated. That matches how `ingredientName` has always been
+ * treated on those routes, so it is not a regression — but a length rule that
+ * has to hold everywhere belongs in the API schemas, not here.
  */
 export const MAX_PREP_CHARS = 120;
 

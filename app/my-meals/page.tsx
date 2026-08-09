@@ -13,7 +13,8 @@ import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, toggleTag } from '@/lib/im
 // byte-identical version of this, so "chopped tomatoes, 2 cans" was five places
 // to fix and the amount-first rewrite would have made My Meals disagree with
 // Discover about the same ingredient.
-import { fmtMeasurement } from '@/components/MealCard';
+import { fmtMeasurement, normIngWithProductQty as normIng } from '@/components/MealCard';
+import { type IngredientForm, toFormIng, fromFormIng } from './ingredient-form';
 
 interface User {
   id: string;
@@ -34,100 +35,13 @@ interface Ingredient {
   prep?: string | null;
 }
 
-interface IngredientForm {
-  ingredientName: string;
-  measure: string;
-  unit: string;
-  searchTerm: string | null;
-  qty: number;
-  productQty?: number;
-  /**
-   * Carried through the edit form untouched, with no input bound to it.
-   *
-   * There is nothing to type into yet — how a creator *enters* prep is still
-   * open — but the round trip has to preserve it regardless: this form is
-   * `Ingredient -> IngredientForm -> Ingredient`, and a field the form does not
-   * carry is a field that opening the edit modal and pressing Save deletes.
-   */
-  prep?: string | null;
-}
-
 const UNITS = ['qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
   // Units a cook writes that convert to nothing. Display only — the cart searches
   // by name and counts packages with productQty — so carrying the word costs
   // nothing and stops '3 cloves garlic' reading as 'garlic, 3'.
   'cloves', 'cans', 'bunches', 'sprigs', 'pinches', 'handfuls', 'grinds', 'slices'];
 
-function normIng(raw: any): Ingredient {
-  return {
-    ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
-    searchTerm: raw.searchTerm ?? raw.search_term ?? null,
-    qty: raw.qty ?? raw.quantity ?? 1,
-    unit: raw.unit ?? 'qty',
-    measure: raw.measure ?? null,
-    productQty: raw.productQty ?? raw.qty ?? raw.quantity ?? 1,
-    prep: raw.prep ?? null,
-  };
-}
 
-
-/**
- * The term this meal's items are searched for in a store.
- *
- * **`prep` is deliberately absent from every branch of this function, and that
- * is the point of MEAL-102 rather than an oversight.** The add gate is exact
- * equality after normalisation, so a term carrying "finely diced" does not
- * fetch a worse onion — it matches nothing, and the item lands in review
- * looking like a matching bug. Preparation is display text; it reaches
- * `fmtMeasurement` and stops there.
- */
-function ingSearchTerm(ing: Ingredient): string {
-  if (ing.searchTerm) return ing.searchTerm;
-  if (!ing.unit || ing.unit === 'qty') return ing.ingredientName;
-  return `${ing.ingredientName}, ${ing.measure ?? ''}${ing.unit}`;
-}
-
-function toFormIng(ing: Ingredient): IngredientForm {
-  return {
-    ingredientName: ing.ingredientName,
-    // Blank rather than "1" for a plain count: a line the source gave no amount
-    // for ("many grinds of black pepper") arrives as a countable 1, and typing
-    // that into the box reads as a quantity we read rather than one we assumed.
-    // `fromFormIng` parses an empty measure straight back to 1.
-    measure: ing.unit === 'qty' ? ((ing.qty ?? 1) > 1 ? String(ing.qty) : '') : (ing.measure ?? ''),
-    unit: ing.unit ?? 'qty',
-    searchTerm: ing.searchTerm ?? null,
-    qty: ing.qty ?? 1,
-    productQty: ing.productQty ?? ing.qty ?? 1,
-    prep: ing.prep ?? null,
-  };
-}
-
-function fromFormIng(form: IngredientForm): Ingredient {
-  if (form.unit === 'qty') {
-    const q = parseInt(form.measure) || 1;
-    return {
-      ingredientName: form.ingredientName.trim(),
-      qty: q,
-      unit: 'qty',
-      measure: null,
-      searchTerm: form.searchTerm ?? null,
-      productQty: q,
-      // Omitted rather than written as null, so a row that never had a
-      // preparation is saved back exactly as it was loaded.
-      ...(form.prep ? { prep: form.prep } : {}),
-    };
-  }
-  return {
-    ingredientName: form.ingredientName.trim(),
-    qty: form.qty,
-    unit: form.unit,
-    measure: form.measure.trim() || null,
-    searchTerm: form.searchTerm ?? null,
-    productQty: form.productQty ?? 1,
-    ...(form.prep ? { prep: form.prep } : {}),
-  };
-}
 
 interface Meal {
   id: string;
@@ -1818,6 +1732,15 @@ function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
   for (const meal of meals) {
     for (const rawIng of meal.ingredients) {
       const ing = normIng(rawIng);
+      // The term this meal's items are actually searched for in a store, and
+      // the row built from it below.
+      //
+      // `prep` is deliberately absent from both, and that is the point of
+      // MEAL-102 rather than an oversight. The add gate is exact equality after
+      // normalisation, so a term carrying "finely diced" does not fetch a worse
+      // onion — it matches nothing, and the item lands in review looking like a
+      // matching bug while the cart is quietly short. Preparation is display
+      // text; it reaches `fmtMeasurement` and stops there.
       const key = (ing.searchTerm || ing.ingredientName).toLowerCase().trim();
       if (!key) continue;
       const ingQty = ing.productQty ?? 1;

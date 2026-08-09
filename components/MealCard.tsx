@@ -29,6 +29,8 @@ export interface Ingredient {
   qty: number;
   unit: string;
   measure?: string | null;
+  /** How many of the product to buy. Carried by the two editable pages only. */
+  productQty?: number;
   /**
    * Preparation — "finely diced" (MEAL-102). Display only, and deliberately not
    * read by anything that builds a search term. See `fmtMeasurement`.
@@ -36,6 +38,20 @@ export interface Ingredient {
   prep?: string | null;
 }
 
+/**
+ * The one normaliser for an ingredient row read back from storage.
+ *
+ * Four pages kept private copies of this, character for character. They are now
+ * all this function, because a copy is where the next divergence goes: one of
+ * those copies wrote `prep: null` and its page POSTed the normalised array
+ * straight back to `/api/meals`, which is how a field documented as "absent
+ * stays absent" ended up stored as null on every meal saved from a preset page.
+ *
+ * `prep` is OMITTED when there is none — never `null`. That is the whole
+ * additivity contract, and it is load-bearing beyond tidiness: `stripEditedConfidence`
+ * (`lib/import-drafts.ts`) compares draft rows by `JSON.stringify`, so a null
+ * where there was no key flips every ingredient's badge to "edited".
+ */
 export function normIng(raw: any): Ingredient {
   return {
     ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
@@ -46,7 +62,24 @@ export function normIng(raw: any): Ingredient {
     // One spelling, unlike the name's four: `prep` is a single word, so
     // camelCase and snake_case are the same six characters and every writer
     // already agrees. See `readPrep` in `lib/import/ingredients.ts`.
-    prep: raw.prep ?? null,
+    // Whitespace-only is no prep, which is what `withPrep` below and
+    // `canonicalPrep` on the import side both already say. Trimmed here too, so
+    // the three agree on the value and not merely on whether there is one.
+    ...(typeof raw.prep === 'string' && raw.prep.trim() ? { prep: raw.prep.trim() } : {}),
+  };
+}
+
+/**
+ * The same row, plus `productQty` — how many of the product to buy, which the
+ * two editable pages (the creator portal and My Meals) carry and the read-only
+ * pages do not. Kept as a separate function rather than a flag so neither page
+ * can quietly acquire the other's shape: an extra key on the read-only pages
+ * would be written back by the preset page exactly the way `prep: null` was.
+ */
+export function normIngWithProductQty(raw: any): Ingredient {
+  return {
+    ...normIng(raw),
+    productQty: raw.productQty ?? raw.qty ?? raw.quantity ?? 1,
   };
 }
 

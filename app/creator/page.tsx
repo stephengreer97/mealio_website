@@ -32,7 +32,8 @@ import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, tagCapError, toggleTag } f
 // byte-identical version of this, so "chopped tomatoes, 2 cans" was five places
 // to fix and the amount-first rewrite would have made My Meals disagree with
 // Discover about the same ingredient.
-import { fmtMeasurement } from '@/components/MealCard';
+import { fmtMeasurement, normIngWithProductQty as normIng } from '@/components/MealCard';
+import { type IngredientForm, toFormIng, fromFormIng } from './ingredient-form';
 
 interface Creator {
   id: string;
@@ -87,94 +88,13 @@ interface Ingredient {
   prep?: string | null;
 }
 
-interface IngredientForm {
-  ingredientName: string;
-  measure: string;
-  unit: string;
-  searchTerm: string | null;
-  qty: number;
-  /**
-   * Carried through the form with no input bound to it (MEAL-102).
-   *
-   * Whether a creator gets a prep box of its own, or types it after a comma and
-   * we split the line, is still open. Until it is settled this field is only
-   * ever *preserved*: the edit modal is `Ingredient -> IngredientForm ->
-   * Ingredient`, so anything the form drops is deleted by the act of opening a
-   * meal and saving it — an imported prep would not survive its first edit.
-   */
-  prep?: string | null;
-}
-
 const UNITS = ['qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
   // Units a cook writes that convert to nothing. Display only — the cart searches
   // by name and counts packages with productQty — so carrying the word costs
   // nothing and stops '3 cloves garlic' reading as 'garlic, 3'.
   'cloves', 'cans', 'bunches', 'sprigs', 'pinches', 'handfuls', 'grinds', 'slices'];
 
-function normIng(raw: any): Ingredient {
-  return {
-    ingredientName: raw.ingredientName ?? raw.productName ?? raw.product_name ?? raw.name ?? '',
-    searchTerm: raw.searchTerm ?? raw.search_term ?? null,
-    qty: raw.qty ?? raw.quantity ?? 1,
-    unit: raw.unit ?? 'qty',
-    measure: raw.measure ?? null,
-    productQty: raw.productQty ?? raw.qty ?? raw.quantity ?? 1,
-    prep: raw.prep ?? null,
-  };
-}
 
-
-function toFormIng(ing: Ingredient): IngredientForm {
-  return {
-    ingredientName: ing.ingredientName,
-    // Blank rather than "1" for a plain count: a line the source gave no amount
-    // for ("many grinds of black pepper") arrives as a countable 1, and typing
-    // that into the box reads as a quantity we read rather than one we assumed.
-    // `fromFormIng` parses an empty measure straight back to 1.
-    // `measure` first for countables too, now that it is what the card reads.
-    // The `qty` fallback is for rows written before that (MEAL-103); without it
-    // a creator opening an old meal would see an empty box and save the number
-    // away.
-    measure: ing.unit === 'qty'
-      ? ((ing.measure ?? '').trim() || ((ing.qty ?? 1) > 1 ? String(ing.qty) : ''))
-      : (ing.measure ?? ''),
-    unit: ing.unit ?? 'qty',
-    searchTerm: ing.searchTerm ?? null,
-    qty: ing.qty ?? 1,
-    prep: ing.prep ?? null,
-  };
-}
-
-function fromFormIng(form: IngredientForm): Ingredient {
-  if (form.unit === 'qty') {
-    const typed = form.measure.trim();
-    const q = parseInt(typed) || 1;
-    return {
-      ingredientName: form.ingredientName.trim(),
-      qty: q,
-      unit: 'qty',
-      // Kept, not discarded. The card prints `measure` for countables now, so
-      // writing null here would show a creator "1 onion" while they typed it and
-      // "onion" the moment they saved — and an empty box stays empty, which is
-      // how "salt" goes on staying salt.
-      measure: typed || null,
-      searchTerm: form.searchTerm ?? null,
-      productQty: q,
-      // Omitted rather than written as null, so a row that never had a
-      // preparation is saved back exactly as it was loaded.
-      ...(form.prep ? { prep: form.prep } : {}),
-    };
-  }
-  return {
-    ingredientName: form.ingredientName.trim(),
-    qty: form.qty,
-    unit: form.unit,
-    measure: form.measure.trim() || null,
-    searchTerm: form.searchTerm ?? null,
-    productQty: 1,
-    ...(form.prep ? { prep: form.prep } : {}),
-  };
-}
 
 /**
  * A fresh idempotency key for one publish attempt (MEAL-93).
