@@ -82,6 +82,20 @@ describe('GET /api/automation/config', () => {
     expect(res.status).toBe(304);
   });
 
+  it('carries the ETag on the 304, as RFC 9110 §15.4.5 requires', async () => {
+    // The route already does this; nothing asserted it, so deleting the header
+    // was a silent change. Added alongside the same gap in
+    // tests/api/stores.test.ts (MEAL-23), which is modelled on this endpoint.
+    fakeDb.queue('automation_config', { data: { version: 7, config: {}, created_at: null }, error: null });
+    const res = await GET(jsonRequest('/api/automation/config', {
+      method: 'GET', token, headers: { 'if-none-match': '"automation-config-v7"' },
+    }));
+    // Both halves: a 200 that carries the ETag would satisfy the header
+    // assertion alone while being the opposite of what this test is named for.
+    expect(res.status).toBe(304);
+    expect(res.headers.get('etag')).toBe('"automation-config-v7"');
+  });
+
   it('200s when If-None-Match is for an older version', async () => {
     fakeDb.queue('automation_config', { data: { version: 8, config: { a: 1 }, created_at: null }, error: null });
     const res = await GET(jsonRequest('/api/automation/config', {
