@@ -198,6 +198,36 @@ CREATE TABLE remembered_devices (
   PRIMARY KEY (id)
 );
 
+-- store_catalog_version (MEAL-23: one row, id = 1. A monotonic counter bumped by
+-- a statement trigger on `stores`, so the client can skip an unchanged fetch and
+-- refuse a payload older than the one it cached. A counter rather than
+-- max(updated_at) because deleting the newest row would make that go BACKWARDS.)
+CREATE TABLE store_catalog_version (
+  id         smallint NOT NULL DEFAULT 1,
+  version    bigint   NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (id)
+);
+
+-- stores (MEAL-23: the store catalog served by GET /api/stores. DISPLAY DATA
+-- ONLY — `platform` is descriptive lineage, not a claim that the app can
+-- automate the store. That stays in the app's KROGER_BRAND_IDS /
+-- WEBVIEW_STORE_IDS, which assert what code the binary contains.)
+CREATE TABLE stores (
+  id           text NOT NULL,
+  name         text NOT NULL,
+  color        text NOT NULL,
+  slug         text NOT NULL,
+  banner_group text,
+  platform     text,
+  host         text,
+  serving_area text,
+  is_listed    boolean NOT NULL DEFAULT true,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (id)
+);
+
 -- subscription_events
 CREATE TABLE subscription_events (
   id         uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -262,6 +292,8 @@ CREATE UNIQUE INDEX automation_steps_run_seq_key   ON automation_steps (run_id, 
 CREATE UNIQUE INDEX automation_config_version_key  ON automation_config (version);
 -- At most one active config row.
 CREATE UNIQUE INDEX automation_config_single_active_key ON automation_config ((is_active)) WHERE is_active;
+CREATE UNIQUE INDEX stores_slug_key                        ON stores (slug);
+CREATE INDEX        idx_stores_listed_id                   ON stores (id) WHERE is_listed;
 CREATE UNIQUE INDEX creators_handle_lower_key             ON creators             (lower(handle)) WHERE handle IS NOT NULL;
 CREATE UNIQUE INDEX creator_applications_handle_lower_key ON creator_applications (lower(handle)) WHERE handle IS NOT NULL;
 
@@ -376,3 +408,23 @@ CREATE OR REPLACE TRIGGER set_meals_updated_at
 CREATE OR REPLACE TRIGGER set_user_profiles_updated_at
   BEFORE UPDATE ON public.user_profiles
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+CREATE OR REPLACE TRIGGER set_stores_updated_at
+  BEFORE UPDATE ON public.stores
+  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- MEAL-23: one bump per statement, so seeding 35 stores is one catalog change,
+-- not 35. Fires on DELETE too, which is why the version cannot go backwards.
+CREATE OR REPLACE FUNCTION public.bump_store_catalog_version()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE store_catalog_version
+     SET version = version + 1, updated_at = now()
+   WHERE id = 1;
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER stores_bump_catalog_version
+  AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON public.stores
+  FOR EACH STATEMENT EXECUTE FUNCTION public.bump_store_catalog_version();

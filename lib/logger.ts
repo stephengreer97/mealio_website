@@ -183,7 +183,9 @@ export type EventType =
   | 'USAGE:OPEN'
   | 'USAGE:AUTOMATION'
   | 'USAGE:AUTOMATION_STEPS'    // per-step funnel telemetry ingest
-  | 'AUTOMATION:CONFIG';        // client fetching the remote store config
+  | 'AUTOMATION:CONFIG'         // client fetching the remote store config
+  // ── Stores ────────────────────────────────────────────────────────────────
+  | 'STORES:CATALOG';           // client fetching the store catalog (MEAL-23)
 
 export type Status = 'success' | 'failed' | 'pending' | 'error';
 
