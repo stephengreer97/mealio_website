@@ -51,7 +51,7 @@ import {
   type DuplicateMatch,
 } from '@/lib/import/duplicates';
 import { canonicalizeDifficulty, canonicalizeTags, SERVES_ERROR, SERVES_PATTERN, tagCapError } from '@/lib/import/vocab';
-import type { CreatorMealDraft, FieldConfidence, ImportConfidence } from '@/lib/import/types';
+import type { CreatorMealDraft, DraftIngredient, FieldConfidence, ImportConfidence } from '@/lib/import/types';
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -1235,6 +1235,29 @@ export function stripEditedConfidence(
 ): ImportConfidence | null {
   if (!confidence) return null;
 
+  /**
+   * A row's fields MINUS `prep`, for deciding whether an operator changed it.
+   *
+   * The row assessment grades the product name and the amount (`pipeline.ts`);
+   * `prep` is deliberately not graded, because it is free text with no evidence
+   * span behind it. So an edit to `prep` cannot invalidate a check that never
+   * covered it — and clearing the row would take the green off the name and the
+   * amount, which nobody touched.
+   *
+   * That is not a nicety. MEAL-165 exists to let a creator delete a preparation
+   * the model invented; doing so used to mark the row "an operator changed
+   * this", drop it out of `all verified`, and move it under their cursor in the
+   * queue's sort order. Fixing the field we asked them to fix punished them for
+   * it.
+   *
+   * Every other field here still clears the assessment, which is right: they are
+   * all things the check actually looked at.
+   */
+  const withoutPrep = (row: DraftIngredient): Omit<DraftIngredient, 'prep'> => {
+    const { prep: _prep, ...rest } = row;
+    return rest;
+  };
+
   const cleared = { ...confidence };
   const scalars = ['name', 'recipe', 'story', 'photoUrl', 'difficulty', 'serves'] as const;
   for (const field of scalars) {
@@ -1246,7 +1269,7 @@ export function stripEditedConfidence(
 
   cleared.ingredients = (after.ingredients ?? []).map((row, i) => {
     const was = (before.ingredients ?? [])[i];
-    const same = was && JSON.stringify(was) === JSON.stringify(row);
+    const same = was && JSON.stringify(withoutPrep(was)) === JSON.stringify(withoutPrep(row));
     return same ? (confidence.ingredients ?? [])[i] ?? UNRECORDED : { ...UNRECORDED, reason: EDITED_REASON };
   });
 
