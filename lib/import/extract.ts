@@ -90,7 +90,8 @@ const ExtractionSchema = z.object({
           .string()
           .describe(
             'The grocery product only — no amount, no unit, no preparation. ' +
-              '"2 tbsp unsalted butter, melted" gives "unsalted butter".',
+              '"2 tbsp unsalted butter, melted" gives "unsalted butter". ' +
+              'This is searched on a grocery site verbatim, so it must be a thing a shop sells.',
           ),
         measure: z
           .string()
@@ -100,6 +101,14 @@ const ExtractionSchema = z.object({
           .string()
           .describe('The unit as written ("tbsp", "cups", "g", "lb"), or "qty" for countable items.'),
         qty: z.number().describe('Count for countable items; 1 for anything measured by a unit.'),
+        prep: z
+          .string()
+          .nullable()
+          .describe(
+            'What the recipe asks be done to this product, copied from the line: "finely diced", ' +
+              '"melted", "drained and rinsed". Never repeat the product name, the amount or the unit ' +
+              'here. null when the line asks for nothing.',
+          ),
         evidence: z.string().nullable().describe(EVIDENCE_DESCRIPTION),
         derivation: DerivationEnum,
       }),
@@ -201,7 +210,7 @@ from the ingredient list itself — see below.
 site, so the test for a row is: could a shopper put this one thing in a basket?
 
 Split each ingredient into:
-- productName: the grocery item only. Drop amounts, units, and preparation notes.
+- productName: the grocery item only. No amount, no unit, no preparation.
   "2 tbsp unsalted butter, melted" -> "unsalted butter". "1 (14 oz) can black beans, drained"
   -> "black beans". "3 cloves garlic, minced" -> "garlic".
 - measure: the numeric amount exactly as written ("2", "1 1/2", "0.5"), or null when the source
@@ -209,6 +218,43 @@ Split each ingredient into:
 - unit: the unit as written. Use "qty" for anything counted rather than measured (3 eggs,
   2 onions, 1 lime).
 - qty: the count for countable items; 1 for anything measured by a unit.
+- prep: what the line asks be DONE to that product, and nothing else.
+
+### prep: keep the preparation, keep it out of the name
+
+A recipe writes "1 onion, finely diced". The onion is the thing to buy; "finely diced" is the
+thing to do to it. Both matter and they go in different fields:
+
+- "1 onion, finely diced"            -> productName "onion",       prep "finely diced"
+- "2 tbsp unsalted butter, melted"   -> productName "unsalted butter", prep "melted"
+- "1 (14 oz) can black beans, drained and rinsed"
+                                     -> productName "black beans", prep "drained and rinsed"
+- "3 cloves garlic, minced"          -> productName "garlic",      prep "minced"
+- "200g chicken thighs"              -> productName "chicken thighs", prep null
+
+**productName is typed into a supermarket's search box exactly as you write it.** That is the
+whole reason prep is a separate field. "diced onion" and "melted unsalted butter" are not
+products — a shop returns the wrong thing or nothing at all, and the ingredient silently fails
+to make it into the cart. Never let a preparation word touch productName, and never repeat the
+product name inside prep.
+
+prep is **null far more often than not**, and null is the correct, expected answer. Only fill it
+when the line actually asks for something to be done.
+
+What is NOT prep:
+- An amount restated another way. "1 onion, about 200g" and "1 can (400g) tomatoes" say how much,
+  not what to do. prep is null; the weight belongs to measure and unit or to nothing.
+- A second product. "salt and pepper" is two rows (see below), not one row with prep "and pepper".
+- The form the shop sells it in, when that IS the product: "ground beef", "smoked paprika",
+  "canned chickpeas", "frozen peas", "sliced bread". Somebody buys these by those names, so they
+  stay in productName and prep is null. The test is what you would type into the shop's search:
+  you buy ground beef; you dice the onion yourself.
+- Anything the line does not say. Do not add "chopped" because a dish usually wants it chopped.
+
+Copy prep in the source's own words, lightly tidied — drop a leading comma, keep everything else.
+Do not rewrite "finely diced" as "dice finely". prep needs no evidence span of its own: it comes
+off the same line as the rest of the row, so the row's existing evidence span already covers it,
+and that span must still be the whole original line.
 
 ### One line can name more than one product — split it
 
@@ -381,6 +427,7 @@ export async function extractDraft(
     measure: item.measure,
     unit: item.unit,
     qty: item.qty,
+    prep: item.prep,
     evidence: item.evidence,
     derivation: item.derivation,
   }));

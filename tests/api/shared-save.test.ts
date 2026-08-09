@@ -97,4 +97,57 @@ describe('POST /api/shared/:token/save — the tag cap on a copy', () => {
       { ingredientName: 'beans', qty: 1, unit: 'qty' },
     ]);
   });
+
+  /**
+   * MEAL-102 — the preparation comes with the meal.
+   *
+   * This route deliberately drops store-specific product data, and preparation
+   * looks superficially like more of it. It is the opposite: it is the
+   * creator's own cooking instruction, and it is on the card the saver was
+   * looking at when they pressed Save. Dropping it would hand them a quieter
+   * recipe than the one they chose.
+   */
+  it('carries a preparation onto the saved copy', async () => {
+    fakeDb.seed('meals', [{
+      id: 'origin',
+      share_token: 'share-abc',
+      name: 'Guacamole',
+      ingredients: [
+        { ingredientName: 'onion', qty: 1, unit: 'qty', measure: '1', prep: 'finely diced' },
+        { ingredientName: 'salt', qty: 1, unit: 'qty' },
+      ],
+      author: 'A Friend', difficulty: 2, serves: '4', website: null,
+      recipe: 'Mash.', photo_url: null, story: null, tags: [],
+    }]);
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'full' } });
+
+    await save();
+
+    expect(saved()!.ingredients).toEqual([
+      { ingredientName: 'onion', qty: 1, unit: 'qty', measure: '1', prep: 'finely diced' },
+      // And a row without one still copies without the key, so a saved meal is
+      // shaped exactly like every meal saved before the field existed.
+      { ingredientName: 'salt', qty: 1, unit: 'qty' },
+    ]);
+  });
+
+  it('does not invent a searchTerm out of the preparation', async () => {
+    // The saved copy is what the cart later reads. A prep that arrived as a
+    // search term here would be a wrong term stored permanently.
+    fakeDb.seed('meals', [{
+      id: 'origin',
+      share_token: 'share-abc',
+      name: 'Guacamole',
+      ingredients: [{ ingredientName: 'onion', qty: 1, unit: 'qty', prep: 'finely diced' }],
+      author: 'A Friend', difficulty: 2, serves: '4', website: null,
+      recipe: 'Mash.', photo_url: null, story: null, tags: [],
+    }]);
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'full' } });
+
+    await save();
+
+    const row = saved()!.ingredients[0];
+    expect(row.searchTerm).toBeUndefined();
+    expect(row.ingredientName).toBe('onion');
+  });
 });

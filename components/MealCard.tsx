@@ -29,6 +29,11 @@ export interface Ingredient {
   qty: number;
   unit: string;
   measure?: string | null;
+  /**
+   * Preparation — "finely diced" (MEAL-102). Display only, and deliberately not
+   * read by anything that builds a search term. See `fmtMeasurement`.
+   */
+  prep?: string | null;
 }
 
 export function normIng(raw: any): Ingredient {
@@ -38,6 +43,10 @@ export function normIng(raw: any): Ingredient {
     qty: raw.qty ?? raw.quantity ?? 1,
     unit: raw.unit ?? 'qty',
     measure: raw.measure ?? null,
+    // One spelling, unlike the name's four: `prep` is a single word, so
+    // camelCase and snake_case are the same six characters and every writer
+    // already agrees. See `readPrep` in `lib/import/ingredients.ts`.
+    prep: raw.prep ?? null,
   };
 }
 
@@ -52,8 +61,36 @@ export function normIng(raw: any): Ingredient {
  *
  * The unit is spelled for the number beside it (`unitLabel`), because units are
  * stored plural and "1 cans" is the storage decision showing through.
+ *
+ * Preparation trails the whole line, comma-separated, exactly where the recipe
+ * put it — "1 onion, finely diced" (MEAL-102). Appended once, at the end,
+ * because the ingredient name ends every branch below. A row with no `prep`
+ * returns the same string it returned before the field existed, character for
+ * character, which is what lets the field be added without touching a single
+ * imported meal.
+ *
+ * This is the *only* thing prep is used for. It is never fed to
+ * `buildSearchTerm`, never concatenated into `ingredientName`, and no caller
+ * derives a store query from this string — the Kroger route reads
+ * `searchTerm ?? productName` off the row itself, never a rendered line.
  */
 export function fmtMeasurement(ing: Ingredient): string {
+  return withPrep(measurementLine(ing), ing.prep);
+}
+
+/**
+ * Trails the preparation after a rendered line.
+ *
+ * The comma is added here rather than stored, so the data holds the phrase a
+ * cook wrote ("finely diced") and not the punctuation joining it to something
+ * else. Whitespace-only prep is no prep.
+ */
+function withPrep(line: string, prep: string | null | undefined): string {
+  const trailer = (prep ?? '').trim();
+  return trailer ? `${line}, ${trailer}` : line;
+}
+
+function measurementLine(ing: Ingredient): string {
   // Countables answer to `measure` like everything else.
   //
   // The old rule read `qty` and hid any count of one, because an unquantified

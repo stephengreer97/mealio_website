@@ -30,6 +30,8 @@ interface Ingredient {
   unit: string;
   measure?: string | null;
   productQty?: number;
+  /** Preparation — "finely diced" (MEAL-102). Rendered by `fmtMeasurement`. */
+  prep?: string | null;
 }
 
 interface IngredientForm {
@@ -39,6 +41,15 @@ interface IngredientForm {
   searchTerm: string | null;
   qty: number;
   productQty?: number;
+  /**
+   * Carried through the edit form untouched, with no input bound to it.
+   *
+   * There is nothing to type into yet — how a creator *enters* prep is still
+   * open — but the round trip has to preserve it regardless: this form is
+   * `Ingredient -> IngredientForm -> Ingredient`, and a field the form does not
+   * carry is a field that opening the edit modal and pressing Save deletes.
+   */
+  prep?: string | null;
 }
 
 const UNITS = ['qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
@@ -55,10 +66,21 @@ function normIng(raw: any): Ingredient {
     unit: raw.unit ?? 'qty',
     measure: raw.measure ?? null,
     productQty: raw.productQty ?? raw.qty ?? raw.quantity ?? 1,
+    prep: raw.prep ?? null,
   };
 }
 
 
+/**
+ * The term this meal's items are searched for in a store.
+ *
+ * **`prep` is deliberately absent from every branch of this function, and that
+ * is the point of MEAL-102 rather than an oversight.** The add gate is exact
+ * equality after normalisation, so a term carrying "finely diced" does not
+ * fetch a worse onion — it matches nothing, and the item lands in review
+ * looking like a matching bug. Preparation is display text; it reaches
+ * `fmtMeasurement` and stops there.
+ */
 function ingSearchTerm(ing: Ingredient): string {
   if (ing.searchTerm) return ing.searchTerm;
   if (!ing.unit || ing.unit === 'qty') return ing.ingredientName;
@@ -77,6 +99,7 @@ function toFormIng(ing: Ingredient): IngredientForm {
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
     productQty: ing.productQty ?? ing.qty ?? 1,
+    prep: ing.prep ?? null,
   };
 }
 
@@ -90,6 +113,9 @@ function fromFormIng(form: IngredientForm): Ingredient {
       measure: null,
       searchTerm: form.searchTerm ?? null,
       productQty: q,
+      // Omitted rather than written as null, so a row that never had a
+      // preparation is saved back exactly as it was loaded.
+      ...(form.prep ? { prep: form.prep } : {}),
     };
   }
   return {
@@ -99,6 +125,7 @@ function fromFormIng(form: IngredientForm): Ingredient {
     measure: form.measure.trim() || null,
     searchTerm: form.searchTerm ?? null,
     productQty: form.productQty ?? 1,
+    ...(form.prep ? { prep: form.prep } : {}),
   };
 }
 

@@ -303,4 +303,76 @@ describe('POST /api/kroger/search-products', () => {
     expect(successLog.detail).toContain('found=1 total=1');
     expect(successLog.detail).toContain('errored=0');
   });
+
+  /**
+   * MEAL-102 — a preparation must never become part of what we search for.
+   *
+   * This is the exact address of the risk. `scoreTarget` here is
+   * `searchTerm ?? productName`, and the add gate is exact equality after
+   * normalisation, so prep reaching either field does not fetch a worse
+   * product — it matches nothing and the item drops into review looking like a
+   * matching bug. `WebViewCartSheet.tsx` in the app computes the same term the
+   * same way; this is the half of it that lives on this side.
+   *
+   * Asserted against the URLs actually sent upstream rather than against the
+   * body we passed in, because the query string is the thing that is really
+   * true about what we asked Kroger for.
+   */
+  describe('preparation never reaches the store (MEAL-102)', () => {
+    /** An onion the recipe wants diced. The prep is present, and irrelevant. */
+    const DICED_ONION = {
+      productName: 'Onion',
+      searchTerm: null,
+      unit: 'qty',
+      measure: '1',
+      quantity: 1,
+      prep: 'finely diced',
+    };
+
+    it('searches the bare product for a row carrying a preparation', async () => {
+      const calls = stubKroger({ status: 200, products: [product('Onion')] });
+
+      const { json } = await search({ ingredients: [DICED_ONION], locationId: LOCATION });
+
+      // The term went up bare, and the onion matched.
+      expect(calls).toHaveLength(1);
+      expect(decodeURIComponent(calls[0])).toContain('Onion');
+      for (const word of ['finely', 'diced']) {
+        expect(decodeURIComponent(calls[0]).toLowerCase()).not.toContain(word);
+      }
+      expect(json.results[0]).toMatchObject({ term: 'Onion', reason: 'matched', exact: true });
+    });
+
+    it('keeps prep out of every rung of the fallback ladder', async () => {
+      // The ladder is searchTerm -> name+measure+unit -> bare name, and the
+      // middle rung *builds* a term by concatenation — the one place prep
+      // would most plausibly be spliced in. Force all three rungs by
+      // answering each with nothing.
+      const calls = stubKroger({ status: 200, products: [] });
+
+      await search({
+        ingredients: [{ ...DICED_ONION, searchTerm: 'Onion, 1 ct', unit: 'cups', measure: '2' }],
+        locationId: LOCATION,
+      });
+
+      expect(calls.length).toBeGreaterThan(1);
+      for (const url of calls) {
+        for (const word of ['finely', 'diced', 'prep']) {
+          expect(decodeURIComponent(url).toLowerCase()).not.toContain(word);
+        }
+      }
+    });
+
+    it('scores the product against the bare term, so a prepped row still matches exactly', async () => {
+      // The gate is `score === 100`. If prep had joined the scoring target,
+      // "Onion" would score short of 100 against it and this exact match would
+      // silently become a review item.
+      stubKroger({ status: 200, products: [product('Onion')] });
+
+      const { json } = await search({ ingredients: [DICED_ONION], locationId: LOCATION });
+
+      expect(json.results[0].exact).toBe(true);
+      expect(json.results[0].upc).toBe('0001111041700');
+    });
+  });
 });

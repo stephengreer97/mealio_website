@@ -24,6 +24,7 @@ function ing(overrides: Partial<ExtractedIngredient>): ExtractedIngredient {
     measure: '2',
     unit: 'tbsp',
     qty: 1,
+    prep: null,
     evidence: null,
     derivation: 'json-ld',
     ...overrides,

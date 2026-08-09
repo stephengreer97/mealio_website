@@ -83,6 +83,8 @@ interface Ingredient {
   unit: string;
   measure?: string | null;
   productQty?: number;
+  /** Preparation — "finely diced" (MEAL-102). Rendered by `fmtMeasurement`. */
+  prep?: string | null;
 }
 
 interface IngredientForm {
@@ -91,6 +93,16 @@ interface IngredientForm {
   unit: string;
   searchTerm: string | null;
   qty: number;
+  /**
+   * Carried through the form with no input bound to it (MEAL-102).
+   *
+   * Whether a creator gets a prep box of its own, or types it after a comma and
+   * we split the line, is still open. Until it is settled this field is only
+   * ever *preserved*: the edit modal is `Ingredient -> IngredientForm ->
+   * Ingredient`, so anything the form drops is deleted by the act of opening a
+   * meal and saving it — an imported prep would not survive its first edit.
+   */
+  prep?: string | null;
 }
 
 const UNITS = ['qty', 'cups', 'fl oz', 'g', 'kg', 'L', 'lb', 'mg', 'ml', 'oz', 'tbsp', 'tsp',
@@ -107,6 +119,7 @@ function normIng(raw: any): Ingredient {
     unit: raw.unit ?? 'qty',
     measure: raw.measure ?? null,
     productQty: raw.productQty ?? raw.qty ?? raw.quantity ?? 1,
+    prep: raw.prep ?? null,
   };
 }
 
@@ -128,6 +141,7 @@ function toFormIng(ing: Ingredient): IngredientForm {
     unit: ing.unit ?? 'qty',
     searchTerm: ing.searchTerm ?? null,
     qty: ing.qty ?? 1,
+    prep: ing.prep ?? null,
   };
 }
 
@@ -146,6 +160,9 @@ function fromFormIng(form: IngredientForm): Ingredient {
       measure: typed || null,
       searchTerm: form.searchTerm ?? null,
       productQty: q,
+      // Omitted rather than written as null, so a row that never had a
+      // preparation is saved back exactly as it was loaded.
+      ...(form.prep ? { prep: form.prep } : {}),
     };
   }
   return {
@@ -155,6 +172,7 @@ function fromFormIng(form: IngredientForm): Ingredient {
     measure: form.measure.trim() || null,
     searchTerm: form.searchTerm ?? null,
     productQty: 1,
+    ...(form.prep ? { prep: form.prep } : {}),
   };
 }
 

@@ -53,6 +53,8 @@ interface Ingredient {
   qty: number;
   unit: string;
   measure?: string | null;
+  /** Preparation — "finely diced" (MEAL-102). Rendered by `fmtMeasurement`. */
+  prep?: string | null;
 }
 
 function normIng(raw: any): Ingredient {
@@ -62,6 +64,7 @@ function normIng(raw: any): Ingredient {
     qty: raw.qty ?? raw.quantity ?? 1,
     unit: raw.unit ?? 'qty',
     measure: raw.measure ?? null,
+    prep: raw.prep ?? null,
   };
 }
 

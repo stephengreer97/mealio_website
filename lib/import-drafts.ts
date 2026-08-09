@@ -1162,6 +1162,11 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
         measure: row?.measure == null ? null : String(row.measure),
         unit: String(row?.unit ?? ''),
         qty: Number(row?.qty ?? 1),
+        // Preserved, not re-derived (MEAL-102). This runs on every save from
+        // the review queue's edit form, so a prep dropped here is a prep
+        // deleted by the act of a reviewer correcting an unrelated typo.
+        // Non-strings become no preparation rather than "undefined".
+        prep: typeof row?.prep === 'string' ? row.prep : null,
         evidence: null,
         derivation: 'page-text',
       }),

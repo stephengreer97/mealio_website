@@ -272,6 +272,20 @@ export interface ExtractedIngredient {
   unit: string;
   /** Count for countable items. */
   qty: number;
+  /**
+   * What the recipe asks be done to the product — "finely diced", "drained and
+   * rinsed", "at room temperature". Null when the line names none (MEAL-102).
+   *
+   * It used to be thrown away: the prompt said to drop preparation notes along
+   * with amounts and units, so "1 onion, finely diced" reached the creator as
+   * "1 onion" and the cooking instruction the source actually gave was gone.
+   *
+   * It is a **separate field and not part of the name** for one reason.
+   * `productName` doubles as the grocery search term, and a store searched for
+   * "diced onion" does not return a worse onion — it returns nothing. See the
+   * warning on `DraftIngredient.prep`.
+   */
+  prep: string | null;
   evidence: string | null;
   derivation: Derivation;
 }
@@ -332,6 +346,27 @@ export interface DraftIngredient {
   unit: string;
   measure: string | null;
   searchTerm: string | null;
+  /**
+   * Preparation, rendered after the name the way a recipe writes it —
+   * "1 onion, finely diced" (MEAL-102).
+   *
+   * **Never a search term, and never part of one.** The add-to-cart gate is
+   * exact-after-normalisation equality against `searchTerm ?? ingredientName`
+   * — `app/api/kroger/search-products/route.ts` on this side, and
+   * `WebViewCartSheet.tsx` on the app's. Prep reaching either field does not
+   * add the wrong product; it matches nothing at all and drops the item into
+   * review looking like a matching bug rather than the data bug it is. So prep
+   * is carried beside the name and concatenated into it at no point in the
+   * pipeline.
+   *
+   * **Optional, and absent rather than null when there is none.** Every
+   * ingredient imported before this field existed has no `prep` key, and a row
+   * with nothing to say has to serialise identically to one of those — that is
+   * what makes the field additive and leaves the whole existing catalogue
+   * untouched. `canonicalizeIngredient` therefore omits the key entirely
+   * rather than writing `prep: null`.
+   */
+  prep?: string;
 }
 
 export interface ImportConfidence {
