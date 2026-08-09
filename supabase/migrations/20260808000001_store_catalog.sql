@@ -127,14 +127,15 @@ INSERT INTO store_catalog_version (id, version)
   SELECT 1, 1
   WHERE NOT EXISTS (SELECT 1 FROM store_catalog_version WHERE id = 1);
 
-CREATE OR REPLACE FUNCTION bump_store_catalog_version() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION public.bump_store_catalog_version()
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   UPDATE store_catalog_version
      SET version = version + 1, updated_at = now()
    WHERE id = 1;
   RETURN NULL;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 -- FOR EACH STATEMENT, not FOR EACH ROW: seeding 35 stores is one change to the
 -- catalog, not 35. A statement that matches no rows still bumps — clients then
@@ -142,10 +143,24 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS stores_bump_catalog_version ON stores;
 CREATE TRIGGER stores_bump_catalog_version
   AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON stores
-  FOR EACH STATEMENT EXECUTE FUNCTION bump_store_catalog_version();
+  FOR EACH STATEMENT EXECUTE FUNCTION public.bump_store_catalog_version();
 
--- Reuses the shared `public.handle_updated_at()` already driving meals and
--- user_profiles (see schema.sql) rather than adding a second copy of it.
+-- `public.handle_updated_at()` is the shared function already driving
+-- `set_meals_updated_at` and `set_user_profiles_updated_at` (schema.sql), so
+-- this adds no second copy of it. It is re-declared here rather than merely
+-- referenced so that this file depends on nothing outside itself: pasted into a
+-- database where that function is somehow absent, a bare CREATE TRIGGER would
+-- fail with the catalog already half-written. CREATE OR REPLACE with a
+-- byte-identical body is a no-op against the database we actually have, and
+-- replacing a function does not disturb the triggers already using it.
+CREATE OR REPLACE FUNCTION public.handle_updated_at()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$;
+
 DROP TRIGGER IF EXISTS set_stores_updated_at ON stores;
 CREATE TRIGGER set_stores_updated_at
   BEFORE UPDATE ON stores

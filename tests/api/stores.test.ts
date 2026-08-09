@@ -280,6 +280,22 @@ describe('GET /api/stores', () => {
     expect((await get()).status).toBe(500);
   });
 
+  it('500s when the paged walk runs out of pages before the end of the table', async () => {
+    // The OTHER way a read comes back short: no error at all, just MAX_PAGES
+    // (20 × 1000 rows) exhausted. `fetchAllPages` reports that as
+    // `complete: false` with `error: null`, so the `read.error` branch does not
+    // see it — and without its own check the endpoint would serve 20,000 stores
+    // as if that were the whole catalog. Twenty full pages, every one a success.
+    const page = Array.from({ length: 1000 }, (_, i) => ({
+      ...ROWS[0], id: `store_${i}`, slug: `store-${i}`,
+    }));
+    seedCatalog([]);
+    for (let i = 0; i < 20; i++) fakeDb.queue('stores', { data: page, error: null });
+    const res = await get();
+    expect(res.status).toBe(500);
+    expect((await res.json()).stores).toBeUndefined();
+  });
+
   it('500s rather than serving a partial catalog when a page fails', async () => {
     // A truncated catalog silently unlists real stores. A client that fell back
     // to its bundled list instead would be strictly better off, so fail.

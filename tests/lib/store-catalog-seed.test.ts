@@ -41,8 +41,67 @@ function seededRows(): Seeded[] {
   return out;
 }
 
+/**
+ * The app's bundled list, pinned.
+ *
+ * Transcribed from mealio_app `src/constants/stores.ts` at authoring time and
+ * verified against it character-for-character by script — an id that disagrees
+ * silently unlists a store and a colour that disagrees is visible on the tile,
+ * and neither shows up as a test failure anywhere else.
+ *
+ * What this buys and what it does not: because both sides were written from the
+ * same reading, it cannot catch a transcription error made in that one sitting.
+ * It catches DRIFT, which is the live risk — an edit to the migration, or the
+ * two lists diverging as stores are added. When a store is genuinely added to
+ * the seed, this table is meant to be updated in the same commit.
+ */
+const BUNDLED: Array<[id: string, name: string, color: string]> = [
+  ['acme', 'Acme Markets', '#F04035'],
+  ['albertsons', 'Albertsons', '#009ee5'],
+  ['aldi', 'ALDI', '#02205F'],
+  ['amazon', 'Amazon Fresh', '#78BD21'],
+  ['bakers', "Baker's", '#EE3124'],
+  ['balduccis', "Balducci's", '#8D2B1E'],
+  ['carrs', 'Carrs', '#E5171D'],
+  ['city_market', 'City Market', '#EE3124'],
+  ['dillons', 'Dillons', '#CA2128'],
+  ['fred_meyer', 'Fred Meyer', '#D7282F'],
+  ['frys', "Fry's Food", '#E1251B'],
+  ['haggen', 'Haggen', '#025635'],
+  ['harris_teeter', 'Harris Teeter', '#A32036'],
+  ['heb', 'H-E-B', '#dd0031'],
+  ['jewel_osco', 'Jewel-Osco', '#E12C47'],
+  ['king_soopers', 'King Soopers', '#005DAA'],
+  ['kings', 'Kings Food Markets', '#417EC0'],
+  ['kroger', 'Kroger', '#0E51A1'],
+  ['marianos', "Mariano's", '#64433D'],
+  ['metro_market', 'Metro Market', '#63463E'],
+  ['pavilions', 'Pavilions', '#2D2B29'],
+  ['pay_less', 'Pay-Less', '#D8232A'],
+  ['pick_n_save', "Pick 'n Save", '#243444'],
+  ['qfc', 'QFC', '#006BB6'],
+  ['ralphs', 'Ralphs', '#EA0029'],
+  ['randalls', 'Randalls', '#02365E'],
+  ['safeway', 'Safeway', '#E5161E'],
+  ['shaws', "Shaw's", '#F48424'],
+  ['smiths', "Smith's Food & Drug", '#D51E48'],
+  ['star_market', 'Star Market', '#7AC142'],
+  ['tom_thumb', 'Tom Thumb', '#0435A6'],
+  ['united', 'United Supermarkets', '#003087'],
+  ['vons', 'Vons', '#E41720'],
+  ['walmart', 'Walmart', '#0053E2'],
+  ['wegmans', 'Wegmans', '#000000'],
+];
+
 describe('the store catalog seed', () => {
   const rows = seededRows();
+
+  it('matches the app\'s bundled list exactly, id for id and colour for colour', () => {
+    // Case-sensitive on the colour: the app writes `#dd0031` for H-E-B and
+    // `#D7282F` for Fred Meyer, and a normalising comparison would let the seed
+    // drift from the literal the app ships.
+    expect(rows.map((r) => [r.id, r.name, r.color])).toEqual(BUNDLED);
+  });
 
   it('seeds the 35 stores the app ships today', () => {
     // Not 36. See the mockstore assertion below.
