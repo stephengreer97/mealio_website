@@ -348,8 +348,8 @@ export const RUNNING_GRACE_MS = 15 * 60 * 1000;
  *     generated column exists — see the list route for how the server-side term
  *     degrades when the migration has not been applied.
  *
- * `unverified` (MEAL-190) is a fifth state and NOT one of the failures. The run
- * did what it was asked; what is missing is the cart reading that would have
+ * `unverified` (MEAL-190) is a state of its own, and NOT one of the failures. The
+ * run did what it was asked; what is missing is the cart reading that would have
  * checked it. Badging that FAILED asserts something went wrong, when what is true
  * is that nothing can say either way — and on a store whose cart page redirects
  * that is every run, which would turn the failing list into one store's noise.
