@@ -211,6 +211,27 @@ describe('AdminRunDrilldown', () => {
     expect(screen.queryByText('PARTIAL')).toBeNull();
   });
 
+  it('badges a run that could not read the cart UNVERIFIED, not PARTIAL', async () => {
+    // MEAL-190. This row added fewer items than requested AND could not read the
+    // cart — which is the normal shape of one, because the shortfall count comes
+    // from the workers' own reports and those are exactly what went unchecked.
+    // PARTIAL claims a measured shortfall; this run measured nothing. It is also
+    // the every-run state on a store whose cart URL redirects, so the wrong label
+    // does not mislabel a row, it fills the failing list with one store.
+    stubFetch(traceBody(), {
+      runs: [{
+        ...run({ status: 'completed', outcome: 'unverified', items_requested: 5, items_added: 3 }),
+        concern: { running: false, abandoned: false, failed: false, unverified: true, partialAdds: true, clean: false },
+      }],
+    });
+    render(<AdminRunDrilldown stores={['heb']} />);
+    fireEvent.click(screen.getByRole('button', { name: 'List runs' }));
+
+    await waitFor(() => expect(screen.getByText('UNVERIFIED')).toBeTruthy());
+    expect(screen.queryByText('PARTIAL')).toBeNull();
+    expect(screen.queryByText('FAILED')).toBeNull();
+  });
+
   it('caps the rows it DRAWS, says the real total, and offers the rest', async () => {
     // `fetchAllPages` can return 20,000 rows and the route is right to fetch them —
     // completeness is the point. Drawing 20,000 `<tr>`s each with a stringified

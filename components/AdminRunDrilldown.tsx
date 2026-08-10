@@ -59,6 +59,8 @@ export interface RunConcern {
   running: boolean;
   abandoned: boolean;
   failed: boolean;
+  /** The run finished but could not read the cart, so nothing checked it (MEAL-190). */
+  unverified: boolean;
   /** Computed per row from the two counts; server-side only once `partial_adds` exists. */
   partialAdds: boolean;
   clean: boolean;
@@ -188,6 +190,13 @@ function concernLabel(concern: RunConcern): { text: string; color: string; backg
   if (concern.running) return { text: 'RUNNING', color: '#1d4ed8', background: '#eff6ff', border: '#bfdbfe' };
   if (concern.abandoned) return { text: 'ABANDONED', color: '#92400e', background: '#fffbeb', border: '#fde68a' };
   if (concern.failed) return { text: 'FAILED', color: '#b91c1c', background: '#fef2f2', border: '#fecaca' };
+  // Above PARTIAL, not below it. PARTIAL is read off items_added vs
+  // items_requested, and on an unverified run that shortfall comes from the run's
+  // own report of itself with no cart reading behind it — the number PARTIAL
+  // claims to have measured is the one thing this row could not measure. Grey
+  // rather than amber for the same reason: it is an absence of evidence, not a
+  // fault found.
+  if (concern.unverified) return { text: 'UNVERIFIED', color: '#525252', background: '#fafafa', border: '#d4d4d4' };
   if (concern.partialAdds) return { text: 'PARTIAL', color: '#92400e', background: '#fffbeb', border: '#fde68a' };
   if (concern.clean) return { text: 'OK', color: '#16a34a', background: '#f0fdf4', border: '#bbf7d0' };
   // Finished, no outcome recorded. The row PostgREST's `outcome <> 'success'`

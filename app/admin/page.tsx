@@ -73,6 +73,7 @@ interface StepStats {
 interface WindowSummary {
   runs: number;
   runsSucceeded: number;
+  runsUnverified: number;
   terminalSuccessRate: number | null;
   blocked: number;
   failures: number;
@@ -107,6 +108,8 @@ interface StoreFunnel {
   storeId: string;
   runs: number;
   runsSucceeded: number;
+  /** Runs that finished without ever reading the cart — the coverage number. */
+  runsUnverified: number;
   runsAbandoned: number;
   itemsRequested: number;
   itemsAdded: number;
@@ -2188,6 +2191,18 @@ export default function AdminPage() {
                     )}
                     <span style={{ fontSize: '13px', color: '#666' }}>
                       {s.runs} run{s.runs === 1 ? '' : 's'} · {s.runsSucceeded} full success · {s.runsAbandoned} abandoned
+                      {/* Beside the run counts and not tucked into a tooltip: it is
+                          the qualifier on every other number in this card. An
+                          unverified run finished without reading the cart, so its
+                          item counts are the run's own report of itself with
+                          nothing able to contradict them (MEAL-190). Always shown,
+                          zero included — "0 unverified" is a statement about
+                          coverage, and only a number that is always there can be
+                          read as one. */}
+                      {' · '}
+                      <span title="Runs that finished without reading the cart. Their item counts are unchecked — the cart diff is the only thing that has ever disagreed with a run.">
+                        {s.runsUnverified} unverified
+                      </span>
                     </span>
                     <span style={{ fontSize: '13px', color: '#666', marginLeft: 'auto' }}>
                       {s.itemsAdded}/{s.itemsRequested} items added
@@ -2204,7 +2219,13 @@ export default function AdminPage() {
                       label="Terminal success"
                       value={pct(s.terminalSuccessRate)}
                       bad={s.terminalSuccessRate != null && s.terminalSuccessRate < 0.9}
-                      note={`${s.runsSucceeded}/${s.runs} runs`}
+                      // Unverified runs stay in this denominator and out of its
+                      // numerator, so they pull the rate down exactly as a real
+                      // failure would. The note says how many, because otherwise a
+                      // store whose cart page starts redirecting reads as an
+                      // automation regression that never happened (MEAL-190).
+                      note={`${s.runsSucceeded}/${s.runs} runs`
+                        + (s.runsUnverified > 0 ? ` · ${s.runsUnverified} unverified` : '')}
                     />
                     <Metric
                       label="Dying on"

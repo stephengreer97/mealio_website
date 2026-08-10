@@ -154,6 +154,43 @@ describe('aggregateFunnel', () => {
     expect(heb.runsAbandoned).toBe(2);
   });
 
+  // ── Unverified runs, counted apart (MEAL-190) ────────────────────────────
+  //
+  // A run that finished without reading the cart reports outcome 'unverified'.
+  // The number matters more than it looks: it is the coverage qualifier on every
+  // other figure in the card. `itemsAdded` on such a run is the run's own report
+  // of itself, and the cart diff is the only check that has ever contradicted a
+  // run — so a store where this approaches `runs` has no measured add path at
+  // all, whatever its rates say. A store whose cart URL redirects (Walmart today)
+  // can be in that state on every single run.
+
+  it('counts unverified runs separately from successes', () => {
+    const runs = [
+      run({ outcome: 'success' }),
+      run({ outcome: 'unverified' }),
+      run({ outcome: 'unverified' }),
+      run({ outcome: 'partial' }),
+    ];
+    const [heb] = aggregateFunnel(runs, []);
+    expect(heb.runs).toBe(4);
+    expect(heb.runsUnverified).toBe(2);
+    // Not folded into either of the neighbours it would otherwise hide in.
+    expect(heb.runsSucceeded).toBe(1);
+    expect(heb.runsAbandoned).toBe(0);
+  });
+
+  it('leaves unverified runs in the terminal success denominator', () => {
+    // Deliberate, and the reason the count above has to be on screen beside it.
+    // Dropping them from the denominator would raise the rate by narrowing the
+    // population it describes, with nothing rendered to say the population moved.
+    // They are not successes either — the run was never checked — so the rate
+    // falls, and `runsUnverified` is what makes that fall explicable instead of
+    // looking like an automation regression.
+    const runs = [run({ outcome: 'success' }), run({ outcome: 'unverified' })];
+    const [heb] = aggregateFunnel(runs, []);
+    expect(heb.terminalSuccessRate).toBe(0.5);
+  });
+
   it('does not count a run that is still going as abandoned', () => {
     // MEAL-145. This counted every `status: 'started'` row, so whatever happened to
     // be running when the query fired was reported as an abandoned run. At peak,
