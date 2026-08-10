@@ -347,6 +347,15 @@ export const RUNNING_GRACE_MS = 15 * 60 * 1000;
  *     row from the two columns, which works whether or not the `partial_adds`
  *     generated column exists — see the list route for how the server-side term
  *     degrades when the migration has not been applied.
+ *
+ * `unverified` (MEAL-190) is a state of its own, and NOT one of the failures. The
+ * run did what it was asked; what is missing is the cart reading that would have
+ * checked it. Badging that FAILED asserts something went wrong, when what is true
+ * is that nothing can say either way — and on a store whose cart page redirects
+ * that is every run, which would turn the failing list into one store's noise.
+ * It is not `clean` either: a run nothing checked is exactly what an operator
+ * wants to see, which is why the list's `outcome.neq.success` term still catches
+ * it.
  */
 export function runConcern(
   run: Pick<TraceRunRow, 'status' | 'outcome' | 'items_requested' | 'items_added' | 'started_at' | 'completed_at'>,
@@ -355,6 +364,7 @@ export function runConcern(
   running: boolean;
   abandoned: boolean;
   failed: boolean;
+  unverified: boolean;
   partialAdds: boolean;
   clean: boolean;
 } {
@@ -373,7 +383,8 @@ export function runConcern(
     ageKnown &&
     now - startedAt < RUNNING_GRACE_MS;
   const abandoned = unterminated && !running;
-  const failed = run.outcome != null && run.outcome !== 'success';
+  const unverified = run.outcome === 'unverified';
+  const failed = run.outcome != null && run.outcome !== 'success' && !unverified;
   const unfinished = run.outcome == null && !unterminated;
   const partialAdds =
     typeof run.items_requested === 'number' &&
@@ -383,9 +394,10 @@ export function runConcern(
     running,
     abandoned,
     failed,
+    unverified,
     partialAdds,
     // A running run is not clean either — it has not finished, so there is nothing
     // yet to call clean. `running` is what the UI badges it, not `OK`.
-    clean: !running && !abandoned && !failed && !unfinished && !partialAdds,
+    clean: !running && !abandoned && !failed && !unverified && !unfinished && !partialAdds,
   };
 }

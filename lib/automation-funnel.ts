@@ -196,6 +196,8 @@ export interface DayPoint {
 export interface WindowSummary {
   runs: number;
   runsSucceeded: number;
+  /** Of `runs`, how many finished without reading the cart — see StoreFunnel. */
+  runsUnverified: number;
   terminalSuccessRate: number | null;
   blocked: number;
   failures: number;
@@ -271,6 +273,21 @@ export interface StoreFunnel {
   runs: number;
   /** Runs whose own outcome was a full success. */
   runsSucceeded: number;
+  /**
+   * Runs that finished without ever reading the cart (outcome 'unverified').
+   *
+   * The coverage number for every other figure on this store. These runs are
+   * counted from the run's own report of itself with nothing able to contradict
+   * it — the cart diff is the only check that has ever disagreed with a run — so
+   * `itemsAdded`, `itemSuccessRate` and `terminalSuccessRate` are all softer than
+   * they look in proportion to this count. A store where it approaches `runs` has
+   * no measured add path at all, whatever the rates say.
+   *
+   * Counted, not subtracted. They stay in every denominator above, because
+   * removing them would quietly narrow the population the rates describe and
+   * leave nothing on screen to say so. See MEAL-190.
+   */
+  runsUnverified: number;
   /** Runs never completed — the app was killed or the engine wedged. */
   runsAbandoned: number;
   itemsRequested: number;
@@ -604,6 +621,7 @@ function summarize(runs: RunRow[], steps: StepRow[]): WindowSummary {
   return {
     runs: runs.length,
     runsSucceeded,
+    runsUnverified: runs.filter((r) => r.outcome === 'unverified').length,
     terminalSuccessRate: rate(runsSucceeded, runs.length),
     blocked: steps.filter(isBlockedRow).length,
     failures: steps.filter(isFailureRow).length,
@@ -724,6 +742,11 @@ export function aggregateFunnel(
     }).length;
 
     const runsSucceeded = storeRuns.filter((r) => r.outcome === 'success').length;
+    // How many of this store's runs never got a cart reading at all (MEAL-190).
+    // Read straight off the run row rather than from the sampled `run_summary`
+    // steps, so it is a count of the whole population and not an estimate of it —
+    // which is what makes it usable as the coverage qualifier on the rates below.
+    const runsUnverified = storeRuns.filter((r) => r.outcome === 'unverified').length;
     // Abandoned means "never reported finishing", not "has not finished yet".
     // Counting every `status: 'started'` row swept in whatever was running at the
     // moment the query ran, so a busy window inflated this number with healthy
@@ -968,6 +991,7 @@ export function aggregateFunnel(
       storeId,
       runs: storeRuns.length,
       runsSucceeded,
+      runsUnverified,
       runsAbandoned,
       itemsRequested,
       itemsAdded,

@@ -187,7 +187,7 @@ describe('runConcern, the definition the list filters on', () => {
 
   it('calls a completed full success clean and nothing else', () => {
     expect(runConcern(clean, NOW))
-      .toEqual({ running: false, abandoned: false, failed: false, partialAdds: false, clean: true });
+      .toEqual({ running: false, abandoned: false, failed: false, unverified: false, partialAdds: false, clean: true });
   });
 
   it('separates the three ways a run is not clean', () => {
@@ -197,6 +197,34 @@ describe('runConcern, the definition the list filters on', () => {
       .toMatchObject({ abandoned: false, failed: true, clean: false });
     expect(runConcern({ ...clean, items_added: 1 }, NOW))
       .toMatchObject({ partialAdds: true, failed: false, clean: false });
+  });
+
+  // ── Unverified is not failed, and not clean either (MEAL-190) ─────────────
+  //
+  // A run that added everything it was asked for but could not read the cart
+  // reports outcome 'unverified'. Before the split it was going to arrive as
+  // 'partial', and either that or 'failed' says something went wrong with the
+  // adding — when what is true is that nothing checked it. On a store whose cart
+  // URL redirects that is EVERY run, so getting this wrong does not mislabel one
+  // row, it fills the failing list with one store.
+
+  it('does not call an unverified run failed', () => {
+    expect(runConcern({ ...clean, outcome: 'unverified' }, NOW))
+      .toMatchObject({ unverified: true, failed: false, clean: false });
+  });
+
+  it('still refuses to call an unverified run clean', () => {
+    // It is in the list `outcome.neq.success` returns, and a row badged OK inside
+    // a list of runs needing attention contradicts the list it appears in.
+    expect(runConcern({ ...clean, outcome: 'unverified' }, NOW).clean).toBe(false);
+  });
+
+  it('leaves every other outcome failed', () => {
+    // The narrowing is to the one value, not to "anything that is not 'partial'".
+    expect(runConcern({ ...clean, outcome: 'partial' }, NOW))
+      .toMatchObject({ unverified: false, failed: true });
+    expect(runConcern({ ...clean, outcome: 'unverified_by_something_else' }, NOW))
+      .toMatchObject({ unverified: false, failed: true });
   });
 
   it('does not call a finished run with no outcome clean', () => {
