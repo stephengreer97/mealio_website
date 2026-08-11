@@ -150,6 +150,50 @@ export default function PrivacyPage() {
           To exercise any of these rights, contact us at <a href="mailto:contact@mealio.co" style={{ color: '#dd0031' }}>contact@mealio.co</a>. We will respond within 30 days.
         </p>
 
+        {/* The URL Meta's app dashboard points at for "Data Deletion
+            Instructions". It describes mechanisms that already exist — the
+            account-delete route and the per-platform disconnect — rather than
+            promising a process we would then have to build. Keep the id stable:
+            it is registered in the Meta app settings, and changing it breaks the
+            link without anything here failing. */}
+        <h3 id="data-deletion" style={{ scrollMarginTop: '24px', fontSize: '16px', fontWeight: 700, color: '#222', marginTop: '28px', marginBottom: '10px' }}>
+          How to delete your data
+        </h3>
+        <p>
+          You can do this yourself, at any time, without contacting us. There are two
+          different things you may want, so both are listed.
+        </p>
+        <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
+          <li style={{ marginBottom: '10px' }}>
+            <strong>Delete your whole Mealio account.</strong> Open <strong>Account</strong> in the
+            app or on the website, choose <strong>Delete Account</strong>, and type{' '}
+            <em>Delete Account</em> to confirm. This immediately and permanently removes your
+            profile, your saved meals, any meals you published as a creator, your creator
+            application and creator profile, who you follow, your saved preset meals, your
+            subscription history, your remembered devices and any one-time codes. It cannot be
+            undone and we do not keep a copy.
+          </li>
+          <li style={{ marginBottom: '10px' }}>
+            <strong>Disconnect a linked account and keep your Mealio account.</strong> If you
+            connected Instagram, YouTube or TikTok as a creator, open the{' '}
+            <strong>creator portal</strong>, find that connection and choose{' '}
+            <strong>Disconnect</strong>. This deletes the access token we stored for it, so we
+            stop reading anything from that platform. Recipes you already published on Mealio
+            stay; delete them individually, or delete your account, if you want them gone too.
+          </li>
+          <li style={{ marginBottom: '10px' }}>
+            <strong>One thing disconnecting cannot undo.</strong> If you asked Mealio to add a
+            link to a YouTube video&rsquo;s description, that edit is on your video and stays
+            there &mdash; we cannot un-tell anyone who has already read it. You can remove it
+            yourself in YouTube Studio at any time.
+          </li>
+          <li style={{ marginBottom: '10px' }}>
+            <strong>If you cannot sign in,</strong> or you want something the steps above do not
+            cover, email <a href="mailto:contact@mealio.co" style={{ color: '#dd0031' }}>contact@mealio.co</a>{' '}
+            from the address on the account and we will delete it for you.
+          </li>
+        </ul>
+
         {/* 9 */}
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>9. Children's Privacy</h2>
         <p>
