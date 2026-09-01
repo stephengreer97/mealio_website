@@ -2545,7 +2545,15 @@ function ChooseProductsFlow({
     const updatedIngredients = meal.ingredients.map(rawIng => {
       const ing = normIng(rawIng);
       const chosen = selMap.get(ing.ingredientName);
-      return chosen !== undefined ? { ...rawIng, searchTerm: chosen.description, productQty: chosen.qty } : rawIng;
+      // This chooser only offers rows with no `searchTerm`, and a row with no
+      // name has no saved identifier either — the two are written together.
+      // Dropped anyway, because the rule is the rule at every writer: a name
+      // that arrives without an id to go with it takes the old id with it
+      // (MEAL-19). A left-behind id resolves and comes back `exact`, so the
+      // review step that would have shown the wrong product never runs.
+      return chosen !== undefined
+        ? withoutStoreProducts({ ...rawIng, searchTerm: chosen.description, productQty: chosen.qty })
+        : rawIng;
     });
     const count = selMap.size;
     try {
