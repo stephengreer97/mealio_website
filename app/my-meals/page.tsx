@@ -15,6 +15,7 @@ import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, toggleTag } from '@/lib/im
 // Discover about the same ingredient.
 import { fmtMeasurement, normIngWithProductQty as normIng } from '@/components/MealCard';
 import { type IngredientForm, toFormIng, fromFormIng } from './ingredient-form';
+import { getStoreProduct, withStoreProduct, withoutStoreProducts } from '@/lib/store-products';
 
 interface User {
   id: string;
@@ -100,6 +101,9 @@ interface MealIngredientQty {
 interface ConsolidatedIngredient {
   ingredientName: string;
   searchTerm: string | null;
+  /** The UPC the user chose for this row at this rail last time, or null
+   *  (MEAL-19). `searchTerm` describes the product; this identifies it. */
+  upc: string | null;
   unit: string;
   measure: string | null;
   productQty: number;
@@ -1727,7 +1731,7 @@ function MealDetailModal({
 
 // ── Kroger Cart Flow ──────────────────────────────────────────────────────────
 
-function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
+function consolidateIngredients(meals: Meal[], storeId?: string | null): ConsolidatedIngredient[] {
   const map = new Map<string, ConsolidatedIngredient>();
   for (const meal of meals) {
     for (const rawIng of meal.ingredients) {
@@ -1744,9 +1748,15 @@ function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
       const key = (ing.searchTerm || ing.ingredientName).toLowerCase().trim();
       if (!key) continue;
       const ingQty = ing.productQty ?? 1;
+      // Read off the RAW row: `normIng` builds a literal and does not carry
+      // this field (nor `dropdown`, nor `purchaseWeight`).
+      const chosen = getStoreProduct(rawIng, storeId);
       if (map.has(key)) {
         const e = map.get(key)!;
         e.productQty += ingQty;
+        // Rows consolidate under this key because they name the same product,
+        // so the first identifier one of them carries stands for all of them.
+        if (!e.upc && chosen) e.upc = chosen.upc;
         if (!e.mealIds.includes(meal.id)) {
           e.mealIds.push(meal.id);
           e.mealNames.push(meal.name);
@@ -1756,7 +1766,7 @@ function consolidateIngredients(meals: Meal[]): ConsolidatedIngredient[] {
           if (mi) mi.qty += ingQty;
         }
       } else {
-        map.set(key, { ingredientName: ing.ingredientName, searchTerm: ing.searchTerm ?? null, unit: ing.unit ?? 'qty', measure: ing.measure ?? null, productQty: ingQty, mealIds: [meal.id], mealNames: [meal.name], mealIngredients: [{ mealId: meal.id, mealName: meal.name, qty: ingQty }] });
+        map.set(key, { ingredientName: ing.ingredientName, searchTerm: ing.searchTerm ?? null, upc: chosen?.upc ?? null, unit: ing.unit ?? 'qty', measure: ing.measure ?? null, productQty: ingQty, mealIds: [meal.id], mealNames: [meal.name], mealIngredients: [{ mealId: meal.id, mealName: meal.name, qty: ingQty }] });
       }
     }
   }
@@ -1778,8 +1788,8 @@ function KrogerCartFlow({
   const [error, setError] = useState('');
 
   // Step 1 – consolidated ingredient list with editable quantities
-  const [items, setItems] = useState<ConsolidatedIngredient[]>(() => consolidateIngredients(meals));
-  const [checkedItems, setCheckedItems] = useState<boolean[]>(() => consolidateIngredients(meals).map(() => true));
+  const [items, setItems] = useState<ConsolidatedIngredient[]>(() => consolidateIngredients(meals, storeId));
+  const [checkedItems, setCheckedItems] = useState<boolean[]>(() => consolidateIngredients(meals, storeId).map(() => true));
 
   // Steps 3/4 – results
   const [searchResults, setSearchResults] = useState<KrogerSearchResult[]>([]);
@@ -1836,7 +1846,7 @@ function KrogerCartFlow({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
-          ingredients: items.filter((it, i) => checkedItems[i] && it.productQty > 0).map(i => ({ productName: i.ingredientName, searchTerm: i.searchTerm, unit: i.unit, measure: i.measure, quantity: i.productQty })),
+          ingredients: items.filter((it, i) => checkedItems[i] && it.productQty > 0).map(i => ({ productName: i.ingredientName, searchTerm: i.searchTerm, upc: i.upc, unit: i.unit, measure: i.measure, quantity: i.productQty })),
           locationId,
           storeId,
           mealNames: [...new Set(items.flatMap(it => it.mealNames))],
@@ -1926,7 +1936,14 @@ function KrogerCartFlow({
           const updatedIngredients = meal.ingredients.map(ing => {
             const ni = normIng(ing);
             if (ni.ingredientName.toLowerCase().trim() === currentReview.ingredientName.toLowerCase().trim()) {
-              return { ...ing, searchTerm: resolved.name, productQty: mealQty };
+              const chosen = { ...ing, searchTerm: resolved.name, productQty: mealQty };
+              // Remember WHICH product, not just what it is called (MEAL-19).
+              // Written together with the name or not at all: a new display name
+              // beside the PREVIOUS product's identifier is the one combination
+              // that adds something nobody chose.
+              return resolved.upc
+                ? withStoreProduct(chosen, storeId, { upc: resolved.upc, name: resolved.name })
+                : withoutStoreProducts(chosen);
             }
             return ing;
           });
@@ -2528,7 +2545,15 @@ function ChooseProductsFlow({
     const updatedIngredients = meal.ingredients.map(rawIng => {
       const ing = normIng(rawIng);
       const chosen = selMap.get(ing.ingredientName);
-      return chosen !== undefined ? { ...rawIng, searchTerm: chosen.description, productQty: chosen.qty } : rawIng;
+      // This chooser only offers rows with no `searchTerm`, and a row with no
+      // name has no saved identifier either — the two are written together.
+      // Dropped anyway, because the rule is the rule at every writer: a name
+      // that arrives without an id to go with it takes the old id with it
+      // (MEAL-19). A left-behind id resolves and comes back `exact`, so the
+      // review step that would have shown the wrong product never runs.
+      return chosen !== undefined
+        ? withoutStoreProducts({ ...rawIng, searchTerm: chosen.description, productQty: chosen.qty })
+        : rawIng;
     });
     const count = selMap.size;
     try {

@@ -6,8 +6,10 @@ import {
   encryptKrogerToken,
   refreshKrogerAccessToken,
   krogerSearchProducts,
+  krogerLookupProductsByUpc,
   scoreProductMatch,
   type KrogerProduct,
+  type KrogerUpcLookup,
 } from '@/lib/kroger';
 import { log } from '@/lib/logger';
 import { getFlag } from '@/lib/flags';
@@ -16,13 +18,18 @@ export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/kroger/search-products
- * Body: { ingredients: Array<{ productName: string; searchTerm?: string | null; unit?: string; measure?: string | null; quantity?: number }>, locationId?: string }
+ * Body: { ingredients: Array<{ productName: string; searchTerm?: string | null; upc?: string | null; quantity?: number }>, locationId?: string }
  *
  * For each ingredient:
- *   - If searchTerm is set, use it directly.
- *   - Else if unit is not 'qty', try "<productName> <measure> <unit>" (capped at 8 words).
- *     If that returns no suggestions, fall back to just "<productName>".
+ *   - If `upc` is set — the product this user already chose at this store — look
+ *     it up directly at this location. A fulfillable, in-stock hit IS the match
+ *     and costs no search at all. Anything else falls through to the ladder.
+ *   - Else if searchTerm is set, search it, then fall back to productName.
  *   - Else use productName directly.
+ *
+ * `unit` and `measure` are accepted and ignored — older clients still send them.
+ * They used to build a third search term; see the ladder below for why that rung
+ * is gone.
  *
  * Returns: { results: Array<{ term, quantity, upc, description, exact, reason, suggestions }> }
  * `term` echoes back productName (ingredientName) for client-side matching.
@@ -40,11 +47,6 @@ type SearchReason =
   | 'search_error'           // Kroger itself failed — 401/429/5xx, not an empty shelf
   | 'no_results'             // Kroger genuinely returned nothing for every term we tried
   | 'low_confidence';
-
-function buildSearchTerm(base: string, measure: string | null, unit: string): string {
-  const full = `${base} ${measure ?? ''} ${unit}`.replace(/\s+/g, ' ').trim();
-  return full.split(' ').slice(0, 8).join(' ');
-}
 
 /**
  * How well a product Kroger refused to fulfil here must match the ingredient
@@ -100,7 +102,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const ingredients: Array<{ productName: string; searchTerm?: string | null; unit?: string; measure?: string | null; quantity?: number }> = body?.ingredients ?? [];
+  const ingredients: Array<{ productName: string; searchTerm?: string | null; upc?: string | null; quantity?: number }> = body?.ingredients ?? [];
   const requestedLocationId: string | undefined = body?.locationId;
   const storeId: string | undefined = body?.storeId;
   const mealNames: string[] = body?.mealNames ?? [];
@@ -153,24 +155,63 @@ export async function POST(request: NextRequest) {
   /** HTTP statuses Kroger returned, so the log line names the real failure. */
   const upstreamStatuses: number[] = [];
 
+  // MEAL-19. Products this user already chose here, resolved by the identifier
+  // Kroger gave us rather than re-derived from the display name we wrote down.
+  //
+  // One request for the whole run (Kroger takes 50 ids at a time), issued before
+  // the batch loop so ten ingredients cost one call rather than ten. It can only
+  // ever remove work: an id Kroger does not resolve, will not fulfil here, or
+  // reports out of stock falls through to exactly the ladder that ran before,
+  // and a lookup that fails outright resolves nothing and does the same.
+  const storedUpcs = ingredients
+    .map(i => i.upc)
+    .filter((u): u is string => typeof u === 'string' && u.trim().length > 0);
+  const upcLookup: KrogerUpcLookup = storedUpcs.length
+    ? await krogerLookupProductsByUpc(userAccessToken, storedUpcs, locationId, debugMode)
+    : { found: new Map(), statuses: [] };
+  upstreamStatuses.push(...upcLookup.statuses);
+  /** Ingredients answered by the lookup alone, for the log — this is the number
+   *  that says whether the accelerator is actually accelerating anything. */
+  let resolvedByUpc = 0;
+
   for (let i = 0; i < ingredients.length; i += BATCH) {
     const batch = ingredients.slice(i, i + BATCH);
     const batchResults = await Promise.all(
       batch.map(async (ing) => {
         const base = ing.productName;
-        const unit = ing.unit ?? 'qty';
         const bare = base.split(' ').slice(0, 8).join(' ');
+
+        // The product the user picked, identified rather than described. Only a
+        // hit this store will fulfil AND has on the shelf ends the work here:
+        // "Kroger refused it" and "Kroger has never heard of it" both drop to
+        // the ladder, and so does out-of-stock, which is what puts a substitute
+        // in front of the user instead of a dead end.
+        const stored = ing.upc ? upcLookup.found.get(ing.upc) : undefined;
+        if (stored?.fulfillable === true && stored.product.stockLevel !== 'TEMPORARILY_OUT_OF_STOCK') {
+          resolvedByUpc += 1;
+          return {
+            term: base,
+            quantity: ing.quantity ?? 1,
+            upc: stored.product.upc || ing.upc!,
+            description: stored.product.description || ing.searchTerm || base,
+            exact: true,
+            reason: 'matched' as SearchReason,
+            suggestions: [stored.product],
+          };
+        }
 
         // Terms to try, widest-specificity first. A saved searchTerm is a
         // *display* string ("Kroger Whole Milk, 1 gal"), so it misses often
         // enough to need the ingredient name behind it.
-        const ladder = ing.searchTerm
-          ? [
-              ing.searchTerm,
-              ...(unit !== 'qty' ? [buildSearchTerm(base, ing.measure ?? null, unit)] : []),
-              bare,
-            ]
-          : [bare];
+        //
+        // There used to be a rung between them: "<productName> <measure> <unit>".
+        // It could not find anything the bare name misses — it is strictly
+        // narrower — and the 8-word cap trims the TAIL, so for any name of 8+
+        // words its query was byte-identical to the rung below and we asked
+        // Kroger the same question twice. Worse, `unit` is recipe vocabulary
+        // (cloves, pinches, sprigs) and `measure` a raw source string, so it
+        // asked a product catalogue for "garlic 3 cloves". Deleted (MEAL-19).
+        const ladder = ing.searchTerm ? [ing.searchTerm, bare] : [bare];
 
         let searchStr = ladder[0];
         let suggestions: KrogerProduct[] = [];
@@ -270,6 +311,12 @@ export async function POST(request: NextRequest) {
   // upstream failure; `requests` counts refused calls. They differ now that a
   // 5xx on one rung can be recovered by the next, and the gap between them is
   // exactly the flakiness the ladder is absorbing — worth seeing.
+  //
+  // A refused UPC lookup is counted in `requests` but can never land in
+  // `failed`: the ingredient falls through to the ladder and gets whatever
+  // verdict the ladder reaches. That is the intended asymmetry — the lookup is
+  // an accelerator, and an accelerator failing is a cost, not an outcome. `0`
+  // in `statuses` is a transport failure rather than an HTTP status.
   if (upstreamStatuses.length) {
     log({
       event: 'KROGER:SEARCH_PRODUCTS',
@@ -289,7 +336,7 @@ export async function POST(request: NextRequest) {
     status: 'success',
     userId: decoded.userId,
     email: decoded.email,
-    detail: `found=${results.filter(r => r.upc).length} total=${results.length}`
+    detail: `found=${results.filter(r => r.upc).length} total=${results.length} viaUpc=${resolvedByUpc}`
       + ` empty=${tally('no_results')} unavailable=${tally('unavailable_at_store')} oos=${tally('out_of_stock')} errored=${tally('search_error')}`
       + ` store=${storeId ?? locationId} meals=${mealNames.join(', ') || '(unknown)'}`,
   });

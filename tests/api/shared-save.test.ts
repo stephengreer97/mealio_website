@@ -98,6 +98,34 @@ describe('POST /api/shared/:token/save — the tag cap on a copy', () => {
     ]);
   });
 
+  it('does not hand the saver the sharer’s chosen product identifier (MEAL-19)', async () => {
+    // The copy is an allow-list, so `storeProducts` is stripped by construction
+    // rather than by a rule anyone wrote. Pinned here because of what would
+    // happen if the list ever grew a spread: an inherited UPC resolves, comes
+    // back `exact`, and the saver's first cart run adds the SHARER's chosen
+    // product with no review screen — a product they never picked, from a
+    // store that may not even be theirs.
+    fakeDb.seed('meals', [{
+      id: 'origin',
+      share_token: 'share-abc',
+      name: 'Chili',
+      ingredients: [{
+        ingredientName: 'beans',
+        qty: 1,
+        unit: 'qty',
+        searchTerm: 'Kroger Black Beans, 15 oz',
+        storeProducts: { kroger: { upc: '0001111041700', name: 'Kroger Black Beans, 15 oz' } },
+      }],
+      tags: [],
+    }]);
+
+    await save();
+
+    const [row] = saved()!.ingredients as any[];
+    expect('storeProducts' in row).toBe(false);
+    expect(JSON.stringify(saved()!.ingredients)).not.toContain('storeProducts');
+  });
+
   /**
    * MEAL-102 — the preparation comes with the meal.
    *
