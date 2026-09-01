@@ -36,6 +36,17 @@ export interface Ingredient {
    * read by anything that builds a search term. See `fmtMeasurement`.
    */
   prep?: string | null;
+  /**
+   * The product the user chose, as the STORE identifies it, keyed by rail
+   * (MEAL-19). `searchTerm` above is what that product is CALLED; this is which
+   * one it is. Absent rather than empty when there is none, like `prep`.
+   *
+   * `normIng` deliberately does NOT carry it — this page's editor rebuilds rows
+   * from a literal, and preserving an identifier through an edit that clears
+   * `searchTerm` would leave the old product resolvable. The Kroger cart flow
+   * reads it off the raw row instead. See `lib/store-products.ts`.
+   */
+  storeProducts?: Record<string, { upc: string; name: string }>;
 }
 
 /**

@@ -252,9 +252,9 @@ export async function krogerSearchProducts(
   // "we don't know" must not be laundered into "your store doesn't have it".
   const unfulfillable: string[] = [];
   const fulfillable = products.filter(p => {
-    const f = p.items?.[0]?.fulfillment;
-    if (!f) return false;
-    if (f.inStore || f.delivery || f.curbside) return true;
+    const f = fulfillmentOf(p);
+    if (f === null) return false;
+    if (f) return true;
     unfulfillable.push(String(p.description ?? term));
     return false;
   });
@@ -263,19 +263,121 @@ export async function krogerSearchProducts(
     ok: true,
     filteredOut: products.length - fulfillable.length,
     unfulfillable,
-    products: fulfillable.map(p => {
-      const images: any[] = p.images ?? [];
-      const featured = images.find((img: any) => img.featured) ?? images[0];
-      const imageUrl: string | null = featured?.sizes?.find((s: any) => s.size === 'medium')?.url ?? null;
-      const stockLevel: string | null = p.items?.[0]?.inventory?.stockLevel ?? null;
-      const itemPrice = p.items?.[0]?.price;
-      const soldBy: string | null = p.items?.[0]?.soldBy ?? null;
-      const price: number | null = itemPrice?.promo ?? itemPrice?.regular ?? null;
-      const size: string | null = p.items?.[0]?.size ?? null;
-      const averageWeightPerUnit: string | null = p.itemInformation?.averageWeightPerUnit ?? null;
-      return { upc: p.upc ?? p.productId, description: p.description ?? term, size, averageWeightPerUnit, imageUrl, stockLevel, price, soldBy };
-    }),
+    products: fulfillable.map(p => mapKrogerProduct(p, term)),
   };
+}
+
+/**
+ * What Kroger said about fulfilling this product at the location we asked
+ * about. `null` is not `false`: a product whose items carry no `fulfillment`
+ * block means Kroger told us nothing, and absent data must not be laundered
+ * into "your store does not have it" (see KrogerSearchOutcome).
+ */
+function fulfillmentOf(p: any): boolean | null {
+  const f = p.items?.[0]?.fulfillment;
+  if (!f) return null;
+  return !!(f.inStore || f.delivery || f.curbside);
+}
+
+/** Kroger's product JSON in the shape the app renders. Shared by the term search
+ *  and the by-UPC lookup so both report price, stock and image identically. */
+function mapKrogerProduct(p: any, fallbackDescription: string): KrogerProduct {
+  const images: any[] = p.images ?? [];
+  const featured = images.find((img: any) => img.featured) ?? images[0];
+  const imageUrl: string | null = featured?.sizes?.find((s: any) => s.size === 'medium')?.url ?? null;
+  const stockLevel: string | null = p.items?.[0]?.inventory?.stockLevel ?? null;
+  const itemPrice = p.items?.[0]?.price;
+  const soldBy: string | null = p.items?.[0]?.soldBy ?? null;
+  const price: number | null = itemPrice?.promo ?? itemPrice?.regular ?? null;
+  const size: string | null = p.items?.[0]?.size ?? null;
+  const averageWeightPerUnit: string | null = p.itemInformation?.averageWeightPerUnit ?? null;
+  return { upc: p.upc ?? p.productId, description: p.description ?? fallbackDescription, size, averageWeightPerUnit, imageUrl, stockLevel, price, soldBy };
+}
+
+/** One product the caller already had the identifier for, and what this store
+ *  says about it. `fulfillable: null` means Kroger returned no fulfillment
+ *  block — unknown, not refused. */
+export type KrogerUpcMatch = { product: KrogerProduct; fulfillable: boolean | null };
+
+/**
+ * `found` is keyed by every identifier Kroger echoed for a product (`upc` and
+ * `productId` are usually equal but not guaranteed to be), so a caller can look
+ * up whichever one it stored. `statuses` carries the HTTP status of any chunk
+ * Kroger refused, for the log — a refusal is NOT reported as "not carried",
+ * because the caller's fallback for a miss is to search, and searching is the
+ * right response to both.
+ */
+export type KrogerUpcLookup = { found: Map<string, KrogerUpcMatch>; statuses: number[] };
+
+/** Kroger caps `filter.productId` at 50 ids per request. */
+const UPC_LOOKUP_CHUNK = 50;
+
+/**
+ * MEAL-19. Resolve products the user has ALREADY chosen, by the identifier
+ * Kroger itself gave us, at a specific location.
+ *
+ * The cart path used to persist a display string ("Kroger Whole Milk, 1 gal")
+ * and re-derive the product from it by relevance search on every later run — so
+ * a choice the user made once was re-decided by `filter.term` every time, and a
+ * miss cost up to two rungs plus their empty-retries. This is the same
+ * `/products` endpoint the term search uses, with `filter.productId` instead of
+ * `filter.term`, so the response envelope, the per-location item data and the
+ * mapping below are identical to the path that has been in production for
+ * months. That is deliberate: the lookup cannot be subtly wrong in a way the
+ * search is not.
+ *
+ * `filter.fulfillment` is deliberately NOT sent. On the search it narrows a
+ * long list; here it would erase the difference between "this store cannot
+ * fulfil the product you chose" and "Kroger has never heard of it", which is
+ * the distinction the whole call exists to make.
+ *
+ * Never throws and never reports a failure as an absence: a chunk that errors
+ * simply contributes no entries, and the caller falls back to searching.
+ */
+export async function krogerLookupProductsByUpc(
+  userAccessToken: string,
+  upcs: string[],
+  locationId: string,
+  debug = false
+): Promise<KrogerUpcLookup> {
+  const found = new Map<string, KrogerUpcMatch>();
+  const statuses: number[] = [];
+  const unique = [...new Set(upcs.filter(u => typeof u === 'string' && u.trim().length > 0))];
+
+  for (let i = 0; i < unique.length; i += UPC_LOOKUP_CHUNK) {
+    const chunk = unique.slice(i, i + UPC_LOOKUP_CHUNK);
+    const params = new URLSearchParams({
+      'filter.productId': chunk.join(','),
+      'filter.locationId': locationId,
+      'filter.limit': String(chunk.length),
+    });
+    let res: Response;
+    try {
+      res = await fetch(`${KROGER_BASE}/products?${params}`, {
+        headers: { Authorization: `Bearer ${userAccessToken}`, Accept: 'application/json' },
+        cache: 'no-store',
+      });
+    } catch {
+      // A transport failure is not a status. 0 marks it in the log without
+      // pretending to know what Kroger would have said.
+      statuses.push(0);
+      continue;
+    }
+    if (!res.ok) {
+      statuses.push(res.status);
+      continue;
+    }
+    const data = await res.json().catch(() => null);
+    if (debug) console.log('[Kroger:raw] upcs=%s response=%s', chunk.join(','), JSON.stringify(data, null, 2));
+    for (const p of (data?.data ?? []) as any[]) {
+      const match: KrogerUpcMatch = { product: mapKrogerProduct(p, ''), fulfillable: fulfillmentOf(p) };
+      for (const id of [p.upc, p.productId]) {
+        if (typeof id === 'string' && chunk.includes(id)) found.set(id, match);
+      }
+    }
+  }
+
+  return { found, statuses };
 }
 
 /** Search for a product at a given Kroger store. Returns the UPC, description, and exact flag or null. */

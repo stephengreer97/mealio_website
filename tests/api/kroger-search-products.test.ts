@@ -15,7 +15,7 @@ process.env.KROGER_TOKEN_ENCRYPTION_KEY = '0'.repeat(64);
 
 import { POST } from '@/app/api/kroger/search-products/route';
 import { createAccessToken, clearRevocationCache } from '@/lib/tokens';
-import { encryptKrogerToken, krogerSearchProducts } from '@/lib/kroger';
+import { encryptKrogerToken, krogerSearchProducts, krogerLookupProductsByUpc } from '@/lib/kroger';
 
 /**
  * MEAL-19 — "Kroger sometimes returns no results".
@@ -99,6 +99,9 @@ async function search(body: Record<string, unknown>) {
 const MILK = { productName: 'Whole Milk', searchTerm: 'Kroger Whole Milk, 1 gal', unit: 'cup', measure: '2', quantity: 1 };
 /** A niche term. Kroger's `filter.term` answers it with something adjacent. */
 const JELLY = { productName: 'Ghost Pepper Jelly', searchTerm: 'Ghost Pepper Jelly, 12 oz', unit: 'tbsp', measure: '2', quantity: 1 };
+/** The same row after the user has picked a product once — `upc` is what Kroger
+ *  handed us then, and `product()` below echoes it back. */
+const MILK_WITH_UPC = { ...MILK, upc: '0001111041700' };
 
 beforeEach(() => {
   fakeDb.reset();
@@ -144,6 +147,48 @@ describe('lib/kroger krogerSearchProducts', () => {
     // Dropped, so it counts as filtered — but it is not evidence of anything.
     expect(outcome).toMatchObject({ ok: true, filteredOut: 1, unfulfillable: [] });
   });
+
+  it('does not report a refused UPC lookup as an absence', async () => {
+    // The caller's fallback for "not found" is to search, which is also the
+    // right response to a refusal — so a refusal must not arrive disguised as
+    // an empty result that a caller could mistake for "Kroger has no such
+    // product". It arrives as a status, and nothing else.
+    stubKroger({ status: 429 });
+
+    const lookup = await krogerLookupProductsByUpc('access', ['0001111041700'], LOCATION);
+
+    expect(lookup.found.size).toBe(0);
+    expect(lookup.statuses).toEqual([429]);
+  });
+
+  it('keys a resolved product under every identifier Kroger echoed for it', async () => {
+    stubKroger({ status: 200, products: [product('Kroger Whole Milk, 1 gal')] });
+
+    const lookup = await krogerLookupProductsByUpc('access', ['0001111041700'], LOCATION);
+
+    expect(lookup.found.get('0001111041700')).toMatchObject({
+      fulfillable: true,
+      product: { upc: '0001111041700', description: 'Kroger Whole Milk, 1 gal' },
+    });
+  });
+
+  it('reports a product this store refuses as unfulfillable rather than as missing', async () => {
+    // The lookup deliberately omits filter.fulfillment so this case is visible.
+    // Erased, it would be indistinguishable from a discontinued UPC.
+    stubKroger({ status: 200, products: [product('Kroger Whole Milk, 1 gal', { fulfillable: false })] });
+
+    const lookup = await krogerLookupProductsByUpc('access', ['0001111041700'], LOCATION);
+
+    expect(lookup.found.get('0001111041700')).toMatchObject({ fulfillable: false });
+  });
+
+  it('says "unknown" rather than "refused" when Kroger sent no fulfillment block', async () => {
+    stubKroger({ status: 200, products: [product('Kroger Whole Milk, 1 gal', { omitFulfillment: true })] });
+
+    const lookup = await krogerLookupProductsByUpc('access', ['0001111041700'], LOCATION);
+
+    expect(lookup.found.get('0001111041700')?.fulfillable).toBeNull();
+  });
 });
 
 describe('POST /api/kroger/search-products', () => {
@@ -157,10 +202,9 @@ describe('POST /api/kroger/search-products', () => {
   });
 
   it('stops the fallback ladder on an upstream failure instead of quadrupling the load', async () => {
-    // The ladder is searchTerm -> name+measure+unit -> bare name. Walking it
-    // against an API that is already refusing us turns one throttled request
-    // into four, ten ingredients at a time, which is how a soft quota becomes
-    // a hard outage.
+    // The ladder is searchTerm -> bare name. Walking it against an API that is
+    // already refusing us multiplies one throttled request, ten ingredients at
+    // a time, which is how a soft quota becomes a hard outage.
     const calls = stubKroger({ status: 429 });
 
     await search({ ingredients: [MILK], locationId: LOCATION });
@@ -194,9 +238,10 @@ describe('POST /api/kroger/search-products', () => {
     const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
 
     expect(json.results[0].reason).toBe('no_results');
-    // Three ladder rungs, each retried once inside krogerSearchProducts on a
-    // genuinely empty response. The old route added a fourth, identical rung.
-    expect(calls).toHaveLength(6);
+    // Two ladder rungs, each retried once inside krogerSearchProducts on a
+    // genuinely empty response. It was three rungs and six calls until the
+    // measure+unit rung was deleted.
+    expect(calls).toHaveLength(4);
   });
 
   it('matches on the first ladder rung without walking the rest', async () => {
@@ -258,7 +303,7 @@ describe('POST /api/kroger/search-products', () => {
   });
 
   describe('a rung that flakes is not the whole ladder', () => {
-    it('recovers an exact match from rung 2 when rung 1 returns a transient 500', async () => {
+    it('recovers an exact match from the bare-name rung when rung 1 returns a transient 500', async () => {
       // Measured regression: this used to cost 2 calls and yield the UPC. After
       // the blanket break it cost 1 call and yielded `search_error` and no UPC,
       // for a failure the very next request was going to answer.
@@ -275,12 +320,12 @@ describe('POST /api/kroger/search-products', () => {
 
     it('still caps a total 5xx outage at one request per rung', async () => {
       // Continuing on 5xx must not resurrect the amplification MEAL-19 fixed.
-      // Three rungs, one call each — fewer than the four the original ladder made.
+      // Two rungs, one call each — half the four the original ladder made.
       const calls = stubKroger({ status: 503 });
 
       const { json } = await search({ ingredients: [MILK], locationId: LOCATION });
 
-      expect(calls).toHaveLength(3);
+      expect(calls).toHaveLength(2);
       expect(json.results[0].reason).toBe('search_error');
     });
 
@@ -318,6 +363,170 @@ describe('POST /api/kroger/search-products', () => {
    * body we passed in, because the query string is the thing that is really
    * true about what we asked Kroger for.
    */
+
+  /**
+   * MEAL-19 — the measure+unit rung, deleted.
+   *
+   * It sat between the saved display name and the bare product name and could
+   * not reach anything the bare name misses: it is strictly narrower. What it
+   * could do is spend a request from the same quota whose 429s the rest of this
+   * file is about, and ask a product catalogue questions in recipe vocabulary.
+   */
+  describe('the measure and the unit never reach Kroger', () => {
+    it('never puts the recipe amount in a query, on any rung', async () => {
+      // MILK is "2 cup Whole Milk" with a saved display name — the exact shape
+      // that used to build "Whole Milk 2 cup". Answer every rung with nothing
+      // so the whole ladder is walked.
+      const calls = stubKroger({ status: 200, products: [] });
+
+      await search({ ingredients: [MILK], locationId: LOCATION });
+
+      expect(calls.length).toBeGreaterThan(0);
+      for (const url of calls) {
+        const query = decodeURIComponent(url).toLowerCase();
+        expect(query).not.toContain('cup');
+        expect(query).not.toContain('whole milk 2');
+      }
+    });
+
+    it('asks the same question at most once per run', async () => {
+      // A product name of 8+ words made the middle rung byte-identical to the
+      // bare-name rung, because the 8-word cap trims the tail. Two rungs, two
+      // distinct questions, forever.
+      const LONG = {
+        productName: 'Organic Grass Fed Boneless Skinless Chicken Breast Fillets Family Pack',
+        searchTerm: 'Simple Truth Organic Grass Fed Boneless Skinless Chicken Breast',
+        unit: 'lb',
+        measure: '2',
+        quantity: 1,
+      };
+      const calls = stubKroger({ status: 200, products: [] });
+
+      await search({ ingredients: [LONG], locationId: LOCATION });
+
+      const terms = calls.map(u => new URL(u).searchParams.get('filter.term'));
+      expect(new Set(terms).size).toBe(terms.length / 2); // each rung retried once, no rung repeated
+    });
+  });
+
+  /**
+   * MEAL-19 — the chosen product, remembered by identifier.
+   *
+   * The cart used to persist a display string and re-derive the product from it
+   * by relevance search on every later run, so a choice made once was re-decided
+   * by `filter.term` every time. The stored UPC is an ACCELERATOR: it ends the
+   * work only where the answer is unambiguous, and every other case falls
+   * through to the ladder that ran before it existed. These pin both halves —
+   * that it short-circuits, and that it never silently swallows a case.
+   */
+  describe('a product chosen once is looked up, not re-searched', () => {
+    it('resolves a stored UPC in one request and runs no search at all', async () => {
+      const calls = stubKroger([{ status: 200, products: [product('Kroger Whole Milk, 1 gal')] }]);
+
+      const { json } = await search({ ingredients: [MILK_WITH_UPC], locationId: LOCATION });
+
+      expect(json.results[0]).toMatchObject({ reason: 'matched', exact: true, upc: '0001111041700' });
+      expect(calls).toHaveLength(1);
+      const params = new URL(calls[0]).searchParams;
+      expect(params.get('filter.productId')).toBe('0001111041700');
+      expect(params.get('filter.locationId')).toBe(LOCATION);
+      expect(params.get('filter.term')).toBeNull();
+      // Omitted on purpose: it would erase "this store will not fulfil the
+      // product you chose", which is the case below.
+      expect(params.get('filter.fulfillment')).toBeNull();
+    });
+
+    it('looks up a whole run in one request, not one per ingredient', async () => {
+      const calls = stubKroger({ status: 200, products: [] });
+
+      await search({
+        ingredients: [{ ...MILK, upc: '111' }, { ...JELLY, upc: '222' }],
+        locationId: LOCATION,
+      });
+
+      const lookups = calls.filter(u => u.includes('filter.productId'));
+      expect(lookups).toHaveLength(1);
+      expect(new URL(lookups[0]).searchParams.get('filter.productId')).toBe('111,222');
+    });
+
+    it('looks nothing up when no ingredient carries a stored UPC', async () => {
+      const calls = stubKroger({ status: 200, products: [product('Kroger Whole Milk, 1 gal')] });
+
+      await search({ ingredients: [MILK], locationId: LOCATION });
+
+      expect(calls.some(u => u.includes('filter.productId'))).toBe(false);
+    });
+
+    it('falls back to the ladder when this store will not fulfil the stored product', async () => {
+      const calls = stubKroger([
+        { status: 200, products: [product('Kroger Whole Milk, 1 gal', { fulfillable: false })] },
+        { status: 200, products: [product('Kroger Whole Milk, 1 gal')] },
+      ]);
+
+      const { json } = await search({ ingredients: [MILK_WITH_UPC], locationId: LOCATION });
+
+      expect(calls).toHaveLength(2);
+      expect(new URL(calls[1]).searchParams.get('filter.term')).toBe('Kroger Whole Milk, 1 gal');
+      expect(json.results[0]).toMatchObject({ reason: 'matched', exact: true });
+    });
+
+    it('falls back to the ladder when the stored product is out of stock here', async () => {
+      // Out of stock is the case where the user most needs a substitute in front
+      // of them, so ending the run on the stored UPC would be the wrong answer
+      // even though it is the "right" product.
+      const calls = stubKroger([
+        { status: 200, products: [product('Kroger Whole Milk, 1 gal', { stockLevel: 'TEMPORARILY_OUT_OF_STOCK' })] },
+        { status: 200, products: [product('Kroger Whole Milk, 1 gal')] },
+      ]);
+
+      const { json } = await search({ ingredients: [MILK_WITH_UPC], locationId: LOCATION });
+
+      expect(calls).toHaveLength(2);
+      expect(json.results[0]).toMatchObject({ reason: 'matched', exact: true });
+    });
+
+    it('falls back to the ladder when Kroger no longer knows the UPC', async () => {
+      // A UPC is not permanent — Kroger discontinues items and re-issues ids.
+      // The text ladder is the fallback, which is what keeps this an
+      // accelerator rather than a replacement.
+      const calls = stubKroger([
+        { status: 200, products: [] },
+        { status: 200, products: [product('Kroger Whole Milk, 1 gal')] },
+      ]);
+
+      const { json } = await search({ ingredients: [MILK_WITH_UPC], locationId: LOCATION });
+
+      expect(calls).toHaveLength(2);
+      expect(json.results[0]).toMatchObject({ reason: 'matched', exact: true });
+    });
+
+    it('a refused lookup costs a request and changes no verdict', async () => {
+      const calls = stubKroger([
+        { status: 429 },
+        { status: 200, products: [product('Kroger Whole Milk, 1 gal')] },
+      ]);
+
+      const { json } = await search({ ingredients: [MILK_WITH_UPC], locationId: LOCATION });
+
+      expect(calls).toHaveLength(2);
+      expect(json.results[0]).toMatchObject({ reason: 'matched', exact: true });
+      const errorLog = log.mock.calls.map(c => c[0]).find(e => e.status === 'error');
+      // Counted as a request, never as a failed ingredient — the asymmetry the
+      // route's log comment names.
+      expect(errorLog.detail).toContain('statuses=429');
+      expect(errorLog.detail).toContain('failed=0/1');
+    });
+
+    it('counts the shortcut in the success log', async () => {
+      stubKroger([{ status: 200, products: [product('Kroger Whole Milk, 1 gal')] }]);
+
+      await search({ ingredients: [MILK_WITH_UPC], locationId: LOCATION, storeId: 'kroger' });
+
+      const successLog = log.mock.calls.map(c => c[0]).find(e => e.status === 'success');
+      expect(successLog.detail).toContain('viaUpc=1');
+    });
+  });
+
   describe('preparation never reaches the store (MEAL-102)', () => {
     /** An onion the recipe wants diced. The prep is present, and irrelevant. */
     const DICED_ONION = {
@@ -344,10 +553,11 @@ describe('POST /api/kroger/search-products', () => {
     });
 
     it('keeps prep out of every rung of the fallback ladder', async () => {
-      // The ladder is searchTerm -> name+measure+unit -> bare name, and the
-      // middle rung *builds* a term by concatenation — the one place prep
-      // would most plausibly be spliced in. Force all three rungs by
-      // answering each with nothing.
+      // The ladder is searchTerm -> bare name. Force both rungs by answering
+      // each with nothing. (Until MEAL-19 there was a middle rung that *built*
+      // a term by concatenation — the one place prep would most plausibly have
+      // been spliced in. It is gone; the assertion stays, because the risk it
+      // guards is a future writer re-introducing one.)
       const calls = stubKroger({ status: 200, products: [] });
 
       await search({
