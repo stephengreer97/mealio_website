@@ -39,7 +39,7 @@ type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
   { id: 'heb', label: 'H-E-B' }, { id: 'walmart', label: 'Walmart' }, { id: 'kroger', label: 'Kroger' },
-  { id: 'aldi', label: 'ALDI' }, { id: 'albertsons', label: 'Albertsons' }, { id: 'amazon', label: 'Amazon Fresh' },
+  { id: 'aldi', label: 'ALDI' }, { id: 'albertsons', label: 'Albertsons' },
   { id: 'safeway', label: 'Safeway' }, { id: 'vons', label: 'Vons' }, { id: 'jewel_osco', label: 'Jewel-Osco' },
   { id: 'shaws', label: "Shaw's" }, { id: 'acme', label: 'Acme Markets' }, { id: 'tom_thumb', label: 'Tom Thumb' },
   { id: 'randalls', label: 'Randalls' }, { id: 'pavilions', label: 'Pavilions' }, { id: 'star_market', label: 'Star Market' },
@@ -2134,7 +2134,7 @@ export default function AdminPage() {
                   <code>confirm</code> rows at all — so the funnel is{' '}
                   <code>login_check → (nothing) → reconcile</code>. Two known causes: the parallel and
                   pre-search add pools emit no per-item steps (MEAL-122, and they are on for HEB,
-                  Walmart, Amazon Fresh and Albertsons), and Kroger adds through the public API rather
+                  Walmart and Albertsons), and Kroger adds through the public API rather
                   than the WebView, so it reports no steps at all. Either way a clean funnel here means{' '}
                   <em>no data</em>, not no failures — judge these stores on terminal success and items
                   added, not on the step table.

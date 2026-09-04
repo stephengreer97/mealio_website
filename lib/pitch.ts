@@ -60,8 +60,8 @@ export const PITCH_SUBHEAD =
  * for it to be right about.
  */
 export const PITCH_STORES =
-  'H-E-B, Walmart, Kroger and its banners, Albertsons, Safeway, ALDI, Amazon '
-  + 'Fresh and Wegmans';
+  'H-E-B, Walmart, Kroger and its banners, Albertsons, Safeway, ALDI and '
+  + 'Wegmans';
 
 /**
  * The mechanism in three steps. Ordered; a surface with room for one shows the

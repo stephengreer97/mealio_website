@@ -634,7 +634,7 @@ describe('aggregateFunnel — failure codes', () => {
 
 describe('aggregateFunnel — instrumentation coverage', () => {
   it('flags a store that reported runs but no per-item steps at all', () => {
-    // FEATURE_PARALLEL_ADD is on for HEB, Walmart, Amazon Fresh and Albertsons —
+    // FEATURE_PARALLEL_ADD is on for HEB, Walmart and Albertsons —
     // four of six stores, and the busiest. Their funnel is
     // login_check → (nothing) → reconcile → run_summary. Rendering that as a
     // flawless funnel is the failure mode this whole flag exists to prevent.

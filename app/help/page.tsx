@@ -23,7 +23,7 @@ export default function HelpPage() {
         <div style={{ maxWidth: '900px', margin: '0 auto', padding: '20px 24px' }}>
           <div style={{ fontWeight: 700, fontSize: '15px', color: '#111', marginBottom: '4px' }}>Two ways to fill your cart</div>
           <div style={{ fontSize: '13px', color: '#666' }}>
-            Connect your Kroger account to add ingredients on the web, or use the Mealio app for H-E-B, Walmart, Amazon Fresh, the Albertsons family, and more.
+            Connect your Kroger account to add ingredients on the web, or use the Mealio app for H-E-B, Walmart, the Albertsons family, and more.
           </div>
         </div>
       </div>
@@ -86,7 +86,7 @@ export default function HelpPage() {
             </p>
             <ul style={ul}>
               <li style={li}><strong>On the web</strong> — for Kroger and its sister banners, connect your Kroger account once and add ingredients to your cart directly from <a href="/my-meals" style={a}>mealio.co</a>.</li>
-              <li style={li}><strong>In the mobile app</strong> — for H-E-B, Walmart, Amazon Fresh, the Albertsons family, and more, the Mealio app opens the store in a secure in-app browser and adds your ingredients automatically.</li>
+              <li style={li}><strong>In the mobile app</strong> — for H-E-B, Walmart, the Albertsons family, and more, the Mealio app opens the store in a secure in-app browser and adds your ingredients automatically.</li>
             </ul>
 
             <h3 style={h3}>Logging in</h3>
@@ -192,7 +192,7 @@ export default function HelpPage() {
             <h3 style={h3}>In the mobile app</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px 16px', margin: '0 0 12px' }}>
               {[
-                'H-E-B', 'Walmart', 'Amazon Fresh', 'ALDI', 'Wegmans',
+                'H-E-B', 'Walmart', 'ALDI', 'Wegmans',
                 'Albertsons', 'Safeway', 'Vons', 'Jewel-Osco', "Shaw's",
                 'Acme Markets', 'Tom Thumb', 'Randalls', 'Pavilions', 'Star Market',
                 'Haggen', 'Carrs', 'Kings Food Markets', "Balducci's",
@@ -426,7 +426,7 @@ export default function HelpPage() {
               },
               {
                 q: 'Which grocery stores does Mealio support?',
-                a: 'On the web, Mealio works with Kroger and its sister banners (Ralphs, Fred Meyer, King Soopers, Harris Teeter, and more) once you connect your Kroger account. In the mobile app, Mealio supports H-E-B, Walmart, Amazon Fresh, ALDI, Wegmans, and the Albertsons family (Safeway, Vons, Jewel-Osco, Acme, and more). See the Supported Stores section above for the full list.',
+                a: 'On the web, Mealio works with Kroger and its sister banners (Ralphs, Fred Meyer, King Soopers, Harris Teeter, and more) once you connect your Kroger account. In the mobile app, Mealio supports H-E-B, Walmart, ALDI, Wegmans, and the Albertsons family (Safeway, Vons, Jewel-Osco, Acme, and more). See the Supported Stores section above for the full list.',
               },
               {
                 q: 'Do my meals sync across devices?',

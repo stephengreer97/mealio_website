@@ -13,7 +13,6 @@ const STORES = [
   { id: 'acme',          label: 'Acme Markets' },
   { id: 'aldi',          label: 'ALDI' },
   { id: 'albertsons',    label: 'Albertsons' },
-  { id: 'amazon',        label: 'Amazon Fresh' },
   { id: 'bakers',        label: "Baker's" },
   { id: 'balduccis',     label: "Balducci's" },
   { id: 'carrs',         label: 'Carrs' },

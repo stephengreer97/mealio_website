@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 /**
@@ -23,10 +23,41 @@ const SQL = readFileSync(
   'utf8',
 );
 
+/**
+ * Store ids REMOVED by a later migration.
+ *
+ * The seed is history — it records what the catalog was on 2026-08-08 and must
+ * not be rewritten, or the file and a database built from it stop agreeing. The
+ * invariant that matters is not "the seed matches the app" but "what the
+ * database ENDS UP with matches the app", so removals are read from the
+ * migrations that perform them and subtracted here.
+ *
+ * Read from the SQL rather than listed, so removing a store is one migration
+ * and not also an edit to this file.
+ */
+function removedIds(): Set<string> {
+  const out = new Set<string>();
+  const dir = join(process.cwd(), 'supabase/migrations');
+  for (const f of readdirSync(dir).sort()) {
+    if (!f.endsWith('.sql') || f.startsWith('20260808000001')) continue;
+    const sql = readFileSync(join(dir, f), 'utf8');
+    for (const m of sql.matchAll(/DELETE\s+FROM\s+stores\s+WHERE\s+id\s*=\s*'([^']+)'/gi)) {
+      out.add(m[1]);
+    }
+  }
+  return out;
+}
+
 type Seeded = {
   id: string; name: string; color: string; slug: string;
   bannerGroup: string; platform: string; host: string;
 };
+
+/** The seed MINUS anything a later migration deletes — i.e. the live catalog. */
+function catalogRows(): Seeded[] {
+  const gone = removedIds();
+  return seededRows().filter((r) => !gone.has(r.id));
+}
 
 function seededRows(): Seeded[] {
   const block = SQL.split('host) VALUES')[1]?.split('ON CONFLICT')[0];
@@ -59,7 +90,6 @@ const BUNDLED: Array<[id: string, name: string, color: string]> = [
   ['acme', 'Acme Markets', '#F04035'],
   ['albertsons', 'Albertsons', '#009ee5'],
   ['aldi', 'ALDI', '#02205F'],
-  ['amazon', 'Amazon Fresh', '#78BD21'],
   ['bakers', "Baker's", '#EE3124'],
   ['balduccis', "Balducci's", '#8D2B1E'],
   ['carrs', 'Carrs', '#E5171D'],
@@ -94,7 +124,17 @@ const BUNDLED: Array<[id: string, name: string, color: string]> = [
 ];
 
 describe('the store catalog seed', () => {
-  const rows = seededRows();
+  // The LIVE catalog: the seed minus anything a later migration removes. The
+  // seed itself is history and is checked on its own below.
+  const rows = catalogRows();
+
+  it('still seeds every row it always did, removals included', () => {
+    // The seed is not to be rewritten when a store leaves — a database built
+    // from scratch runs it and then runs the removal, which is self-consistent.
+    // This is what stops someone "tidying" the row out of it.
+    expect(seededRows().length).toBeGreaterThanOrEqual(rows.length);
+    expect(seededRows().map((r) => r.id)).toContain('amazon');
+  });
 
   it('matches the app\'s bundled list exactly, id for id and colour for colour', () => {
     // Case-sensitive on the colour: the app writes `#dd0031` for H-E-B and
@@ -103,11 +143,14 @@ describe('the store catalog seed', () => {
     expect(rows.map((r) => [r.id, r.name, r.color])).toEqual(BUNDLED);
   });
 
-  it('seeds the 35 stores the app ships today', () => {
-    // Thirty-five, not thirty-six. The `STORES` literal in the app has 35
-    // entries; the 36th is `mockstore`, pushed conditionally under
-    // MOCK_STORE_ENABLED. See the mockstore assertion below.
-    expect(rows).toHaveLength(35);
+  it('leaves the 34 stores the app ships today', () => {
+    // Thirty-four: the seed's 35 minus Amazon Fresh, removed on 2026-09-04
+    // because it was the last store with no network rail and could not be added
+    // to at all. Not thirty-five, and not thirty-six either — `mockstore` is
+    // pushed by the app conditionally under MOCK_STORE_ENABLED and has never
+    // had a row here. See the mockstore assertion below.
+    expect(rows).toHaveLength(34);
+    expect(seededRows()).toHaveLength(35);
   });
 
   it('parsed real rows, so none of the checks below can pass vacuously', () => {
@@ -166,7 +209,7 @@ describe('the store catalog seed', () => {
     // exists for humans reading the table and for ops queries. Naming this test
     // after adapters or support, as an earlier version did, is exactly how the
     // column starts being read as a capability claim again.
-    const spellings = new Set(['kroger', 'albertsons', 'instacart', 'heb', 'walmart', 'amazon', 'wegmans']);
+    const spellings = new Set(['kroger', 'albertsons', 'instacart', 'heb', 'walmart', 'wegmans']);
     for (const r of rows) expect(spellings.has(r.platform), `${r.id}: ${r.platform}`).toBe(true);
   });
 

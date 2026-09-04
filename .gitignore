@@ -61,6 +61,14 @@ Thumbs.db
 supabase/.temp/
 .env*.local
 
+# Anything pulled OUT of an env store. `vercel env pull` writes .env.vercel.tmp
+# — real credentials, in the repo root, matching none of the rules above. It sat
+# untracked and unignored until a `git add -A` swept it into a commit on
+# 2026-09-04; GitHub's push protection refused the push, which is the last line
+# of defence and not one to rely on.
+.env*.tmp
+.env.vercel*
+
 # Env backups. `.env*.local` does not match `.env.local.bak-1785633128`, so a
 # timestamped copy sat untracked in the repo root until GitHub's secret scanner
 # caught it on the way out. Anything derived from an env file is a secret.

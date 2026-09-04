@@ -14,7 +14,7 @@
 // admit rather than paper over:
 //
 //   1. AN EMPTY TRACE IS NOT AN IDLE RUN. The parallel and pre-search add pools
-//      emit no per-item step rows at all (MEAL-122, on for HEB, Walmart, Amazon
+//      emit no per-item step rows at all (MEAL-122, on for HEB, Walmart
 //      Fresh and Albertsons), and Kroger adds through the public API without ever
 //      running the WebView engine. A run at one of those stores can add every item
 //      it was asked for and leave behind nothing but `run_summary`. So zero steps

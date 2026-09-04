@@ -527,7 +527,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
               <p style={{ fontSize: '13px', color: '#92400e', margin: 0, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px' }}>
                 This run reported no steps at all. That is a statement about instrumentation, not about
                 the run: the parallel and pre-search add pools emit no per-item rows (MEAL-122, on for
-                HEB, Walmart, Amazon Fresh and Albertsons), and Kroger adds through the public API
+                HEB, Walmart and Albertsons), and Kroger adds through the public API
                 without running the WebView engine. The run above is real —{' '}
                 {trace.run.items_added ?? '—'} of {trace.run.items_requested ?? '—'} items added — there
                 is simply nothing recorded about how it got there.
