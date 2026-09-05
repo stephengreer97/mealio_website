@@ -240,7 +240,7 @@ export async function sendCreatorSourceMovedEmail(opts: {
   // renders HTML. The application email above predates this helper; anything
   // reaching a URL bar or a link text here goes through it.
   const name = escapeHtml(opts.creatorName);
-  const handle = opts.handle ? escapeHtml(opts.handle) : 'none';
+  const handle = opts.handle ? escapeHtml(opts.handle) : '—';
   const source = escapeHtml(opts.sourceLabel);
   const was = escapeHtml(opts.previousUrl);
   const now = removed ? 'removed' : escapeHtml(opts.newUrl);
@@ -355,7 +355,7 @@ export async function sendPollHealthAlertEmail(opts: {
     // Every value below is either a creator's own text or a remote server's, on
     // its way into an inbox that renders HTML.
     const name = escapeHtml(source.creatorName);
-    const handle = source.handle ? escapeHtml(source.handle) : 'none';
+    const handle = source.handle ? escapeHtml(source.handle) : '—';
     const label = escapeHtml(source.sourceLabel);
     const silent = source.status === 'silent';
 
@@ -489,11 +489,11 @@ const REASON_HEADLINE: Record<StoreAlertLine['reasons'][number], string> = {
 const ALERT_CODE_ROWS = 6;
 
 function pct(value: number | null): string {
-  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+  return value == null ? '—' : `${(value * 100).toFixed(1)}%`;
 }
 
 function points(value: number | null): string {
-  return value == null ? 'n/a' : `${(value * 100).toFixed(1)} pts`;
+  return value == null ? '—' : `${(value * 100).toFixed(1)} pts`;
 }
 
 /**

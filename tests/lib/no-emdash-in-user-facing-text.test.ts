@@ -19,8 +19,22 @@
 // an argument for exempting them. Not taken: they are still a person reading a
 // sentence in a browser, and a carve-out for "internal UI" is the kind of hole
 // that quietly widens. One rule is easier to keep than one rule with a border.
+//
+// THE RULE IS ABOUT PUNCTUATION, NOT ABOUT THE CHARACTER. Stephen, on the first
+// pass of this sweep: "You can put those two emdashes back." A lone em dash in
+// a table cell is not punctuating a sentence, it is the VALUE -- "no value" is
+// what a dash has meant in a table for longer than this app has existed. The
+// admin tables and the digest emails use it that way in about forty places, and
+// changing the character there fixed nothing and cost a convention.
+//
+// So a string that is nothing but the glyph is allowed, and a string that uses
+// one to join two clauses is not. Prose that QUOTES the glyph while explaining
+// it is allowed too, because the incomplete-data banner has to show the reader
+// the character it is describing. Quoting is the tell: punctuation is never in
+// quote marks, and a character being named almost always is.
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as ts from 'typescript';
 
@@ -35,6 +49,38 @@ const ROOTS = ['app', 'components', 'lib'].map((d) => path.join(ROOT, d));
  * `&mdash;`, so removing it would stop the decoder decoding.
  */
 const EXCLUDED_FILES = (rel: string) => rel === 'lib/import/html-text.ts';
+
+/**
+ * A string that IS the dash rather than one that contains it.
+ *
+ * Deliberately this strict. Not "starts with a dash", not "is short" -- a
+ * string with any other character in it is a sentence, and a sentence with an
+ * em dash in it is exactly what this file exists to find.
+ */
+function isGlyphNotPunctuation(text: string): boolean {
+  return text.trim() === EM_DASH;
+}
+
+/**
+ * Prose that contains the glyph because it is ABOUT the glyph.
+ *
+ * The incomplete-data banner explains what the dash in the table means, so it
+ * has to show one. Quoting is the tell: a dash used as PUNCTUATION is never
+ * wrapped in quote marks, and a dash being NAMED almost always is.
+ *
+ * This started as an allowlist of one exact sentence and that was wrong within
+ * a minute: the same sentence exists twice on the admin page, once as a string
+ * literal and once as JSX text with different whitespace and a neighbouring
+ * clause, so matching the text caught one and missed the other. A rule about
+ * the shape catches both and does not need editing when the wording changes.
+ */
+function isQuotedGlyph(text: string): boolean {
+  // Strip every quoted occurrence, then see whether any dash is left over. A
+  // sentence that quotes the glyph AND uses one as punctuation still fails,
+  // which is the right answer.
+  const withoutQuoted = text.replace(/[\u201c\u2018"']\s*\u2014\s*[\u201d\u2019"']/g, '');
+  return !withoutQuoted.includes(EM_DASH);
+}
 
 /**
  * Call targets and constants whose text is not read by a person.
@@ -76,7 +122,8 @@ function offenders(file: string): string[] {
 
   const visit = (n: ts.Node): void => {
     const text = (n as ts.LiteralLikeNode).text;
-    if (STRING_KINDS.has(n.kind) && typeof text === 'string' && text.includes(EM_DASH)) {
+    if (STRING_KINDS.has(n.kind) && typeof text === 'string' && text.includes(EM_DASH)
+        && !isGlyphNotPunctuation(text) && !isQuotedGlyph(text)) {
       let p: ts.Node | undefined = n.parent;
       let skip = false;
       while (p && !skip) {
@@ -121,6 +168,49 @@ describe('no em dash in user-facing text', () => {
     };
     look(sf);
     expect(anyString).toBe(true);
+  });
+
+  it('allows the glyph and still catches a sentence, so the exception is not a hole', () => {
+    // Written as a fixture rather than asserted against the live source,
+    // because what has to hold is the RULE. A repo that happens to have no
+    // offending string in it today would make an assertion about the source
+    // pass either way.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emdash-'));
+    const fixture = path.join(dir, 'fixture.ts');
+    try {
+      fs.writeFileSync(fixture, [
+        "export const CELL = '\u2014';",                        // the value: allowed
+        "export const PADDED = '  \u2014  ';",                  // still just the value
+        "export const PROSE = 'No orphans \u2014 storage is clean.';",
+        "export const SHORT = '\u2014 removed';",               // short, but a sentence
+      ].join('\n'));
+      const found = offenders(fixture);
+      expect(found.join('\n')).toContain('No orphans');
+      expect(found.join('\n')).toContain('removed');
+      expect(found).toHaveLength(2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows a QUOTED glyph, and still fails a sentence that also uses one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emdash-'));
+    const fixture = path.join(dir, 'fixture.ts');
+    try {
+      fs.writeFileSync(fixture, [
+        // Naming the character: allowed, and the wording is free to change.
+        "export const A = 'Figures are shown as \u201c\u2014\u201d rather than as a number.';",
+        "export const B = 'The \"\u2014\" means no value.';",
+        // Naming it AND using one. Still an offender, which is the point: the
+        // exception is about the quoted occurrence, not about the sentence.
+        "export const C = 'A \u201c\u2014\u201d means no value \u2014 check the log.';",
+      ].join('\n'));
+      const found = offenders(fixture);
+      expect(found).toHaveLength(1);
+      expect(found[0]).toContain('check the log');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('finds none', () => {

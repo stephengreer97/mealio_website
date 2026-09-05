@@ -182,17 +182,17 @@ interface ConfigVersion {
 // as "—" rather than 0% keeps "we have no data" visually distinct from "everything
 // failed", which is the difference between ignoring a store and paging someone.
 function pct(v: number | null): string {
-  return v == null ? 'n/a' : `${(v * 100).toFixed(1)}%`;
+  return v == null ? '—' : `${(v * 100).toFixed(1)}%`;
 }
 
 function ms(v: number | null): string {
-  if (v == null) return 'n/a';
+  if (v == null) return '—';
   return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`;
 }
 
 /** A signed percentage-point change, or "—" when either side had no denominator. */
 function delta(v: number | null): string {
-  if (v == null) return 'n/a';
+  if (v == null) return '—';
   const pp = v * 100;
   if (Math.abs(pp) < 0.05) return 'no change';
   return `${pp > 0 ? '+' : '−'}${Math.abs(pp).toFixed(1)} pts`;
@@ -301,7 +301,7 @@ const VERDICT_COLORS: Record<string, string> = {
  * mistaken for a number.
  */
 const orDash = (value: number | null | undefined) =>
-  value === null || value === undefined ? 'n/a' : value.toLocaleString();
+  value === null || value === undefined ? '—' : value.toLocaleString();
 
 /** What each name an API puts in `incomplete` means to a human. */
 const READ_LABELS: Record<string, string> = {
@@ -330,7 +330,7 @@ function IncompleteBanner({ names, children }: { names: string[]; children?: Rea
     >
       <strong>Incomplete data. This screen is showing less than it was asked for.</strong>{' '}
       These reads could not be completed: {names.map(n => READ_LABELS[n] ?? n).join(', ')}.{' '}
-      {children ?? 'The affected figures are shown as “n/a” rather than as a number that would be understated.'}{' '}
+      {children ?? 'The affected figures are shown as “—” rather than as a number that would be understated.'}{' '}
       Retry, and if it persists check the server log.
     </div>
   );
@@ -660,11 +660,11 @@ interface Stats {
  * operator-facing character: a zero looks like an answer, and payouts get read off
  * it. A dash cannot be mistaken for a number.
  */
-const figure = (value: number | null) => (value === null ? 'n/a' : value.toLocaleString());
+const figure = (value: number | null) => (value === null ? '—' : value.toLocaleString());
 
 /** Same, signed, for the net-new-paid tiles. */
 const signedFigure = (value: number | null) =>
-  value === null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
+  value === null ? '—' : `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
 
 /** What each name in `stats.incomplete` means to a human. */
 const INCOMPLETE_LABELS: Record<string, string> = {
@@ -1193,10 +1193,10 @@ export default function AdminPage() {
                 <tbody>
                   {applications.map(app => (
                     <tr key={app.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '12px 16px', color: '#333' }}>{app.user_profiles?.email ?? 'n/a'}</td>
+                      <td style={{ padding: '12px 16px', color: '#333' }}>{app.user_profiles?.email ?? '—'}</td>
                       <td style={{ padding: '12px 16px', fontWeight: 500 }}>{app.display_name}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{app.phone || 'n/a'}</td>
-                      <td style={{ padding: '12px 16px', color: '#555', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app.find_us || 'n/a'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555' }}>{app.phone || '—'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app.find_us || '—'}</td>
                       {/* A real site with real recipes is the most useful single
                           signal for approving an application, so the four links
                           are visible here rather than only after approval. */}
@@ -1214,7 +1214,7 @@ export default function AdminPage() {
                             </a>
                           ))}
                           {PLATFORM_SOURCES.every(s => !app[SOURCE_COLUMNS[s] as keyof Application]) && (
-                            <span style={{ color: '#aaa' }}>n/a</span>
+                            <span style={{ color: '#aaa' }}>—</span>
                           )}
                         </div>
                       </td>
@@ -1552,8 +1552,8 @@ export default function AdminPage() {
                   {meals.map(meal => (
                     <tr key={meal.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
                       <td style={{ padding: '12px 16px', fontWeight: 500 }}>{meal.name}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.creator_name || meal.author || 'n/a'}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.difficulty ?? 'n/a'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.creator_name || meal.author || '—'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.difficulty ?? '—'}</td>
                       <td style={{ padding: '12px 16px', color: '#555' }}>{Number(meal.trending_score).toFixed(1)}</td>
                       <td style={{ padding: '12px 16px' }}>
                         <button
@@ -1588,7 +1588,7 @@ export default function AdminPage() {
                     <strong>Incomplete data. Do not pay out from this screen.</strong>{' '}
                     These reads could not be completed:{' '}
                     {stats.incomplete.map(k => INCOMPLETE_LABELS[k] ?? k).join(', ')}. The
-                    affected figures are shown as “n/a” rather than as a number that would be
+                    affected figures are shown as “—” rather than as a number that would be
                     understated. Retry, and if it persists check the server log for
                     ADMIN:STATS.
                   </div>
@@ -2268,7 +2268,7 @@ export default function AdminPage() {
                     />
                     <Metric
                       label="Dying on"
-                      value={worst.kind === 'dying' ? worst.step : 'n/a'}
+                      value={worst.kind === 'dying' ? worst.step : '—'}
                       bad={worst.kind === 'dying'}
                       note={worstNote}
                     />
@@ -2432,7 +2432,7 @@ export default function AdminPage() {
                                   </span>
                                 )}
                               </td>
-                              <td style={{ padding: '6px 8px', color: st.blocked > 0 ? '#92400e' : '#ccc' }}>{st.blocked || 'n/a'}</td>
+                              <td style={{ padding: '6px 8px', color: st.blocked > 0 ? '#92400e' : '#ccc' }}>{st.blocked || '—'}</td>
                               <td style={{ padding: '6px 8px' }}><CodeChips codes={st.codes} /></td>
                               <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p50DurationMs)}</td>
                               <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p95DurationMs)}</td>
@@ -2644,7 +2644,7 @@ export default function AdminPage() {
                         </span>
                       )}
                       <span style={{ color: '#888' }}>{new Date(v.created_at).toLocaleString()}</span>
-                      <span style={{ color: '#666', flex: 1, minWidth: '160px' }}>{v.notes ?? 'n/a'}</span>
+                      <span style={{ color: '#666', flex: 1, minWidth: '160px' }}>{v.notes ?? '—'}</span>
                       <button
                         onClick={() => setConfigDraft(JSON.stringify(v.config, null, 2))}
                         style={{ border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#666' }}

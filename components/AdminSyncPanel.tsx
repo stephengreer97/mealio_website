@@ -240,9 +240,9 @@ function Step({
 }
 
 function formatDate(value: string | null): string {
-  if (!value) return 'n/a';
+  if (!value) return '—';
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleDateString() : 'n/a';
+  return Number.isFinite(parsed) ? new Date(parsed).toLocaleDateString() : '—';
 }
 
 export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {

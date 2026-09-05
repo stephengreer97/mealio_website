@@ -118,7 +118,7 @@ export function TrendSparkline({
  * ignoreDuplicates, so an old row never gains a code). Leaving them out would
  * read as "no unexplained failures", the reverse of the truth.
  */
-export function CodeChips({ codes, empty = 'n/a' }: { codes: Record<string, number>; empty?: string }) {
+export function CodeChips({ codes, empty = '—' }: { codes: Record<string, number>; empty?: string }) {
   const entries = Object.entries(codes).sort((a, b) => b[1] - a[1]);
   if (entries.length === 0) return <span style={{ color: '#aaa' }}>{empty}</span>;
   return (

@@ -162,12 +162,12 @@ const TD: React.CSSProperties = { padding: '6px 8px' };
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
 function ms(v: number | null): string {
-  if (v == null) return 'n/a';
+  if (v == null) return '—';
   return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`;
 }
 
 function when(ts: string | null): string {
-  if (!ts) return 'n/a';
+  if (!ts) return '—';
   const t = Date.parse(ts);
   return Number.isFinite(t) ? new Date(t).toLocaleString() : ts;
 }
@@ -383,12 +383,12 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                             {label.text}
                           </span>
                         </td>
-                        <td style={{ ...TD, color: '#666' }}>{r.status} / {r.outcome ?? 'n/a'}</td>
+                        <td style={{ ...TD, color: '#666' }}>{r.status} / {r.outcome ?? '—'}</td>
                         <td style={{ ...TD, color: '#666' }}>
-                          {r.items_added ?? 'n/a'}/{r.items_requested ?? 'n/a'}
+                          {r.items_added ?? '—'}/{r.items_requested ?? '—'}
                         </td>
                         <td style={{ ...TD, color: '#666' }}>
-                          v{r.config_version ?? 'n/a'} · {r.app_version ?? 'n/a'} · {r.platform ?? 'n/a'}
+                          v{r.config_version ?? '—'} · {r.app_version ?? '—'} · {r.platform ?? '—'}
                         </td>
                         <td style={TD}>
                           <button onClick={() => loadTrace(r.id)} style={{ ...CONTROL, cursor: 'pointer', padding: '3px 10px', fontSize: '12px' }}>
@@ -417,11 +417,11 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
             <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#999', fontFamily: MONO }}>{trace.run.id}</p>
             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginTop: '12px', fontSize: '13px', color: '#666' }}>
               <span>{trace.run.status} / {trace.run.outcome ?? 'no outcome'}</span>
-              <span>{trace.run.items_added ?? 'n/a'}/{trace.run.items_requested ?? 'n/a'} items added</span>
-              <span>{trace.run.meal_count ?? 'n/a'} meal(s) · {trace.run.source ?? 'n/a'}</span>
+              <span>{trace.run.items_added ?? '—'}/{trace.run.items_requested ?? '—'} items added</span>
+              <span>{trace.run.meal_count ?? '—'} meal(s) · {trace.run.source ?? '—'}</span>
               <span>
-                config v{trace.summary.versions.configVersions.join(', v') || 'n/a'} · app{' '}
-                {trace.summary.versions.appVersions.join(', ') || 'n/a'} · {trace.run.platform ?? 'n/a'}
+                config v{trace.summary.versions.configVersions.join(', v') || '—'} · app{' '}
+                {trace.summary.versions.appVersions.join(', ') || '—'} · {trace.run.platform ?? '—'}
               </span>
               <span>
                 {trace.read.stepsRead} step row{trace.read.stepsRead === 1 ? '' : 's'}
@@ -459,7 +459,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                   run_summary says
                 </div>
                 <div style={{ fontSize: '16px', fontWeight: 700, color: '#666' }}>
-                  {trace.summary.runSummaryCode ?? (trace.summary.hasRunSummary ? 'no code' : 'n/a')}
+                  {trace.summary.runSummaryCode ?? (trace.summary.hasRunSummary ? 'no code' : '—')}
                 </div>
                 <div style={{ fontSize: '11px', color: '#999', marginTop: '2px', maxWidth: '280px' }}>
                   The run&apos;s most frequent code, not its most severe (MEAL-123). Where the two
@@ -491,7 +491,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                   Items missed
                 </div>
                 <div style={{ fontSize: '16px', fontWeight: 700, color: (trace.summary.itemsMissed ?? 0) > 0 ? '#b91c1c' : '#333' }}>
-                  {trace.summary.itemsMissed ?? 'n/a'}
+                  {trace.summary.itemsMissed ?? '—'}
                 </div>
                 <div style={{ fontSize: '11px', color: '#999', marginTop: '2px', maxWidth: '280px' }}>
                   {trace.summary.itemsMissed == null
@@ -529,7 +529,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                 the run: the parallel and pre-search add pools emit no per-item rows (MEAL-122, on for
                 HEB, Walmart and Albertsons), and Kroger adds through the public API
                 without running the WebView engine. The run above is real:{' '}
-                {trace.run.items_added ?? 'n/a'} of {trace.run.items_requested ?? 'n/a'} items added, and there
+                {trace.run.items_added ?? '—'} of {trace.run.items_requested ?? '—'} items added, and there
                 is simply nothing recorded about how it got there.
               </p>
             ) : (
@@ -578,12 +578,12 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                           <td style={{ ...TD, color: '#999', fontFamily: MONO }}>{s.seq}</td>
                           <td style={{ ...TD, fontWeight: 600 }}>{s.step}</td>
                           <td style={{ ...TD, color: outcomeColor(s) }}>{s.outcome}</td>
-                          <td style={{ ...TD, color: '#666' }}>{s.code ?? 'n/a'}</td>
-                          <td style={{ ...TD, color: '#666' }}>{s.item_index ?? 'n/a'}</td>
+                          <td style={{ ...TD, color: '#666' }}>{s.code ?? '—'}</td>
+                          <td style={{ ...TD, color: '#666' }}>{s.item_index ?? '—'}</td>
                           <td style={{ ...TD, color: '#666' }}>{ms(s.duration_ms)}</td>
                           <td style={{ ...TD, color: '#999', whiteSpace: 'nowrap' }}>{when(s.occurred_at)}</td>
                           <td style={{ ...TD, color: '#666', fontFamily: MONO, fontSize: '11px', maxWidth: '320px' }}>
-                            {detail ? <span title={detail}>{detail.length > 140 ? `${detail.slice(0, 140)}…` : detail}</span> : 'n/a'}
+                            {detail ? <span title={detail}>{detail.length > 140 ? `${detail.slice(0, 140)}…` : detail}</span> : '—'}
                           </td>
                         </tr>
                       );
