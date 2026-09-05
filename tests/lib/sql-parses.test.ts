@@ -21,7 +21,17 @@ import * as path from 'path';
 
 const ROOT = path.resolve(__dirname, '../..');
 const SUPABASE = path.join(ROOT, 'supabase');
-const VENV = '/tmp/claude-1000/-home-sgreer-mealio-app/51938f1f-f69d-4a0f-b144-0e4ac1c3d9a7/scratchpad/venv/bin/python';
+// Where the parser lives depends on the machine, so LOOK for it rather than
+// hardcoding a path. This used to point at a session-scoped scratchpad venv,
+// which meant the check evaporated the moment that directory went away -- and
+// on CI, which never had it, it went red instead of running. Order: an explicit
+// override, a repo-local venv, then whatever python3 is on PATH (how CI gets
+// it, via `pip install pglast` in the workflow).
+const CANDIDATES = [
+  process.env.PGLAST_PYTHON,
+  path.join(ROOT, '.venv-sql/bin/python'),
+  'python3',
+].filter((c): c is string => !!c);
 
 function sqlFiles(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -32,13 +42,14 @@ function sqlFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** pglast is not a repo dependency; skip rather than fail where it is absent. */
-const haveParser = fs.existsSync(VENV) && (() => {
+/** The first candidate that can actually `import pglast`, or null. */
+const PYTHON = CANDIDATES.find((py) => {
   try {
-    execFileSync(VENV, ['-c', 'import pglast'], { stdio: 'ignore' });
+    execFileSync(py, ['-c', 'import pglast'], { stdio: 'ignore' });
     return true;
   } catch { return false; }
-})();
+}) ?? null;
+const haveParser = PYTHON !== null;
 
 describe('every .sql file parses as Postgres', () => {
   const files = sqlFiles(SUPABASE);
@@ -60,15 +71,17 @@ except pglast.parser.ParseError as e:
     line = sql[:loc].count("\\n") + 1 if isinstance(loc, int) else "?"
     print(f"FAIL line {line}: {e}")
 `;
-      const out = execFileSync(VENV, ['-c', script, path.join(ROOT, rel)], { encoding: 'utf8' }).trim();
+      const out = execFileSync(PYTHON!, ['-c', script, path.join(ROOT, rel)], { encoding: 'utf8' }).trim();
       expect(`${rel}: ${out}`).toBe(`${rel}: OK`);
     });
 
   it('says when it is not actually running', () => {
-    // A skipped suite that looks green is the same lie as a vacuous assertion.
-    // If this ever fails, the parser is missing and the checks above did
-    // nothing — reinstall with: python3 -m venv <venv> && <venv>/bin/pip install pglast
-    expect(haveParser ? 'parser present' : 'PARSER MISSING — the SQL checks above did not run')
+    // A skipped suite that looks green is the same lie as a vacuous assertion,
+    // so this FAILS rather than skips when no parser was found. Install one:
+    //   python3 -m venv .venv-sql && .venv-sql/bin/pip install pglast
+    // or `pip install pglast` for the python3 already on PATH, which is what
+    // the Tests workflow does. PGLAST_PYTHON overrides the search.
+    expect(haveParser ? 'parser present' : 'PARSER MISSING - the SQL checks above did not run')
       .toBe('parser present');
   });
 });

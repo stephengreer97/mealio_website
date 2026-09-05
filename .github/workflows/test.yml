@@ -25,4 +25,13 @@ jobs:
 
       - run: npm ci
 
+      # The SQL parser for tests/lib/sql-parses.test.ts. pglast wraps
+      # libpg_query -- the real Postgres grammar -- so the migrations are
+      # checked against the actual parser rather than by reading them. It is
+      # deliberately NOT an npm dependency: nothing in the app imports it, and
+      # it is the only Python in the repo. Without this step the test suite goes
+      # red rather than quietly skipping, which is the point.
+      - name: Install the Postgres SQL parser
+        run: pip install --disable-pip-version-check pglast
+
       - run: npm test

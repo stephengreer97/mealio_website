@@ -77,3 +77,4 @@ supabase/.temp/
 
 # Credentials for the PostgREST contract suite. Never committed.
 .env.contract
+.venv-sql/
