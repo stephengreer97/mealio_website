@@ -52,6 +52,9 @@ export type EventType =
   | 'CREATOR:MEAL_UPDATE'
   | 'CREATOR:MEAL_DELETE'
   | 'CREATOR:MEAL_IMPORT'    // paste-a-link import pipeline (MEAL-67)
+  // The accounting row for an import failed to store (MEAL-222). The import
+  // itself is unaffected; what is lost is the cost of it.
+  | 'IMPORT:RECORD_FAILED'
   | 'CREATOR:PROFILE_UPDATE'
   | 'CREATOR:FOLLOW'
   // Connecting a publishing account by OAuth (MEAL-74, and MEAL-82/83 after it).

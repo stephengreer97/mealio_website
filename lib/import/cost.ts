@@ -29,6 +29,30 @@ import { EXTRACTION_MODEL, GATE_MODEL, estimateCostUsd } from './anthropic';
  * Gate input is the first ~1,500 words of page text; extraction input is the
  * cleaned document, and its output is the whole draft — name, story, recipe and
  * every ingredient row — which is why the output side dominates at Opus rates.
+ *
+ * THIS IS AN ESTIMATE AND IT IS OLDER THAN IT LOOKS. It was measured when
+ * extraction ran on **Opus with adaptive thinking**. Extraction is Haiku now and
+ * thinking is off, and nobody has re-measured the SHAPE. The pricing follows the
+ * model automatically; these token counts do not, so they are the one number
+ * here that can be silently wrong.
+ *
+ * Since MEAL-222 that is checkable rather than arguable. `recipe_imports` stores
+ * the real counts per stage, so a week of rows answers it in one query:
+ *
+ *     SELECT
+ *       percentile_cont(0.5) WITHIN GROUP (ORDER BY gate_input_tokens)     AS gate_in,
+ *       percentile_cont(0.5) WITHIN GROUP (ORDER BY gate_output_tokens)    AS gate_out,
+ *       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract_input_tokens)  AS ext_in,
+ *       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract_output_tokens) AS ext_out,
+ *       count(*)                                                           AS n
+ *     FROM public.recipe_imports
+ *     WHERE occurred_at > now() - interval '7 days'
+ *       AND cached = false;
+ *
+ * MEDIAN, not mean: one pathological page with a 40k-word recipe drags an
+ * average and tells you nothing about the import you are about to run. `cached`
+ * is excluded because a cache hit paid for neither call and would pull every
+ * figure towards zero.
  */
 export const TYPICAL_IMPORT_TOKENS = {
   gate: { inputTokens: 2_500, outputTokens: 120 },

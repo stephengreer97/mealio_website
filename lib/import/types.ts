@@ -452,6 +452,27 @@ export interface ImportTelemetry {
   ingredientCount: number | null;
   /** How many fields landed on each level — the calibration signal. */
   confidence: { green: number; amber: number; red: number } | null;
+  /**
+   * The gate call, and the extraction call, kept APART (MEAL-222).
+   *
+   * They used to be summed into `costUsd` at the four sites that emit, which
+   * threw away the two facts worth having. Tokens are the fact and the dollar
+   * figure is a derivation, so a repricing can be recomputed over history
+   * instead of leaving a column that quietly means something different before
+   * and after a date. And "how often does the gate reject, and what does
+   * rejecting cost" cannot be answered from a total.
+   *
+   * Null where the stage did not run or did not pay: a structured-data
+   * shortcut makes the classifier unnecessary, and a cache hit pays for
+   * neither.
+   */
+  gateUsage: ImportUsage | null;
+  extractUsage: ImportUsage | null;
+  /**
+   * Gate plus extraction. DERIVED in `finish` rather than passed in, so a new
+   * exit from the pipeline cannot report a cost that disagrees with the usage
+   * beside it — which is exactly what a fifth emit site would have done.
+   */
   costUsd: number;
   durationMs: number;
 }

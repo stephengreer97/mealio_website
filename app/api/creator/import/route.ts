@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { runImport } from '@/lib/import/pipeline';
+import { importLogSink } from '@/lib/import/import-log';
 import { formatTelemetry } from '@/lib/import/telemetry';
 
 /**
@@ -60,18 +61,22 @@ export async function POST(request: NextRequest) {
   }
 
   // The pipeline emits its own CREATOR:MEAL_IMPORT telemetry line (platform,
-  // path, gate verdict, confidence spread); this sink only adds who asked.
+  // path, gate verdict, confidence spread); this sink adds who asked, and since
+  // MEAL-222 also stores the row that carries the tokens and the cost.
   const result = await runImport(url, {
     mode: 'manual',
     // Scopes the storage path when we copy the page's image into our bucket.
     userId: auth.userId,
-    telemetry: (event) =>
-      log({
-        event: 'CREATOR:MEAL_IMPORT',
-        status: event.outcome === 'ok' ? 'success' : 'error',
-        userId: auth.creator.id,
-        detail: formatTelemetry(event),
-      }),
+    telemetry: importLogSink(
+      { actor: 'creator', userId: auth.userId, creatorId: auth.creator.id },
+      (event) =>
+        log({
+          event: 'CREATOR:MEAL_IMPORT',
+          status: event.outcome === 'ok' ? 'success' : 'error',
+          userId: auth.creator.id,
+          detail: formatTelemetry(event),
+        }),
+    ),
   });
 
   // 422 rather than 200-with-a-status-field so a rejection is visible to

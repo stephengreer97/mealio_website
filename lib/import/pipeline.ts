@@ -142,11 +142,14 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
 
   // Every exit from this function goes through `finish`, so no path can escape
   // without a telemetry line.
-  const finish = <T extends ImportResult>(result: T, event: Partial<ImportTelemetry>): T => {
-    emit({
+  const finish = <T extends ImportResult>(
+    result: T,
+    event: Partial<Omit<ImportTelemetry, 'costUsd'>>,
+  ): T => {
+    const merged = {
       url: result.url,
-      outcome: result.status === 'ok' ? 'ok' : 'rejected',
-      stage: result.status === 'ok' ? 'complete' : result.stage,
+      outcome: (result.status === 'ok' ? 'ok' : 'rejected') as ImportTelemetry['outcome'],
+      stage: (result.status === 'ok' ? 'complete' : result.stage) as ImportTelemetry['stage'],
       reason: result.status === 'ok' ? null : result.reason,
       platform: null,
       path: null,
@@ -155,9 +158,17 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       cached: result.meta.cached,
       ingredientCount: null,
       confidence: null,
-      costUsd: 0,
+      gateUsage: null,
+      extractUsage: null,
       durationMs: now() - startedAt,
       ...event,
+    };
+    // DERIVED, never passed (MEAL-222). Every exit used to add the two costs up
+    // by hand, so the fifth one to be written would have been the one that got
+    // it wrong, silently, in the number the dashboard reads.
+    emit({
+      ...merged,
+      costUsd: (merged.gateUsage?.costUsd ?? 0) + (merged.extractUsage?.costUsd ?? 0),
     });
     return result;
   };
@@ -349,7 +360,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       platform,
       gateVerdict: verdict.verdict,
       gateSource: verdict.source,
-      costUsd: gateUsage?.costUsd ?? 0,
+      gateUsage: toImportUsage(gateUsage),
     });
   }
 
@@ -373,7 +384,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
         path: document.structuredSource ?? 'raw-html',
         gateVerdict: verdict.verdict,
         gateSource: verdict.source,
-        costUsd: gateUsage?.costUsd ?? 0,
+        gateUsage: toImportUsage(gateUsage),
       },
     );
   }
@@ -452,7 +463,8 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     gateSource: verdict.source,
     ingredientCount: success.draft.ingredients.length,
     confidence: summariseConfidence(allFields),
-    costUsd: (extraction.usage.costUsd ?? 0) + (gateUsage?.costUsd ?? 0),
+    gateUsage: toImportUsage(gateUsage),
+    extractUsage: toImportUsage(extraction.usage),
   });
   } catch (err) {
     return finish(

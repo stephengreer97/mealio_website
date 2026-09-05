@@ -48,6 +48,7 @@ import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
 import { loadConnection, usableAccessToken } from '@/lib/platform-tokens';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
 import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { importLogSink } from '@/lib/import/import-log';
 import { robotsPerOrigin } from '@/lib/import/robots';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
 import {
@@ -1229,13 +1230,21 @@ export async function processSyncItem(
       // synced photo lands under the creator it belongs to.
       userId: creator.user_id,
       fetchOptions: deps.fetchOptions,
-      telemetry: (event) =>
-        log({
-          event: 'CREATOR:MEAL_IMPORT',
-          status: event.outcome === 'ok' ? 'success' : 'error',
-          userId: creator.id,
-          detail: formatTelemetry(event),
-        }),
+      // The log line stays and the accounting row is added beside it
+      // (MEAL-222). `creator`, because this import is on a creator's behalf
+      // whether an operator queued it or the poller found it -- the actor is
+      // whose content is being imported, not who pressed the button, or a
+      // poller run would be attributed to nobody.
+      telemetry: importLogSink(
+        { actor: 'creator', userId: creator.user_id, creatorId: creator.id },
+        (event) =>
+          log({
+            event: 'CREATOR:MEAL_IMPORT',
+            status: event.outcome === 'ok' ? 'success' : 'error',
+            userId: creator.id,
+            detail: formatTelemetry(event),
+          }),
+      ),
     });
   } catch (err) {
     return await recordItem(deps, creator, run, {

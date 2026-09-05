@@ -518,6 +518,8 @@ describe('import/telemetry — log lines cannot be forged', () => {
       cached: false,
       ingredientCount: null,
       confidence: null,
+      gateUsage: null,
+      extractUsage: null,
       costUsd: 0,
       durationMs: 1,
     });
