@@ -1,0 +1,142 @@
+-- MEAL-219, retention. Stephen chose "aggregate then prune after 30 days".
+--
+-- There has never been a pruning job. Rows leave automation_steps only when an
+-- account is deleted, and the funnel query already caps at 50k rows per window
+-- and renders a `truncated` flag -- so the volume is real today, before this
+-- ticket adds four columns and two indexes to every future row.
+--
+-- WHAT IS LOST, said plainly because it is a real cost and not a footnote:
+-- after 30 days an individual run can no longer be WALKED step by step. That is
+-- MEAL-143's feature. Thirty days is Stephen's call; the rollup below is what
+-- makes it survivable, because the aggregate answers every question the
+-- dashboard asks and none of the questions a single run answers.
+--
+-- Runs are NOT pruned. automation_runs is one row per run, not one per step, so
+-- the long tail is cheap and "how many runs did this store have in March" stays
+-- answerable forever.
+
+-- ── 1 · the daily aggregate ──────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.automation_daily (
+  day           date    NOT NULL,
+  store_id      text    NOT NULL,
+  rail          text,
+  phase         text,
+  step          text    NOT NULL,
+  outcome       text    NOT NULL,
+  code          text,
+  -- Bucketed, not exact: 200, 400, 403, 429, 500, 503 all matter individually,
+  -- and nothing is learned from separating 507 from 508. NULL stays NULL --
+  -- "no answer at all" is its own bucket and must not be folded into 5xx.
+  http_status   smallint,
+  rows          integer NOT NULL,
+  -- Summed, so an average can be recovered; storing a pre-divided mean makes
+  -- the rows unmergeable across any window but the one it was computed for.
+  duration_sum  bigint,
+  duration_rows integer,
+  attempts_sum  integer,
+  retried_rows  integer,
+  PRIMARY KEY (day, store_id, step, outcome, coalesce(rail, ''), coalesce(phase, ''), coalesce(code, ''), coalesce(http_status, -1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_automation_daily_store_day
+  ON public.automation_daily (store_id, day DESC);
+CREATE INDEX IF NOT EXISTS idx_automation_daily_day
+  ON public.automation_daily (day DESC);
+
+COMMENT ON TABLE public.automation_daily IS
+  'MEAL-219. One row per (day, store, step, outcome, rail, phase, code, status). Survives the 30-day prune of automation_steps.';
+
+-- ── 2 · roll one day up ──────────────────────────────────────────────────────
+--
+-- IDEMPOTENT. Re-running for the same day replaces that day's rows rather than
+-- adding to them, so a retry, a manual re-run, or two schedulers firing at once
+-- cannot double a count. That matters more than speed here: a rollup that
+-- double-counts is worse than no rollup, because it looks authoritative.
+
+CREATE OR REPLACE FUNCTION public.roll_up_automation_day(target_day date)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  inserted integer;
+BEGIN
+  DELETE FROM public.automation_daily WHERE day = target_day;
+
+  INSERT INTO public.automation_daily (
+    day, store_id, rail, phase, step, outcome, code, http_status,
+    rows, duration_sum, duration_rows, attempts_sum, retried_rows
+  )
+  SELECT
+    target_day,
+    s.store_id,
+    s.rail,
+    s.phase,
+    s.step,
+    s.outcome,
+    s.code,
+    s.http_status,
+    count(*),
+    sum(s.duration_ms)                                   FILTER (WHERE s.duration_ms IS NOT NULL),
+    count(*)                                             FILTER (WHERE s.duration_ms IS NOT NULL),
+    sum(s.attempts)                                      FILTER (WHERE s.attempts IS NOT NULL),
+    -- The number worth watching after the retry policy shipped: how often a
+    -- request needed asking twice.
+    count(*)                                             FILTER (WHERE s.attempts > 1)
+  FROM public.automation_steps s
+  WHERE s.occurred_at >= target_day::timestamptz
+    AND s.occurred_at <  (target_day + 1)::timestamptz
+  GROUP BY s.store_id, s.rail, s.phase, s.step, s.outcome, s.code, s.http_status;
+
+  GET DIAGNOSTICS inserted = ROW_COUNT;
+  RETURN inserted;
+END;
+$$;
+
+-- ── 3 · roll up, THEN prune ──────────────────────────────────────────────────
+--
+-- One function so the order cannot be got wrong. Pruning a day that was never
+-- rolled up destroys it, and that is not recoverable, so the prune only ever
+-- touches days the rollup has already covered.
+
+CREATE OR REPLACE FUNCTION public.prune_automation_steps(keep_days integer DEFAULT 30)
+RETURNS TABLE (rolled_days integer, deleted_rows bigint)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  cutoff  date := (now() AT TIME ZONE 'UTC')::date - keep_days;
+  d       date;
+  days    integer := 0;
+  gone    bigint  := 0;
+BEGIN
+  -- Every day that still has raw rows older than the cutoff, oldest first.
+  FOR d IN
+    SELECT DISTINCT (occurred_at AT TIME ZONE 'UTC')::date AS day
+    FROM public.automation_steps
+    WHERE occurred_at < cutoff::timestamptz
+    ORDER BY 1
+  LOOP
+    PERFORM public.roll_up_automation_day(d);
+    days := days + 1;
+  END LOOP;
+
+  DELETE FROM public.automation_steps WHERE occurred_at < cutoff::timestamptz;
+  GET DIAGNOSTICS gone = ROW_COUNT;
+
+  RETURN QUERY SELECT days, gone;
+END;
+$$;
+
+COMMENT ON FUNCTION public.prune_automation_steps IS
+  'MEAL-219. Rolls every day older than keep_days into automation_daily, THEN deletes it. Idempotent; safe to re-run.';
+
+-- ── 4 · yesterday, every day ─────────────────────────────────────────────────
+--
+-- Rolling yesterday up nightly means the aggregate is never more than a day
+-- behind, so the dashboard can read `daily` for old windows and `steps` for
+-- recent ones without a gap between them. The prune is separate and slower-
+-- moving; scheduling both is in the checklist item that ships with this.

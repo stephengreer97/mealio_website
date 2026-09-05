@@ -7,7 +7,8 @@ import { log } from '@/lib/logger';
 //
 // Batched per-step telemetry for one add-to-cart run:
 //   { runId, configVersion?, appVersion?, platform?, steps: [
-//       { seq, step, outcome, code?, durationMs?, itemIndex?, detail? }, ...
+//       { seq, step, outcome, code?, durationMs?, itemIndex?, detail?,
+//         httpStatus?, phase?, attempts?, rail? }, ...
 //   ] }
 //
 // This is the funnel that answers "what percent of HEB adds confirmed on the
@@ -29,6 +30,30 @@ const STEPS = new Set([
   'confirm', 'reconcile', 'blocked', 'run_summary',
 ]);
 const OUTCOMES = new Set(['ok', 'empty', 'timeout', 'error', 'blocked', 'skipped']);
+
+// MEAL-219. The network rail's four phases, which `step` cannot express.
+//
+// Validated but NOT used to skip a row: an unknown phase is stored as-is, the
+// same way an unknown `code` is. The row is worth more than the field, and a
+// newer client shipping a fifth phase must not have its rows silently dropped
+// by an older deploy — that loses exactly the rows worth having, at exactly the
+// moment something new is happening.
+const MAX_PHASE_LENGTH = 20;
+const MAX_RAIL_LENGTH = 40;
+
+// A status outside this is not a status. smallint tops out at 32767 and the
+// column would reject it, which would fail the whole batch rather than one row.
+const httpStatus = (v: unknown): number | null => {
+  const n = typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : null;
+  return n !== null && n >= 100 && n <= 599 ? n : null;
+};
+
+// Clamped, not trusted: this arrives from a script running in a page we do not
+// control, and smallint would reject anything past 32767 — failing the batch.
+const attempts = (v: unknown): number | null => {
+  const n = typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : null;
+  return n !== null && n >= 1 ? Math.min(n, 99) : null;
+};
 
 // MEAL-4's failure taxonomy. Deliberately NOT part of the row-skip guard below:
 // that guard `continue`s, so an older server meeting a newer client's ninth code
@@ -108,6 +133,11 @@ export async function POST(request: NextRequest) {
       duration_ms: int(raw?.durationMs),
       item_index: int(raw?.itemIndex),
       detail,
+      // MEAL-219. The store's own answer, and where in the run it happened.
+      http_status: httpStatus(raw?.httpStatus),
+      phase: str(raw?.phase, MAX_PHASE_LENGTH),
+      attempts: attempts(raw?.attempts),
+      rail: str(raw?.rail, MAX_RAIL_LENGTH),
       config_version: configVersion,
       app_version: appVersion,
       platform,

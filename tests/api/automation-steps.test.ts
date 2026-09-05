@@ -270,3 +270,79 @@ describe('POST /api/usage/automation/steps', () => {
     expect(res.status).toBe(500);
   });
 });
+
+// ── MEAL-219: the store's own answer, stored as a fact ──────────────────────
+//
+// Every rail computes an HTTP status and, until this ticket, dropped it at the
+// WebView boundary. These pin what the ingest does with the four new fields —
+// and, more importantly, what it refuses to do: reject a row over one of them.
+describe('POST /api/usage/automation/steps — request telemetry', () => {
+  let token: string;
+
+  beforeEach(async () => {
+    fakeDb.reset();
+    token = await createAccessToken('user-1', 'a@b.test');
+  });
+
+  const send = async (over: Record<string, unknown>) => {
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    return POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step({ step: 'search', outcome: 'error', ...over })]),
+    }));
+  };
+
+  it('stores status, phase, attempts and rail as columns', async () => {
+    await send({ httpStatus: 503, phase: 'search', attempts: 3, rail: 'heb' });
+    expect(upsertedRows()[0]).toMatchObject({
+      http_status: 503, phase: 'search', attempts: 3, rail: 'heb',
+    });
+  });
+
+  it('keeps NULL distinct from a 5xx', async () => {
+    // A request that got no answer at all — dropped, aborted — is a different
+    // fact from one the store answered badly, and folding them together is how
+    // "the store is down" and "we did not wait long enough" become one bar.
+    await send({ phase: 'search', attempts: 1 });
+    expect(upsertedRows()[0].http_status).toBeNull();
+  });
+
+  it('refuses a status that is not one', async () => {
+    // The column is smallint. A number past 32767 would be rejected by Postgres
+    // and fail the WHOLE batch rather than one field, losing the run's funnel.
+    for (const bad of [0, -1, 99, 600, 99999, 'x', null]) {
+      await send({ httpStatus: bad });
+      expect(upsertedRows()[0].http_status).toBeNull();
+      fakeDb.reset();
+      token = await createAccessToken('user-1', 'a@b.test');
+    }
+  });
+
+  it('clamps attempts rather than passing an unbounded number through', async () => {
+    // This arrives from a script running in a page we do not control.
+    await send({ attempts: 100000 });
+    expect(upsertedRows()[0].attempts).toBe(99);
+  });
+
+  it('stores a phase it has never heard of instead of dropping the row', async () => {
+    // The rule the `code` field already follows, for the same reason: a newer
+    // client shipping a fifth phase must not have its rows silently deleted by
+    // an older deploy. That loses the rows most worth having at exactly the
+    // moment something new is happening.
+    const res = await send({ phase: 'checkout', httpStatus: 500 });
+    expect(res.status).toBe(200);
+    expect(upsertedRows()).toHaveLength(1);
+    expect(upsertedRows()[0].phase).toBe('checkout');
+    expect(upsertedRows()[0].http_status).toBe(500);
+  });
+
+  it('still stores a row that carries none of them', async () => {
+    // Every row written before this ticket, and every row from an older client.
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    const res = await POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step()]),
+    }));
+    expect(res.status).toBe(200);
+    expect(upsertedRows()).toHaveLength(1);
+    expect(upsertedRows()[0]).toMatchObject({ http_status: null, phase: null, attempts: null, rail: null });
+  });
+});
