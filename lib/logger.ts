@@ -109,6 +109,7 @@ export type EventType =
   | 'ADMIN:CREATOR_VIABILITY'   // the onboarding importability measurement (MEAL-81)
   | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
   | 'ADMIN:AUTOMATION_FUNNEL'   // per-store add-to-cart reliability dashboard
+  | 'ADMIN:IMPORT_SPEND'       // what imports cost, creator vs user (MEAL-222)
   // The per-run drilldown behind that dashboard (MEAL-143). Two events, because
   // they fail for different reasons and only one of them means a lost trace:
   // listing recent failing runs is a picker that can be retried, while a trace

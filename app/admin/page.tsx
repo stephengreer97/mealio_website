@@ -18,6 +18,7 @@ import type { ViabilityReport } from '@/lib/import/viability';
 import { pollConcern, pollStatus, type CreatorPollHealth, type PollStatusKind } from '@/lib/poll-health';
 import { daysSince, relativeTime } from '@/lib/relative-time';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
+import AdminImportSpend from '@/components/AdminImportSpend';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelChart';
 // The per-run drilldown (MEAL-143). Its own component and its own fetches: the
@@ -1525,7 +1526,18 @@ export default function AdminPage() {
         )}
 
         {/* Sync Tab — MEAL-90. One link, or a reviewed checklist. */}
-        {tab === 'sync' && <AdminSyncPanel creators={creators} />}
+        {tab === 'sync' && (
+          <>
+            <AdminSyncPanel creators={creators} />
+            {/* MEAL-222. What the imports on this tab have cost, split by who
+                ran them, with the median token shape that makes the estimate in
+                lib/import/cost.ts checkable rather than arguable. Here rather
+                than on Stats because it is about the thing this tab does, and
+                the operator deciding whether to sync fifty posts is the person
+                who should see what the last fifty cost. */}
+            <AdminImportSpend token={token() ?? ''} />
+          </>
+        )}
 
         {/* Where a synced recipe becomes live. Nothing published under a
             creator's name skips this tab any more (MEAL-91). */}
