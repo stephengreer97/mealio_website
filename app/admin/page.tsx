@@ -136,6 +136,25 @@ interface StoreFunnel {
   alertReasons: AlertReason[];
 }
 
+// MEAL-219. The request view, straight from lib/automation-requests.ts.
+interface RequestsResponse {
+  days: number;
+  since: string;
+  truncated: boolean;
+  rowsScanned: number;
+  stores: Array<{
+    storeId: string;
+    rails: string[];
+    requests: number;
+    statuses: Array<{ bucket: string; count: number }>;
+    okRate: number | null;
+    retryRate: number | null;
+    retrySuccessRate: number | null;
+    phases: Array<{ phase: string; requests: number; okRate: number | null; failures: number; p50: number | null; p95: number | null }>;
+    codes: Array<{ code: string; count: number }>;
+  }>;
+}
+
 interface FunnelResponse {
   days: number;
   since: string;
@@ -725,6 +744,10 @@ export default function AdminPage() {
   const [emailSearch, setEmailSearch] = useState('');
 
   const [funnel, setFunnel] = useState<FunnelResponse | null>(null);
+  // MEAL-219. The network rail's own view, kept beside the funnel rather than
+  // folded into it: the funnel measures a DOM run and its rows are still real.
+  const [requests, setRequests] = useState<RequestsResponse | null>(null);
+  const [requestsErr, setRequestsErr] = useState<string | null>(null);
   // 30 by default: the trend line and the week-over-week comparison both need a
   // window wider than the week being judged, and this is the view the ticket's
   // "is HEB worse than last week" question is actually asked from.
@@ -891,6 +914,18 @@ export default function AdminPage() {
     if (res.ok) setFunnel(await res.json());
   };
 
+  const loadRequests = async (days = funnelDays) => {
+    setRequestsErr(null);
+    const res = await fetch(`/api/admin/automation-requests?days=${days}`, {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok) { setRequests(data); return; }
+    // A 409 means the migration has not been run. That is a specific, fixable
+    // thing and the page should say which file, not render "something broke".
+    setRequestsErr(data?.error ?? 'Failed to load request telemetry');
+  };
+
   const loadAutomationConfig = async () => {
     const res = await fetch('/api/admin/automation-config', {
       headers: { Authorization: `Bearer ${token()}` },
@@ -946,7 +981,11 @@ export default function AdminPage() {
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
     if (t === 'email' && !emailStats) loadEmailStats();
-    if (t === 'automation') { if (!funnel) loadFunnel(); if (configVersions.length === 0) loadAutomationConfig(); }
+    if (t === 'automation') {
+      if (!funnel) loadFunnel();
+      if (!requests && !requestsErr) loadRequests();
+      if (configVersions.length === 0) loadAutomationConfig();
+    }
   };
 
   const loadBroadcasts = async () => {
@@ -2257,7 +2296,14 @@ export default function AdminPage() {
                       }
                     />
                     <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < DEFAULT_CONFIRM_RATE_THRESHOLD} />
-                    <Metric label="First-click confirm" value={pct(s.firstClickConfirmRate)} />
+                    {/* "First-click confirm" was here and is gone (MEAL-219).
+                        It was computed from `detail.attempt`, which only the
+                        DELETED click path ever set — so for every live store it
+                        was mathematically identical to the Confirm rate beside
+                        it. Two tiles, one number, presented as two signals.
+                        Retries are a real thing again and are measured properly
+                        in the Requests panel below, from the retry policy's own
+                        count. */}
                     {/* Blocks sit apart on purpose: they are excluded from every
                         rate to the left of here, because a WAF wall and a renamed
                         button need different people to fix them. */}
@@ -2423,6 +2469,112 @@ export default function AdminPage() {
               })}
             </div>
 
+            {/* ── Requests, by HTTP code (MEAL-219) ──────────────────────── */}
+            {/* Every store is on the network rail now, so every failure has a
+                status behind it. This panel is that status. It sits BELOW the
+                funnel rather than replacing it: the funnel's numbers are
+                computed over rows recorded under a DOM vocabulary that still
+                exists in the table, and those rows still answer the question
+                they were written for. */}
+            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+              <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
+                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Requests</h2>
+                <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#888' }}>
+                  What each store actually answered, which phase of the run asked, and whether
+                  retrying worked. Rows recorded before the MEAL-219 columns shipped carry none of
+                  this and are not counted here &mdash; a blank store means no instrumented traffic
+                  yet, not a healthy one.
+                </p>
+              </div>
+
+              {requestsErr && (
+                <div style={{ padding: '16px 24px', background: '#fffbeb', color: '#92400e', fontSize: '13px' }}>
+                  {requestsErr}
+                </div>
+              )}
+
+              {!requestsErr && requests && requests.stores.length === 0 && (
+                <div style={{ padding: '16px 24px', color: '#888', fontSize: '13px' }}>
+                  No request rows in the last {requests.days} days.
+                </div>
+              )}
+
+              {!requestsErr && requests?.truncated && (
+                <div style={{ padding: '10px 24px', background: '#fffbeb', color: '#92400e', fontSize: '12px' }}>
+                  Showing a prefix, not the whole window &mdash; the read hit its page ceiling.
+                </div>
+              )}
+
+              {(requests?.stores ?? []).map((s) => (
+                <div key={s.storeId} style={{ padding: '18px 24px', borderTop: '1px solid #f6f6f6' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                    <strong style={{ fontSize: '15px' }}>{s.storeId}</strong>
+                    {/* The implementation, not the banner: fifteen Albertsons
+                        banners share one, and a rail-level regression otherwise
+                        reads as fifteen unrelated store problems. */}
+                    {s.rails.length > 0 && (
+                      <span style={{ fontSize: '12px', color: '#888' }}>rail: {s.rails.join(', ')}</span>
+                    )}
+                    <span style={{ fontSize: '12px', color: '#888' }}>{s.requests} requests</span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', margin: '10px 0' }}>
+                    <Metric label="Served" value={pct(s.okRate)} bad={s.okRate != null && s.okRate < 0.95} />
+                    <Metric label="Asked twice" value={pct(s.retryRate)} bad={s.retryRate != null && s.retryRate > 0.1} />
+                    {/* Null when nothing was retried. "0%" would read as a
+                        broken retry policy; it means there was nothing to retry. */}
+                    <Metric label="Retry worked" value={pct(s.retrySuccessRate)} />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                    {s.statuses.map((b) => (
+                      <span
+                        key={b.bucket}
+                        title={b.bucket === 'none' ? 'No answer at all — dropped or aborted. Not a 5xx.' : undefined}
+                        style={{
+                          fontSize: '12px', padding: '3px 8px', borderRadius: '6px',
+                          background: b.bucket === '2xx' || b.bucket === '3xx' ? '#ecfdf5'
+                            : b.bucket === '429' || b.bucket === '403' || b.bucket === '412' || b.bucket === '418' ? '#fffbeb'
+                            : b.bucket === 'none' ? '#f4f4f5' : '#fef2f2',
+                          color: b.bucket === '2xx' || b.bucket === '3xx' ? '#065f46'
+                            : b.bucket === 'none' ? '#52525b' : '#92400e',
+                        }}
+                      >
+                        {b.bucket} · {b.count}
+                      </span>
+                    ))}
+                  </div>
+
+                  <table style={{ width: '100%', fontSize: '13px', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', color: '#888' }}>
+                        <th style={{ padding: '4px 0' }}>Phase</th>
+                        <th>Requests</th><th>Served</th><th>Failures</th><th>p50</th><th>p95</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {s.phases.map((ph) => (
+                        <tr key={ph.phase} style={{ borderTop: '1px solid #f6f6f6' }}>
+                          <td style={{ padding: '5px 0' }}>{ph.phase}</td>
+                          <td>{ph.requests}</td>
+                          <td>{pct(ph.okRate)}</td>
+                          <td>{ph.failures || ''}</td>
+                          <td>{ph.p50 != null ? `${ph.p50}ms` : ''}</td>
+                          <td>{ph.p95 != null ? `${ph.p95}ms` : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  {s.codes.length > 0 && (
+                    <div style={{ marginTop: '8px', fontSize: '12px', color: '#888' }}>
+                      {s.codes.map((c) => `${c.code} ${c.count}`).join(' · ')}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
             {/* ── Per-run drilldown ──────────────────────────────────────── */}
             {/* Directly under the funnel, because it is the next question: the
                 funnel names the step a store is dying on and cannot show you a
@@ -2439,6 +2591,10 @@ export default function AdminPage() {
                   Partial overrides on top of the app&apos;s bundled defaults. Publishing creates a new
                   version and activates it; clients pick it up on their next launch. Keys the app
                   does not recognize, and values outside their safe range, are ignored by the client.
+                  {' '}<b>Selectors are no longer read by anything</b> — DOM automation was removed on
+                  2026-09-01 and the key is still parsed and validated, but nothing consumes it. The
+                  live levers are the per-store <code>networkSearch</code> / <code>networkAdd</code>
+                  {' '}switches and <code>flags.manualPrefetch</code>.
                 </p>
               </div>
 
@@ -2447,7 +2603,7 @@ export default function AdminPage() {
                   value={configDraft}
                   onChange={(e) => { setConfigMsg(null); setConfigDraft(e.target.value); }}
                   spellCheck={false}
-                  placeholder={'{\n  "stores": {\n    "albertsons": {\n      "selectors": { "atc": "button[aria-label^=Add]" }\n    }\n  }\n}'}
+                  placeholder={'{\n  "stores": {\n    "albertsons": {\n      "networkSearch": true,\n      "networkAdd": false\n    }\n  }\n}'}
                   style={{
                     width: '100%', minHeight: '220px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                     fontSize: '13px', padding: '12px', border: '1px solid #e0e0e0', borderRadius: '8px',
