@@ -60,7 +60,7 @@ export async function DELETE(request: NextRequest) {
           detail: `authored-meal read incomplete after ${authored.rows.length} rows`,
         });
         return NextResponse.json(
-          { error: 'Could not read all of your published meals. Nothing was deleted — please try again.' },
+          { error: 'Could not read all of your published meals. Nothing was deleted. Please try again.' },
           { status: 503 },
         );
       }

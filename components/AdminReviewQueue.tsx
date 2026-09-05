@@ -93,7 +93,7 @@ type Action = 'approve' | 'send-to-creator' | 'delete' | 'reclaim';
  * should know whether they can change their mind.
  */
 const HANDOFF_NOTE =
-  'Send to creator moves it to their own review queue — it shows up as a count on their Creator tab, ' +
+  'Send to creator moves it to their own review queue. It shows up as a count on their Creator tab, ' +
   'and on the portal here. It stays yours to take back until they decide it.';
 
 const card: React.CSSProperties = {
@@ -259,13 +259,13 @@ export default function AdminReviewQueue() {
       setNotice(
         `Published ${data.published.map((meal: { name: string }) => meal.name).join(', ')}.` +
         (data.emailsSent > 0
-          ? ` ${data.emailsSent === 1 ? 'One email' : `${data.emailsSent} emails`} sent — one per creator, listing everything of theirs that went live.`
+          ? ` ${data.emailsSent === 1 ? 'One email' : `${data.emailsSent} emails`} sent, one per creator, listing everything of theirs that went live.`
           : ''),
       );
     }
     if (action === 'reclaim' && landed) setNotice('Back in your queue. It is yours to decide again.');
     if (action === 'send-to-creator' && landed) {
-      setNotice('Sent. It is on their Creator tab now, as a count they will see next time they open the app — and you can take it back below until they decide it.');
+      setNotice('Sent. It is on their Creator tab now, as a count they will see next time they open the app, and you can take it back below until they decide it.');
     }
     if (action === 'delete' && landed) setNotice('Declined. It will not be imported again by a later sync or poll.');
     // Only a decision that happened closes what the operator was reading. A
@@ -296,7 +296,7 @@ export default function AdminReviewQueue() {
     setBusy(false);
     if (!res.ok) { setError(data.error || 'Those edits could not be saved.'); return; }
     setEditingId(null);
-    setNotice('Saved. It is still waiting on you — editing does not publish it.');
+    setNotice('Saved. It is still waiting on you, and editing does not publish it.');
     await load();
   };
 
@@ -384,13 +384,13 @@ export default function AdminReviewQueue() {
           */}
           <p style={{ margin: 0, fontSize: '12px', color: '#92400e', lineHeight: 1.6 }}>
             The normal queue asks only for drafts marked as yours, plus the ones an operator handed to a creator. Any
-            other pending draft — everything the poller queued for a creator, waiting on a review queue that was never
-            built — is in no queue at all and nothing shows it to anybody. This mode asks for them by status alone.{' '}
+            other pending draft, everything the poller queued for a creator waiting on a review queue that was never
+            built, is in no queue at all and nothing shows it to anybody. This mode asks for them by status alone.{' '}
             {totals?.truncated
               ? <>
                   It reads a page at a time, and <strong>this page is full</strong>: {totals.allPending} drafts are
                   pending in all and these are the oldest {totals.limit}. Decide or take back some of them and the
-                  rest come into reach — until then the ones past {totals.limit} are as unreachable as they were
+                  rest come into reach. Until then the ones past {totals.limit} are as unreachable as they were
                   before this mode existed.
                 </>
               : <>
@@ -421,7 +421,7 @@ export default function AdminReviewQueue() {
               learns from a follower that nine recipes went live under their name
               is the failure this checkbox exists to keep one click away. */}
           <p style={{ margin: '6px 0 0 24px', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-            One email per creator per approval — tick several and approve them together and they get one message
+            One email per creator per approval. Tick several and approve them together and they get one message
             listing all of them, not one each. It links to every meal and says how to edit or unpublish.
             Turning this off means the creator finds out from a follower.
           </p>
@@ -483,7 +483,7 @@ export default function AdminReviewQueue() {
         title={`Waiting on their creator (${handedOver.length})`}
         blurb="You sent these to the creator, and they are counted on that creator’s Creator tab until they approve,
           edit or decline them. Nothing here is live, and a later sync will not re-import the post because it is
-          already recorded as imported — so if one has been sitting a while, take it back and decide it here."
+          already recorded as imported, so if one has been sitting a while, take it back and decide it here."
         rows={handedOver.map(stranded)}
         busy={busy}
         onReclaim={id => act('reclaim', [id])}
@@ -661,7 +661,7 @@ function DraftRow({
                         data-field={blocker.field}
                       >
                         <span style={{ fontWeight: 700 }}>{FIELD_LABELS[blocker.field]}</span>
-                        {' — '}
+                        {': '}
                         {blocker.message}
                       </li>
                     ))}
@@ -671,7 +671,7 @@ function DraftRow({
 
               <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#6b7280' }} data-testid="draft-summary">
                 {summaryLine(row.summary)}{' '}
-                {row.summary.needALook === 0 && 'Nothing to check — the notes below fields are what a flagged one looks like.'}
+                {row.summary.needALook === 0 && 'Nothing to check. The notes below fields are what a flagged one looks like.'}
               </p>
 
               <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>

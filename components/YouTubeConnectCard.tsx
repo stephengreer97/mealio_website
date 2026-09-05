@@ -61,7 +61,7 @@ const FAILURE_COPY: Record<string, string> = {
   account: 'We could not read a channel from that Google account. Make sure it has a YouTube channel, then try again.',
   store: 'We could not store that connection. Try again.',
   'consent-write':
-    'Your channel is connected, but we could not save your choice about editing descriptions. It is off — set it ' +
+    'Your channel is connected, but we could not save your choice about editing descriptions. It is off. Set it ' +
     'from the card below.',
   'consent-withdraw':
     'We could not record that you no longer want Mealio editing your descriptions, so nothing was changed. Try again.',
@@ -336,7 +336,7 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
           <p className="text-sm text-amber-900 leading-relaxed">
             <span className="font-semibold">Mealio cannot read this channel’s captions.</span> Any video where
-            the recipe is spoken rather than written out in the description gets skipped — there is nothing for
+            the recipe is spoken rather than written out in the description gets skipped. There is nothing for
             us to read. YouTube shares captions only with the channel owner, and only through a permission this
             connection was not given.
           </p>
@@ -353,7 +353,7 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
               to have been warned, and to be told what still governs the edit. */}
           <p className="text-[11px] text-amber-800/80 mt-2 leading-relaxed">
             Google has no permission for captions alone, so its screen will mention editing your videos. Mealio
-            still edits nothing unless you tick the box below — that is a separate setting, off unless you turn
+            still edits nothing unless you tick the box below. That is a separate setting, off unless you turn
             it on, and this does not turn it on.
           </p>
         </div>
@@ -406,7 +406,7 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
                 named, because a creator who has just ticked that box is about to
                 grant description-editing on their own channel, and a button that
                 said only "Connect YouTube" would be where that disappeared. */}
-            {busy ? 'Opening Google…' : consent ? 'Connect YouTube — and edit descriptions' : 'Connect YouTube'}
+            {busy ? 'Opening Google…' : consent ? 'Connect YouTube and edit descriptions' : 'Connect YouTube'}
           </button>
           {/* Says which screen the creator is about to meet, and it differs by
               the tick: unticked, Google asks only to view the account
@@ -416,7 +416,7 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
               takes — which is the mistake this ticket was auditing for. */}
           <p className="text-[11px] text-gray-400 mt-2">
             {consent
-              ? 'Google will ask for permission to see, edit and delete your YouTube videos — that one permission is the ' +
+              ? 'Google will ask for permission to see, edit and delete your YouTube videos. That one permission is the ' +
                 'only way it lets us add a link to a description. We use it to read your videos and to add that link, ' +
                 'nothing else.'
               : 'Google will ask for permission to view your YouTube account. We use it to read your videos’ titles and ' +

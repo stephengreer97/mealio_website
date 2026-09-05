@@ -476,7 +476,7 @@ export async function pollCreator(
         kind: 'blocked',
         detail:
           `${creator.display_name}'s ${SOURCE_LABELS[source]} source has started refusing us after ` +
-          `previously working: ${catalog.detail} Their posts will stop arriving until this clears — ` +
+          `previously working: ${catalog.detail} Their posts will stop arriving until this clears. ` +
           'this is a conversation to have with them, not a source to quietly drop.',
       });
       log({ event: 'POLL:SOURCE', status: 'error', userId: creator.id, reason: 'newly blocked', detail: signals[0].detail });
@@ -573,7 +573,7 @@ export async function pollCreator(
       detail:
         `${creator.display_name}'s ${SOURCE_LABELS[source]} source produced ${unseen.length} new items in ` +
         `one poll; ${POLL_ITEM_CAP} were processed and ${overCap} wait for the next cycle. A creator does ` +
-        'not publish that fast — a site re-publishing its archive after a migration looks exactly like ' +
+        'not publish that fast. A site re-publishing its archive after a migration looks exactly like ' +
         'this, and so does a feed whose item ids have changed.',
     });
   }
@@ -590,7 +590,7 @@ export async function pollCreator(
       detail:
         `Every one of the ${catalog.entries.length} items in ${creator.display_name}'s ` +
         `${SOURCE_LABELS[source]} listing is new to us, though we have polled it before. That is what a ` +
-        'changed item id looks like, not a burst of publishing — check whether the feed URL, the feed ' +
+        'changed item id looks like, not a burst of publishing. Check whether the feed URL, the feed ' +
         'itself or the permalinks have moved before trusting the drafts this produced.',
     });
   }
@@ -736,7 +736,7 @@ async function markSeen(
       published_at: entry.publishedAt,
       status: 'seen',
       detail:
-        'Already published when this source was connected. Marked seen without importing — ' +
+        'Already published when this source was connected. Marked seen without importing. ' +
         'back-catalog import is a separate, deliberate action.',
       updated_at: at,
     })),

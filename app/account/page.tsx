@@ -530,7 +530,7 @@ export default function AccountPage() {
                   Works with Kroger, Ralphs, Fred Meyer, King Soopers, Harris Teeter, and 10+ more banners.
                 </p>
                 <p className="text-xs mt-1.5" style={{ color: 'var(--text-3)' }}>
-                  Note: If you shop at a Kroger-family brand (Ralphs, Fred Meyer, etc.), you may see a Kroger login screen during sign-in — this is normal and expected.
+                  Note: If you shop at a Kroger-family brand (Ralphs, Fred Meyer, etc.), you may see a Kroger login screen during sign-in. That is normal and expected.
                 </p>
               </div>
             ) : (
@@ -538,7 +538,7 @@ export default function AccountPage() {
                 <div className="rounded-xl p-4 mb-4" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
                   <p className="font-semibold text-sm mb-0.5" style={{ color: '#14532d' }}>Connected</p>
                   {Object.keys(krogerLocations).length === 0 ? (
-                    <p className="text-sm" style={{ color: '#166534' }}>No stores selected yet — search below.</p>
+                    <p className="text-sm" style={{ color: '#166534' }}>No stores selected yet. Search below.</p>
                   ) : (
                     <div className="space-y-1">
                       {Object.entries(krogerLocations).map(([sid, loc]) => (

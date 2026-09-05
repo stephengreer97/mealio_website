@@ -96,7 +96,7 @@ describe('draft-form — notices flag only the exceptions', () => {
   it('tells a creator to add a field the source did not have', () => {
     expect(noticeFor(state({ level: 'red', derivation: 'absent', evidence: null }, false))).toEqual({
       kind: 'absent',
-      text: 'Not found in the source — add this',
+      text: 'Not found in the source. Add this',
       evidence: null,
     });
   });
@@ -120,11 +120,11 @@ describe('draft-form — notices flag only the exceptions', () => {
       level: 'amber',
       derivation: 'generated',
       evidence: null,
-      reason: 'No usable image on the page — this is a stock photo we picked.',
+      reason: 'No usable image on the page, so this is a stock photo we picked.',
     }));
     expect(notice).toEqual({
       kind: 'generated',
-      text: 'No usable image on the page — this is a stock photo we picked.',
+      text: 'No usable image on the page, so this is a stock photo we picked.',
       evidence: null,
     });
   });
@@ -138,7 +138,7 @@ describe('draft-form — notices flag only the exceptions', () => {
       level: 'green',
       derivation: 'generated',
       evidence: null,
-      reason: 'No usable image on the page — this is a stock photo we picked.',
+      reason: 'No usable image on the page, so this is a stock photo we picked.',
     }));
     expect(notice?.kind).toBe('generated');
     expect(summarise({
@@ -209,7 +209,7 @@ describe('draft-form — serves', () => {
     expect(result.confidence.serves.evidence).toBe('2 1/2 cups guacamole');
     expect(noticeFor(states.serves)).toEqual({
       kind: 'absent',
-      text: 'We found this but couldn’t use it — add this.',
+      text: 'We found this but couldn’t use it. Add this.',
       evidence: '2 1/2 cups guacamole',
     });
   });
@@ -263,7 +263,7 @@ describe('draft-form — filling the form from a real import', () => {
 
     expect(values.tags).toEqual(['Mexican', 'No Cook', 'Appetizer']);
     // Dropping two silently would read as the import having missed them.
-    expect(values.tagsNote).toBe('We found 5 tags and kept the first 3 — the form takes 3.');
+    expect(values.tagsNote).toBe('We found 5 tags and kept the first 3. The form takes 3.');
   });
 
   it('says nothing about tags when none were dropped', () => {

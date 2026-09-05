@@ -286,7 +286,7 @@ export async function disconnectPlatform(
   } catch (err) {
     log({ event: 'CREATOR:SOURCE_DISCONNECT', status: 'error', userId: user.userId, email: user.email, error: err });
     return NextResponse.json(
-      { error: `We could not disconnect that account. It is still connected — please try again.` },
+      { error: `We could not disconnect that account. It is still connected. Please try again.` },
       { status: 500 },
     );
   }

@@ -445,23 +445,23 @@ function reasonFor(
   region: MatchRegion = 'recipe',
   amount: AmountCheck = 'exempt',
 ): string {
-  if (!hasSpan) return 'No evidence span — the value is not traceable to the source.';
+  if (!hasSpan) return 'No evidence span. The value is not traceable to the source.';
   if (match === 'none') return 'Evidence span was not found in the page we fetched.';
   if (value === 'empty') return 'No value was extracted for this field.';
   if (value === 'unrelated') {
     return 'The evidence span is real, but it does not contain or support this value.';
   }
   if (region === 'page') {
-    return 'Found on the page but outside the recipe itself — it may have come from a reader ' +
+    return 'Found on the page but outside the recipe itself. It may have come from a reader ' +
       'comment or a related post, so check it.';
   }
   if (region === 'unnarrowed') {
     return 'Found on the page, but on this layout we could not tell the recipe apart from the ' +
-      'rest of it — so this could have come from anywhere on the page. Check it.';
+      'rest of it, so this could have come from anywhere on the page. Check it.';
   }
   if (amount === 'unstated') {
     return 'The product name checks out, but the amount and unit are not stated in the ' +
-      'evidence span — check them before this reaches a cart.';
+      'evidence span. Check them before this reaches a cart.';
   }
   if (value === 'exempt') {
     return derivation === 'inferred' || derivation === 'normalized'
@@ -481,7 +481,7 @@ function reasonFor(
   if (derivation === 'page-text') {
     return match === 'exact' ? 'Verbatim from the page.' : 'Near-verbatim from the page.';
   }
-  if (derivation === 'normalized') return 'Restated from the source — check the amount and unit.';
+  if (derivation === 'normalized') return 'Restated from the source. Check the amount and unit.';
   return 'Inferred from the source as a whole, not stated outright.';
 }
 
@@ -530,7 +530,7 @@ export function assessField(
       match: 'none',
       score: 0,
       evidence: null,
-      reason: shown || 'Chosen by Mealio — not found on the page.',
+      reason: shown || 'Chosen by Mealio, not found on the page.',
     };
   }
 

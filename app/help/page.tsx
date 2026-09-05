@@ -5,7 +5,7 @@ import BugReportForm from '@/components/BugReportForm';
 
 export const metadata: Metadata = {
   title: 'Help',
-  description: 'Find answers to common questions about Mealio — saving meals, adding ingredients to your cart, supported stores, and more.',
+  description: 'Find answers to common questions about Mealio: saving meals, adding ingredients to your cart, supported stores, and more.',
 };
 
 export default function HelpPage() {
@@ -77,7 +77,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>Creating an account</h3>
             <p style={p}>
-              Go to <a href="/" style={a}>mealio.co</a> and click the <strong>Sign Up</strong> tab. Enter your email address and choose a password, then click <strong>Create Account</strong>. You will receive a verification email — click the link inside to confirm your address before logging in.
+              Go to <a href="/" style={a}>mealio.co</a> and click the <strong>Sign Up</strong> tab. Enter your email address and choose a password, then click <strong>Create Account</strong>. You will receive a verification email. Click the link inside to confirm your address before logging in.
             </p>
 
             <h3 style={h3}>How Mealio adds ingredients to your cart</h3>
@@ -85,13 +85,13 @@ export default function HelpPage() {
               Mealio saves your meals and adds their ingredients to your online grocery cart. There are two ways to do this, depending on where you shop:
             </p>
             <ul style={ul}>
-              <li style={li}><strong>On the web</strong> — for Kroger and its sister banners, connect your Kroger account once and add ingredients to your cart directly from <a href="/my-meals" style={a}>mealio.co</a>.</li>
-              <li style={li}><strong>In the mobile app</strong> — for H-E-B, Walmart, the Albertsons family, and more, the Mealio app opens the store in a secure in-app browser and adds your ingredients automatically.</li>
+              <li style={li}><strong>On the web</strong>: for Kroger and its sister banners, connect your Kroger account once and add ingredients to your cart directly from <a href="/my-meals" style={a}>mealio.co</a>.</li>
+              <li style={li}><strong>In the mobile app</strong>: for H-E-B, Walmart, the Albertsons family, and more, the Mealio app opens the store in a secure in-app browser and adds your ingredients automatically.</li>
             </ul>
 
             <h3 style={h3}>Logging in</h3>
             <p style={p}>
-              Log in with your email and password on <a href="/signin" style={a}>mealio.co</a> or in the mobile app. Your login persists for 90 days — you should not need to sign in again unless you explicitly log out or clear your data.
+              Log in with your email and password on <a href="/signin" style={a}>mealio.co</a> or in the mobile app. Your login persists for 90 days. You should not need to sign in again unless you explicitly log out or clear your data.
             </p>
 
             <h3 style={h3}>Two-factor authentication (creators and admins)</h3>
@@ -138,7 +138,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>Getting the app</h3>
             <p style={p}>
-              Download Mealio for iOS from the App Store and sign in with your Mealio account. An Android version is coming soon to Google Play. Your saved meals and subscription carry over automatically — they are stored on Mealio's servers, not on any single device.
+              Download Mealio for iOS from the App Store and sign in with your Mealio account. An Android version is coming soon to Google Play. Your saved meals and subscription carry over automatically. They are stored on Mealio's servers, not on any single device.
             </p>
 
             <h3 style={h3}>Choosing a store</h3>
@@ -148,12 +148,12 @@ export default function HelpPage() {
 
             <h3 style={h3}>Signing in to the store</h3>
             <p style={p}>
-              The first time you add to cart at a store, Mealio opens that store's site in a secure in-app browser and asks you to log in with your grocery account. Mealio never sees or stores your store credentials — you log in directly with the retailer, and the store keeps you signed in for next time.
+              The first time you add to cart at a store, Mealio opens that store's site in a secure in-app browser and asks you to log in with your grocery account. Mealio never sees or stores your store credentials. You log in directly with the retailer, and the store keeps you signed in for next time.
             </p>
 
             <h3 style={h3}>Adding ingredients automatically</h3>
             <p style={p}>
-              Once you're signed in, Mealio searches for each ingredient and adds it to your cart. A progress indicator shows how many items are done. You can send the job to the background — a floating progress bubble keeps you posted while you use the rest of the app — and Mealio notifies you when it finishes.
+              Once you're signed in, Mealio searches for each ingredient and adds it to your cart. A progress indicator shows how many items are done. You can send the job to the background, where a floating progress bubble keeps you posted while you use the rest of the app, and Mealio notifies you when it finishes.
             </p>
             <p style={p}>
               When the run completes, Mealio shows a cart summary so you can confirm everything made it in before you check out on the store's site.
@@ -203,7 +203,7 @@ export default function HelpPage() {
               ))}
             </div>
             <p style={p}>
-              Meals are stored separately per store. A meal saved at H-E-B will not appear when you switch to Walmart, since product names and availability differ across stores. We're always adding support for more retailers — if a store you use isn't listed, let us know.
+              Meals are stored separately per store. A meal saved at H-E-B will not appear when you switch to Walmart, since product names and availability differ across stores. We're always adding support for more retailers. If a store you use isn't listed, let us know.
             </p>
           </section>
 
@@ -223,9 +223,9 @@ export default function HelpPage() {
               Discover has three sub-tabs:
             </p>
             <ul style={ul}>
-              <li style={li}><strong>Trending</strong> — meals ranked by a score weighted toward recent saves (last 30 days count most)</li>
-              <li style={li}><strong>New</strong> — meals sorted by publish date, newest first</li>
-              <li style={li}><strong>Following</strong> — meals from the creators you follow, newest first</li>
+              <li style={li}><strong>Trending</strong>: meals ranked by a score weighted toward recent saves (last 30 days count most)</li>
+              <li style={li}><strong>New</strong>: meals sorted by publish date, newest first</li>
+              <li style={li}><strong>Following</strong>: meals from the creators you follow, newest first</li>
             </ul>
 
             <h3 style={h3}>Searching Discover</h3>
@@ -299,7 +299,7 @@ export default function HelpPage() {
                   <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
                     {plan.features.map(f => (
                       <li key={f} style={{ fontSize: '13px', color: '#555', padding: '4px 0', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                        <span style={{ color: '#dd0031', fontWeight: 700, flexShrink: 0 }}>—</span> {f}
+                        <span style={{ color: '#dd0031', fontWeight: 700, flexShrink: 0 }}>•</span> {f}
                       </li>
                     ))}
                   </ul>
@@ -309,12 +309,12 @@ export default function HelpPage() {
 
             <h3 style={h3}>Upgrading to Full Access</h3>
             <p style={p}>
-              Go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Upgrade to Full Access</strong>. You will be taken to the checkout page. Both monthly and annual plans are available — the annual plan works out to about $4.17/month — billed as $49.99/year.
+              Go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Upgrade to Full Access</strong>. You will be taken to the checkout page. Both monthly and annual plans are available. The annual plan works out to about $4.17 a month, billed as $49.99 a year.
             </p>
 
             <h3 style={h3}>Managing or cancelling your subscription</h3>
             <p style={p}>
-              Go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Manage Subscription</strong> to open the billing portal, where you can update your payment method, view invoices, or cancel. Cancellation takes effect at the end of your current billing cycle — you retain Full Access until then.
+              Go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Manage Subscription</strong> to open the billing portal, where you can update your payment method, view invoices, or cancel. Cancellation takes effect at the end of your current billing cycle. You retain Full Access until then.
             </p>
 
             <h3 style={h3}>Comped Full Access for creators</h3>
@@ -336,19 +336,19 @@ export default function HelpPage() {
 
             <h3 style={h3}>How to apply</h3>
             <p style={p}>
-              Log in, then visit <a href="/creator/apply" style={a}>mealio.co/creator/apply</a>. Fill in your display name and any social media or website links so we can find your work. Applications are reviewed manually — you will hear back via email.
+              Log in, then visit <a href="/creator/apply" style={a}>mealio.co/creator/apply</a>. Fill in your display name and any social media or website links so we can find your work. Applications are reviewed manually. You will hear back by email.
             </p>
 
             <h3 style={h3}>Publishing meals</h3>
             <p style={p}>
-              Once approved, go to <a href="/creator" style={a}>mealio.co/creator</a> — you will also find a <strong>Creator Portal</strong> link under <strong>Account</strong> in the navigation. Click <strong>Publish New Meal</strong> and fill in:
+              Once approved, go to <a href="/creator" style={a}>mealio.co/creator</a>. You will also find a <strong>Creator Portal</strong> link under <strong>Account</strong> in the navigation. Click <strong>Publish New Meal</strong> and fill in:
             </p>
             <ul style={ul}>
               <li style={li}><strong>Meal name</strong> (required)</li>
-              <li style={li}><strong>Ingredients</strong> with quantities (required) — the product name is used as the cart search term automatically</li>
+              <li style={li}><strong>Ingredients</strong> with quantities (required). The product name is used as the cart search term automatically</li>
               <li style={li}><strong>Photo</strong> (optional but strongly recommended)</li>
               <li style={li}><strong>Recipe instructions</strong> (optional)</li>
-              <li style={li}><strong>Recipe URL</strong> (optional) — link to the original recipe on your website or blog</li>
+              <li style={li}><strong>Recipe URL</strong> (optional): a link to the original recipe on your website or blog</li>
               <li style={li}><strong>Difficulty</strong> (optional, 1–5)</li>
             </ul>
             <p style={p}>
@@ -365,7 +365,7 @@ export default function HelpPage() {
               Each quarter, 50% of Mealio's subscription revenue is distributed to active Creator Partners. Your share is based entirely on a single rolling 12-month factor:
             </p>
             <ul style={ul}>
-              <li style={li}><strong>Saves over the last 12 months</strong> — your meals saved in the last 365 days as a percentage of all creator meal saves over the same rolling 12-month window</li>
+              <li style={li}><strong>Saves over the last 12 months</strong>: your meals saved in the last 365 days as a percentage of all creator meal saves over the same rolling 12-month window</li>
             </ul>
             <p style={p}>
               Your Creator Portal shows these numbers in real time, including the exact formula breakdown. Payouts are issued quarterly via Tremendous for amounts above $25. Recipients choose their preferred payout method (bank transfer, PayPal, Venmo, gift cards, etc.) when claiming.
@@ -388,10 +388,10 @@ export default function HelpPage() {
               This can happen when:
             </p>
             <ul style={ul}>
-              <li style={li}>The ingredient name doesn't match what the store sells — try editing the meal with a simpler or more generic product name</li>
-              <li style={li}>You are not signed in to the grocery store — make sure your store session is active (in the mobile app, log in again when prompted)</li>
+              <li style={li}>The ingredient name doesn't match what the store sells. Try editing the meal with a simpler or more generic product name</li>
+              <li style={li}>You are not signed in to the grocery store. Make sure your store session is active (in the mobile app, log in again when prompted)</li>
               <li style={li}>The item is out of stock or not available in your area</li>
-              <li style={li}>The store's website changed its layout — contact us so we can update the integration</li>
+              <li style={li}>The store's website changed its layout. Contact us so we can update the integration</li>
             </ul>
             <p style={p}>
               Items that can't be added are flagged so you can pick an alternative product or skip them.

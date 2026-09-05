@@ -224,7 +224,7 @@ export async function appendMealioLink(
       status: 409,
       error:
         'This meal did not come from one of this creator’s YouTube videos, so there is no video to write ' +
-        'to. Only meals imported from a video are offered — there is no title matching here.',
+        'to. Only meals imported from a video are offered. There is no title matching here.',
     };
   }
   if (draft.status !== 'approved' && draft.status !== 'edited') {

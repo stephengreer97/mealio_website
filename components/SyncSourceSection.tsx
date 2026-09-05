@@ -415,7 +415,7 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
       if (!res.ok) {
         setDisconnecting(false);
         const data = await res.json().catch(() => null);
-        setError(data?.error || `We could not disconnect your ${label}. It is still connected — please try again.`);
+        setError(data?.error || `We could not disconnect your ${label}. It is still connected. Please try again.`);
         return;
       }
       setConnected(current => ({ ...current, [source]: false }));
@@ -842,7 +842,7 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
         if (!mounted.current) return;
         setError(
           data.error
-          || 'That is as far as this run got in one go. Everything read so far is saved — press Carry on to finish it.',
+          || 'That is as far as this run got in one go. Everything read so far is saved. Press Carry on to finish it.',
         );
         return;
       }
@@ -863,13 +863,13 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
         return;
       }
       if (next.status === 'running') {
-        setError('This import is already running somewhere else — another tab, or Mealio finishing it off.');
+        setError('This import is already running somewhere else: another tab, or Mealio finishing it off.');
         return;
       }
       await new Promise(resolve => setTimeout(resolve, POLL_DELAY_MS));
       if (!mounted.current) return;
     }
-    setError('That import is taking a while. It is saved — press Carry on to keep going.');
+    setError('That import is taking a while. It is saved. Press Carry on to keep going.');
   };
 
   const startImport = async () => {
@@ -1009,7 +1009,7 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
         {source === 'none' ? (
           <p className="text-sm text-gray-600 leading-relaxed" data-testid="sync-off">
             Mealio is not reading anything you publish. Pick where you publish above whenever you would like it to
-            start — recipes already published on Mealio stay exactly where they are.
+            start. Recipes already published on Mealio stay exactly where they are.
           </p>
         ) : source === 'website' ? (
           <>
@@ -1117,7 +1117,7 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
           <p className="text-sm text-gray-600 leading-relaxed mb-4">
             Syncing starts from today: <strong className="font-semibold text-gray-800">nothing you posted before
             now is imported on its own</strong>. Tick anything from your back catalogue you would like as a draft
-            too — up to {CREATOR_SELECTION_MAX} at a time.
+            too, up to {CREATOR_SELECTION_MAX} at a time.
           </p>
 
           {loadingCatalog && <p className="text-sm text-gray-500">Reading what you have published…</p>}

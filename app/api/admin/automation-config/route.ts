@@ -121,7 +121,7 @@ export async function POST(request: NextRequest) {
     // A concurrent publish took nextVersion (unique index on version). The admin
     // retries; nothing is half-written because the insert is a single statement.
     log({ event: 'ADMIN:AUTOMATION_CONFIG', status: 'error', userId: admin.userId, error: insErr, detail: 'publish' });
-    return NextResponse.json({ error: 'Failed to publish — retry' }, { status: 409 });
+    return NextResponse.json({ error: 'Failed to publish. Retry.' }, { status: 409 });
   }
 
   log({ event: 'ADMIN:AUTOMATION_CONFIG', status: 'success', userId: admin.userId, detail: `published v${nextVersion}` });

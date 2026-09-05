@@ -56,7 +56,7 @@ export default function BugReportForm() {
       <textarea
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        placeholder="Describe the problem — what you were doing and what happened."
+        placeholder="Describe the problem. What were you doing, and what happened?"
         rows={5}
         disabled={status === 'sending'}
         style={{

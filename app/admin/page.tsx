@@ -182,17 +182,17 @@ interface ConfigVersion {
 // as "—" rather than 0% keeps "we have no data" visually distinct from "everything
 // failed", which is the difference between ignoring a store and paging someone.
 function pct(v: number | null): string {
-  return v == null ? '—' : `${(v * 100).toFixed(1)}%`;
+  return v == null ? 'n/a' : `${(v * 100).toFixed(1)}%`;
 }
 
 function ms(v: number | null): string {
-  if (v == null) return '—';
+  if (v == null) return 'n/a';
   return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`;
 }
 
 /** A signed percentage-point change, or "—" when either side had no denominator. */
 function delta(v: number | null): string {
-  if (v == null) return '—';
+  if (v == null) return 'n/a';
   const pp = v * 100;
   if (Math.abs(pp) < 0.05) return 'no change';
   return `${pp > 0 ? '+' : '−'}${Math.abs(pp).toFixed(1)} pts`;
@@ -301,7 +301,7 @@ const VERDICT_COLORS: Record<string, string> = {
  * mistaken for a number.
  */
 const orDash = (value: number | null | undefined) =>
-  value === null || value === undefined ? '—' : value.toLocaleString();
+  value === null || value === undefined ? 'n/a' : value.toLocaleString();
 
 /** What each name an API puts in `incomplete` means to a human. */
 const READ_LABELS: Record<string, string> = {
@@ -328,9 +328,9 @@ function IncompleteBanner({ names, children }: { names: string[]; children?: Rea
       data-testid="incomplete-banner"
       style={{ padding: '14px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}
     >
-      <strong>Incomplete data — this screen is showing less than it was asked for.</strong>{' '}
+      <strong>Incomplete data. This screen is showing less than it was asked for.</strong>{' '}
       These reads could not be completed: {names.map(n => READ_LABELS[n] ?? n).join(', ')}.{' '}
-      {children ?? 'The affected figures are shown as “—” rather than as a number that would be understated.'}{' '}
+      {children ?? 'The affected figures are shown as “n/a” rather than as a number that would be understated.'}{' '}
       Retry, and if it persists check the server log.
     </div>
   );
@@ -455,7 +455,7 @@ function PollHealthPanel({ health, now }: { health: CreatorPollHealth; now: numb
   if (kind === 'unconfigured' && !health.lastPolledAt && health.draftedCount === 0) {
     return (
       <p data-testid={`poll-health-${health.creatorId}`} style={{ margin: '4px 0 16px', fontSize: '12px', color: '#aaa' }}>
-        No source is being polled for this creator — nothing here is broken, there is just nothing to report yet.
+        No source is being polled for this creator. Nothing here is broken, there is just nothing to report yet.
       </p>
     );
   }
@@ -493,7 +493,7 @@ function PollHealthPanel({ health, now }: { health: CreatorPollHealth; now: numb
         <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
           {health.lastNewItemAt
             ? kind === 'silent'
-              ? 'Polling is fine and this source is producing nothing — the failure no other column shows.'
+              ? 'Polling is fine and this source is producing nothing: the failure no other column shows.'
               : `First seen ${exactly(health.lastNewItemAt)}`
             : 'Polling has never met a post here. Normal for a source only just set up.'}
         </div>
@@ -660,11 +660,11 @@ interface Stats {
  * operator-facing character: a zero looks like an answer, and payouts get read off
  * it. A dash cannot be mistaken for a number.
  */
-const figure = (value: number | null) => (value === null ? '—' : value.toLocaleString());
+const figure = (value: number | null) => (value === null ? 'n/a' : value.toLocaleString());
 
 /** Same, signed, for the net-new-paid tiles. */
 const signedFigure = (value: number | null) =>
-  value === null ? '—' : `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
+  value === null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toLocaleString()}`;
 
 /** What each name in `stats.incomplete` means to a human. */
 const INCOMPLETE_LABELS: Record<string, string> = {
@@ -1193,10 +1193,10 @@ export default function AdminPage() {
                 <tbody>
                   {applications.map(app => (
                     <tr key={app.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '12px 16px', color: '#333' }}>{app.user_profiles?.email ?? '—'}</td>
+                      <td style={{ padding: '12px 16px', color: '#333' }}>{app.user_profiles?.email ?? 'n/a'}</td>
                       <td style={{ padding: '12px 16px', fontWeight: 500 }}>{app.display_name}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{app.phone || '—'}</td>
-                      <td style={{ padding: '12px 16px', color: '#555', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app.find_us || '—'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555' }}>{app.phone || 'n/a'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app.find_us || 'n/a'}</td>
                       {/* A real site with real recipes is the most useful single
                           signal for approving an application, so the four links
                           are visible here rather than only after approval. */}
@@ -1214,7 +1214,7 @@ export default function AdminPage() {
                             </a>
                           ))}
                           {PLATFORM_SOURCES.every(s => !app[SOURCE_COLUMNS[s] as keyof Application]) && (
-                            <span style={{ color: '#aaa' }}>—</span>
+                            <span style={{ color: '#aaa' }}>n/a</span>
                           )}
                         </div>
                       </td>
@@ -1264,7 +1264,7 @@ export default function AdminPage() {
                 read, both used to render as a confident "nothing is configured". */}
             <IncompleteBanner names={creatorsIncomplete}>
               Creators whose poll health could not be read are counted as “not read”
-              rather than as having no source — the two look identical on a row and mean
+              rather than as having no source. The two look identical on a row and mean
               opposite things.
             </IncompleteBanner>
 
@@ -1408,7 +1408,7 @@ export default function AdminPage() {
                               </a>
                             ) : (
                               <span style={{ fontSize: '12px', color: '#bbb', flex: 1 }}>
-                                {connected ? 'no link — read through the connection' : 'no link'}
+                                {connected ? 'no link, read through the connection' : 'no link'}
                               </span>
                             )}
                             {checkable && (
@@ -1443,7 +1443,7 @@ export default function AdminPage() {
                                     Feed found via <strong>{report.feed.via}</strong> ({report.feed.kind}):{' '}
                                     <a href={report.feed.url} target="_blank" rel="noopener noreferrer nofollow" style={{ color: '#2563eb' }}>{report.feed.url}</a>
                                   </div>
-                                  <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px' }}>Most recent entries — confirm these are this creator&apos;s:</div>
+                                  <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px' }}>Most recent entries. Confirm these are this creator&apos;s:</div>
                                   <ol style={{ margin: '0 0 10px', paddingLeft: '18px' }}>
                                     {report.feed.entries.slice(0, 5).map(entry => (
                                       <li key={entry.id} style={{ fontSize: '12px', color: '#555', padding: '2px 0' }}>
@@ -1552,8 +1552,8 @@ export default function AdminPage() {
                   {meals.map(meal => (
                     <tr key={meal.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
                       <td style={{ padding: '12px 16px', fontWeight: 500 }}>{meal.name}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.creator_name || meal.author || '—'}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.difficulty ?? '—'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.creator_name || meal.author || 'n/a'}</td>
+                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.difficulty ?? 'n/a'}</td>
                       <td style={{ padding: '12px 16px', color: '#555' }}>{Number(meal.trending_score).toFixed(1)}</td>
                       <td style={{ padding: '12px 16px' }}>
                         <button
@@ -1585,10 +1585,10 @@ export default function AdminPage() {
                     partial. */}
                 {stats.incomplete.length > 0 && (
                   <div style={{ marginBottom: '20px', padding: '14px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
-                    <strong>Incomplete data — do not pay out from this screen.</strong>{' '}
+                    <strong>Incomplete data. Do not pay out from this screen.</strong>{' '}
                     These reads could not be completed:{' '}
                     {stats.incomplete.map(k => INCOMPLETE_LABELS[k] ?? k).join(', ')}. The
-                    affected figures are shown as “—” rather than as a number that would be
+                    affected figures are shown as “n/a” rather than as a number that would be
                     understated. Retry, and if it persists check the server log for
                     ADMIN:STATS.
                   </div>
@@ -1704,14 +1704,14 @@ export default function AdminPage() {
                 <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden', marginBottom: '24px' }}>
                   <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
                     <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#222' }}>Profit-Share Leaderboard</h2>
-                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>Creator saves over the rolling last 12 months — sorted by share of pool</p>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#888' }}>Creator saves over the rolling last 12 months, sorted by share of pool</p>
                   </div>
                   {stats.leaderboard === null ? (
                     /* The read was short, so the shares are wrong for everybody — not
                        just small. Showing the table anyway is how a creator gets
                        under-paid by a number that looked plausible. */
                     <p style={{ padding: '32px 24px', color: '#b91c1c', textAlign: 'center', fontSize: '13px', margin: 0 }}>
-                      Leaderboard unavailable — the creator-save read could not be completed,
+                      Leaderboard unavailable. The creator-save read could not be completed,
                       so every share below it would be understated. Nothing is shown rather
                       than something partial. Retry before paying out.
                     </p>
@@ -1788,7 +1788,7 @@ export default function AdminPage() {
                     <tbody>
                       {emailStats.campaigns === null ? (
                         <tr><td colSpan={7} style={{ padding: '20px', textAlign: 'center', color: '#b91c1c' }}>
-                          Funnel unavailable — the send log could not be read in full, so every
+                          Funnel unavailable. The send log could not be read in full, so every
                           rate below it would be computed over a biased slice. Nothing is shown
                           rather than something partial.
                         </td></tr>
@@ -1883,7 +1883,7 @@ export default function AdminPage() {
                 <div style={{ marginTop: '16px', padding: '14px 16px', background: '#f8f9fa', borderRadius: '8px', fontSize: '13px' }}>
                   <div style={{ fontWeight: 600, color: '#222', marginBottom: '6px' }}>
                     Dry run: {storageDryRunResult.orphanCount} orphan{storageDryRunResult.orphanCount !== 1 ? 's' : ''} found
-                    — ~{(storageDryRunResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB
+                    , about {(storageDryRunResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB
                   </div>
                   {storageDryRunResult.wouldBlock && (
                     <div style={{ margin: '0 0 8px', padding: '10px 12px', background: '#fff4e5', border: '1px solid #f0b37e', borderRadius: '6px', color: '#8a4b08', fontWeight: 600 }}>
@@ -1897,7 +1897,7 @@ export default function AdminPage() {
                     <div data-testid="storage-dry-run-warnings" style={{ margin: '0 0 8px', padding: '10px 12px', background: '#fff4e5', border: '1px solid #f0b37e', borderRadius: '6px', color: '#8a4b08' }}>
                       {storageDryRunResult.ageFilterAvailable === false && (
                         <div style={{ fontWeight: 600 }}>
-                          Age filter unavailable — a photo uploaded moments ago cannot be told from an
+                          Age filter unavailable. A photo uploaded moments ago cannot be told from an
                           abandoned one, and can still be deleted by this sweep.
                         </div>
                       )}
@@ -1915,7 +1915,7 @@ export default function AdminPage() {
                     </div>
                   )}
                   {storageDryRunResult.orphanCount === 0 ? (
-                    <div style={{ color: '#16a34a' }}>No orphans — storage is clean.</div>
+                    <div style={{ color: '#16a34a' }}>No orphans. Storage is clean.</div>
                   ) : (
                     <div style={{ maxHeight: '160px', overflowY: 'auto', marginTop: '8px' }}>
                       {storageDryRunResult.paths.map(p => (
@@ -1955,13 +1955,13 @@ export default function AdminPage() {
               </div>
               {photoBackfillResult && (
                 <div data-testid="photo-backfill-result" style={{ marginTop: '16px', padding: '14px 16px', background: photoBackfillResult.complete ? '#f5f3ff' : '#fffbeb', borderRadius: '8px', fontSize: '13px', color: photoBackfillResult.complete ? '#5b21b6' : '#92400e', fontWeight: 600 }}>
-                  {photoBackfillResult.complete ? 'Done' : 'Partial run'} — {photoBackfillResult.processed} resolved, {photoBackfillResult.skipped} skipped (already permanent or unchanged), {photoBackfillResult.errors} errors
+                  {photoBackfillResult.complete ? 'Done' : 'Partial run'}: {photoBackfillResult.processed} resolved, {photoBackfillResult.skipped} skipped (already permanent or unchanged), {photoBackfillResult.errors} errors
                   {' '}({photoBackfillResult.total} proxy URLs found)
                   {/* The sentence that was missing. A batch of 500 out of 1200 used to
                       read simply as "Done". */}
                   {!photoBackfillResult.complete && (
                     <div style={{ marginTop: '6px', fontWeight: 400 }}>
-                      {photoBackfillResult.remaining.toLocaleString()} still to do — this run is capped at{' '}
+                      {photoBackfillResult.remaining.toLocaleString()} still to do. This run is capped at{' '}
                       {photoBackfillResult.batchLimit.toLocaleString()} rows. Run it again.
                       {!photoBackfillResult.scanComplete && ' The scan was also truncated, so the total above is a floor.'}
                     </div>
@@ -1988,10 +1988,10 @@ export default function AdminPage() {
               </div>
               {backfillResult && (
                 <div data-testid="hash-backfill-result" style={{ marginTop: '16px', padding: '14px 16px', background: backfillResult.complete ? '#e6f9ed' : '#fffbeb', borderRadius: '8px', fontSize: '13px', color: backfillResult.complete ? '#1a7a3a' : '#92400e', fontWeight: 600 }}>
-                  {backfillResult.complete ? 'Done' : 'Partial run'} — {backfillResult.processed} hashed, {backfillResult.skipped} skipped, {backfillResult.errors} errors (of {backfillResult.total} total files)
+                  {backfillResult.complete ? 'Done' : 'Partial run'}: {backfillResult.processed} hashed, {backfillResult.skipped} skipped, {backfillResult.errors} errors (of {backfillResult.total} total files)
                   {!backfillResult.complete && (
                     <div style={{ marginTop: '6px', fontWeight: 400 }}>
-                      {backfillResult.remaining.toLocaleString()} still to do — this run is capped at{' '}
+                      {backfillResult.remaining.toLocaleString()} still to do. This run is capped at{' '}
                       {backfillResult.batchLimit.toLocaleString()} files. Run it again.
                       {!backfillResult.scanComplete && ' The scan was also truncated, so the total above is a floor.'}
                     </div>
@@ -2152,14 +2152,14 @@ export default function AdminPage() {
                 <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
                   <strong>Runs being walled off:</strong> {funnel.blockedAlerting.join(', ')}. A large share of
                   these stores&apos; runs hit a WAF or robot wall. Nothing to the left of the WAF tile can show
-                  this — blocked clicks are excluded from those rates on purpose — so judge these stores on
+                  this (blocked clicks are excluded from those rates on purpose), so judge these stores on
                   terminal success, not on their confirm rate.
                 </div>
               )}
 
               {funnel && funnel.truncated && (
                 <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
-                  Showing a partial window — the row cap was hit. Every number below is an
+                  Showing a partial window. The row cap was hit. Every number below is an
                   undercount. Narrow the range or filter to one store.
                 </div>
               )}
@@ -2170,12 +2170,12 @@ export default function AdminPage() {
                 <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
                   <strong>Funnel has no middle for:</strong> {funnel.partialInstrumentation.join(', ')}.
                   No <code>search</code>, <code>candidates</code>, <code>add_click</code> or{' '}
-                  <code>confirm</code> rows at all — so the funnel is{' '}
+                  <code>confirm</code> rows at all, so the funnel is{' '}
                   <code>login_check → (nothing) → reconcile</code>. Two known causes: the parallel and
                   pre-search add pools emit no per-item steps (MEAL-122, and they are on for HEB,
                   Walmart and Albertsons), and Kroger adds through the public API rather
                   than the WebView, so it reports no steps at all. Either way a clean funnel here means{' '}
-                  <em>no data</em>, not no failures — judge these stores on terminal success and items
+                  <em>no data</em>, not no failures. Judge these stores on terminal success and items
                   added, not on the step table.
                 </div>
               )}
@@ -2239,7 +2239,7 @@ export default function AdminPage() {
                           coverage, and only a number that is always there can be
                           read as one. */}
                       {' · '}
-                      <span title="Runs that finished without reading the cart. Their item counts are unchecked — the cart diff is the only thing that has ever disagreed with a run.">
+                      <span title="Runs that finished without reading the cart. Their item counts are unchecked. The cart diff is the only thing that has ever disagreed with a run.">
                         {s.runsUnverified} unverified
                       </span>
                     </span>
@@ -2268,7 +2268,7 @@ export default function AdminPage() {
                     />
                     <Metric
                       label="Dying on"
-                      value={worst.kind === 'dying' ? worst.step : '—'}
+                      value={worst.kind === 'dying' ? worst.step : 'n/a'}
                       bad={worst.kind === 'dying'}
                       note={worstNote}
                     />
@@ -2361,7 +2361,7 @@ export default function AdminPage() {
                         </div>
                       ) : (
                         <p style={{ fontSize: '13px', color: '#aaa', margin: 0, maxWidth: '260px' }}>
-                          Needs a 14-day window or wider — a seven-day fetch has no prior week to
+                          Needs a 14-day window or wider. A seven-day fetch has no prior week to
                           compare against, and half a week of data would invent a regression.
                         </p>
                       )}
@@ -2371,20 +2371,20 @@ export default function AdminPage() {
                   {s.coverage.partialInstrumentation ? (
                     <p style={{ fontSize: '13px', color: '#92400e', margin: '0 0 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px' }}>
                       This store reported no <code>search</code>, <code>candidates</code>, <code>add_click</code> or{' '}
-                      <code>confirm</code> rows at all — the parallel-add blind spot (MEAL-122), or a store
+                      <code>confirm</code> rows at all: the parallel-add blind spot (MEAL-122), or a store
                       that never runs the WebView engine. Not a flawless run: whatever is below cannot tell
                       you where this store is dying.
                     </p>
                   ) : s.coverage.missingSteps.length > 0 ? (
                     <p style={{ fontSize: '12px', color: '#999', margin: '0 0 12px' }}>
-                      No rows for {s.coverage.missingSteps.join(', ')} in this window — either the run
+                      No rows for {s.coverage.missingSteps.join(', ')} in this window. Either the run
                       never got that far, or that pool does not report.
                     </p>
                   ) : null}
 
                   {s.steps.length === 0 ? (
                     <p style={{ fontSize: '13px', color: '#888', margin: 0 }}>
-                      No step telemetry at all in this window — a store that adds through the public API,
+                      No step telemetry at all in this window: a store that adds through the public API,
                       a pool that reports nothing, or a build that predates step reporting. The runs above
                       are real; there is simply nothing to break down.
                     </p>
@@ -2394,7 +2394,7 @@ export default function AdminPage() {
                         <thead>
                           <tr style={{ textAlign: 'left', color: '#888', fontSize: '12px' }}>
                             <th style={{ padding: '6px 8px' }}>Step</th>
-                            <th style={{ padding: '6px 8px' }} title="Rows where the automation got to try — blocked rows excluded">Attempted</th>
+                            <th style={{ padding: '6px 8px' }} title="Rows where the automation got to try, blocked rows excluded">Attempted</th>
                             <th style={{ padding: '6px 8px' }}>OK</th>
                             <th style={{ padding: '6px 8px' }}>Failures</th>
                             <th style={{ padding: '6px 8px' }} title="WAF/robot walls; never counted as a failure">Blocked</th>
@@ -2432,7 +2432,7 @@ export default function AdminPage() {
                                   </span>
                                 )}
                               </td>
-                              <td style={{ padding: '6px 8px', color: st.blocked > 0 ? '#92400e' : '#ccc' }}>{st.blocked || '—'}</td>
+                              <td style={{ padding: '6px 8px', color: st.blocked > 0 ? '#92400e' : '#ccc' }}>{st.blocked || 'n/a'}</td>
                               <td style={{ padding: '6px 8px' }}><CodeChips codes={st.codes} /></td>
                               <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p50DurationMs)}</td>
                               <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p95DurationMs)}</td>
@@ -2448,7 +2448,7 @@ export default function AdminPage() {
                     <CodeChips codes={s.failureCodes} empty="none in this window" />
                     {s.coverage.uncodedFailures > 0 && (
                       <span style={{ color: '#999' }}>
-                        — {s.coverage.uncodedFailures} of them predate the code taxonomy and can never be attributed.
+                        {s.coverage.uncodedFailures} of them predate the code taxonomy and can never be attributed.
                       </span>
                     )}
                   </div>
@@ -2458,7 +2458,7 @@ export default function AdminPage() {
                       <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>run_summary says</span>
                       <CodeChips codes={s.runSummaryCodes} />
                       <span style={{ color: '#999' }}>
-                        — the run&apos;s MOST FREQUENT code, not its most severe (MEAL-123). Three
+                        This is the run&apos;s MOST FREQUENT code, not its most severe (MEAL-123). Three
                         confirm_failed and one waf_block reports confirm_failed. Trust the per-step
                         codes above over this.
                       </span>
@@ -2530,7 +2530,7 @@ export default function AdminPage() {
                     {s.statuses.map((b) => (
                       <span
                         key={b.bucket}
-                        title={b.bucket === 'none' ? 'No answer at all — dropped or aborted. Not a 5xx.' : undefined}
+                        title={b.bucket === 'none' ? 'No answer at all: dropped or aborted. Not a 5xx.' : undefined}
                         style={{
                           fontSize: '12px', padding: '3px 8px', borderRadius: '6px',
                           background: b.bucket === '2xx' || b.bucket === '3xx' ? '#ecfdf5'
@@ -2591,7 +2591,7 @@ export default function AdminPage() {
                   Partial overrides on top of the app&apos;s bundled defaults. Publishing creates a new
                   version and activates it; clients pick it up on their next launch. Keys the app
                   does not recognize, and values outside their safe range, are ignored by the client.
-                  {' '}<b>Selectors are no longer read by anything</b> — DOM automation was removed on
+                  {' '}<b>Selectors are no longer read by anything.</b> DOM automation was removed on
                   2026-09-01 and the key is still parsed and validated, but nothing consumes it. The
                   live levers are the per-store <code>networkSearch</code> / <code>networkAdd</code>
                   {' '}switches and <code>flags.manualPrefetch</code>.
@@ -2644,7 +2644,7 @@ export default function AdminPage() {
                         </span>
                       )}
                       <span style={{ color: '#888' }}>{new Date(v.created_at).toLocaleString()}</span>
-                      <span style={{ color: '#666', flex: 1, minWidth: '160px' }}>{v.notes ?? '—'}</span>
+                      <span style={{ color: '#666', flex: 1, minWidth: '160px' }}>{v.notes ?? 'n/a'}</span>
                       <button
                         onClick={() => setConfigDraft(JSON.stringify(v.config, null, 2))}
                         style={{ border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#666' }}

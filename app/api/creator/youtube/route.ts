@@ -168,7 +168,7 @@ export async function DELETE(request: NextRequest) {
   if (consentError) {
     log({ event: 'CREATOR:SOURCE_DISCONNECT', status: 'error', userId: user.userId, email: user.email, error: consentError });
     return NextResponse.json(
-      { error: 'We could not disconnect that channel. Nothing was changed — please try again.' },
+      { error: 'We could not disconnect that channel. Nothing was changed. Please try again.' },
       { status: 500 },
     );
   }
@@ -182,7 +182,7 @@ export async function DELETE(request: NextRequest) {
   } catch (err) {
     log({ event: 'CREATOR:SOURCE_DISCONNECT', status: 'error', userId: user.userId, email: user.email, error: err });
     return NextResponse.json(
-      { error: 'We could not disconnect that channel. Mealio can no longer edit your descriptions, but the connection is still stored — please try again.' },
+      { error: 'We could not disconnect that channel. Mealio can no longer edit your descriptions, but the connection is still stored. Please try again.' },
       { status: 500 },
     );
   }

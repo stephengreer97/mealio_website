@@ -70,8 +70,8 @@ export const FLAGGED_FIELD_STYLE: React.CSSProperties = {
  */
 const FALLBACK_TEXT: Record<NoticeKind, string> = {
   adjusted: 'Adjusted from what the page said.',
-  unverified: 'We could not confirm this against the source — check it.',
-  absent: 'Not found in the source — add this.',
+  unverified: 'We could not confirm this against the source. Check it.',
+  absent: 'Not found in the source. Add this.',
   generated: 'We chose this rather than reading it.',
 };
 
@@ -119,7 +119,7 @@ export default function ImportFieldNotice({
       data-kind={notice.kind}
     >
       <span style={{ fontWeight: 700 }}>{fieldLabel}</span>
-      {' — '}
+      {': '}
       {text}
       {notice.evidence && (
         <>

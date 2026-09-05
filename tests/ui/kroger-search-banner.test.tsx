@@ -95,7 +95,7 @@ async function openPicker() {
 
 /** Types `term` into the "Other…" box and submits the re-search. */
 async function reSearch(term: string) {
-  fireEvent.click(screen.getByRole('button', { name: /Other — type a product name/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Other: type a product name/ }));
   fireEvent.change(screen.getByPlaceholderText(/e.g. Ground Beef/), { target: { value: term } });
   // The submit button is disabled at qty 0, which is the flow's default.
   fireEvent.click(screen.getByRole('button', { name: '+' }));
@@ -156,8 +156,8 @@ describe('an explanation for a search the user has replaced', () => {
  * search failed" one above the other, about two different requests.
  */
 describe('the same explanation on the cart review screen', () => {
-  const SELLS_IT_ELSEWHERE_LONG = /sells this, but not at the store you picked — try another store/i;
-  const DID_NOT_RESPOND_LONG = /this isn't a sign the product is missing/i;
+  const SELLS_IT_ELSEWHERE_LONG = /sells this, but not at the store you picked. Try another store/i;
+  const DID_NOT_RESPOND_LONG = /that isn't a sign the product is missing/i;
 
   /** Selects the meal, runs the cart search, and lands on the review screen. */
   async function openReview() {
@@ -171,7 +171,7 @@ describe('the same explanation on the cart review screen', () => {
 
   /** Types `term` into the "Other…" box and submits the re-search. */
   async function reSearchInReview(term: string) {
-    fireEvent.click(screen.getByRole('button', { name: /Other — type a product name/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Other: type a product name/ }));
     fireEvent.change(screen.getByPlaceholderText(/e.g. Ground Beef/), { target: { value: term } });
     fireEvent.click(screen.getByRole('button', { name: 'Add to Cart Only' }));
   }

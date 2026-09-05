@@ -199,7 +199,7 @@ export default function DraftEditor({
             value={form.difficulty ?? ''}
             onChange={e => set('difficulty', e.target.value ? Number(e.target.value) : null)}
           >
-            <option value="">—</option>
+            <option value="">none</option>
             {[1, 2, 3, 4, 5].map(level => <option key={level} value={level}>{level}</option>)}
           </select>
         </div>

@@ -560,7 +560,7 @@ async function uploadsPlaylistId(
       quotaUnits: YOUTUBE_QUOTA.channelsList,
       detail:
         `YouTube returned no uploads playlist for channel ${channelId}. That is what a channel with no ` +
-        'uploads looks like, and it is also what a grant for a different account looks like — ask the ' +
+        'uploads looks like, and it is also what a grant for a different account looks like. Ask the ' +
         'creator to reconnect if they do have videos.',
     };
   }
@@ -811,7 +811,7 @@ export async function fetchVideoSnippet(
       ok: false,
       detail:
         `The description YouTube returned for video ${videoId} is ${snippet.description.length} characters, ` +
-        `which is YouTube's own ${YOUTUBE_DESCRIPTION_MAX}-character maximum — a read that comes back exactly ` +
+        `which is YouTube's own ${YOUTUBE_DESCRIPTION_MAX}-character maximum. A read that comes back exactly ` +
         'at the limit cannot be told apart from one the API cut short, and writing it back would delete ' +
         'whatever sits past the cut. Nothing was written.',
     };
@@ -881,7 +881,7 @@ export function withMealioLink(description: string, mealUrl: string): Descriptio
         // separator: a blank description gets no separator, and a trailing
         // newline the trim removes makes the difference smaller still.
         `${next.length - description.length} more, ` +
-        `which is past YouTube's ${YOUTUBE_DESCRIPTION_MAX}-character limit. Nothing was written — trimming ` +
+        `which is past YouTube's ${YOUTUBE_DESCRIPTION_MAX}-character limit. Nothing was written, because trimming ` +
         "a creator's description to make room is a second edit nobody asked for.",
     };
   }
@@ -939,7 +939,7 @@ export async function updateVideoDescription(
       quotaUnits: 0,
       detail:
         `YouTube did not report a category for video ${snippet.videoId}, and \`videos.update\` replaces the ` +
-        'whole snippet — so writing now would re-file the video under People & Blogs. Nothing was written.',
+        'whole snippet, so writing now would re-file the video under People & Blogs. Nothing was written.',
     };
   }
 
@@ -1068,7 +1068,7 @@ export const CAPTIONS_MISSING_SCOPE_DETAIL =
   'This video’s description was too short to read a recipe from, and its captions could not be read: ' +
   'this YouTube connection was not given permission to read captions. Nothing is wrong with the video. ' +
   'Turn on “let Mealio read my captions” on the YouTube card in your creator portal, then import this ' +
-  `video from your catalogue — it ${CAPTIONS_NO_AUTO_RETRY}.`;
+  `video from your catalogue, and it ${CAPTIONS_NO_AUTO_RETRY}.`;
 
 /** What a caption fetch ended as, and why. See `CaptionsOutcome`. */
 export type CaptionsResult =

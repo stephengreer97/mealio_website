@@ -243,7 +243,7 @@ export default function ImportLinkBar({
             aria-hidden="true"
           />
           <p className="text-xs leading-relaxed" style={{ color: '#52525B' }}>
-            Reading {host} — fetching the page, then pulling the recipe out of it.
+            Reading {host}: fetching the page, then pulling the recipe out of it.
             This can take up to a minute. Carry on filling the form in if you like:
             anything you type while we read stays exactly as you typed it.
           </p>

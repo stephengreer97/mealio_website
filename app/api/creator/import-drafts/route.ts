@@ -181,7 +181,7 @@ export async function POST(request: NextRequest) {
       {
         error:
           'Recipes are approved one at a time. Approving a batch without reading it is exactly what the ' +
-          'per-field checks are for — open each one and decide it.',
+          'per-field checks are for. Open each one and decide it.',
       },
       { status: 400 },
     );

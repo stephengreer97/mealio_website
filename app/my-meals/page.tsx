@@ -2152,10 +2152,10 @@ function KrogerCartFlow({
                   <p className="text-xs font-medium" style={{ color: '#b45309' }}>⚠ Out of stock at this store</p>
                 )}
                 {showAutoSearchNotice && currentReview.reason === 'unavailable_at_store' && (
-                  <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} sells this, but not at the store you picked — try another store or search for something else</p>
+                  <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} sells this, but not at the store you picked. Try another store, or search for something else</p>
                 )}
                 {showAutoSearchNotice && currentReview.reason === 'search_error' && (
-                  <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item — this isn&apos;t a sign the product is missing. Try again in a moment.</p>
+                  <p className="text-xs font-medium" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item. That isn&apos;t a sign the product is missing. Try again in a moment.</p>
                 )}
                 {showAutoSearchNotice && currentReview.reason === 'no_results' && (
                   <p className="text-xs font-medium" style={{ color: 'var(--text-3)' }}>No products found for this search</p>
@@ -2227,7 +2227,7 @@ function KrogerCartFlow({
                           color: selectedSuggIdx === 'custom' ? 'var(--text-1)' : 'var(--text-3)',
                         }}
                       >
-                        {customSuggestions.length > 0 ? 'Try a different search…' : 'Other — type a product name…'}
+                        {customSuggestions.length > 0 ? 'Try a different search…' : 'Other: type a product name…'}
                       </button>
                       {selectedSuggIdx === 'custom' && (
                         <input
@@ -2634,7 +2634,7 @@ function ChooseProductsFlow({
                     <p className="text-xs mt-1" style={{ color: '#b45309' }}>{storeName} sells this, but not at the store you picked</p>
                   )}
                   {showAutoSearchNotice && currentResult.reason === 'search_error' && (
-                    <p className="text-xs mt-1" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item — try again in a moment</p>
+                    <p className="text-xs mt-1" style={{ color: '#b45309' }}>{storeName} search didn&apos;t respond for this item. Try again in a moment</p>
                   )}
                 </div>
 
@@ -2682,7 +2682,7 @@ function ChooseProductsFlow({
                           color: selectedSuggIdx === 'custom' ? 'var(--text-1)' : 'var(--text-3)',
                         }}
                       >
-                        {customSuggestions.length > 0 ? 'Try a different search…' : 'Other — type a product name…'}
+                        {customSuggestions.length > 0 ? 'Try a different search…' : 'Other: type a product name…'}
                       </button>
                       {selectedSuggIdx === 'custom' && (
                         <input
@@ -2730,7 +2730,7 @@ function ChooseProductsFlow({
                   </div>
                   {currentIngQty > 2 && (
                     <p className="text-sm font-semibold rounded-md px-3 py-2 border border-amber-400 bg-amber-50 text-amber-800">
-                      ⚠ {currentIngQty} is a lot for one item — does this come in a multipack or bulk size?
+                      ⚠ {currentIngQty} is a lot for one item. Does this come in a multipack or bulk size?
                     </p>
                   )}
                 </div>
@@ -3654,7 +3654,7 @@ export default function MyMealsPage() {
             </button>
             {!krogerConnected && !needsChoose && (
               <p className="text-xs px-3 py-1.5 rounded-xl text-center" style={{ background: 'rgba(0,0,0,0.6)', color: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(4px)', maxWidth: '320px' }}>
-                {selectedStore !== 'kroger' ? `You may see a Kroger login screen — ${storeName} uses the Kroger sign-in system.` : "You'll be prompted to sign in to Kroger."}
+                {selectedStore !== 'kroger' ? `You may see a Kroger login screen. ${storeName} uses the Kroger sign-in system.` : "You'll be prompted to sign in to Kroger."}
               </p>
             )}
           </div>

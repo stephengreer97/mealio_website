@@ -162,12 +162,12 @@ const TD: React.CSSProperties = { padding: '6px 8px' };
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
 function ms(v: number | null): string {
-  if (v == null) return '—';
+  if (v == null) return 'n/a';
   return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`;
 }
 
 function when(ts: string | null): string {
-  if (!ts) return '—';
+  if (!ts) return 'n/a';
   const t = Date.parse(ts);
   return Number.isFinite(t) ? new Date(t).toLocaleString() : ts;
 }
@@ -275,7 +275,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
         <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Run drilldown</h2>
         <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#888' }}>
           The funnel above is a set of rates and cannot show you a run. This lists recent runs that
-          were not a clean success and reads the whole ordered trace behind one of them — every step,
+          were not a clean success and reads the whole ordered trace behind one of them: every step,
           in the order the app reported it, with the failure code and the <code>detail</code> payload.
         </p>
       </div>
@@ -340,7 +340,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
           {list.listMaybeTruncated && (
             <div style={{ ...WARN, margin: '16px 0 0' }}>
               Showing the {list.limit} most recent matching runs and there are probably more. Narrow the
-              window or pick one store — this list is a way in, not a census.
+              window or pick one store. This list is a way in, not a census.
             </div>
           )}
 
@@ -349,9 +349,9 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
               No run in the last {list.days} day{list.days === 1 ? '' : 's'} matched.
               {list.filter === 'failing' && (list.partialAddsFiltered
                 ? ' That includes runs reporting outcome=success while adding fewer items than they were ' +
-                  'asked for — those are filtered server-side, so an empty list here means there were none.'
+                  'asked for. Those are filtered server-side, so an empty list here means there were none.'
                 : ' Note that a run reporting outcome=success while adding fewer items ' +
-                  'than it was asked for is not in this filter — PostgREST cannot compare two columns and the ' +
+                  'than it was asked for is not in this filter. PostgREST cannot compare two columns and the ' +
                   'partial_adds column is not applied to this database yet. Switch to “Every run” and look for ' +
                   'the PARTIAL badge, bearing in mind that is a page of recent runs of every kind rather than ' +
                   'a search.')}
@@ -383,12 +383,12 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                             {label.text}
                           </span>
                         </td>
-                        <td style={{ ...TD, color: '#666' }}>{r.status} / {r.outcome ?? '—'}</td>
+                        <td style={{ ...TD, color: '#666' }}>{r.status} / {r.outcome ?? 'n/a'}</td>
                         <td style={{ ...TD, color: '#666' }}>
-                          {r.items_added ?? '—'}/{r.items_requested ?? '—'}
+                          {r.items_added ?? 'n/a'}/{r.items_requested ?? 'n/a'}
                         </td>
                         <td style={{ ...TD, color: '#666' }}>
-                          v{r.config_version ?? '—'} · {r.app_version ?? '—'} · {r.platform ?? '—'}
+                          v{r.config_version ?? 'n/a'} · {r.app_version ?? 'n/a'} · {r.platform ?? 'n/a'}
                         </td>
                         <td style={TD}>
                           <button onClick={() => loadTrace(r.id)} style={{ ...CONTROL, cursor: 'pointer', padding: '3px 10px', fontSize: '12px' }}>
@@ -417,11 +417,11 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
             <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#999', fontFamily: MONO }}>{trace.run.id}</p>
             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginTop: '12px', fontSize: '13px', color: '#666' }}>
               <span>{trace.run.status} / {trace.run.outcome ?? 'no outcome'}</span>
-              <span>{trace.run.items_added ?? '—'}/{trace.run.items_requested ?? '—'} items added</span>
-              <span>{trace.run.meal_count ?? '—'} meal(s) · {trace.run.source ?? '—'}</span>
+              <span>{trace.run.items_added ?? 'n/a'}/{trace.run.items_requested ?? 'n/a'} items added</span>
+              <span>{trace.run.meal_count ?? 'n/a'} meal(s) · {trace.run.source ?? 'n/a'}</span>
               <span>
-                config v{trace.summary.versions.configVersions.join(', v') || '—'} · app{' '}
-                {trace.summary.versions.appVersions.join(', ') || '—'} · {trace.run.platform ?? '—'}
+                config v{trace.summary.versions.configVersions.join(', v') || 'n/a'} · app{' '}
+                {trace.summary.versions.appVersions.join(', ') || 'n/a'} · {trace.run.platform ?? 'n/a'}
               </span>
               <span>
                 {trace.read.stepsRead} step row{trace.read.stepsRead === 1 ? '' : 's'}
@@ -440,7 +440,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                     ? `${first.step} · seq ${first.seq}`
                     : first?.kind === 'clean' ? 'nothing failed'
                       : first?.kind === 'no_trace' ? 'no step rows'
-                        : 'unknown — trace incomplete'}
+                        : 'unknown, trace incomplete'}
                 </div>
                 <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>
                   {first?.kind === 'failed'
@@ -450,7 +450,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                     : first?.kind === 'incomplete'
                       ? 'the rows read are a prefix, so “first” is not a fact about this run'
                       : first?.kind === 'no_trace'
-                        ? 'instrumentation, not inactivity — see the note below'
+                        ? 'instrumentation, not inactivity. See the note below'
                         : 'every step reported ok or skipped'}
                 </div>
               </div>
@@ -459,7 +459,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                   run_summary says
                 </div>
                 <div style={{ fontSize: '16px', fontWeight: 700, color: '#666' }}>
-                  {trace.summary.runSummaryCode ?? (trace.summary.hasRunSummary ? 'no code' : '—')}
+                  {trace.summary.runSummaryCode ?? (trace.summary.hasRunSummary ? 'no code' : 'n/a')}
                 </div>
                 <div style={{ fontSize: '11px', color: '#999', marginTop: '2px', maxWidth: '280px' }}>
                   The run&apos;s most frequent code, not its most severe (MEAL-123). Where the two
@@ -469,7 +469,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                       counts beside it are: a dash that means "not reached" and a dash
                       that means "the run wrote no code" are different facts. */}
                   {trace.truncated && !trace.summary.hasRunSummary
-                    && ' · not reached — the terminal row is outside this prefix, so the dash is not a finding'}
+                    && ' · not reached. The terminal row is outside this prefix, so the gap is not a finding'}
                 </div>
               </div>
               <div>
@@ -491,7 +491,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                   Items missed
                 </div>
                 <div style={{ fontSize: '16px', fontWeight: 700, color: (trace.summary.itemsMissed ?? 0) > 0 ? '#b91c1c' : '#333' }}>
-                  {trace.summary.itemsMissed ?? '—'}
+                  {trace.summary.itemsMissed ?? 'n/a'}
                 </div>
                 <div style={{ fontSize: '11px', color: '#999', marginTop: '2px', maxWidth: '280px' }}>
                   {trace.summary.itemsMissed == null
@@ -518,7 +518,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
               // the read), and asserting "no steps at all" off a failed read is the
               // exact confusion this endpoint exists to refuse.
               <p style={{ fontSize: '13px', color: '#92400e', margin: 0, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px' }}>
-                No step rows arrived in this read, and the read was incomplete — see the banner above.
+                No step rows arrived in this read, and the read was incomplete. See the banner above.
                 That is a fact about the READ, not about the run: this says nothing either way about
                 whether the run reported steps, so do not read it as the MEAL-122 blind spot and do not
                 read it as an idle run. Re-open the trace.
@@ -528,8 +528,8 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                 This run reported no steps at all. That is a statement about instrumentation, not about
                 the run: the parallel and pre-search add pools emit no per-item rows (MEAL-122, on for
                 HEB, Walmart and Albertsons), and Kroger adds through the public API
-                without running the WebView engine. The run above is real —{' '}
-                {trace.run.items_added ?? '—'} of {trace.run.items_requested ?? '—'} items added — there
+                without running the WebView engine. The run above is real:{' '}
+                {trace.run.items_added ?? 'n/a'} of {trace.run.items_requested ?? 'n/a'} items added, and there
                 is simply nothing recorded about how it got there.
               </p>
             ) : (
@@ -539,7 +539,7 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                 {trace.steps.length > RENDER_CAP && !renderAll && (
                   <div style={{ ...WARN, margin: '0 0 12px' }}>
                     Drawing the first {RENDER_CAP} of {trace.steps.length} step rows. The API returned all{' '}
-                    {trace.steps.length} — nothing was dropped from the read — but {trace.steps.length} rows
+                    {trace.steps.length} (nothing was dropped from the read), but {trace.steps.length} rows
                     of table would hang this tab, so the TABLE stops at seq{' '}
                     {trace.steps[RENDER_CAP - 1]?.seq}. The rest are in the raw response:{' '}
                     <code>GET /api/admin/automation-runs/{trace.run.id}</code>.{' '}
@@ -578,12 +578,12 @@ export default function AdminRunDrilldown({ stores }: { stores: string[] }) {
                           <td style={{ ...TD, color: '#999', fontFamily: MONO }}>{s.seq}</td>
                           <td style={{ ...TD, fontWeight: 600 }}>{s.step}</td>
                           <td style={{ ...TD, color: outcomeColor(s) }}>{s.outcome}</td>
-                          <td style={{ ...TD, color: '#666' }}>{s.code ?? '—'}</td>
-                          <td style={{ ...TD, color: '#666' }}>{s.item_index ?? '—'}</td>
+                          <td style={{ ...TD, color: '#666' }}>{s.code ?? 'n/a'}</td>
+                          <td style={{ ...TD, color: '#666' }}>{s.item_index ?? 'n/a'}</td>
                           <td style={{ ...TD, color: '#666' }}>{ms(s.duration_ms)}</td>
                           <td style={{ ...TD, color: '#999', whiteSpace: 'nowrap' }}>{when(s.occurred_at)}</td>
                           <td style={{ ...TD, color: '#666', fontFamily: MONO, fontSize: '11px', maxWidth: '320px' }}>
-                            {detail ? <span title={detail}>{detail.length > 140 ? `${detail.slice(0, 140)}…` : detail}</span> : '—'}
+                            {detail ? <span title={detail}>{detail.length > 140 ? `${detail.slice(0, 140)}…` : detail}</span> : 'n/a'}
                           </td>
                         </tr>
                       );

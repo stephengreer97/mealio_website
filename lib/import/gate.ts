@@ -133,7 +133,7 @@ export async function classifySource(
       verdict: {
         verdict: 'no',
         reason:
-          `Page has only ${text.length} characters of readable text — too little to hold a ` +
+          `Page has only ${text.length} characters of readable text. That is too little to hold a ` +
           'recipe. Link-in-bio and landing pages look like this; link the recipe post itself.',
         source: 'no-content',
       },

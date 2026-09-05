@@ -165,7 +165,7 @@ export async function POST(request: NextRequest) {
     detail:
       report.outcome === 'partial'
         ? `${report.passed} of the ${report.checked} recent posts we read are recipes Mealio can import. We will ` +
-          'watch this site and turn new recipe posts into drafts for you to review — the rest we will leave ' +
+          'watch this site and turn new recipe posts into drafts for you to review. The rest we will leave ' +
           'alone. Nothing you have already published is imported automatically; pick those below.'
         : `${report.passed} of the ${report.checked} recent posts we read are recipes Mealio can import. From now ` +
           'on new posts sync automatically and arrive as drafts for you to review before anything goes live. ' +

@@ -56,7 +56,7 @@ const COPY: Record<SocialPlatform, CardCopy> = {
     label: 'Instagram',
     pitch:
       'Connecting lets Mealio read the captions on your posts and Reels, so a recipe you have already written ' +
-      'out can be imported instead of typed again. We cannot read what is only spoken in a video — if your ' +
+      'out can be imported instead of typed again. We cannot read what is only spoken in a video, so if your ' +
       'recipe lives in the voiceover rather than the caption, this will find very little. Instagram also ' +
       'requires a Professional (Business or Creator) account; personal accounts get no access at all.',
     button: 'Connect Instagram',
@@ -71,8 +71,8 @@ const COPY: Record<SocialPlatform, CardCopy> = {
     label: 'TikTok',
     pitch:
       'Connecting lets Mealio read the descriptions on your videos, so a recipe you have written out there can ' +
-      'be imported instead of typed again. TikTok gives apps the description and nothing else — no video file ' +
-      'and no transcript — so if your recipes are spoken rather than written, there is nothing here for us to ' +
+      'be imported instead of typed again. TikTok gives apps the description and nothing else, no video file ' +
+      'and no transcript, so if your recipes are spoken rather than written, there is nothing here for us to ' +
       'read, and that is a limit of TikTok rather than something we can improve.',
     button: 'Connect TikTok',
     connectedNote:
@@ -121,7 +121,7 @@ const FAILURE_COPY: Record<string, (label: string) => string> = {
    */
   unavailable: (label) =>
     `${label} would not connect that account. That usually means ${label} declined it rather than you ` +
-    `cancelling — a personal account it will not grant access to, or a permission that was turned down. ` +
+    `cancelling: a personal account it will not grant access to, or a permission that was turned down. ` +
     `Try again, and if it keeps happening tell us which account and we will look at what ${label} sent back.`,
   scope: () =>
     'That connection came back without permission to read your posts, so there would be nothing to import. ' +
@@ -308,7 +308,7 @@ export default function PlatformConnectCard({
               a client key, so the press could only ever produce a 500. */}
           {unconfigured ? (
             <p className="text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 leading-relaxed" data-testid={`unconfigured-${platform}`}>
-              {copy.label} syncing is not switched on here yet. Nothing is wrong with your account — get in touch
+              {copy.label} syncing is not switched on here yet. Nothing is wrong with your account. Get in touch
               and we will tell you when it is ready.
             </p>
           ) : (

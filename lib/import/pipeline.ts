@@ -263,7 +263,7 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       url,
       'gate',
       'link-in-bio',
-      'That is a link-in-bio page, which only holds links — there is no recipe on it to read. ' +
+      'That is a link-in-bio page, which only holds links. There is no recipe on it to read. ' +
         'Open the recipe itself and paste that link instead.',
       { platform },
     );

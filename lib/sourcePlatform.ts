@@ -33,7 +33,7 @@ export function captionGuidance(platform: SourcePlatform): CaptionGuidance {
       return {
         title: 'Add this link to your TikTok caption',
         body: 'Anyone who taps it can save the meal and send every ingredient straight to their grocery cart.',
-        note: 'TikTok only lets you edit a description for 7 days after posting, once per day — then it locks permanently. If the video is already up, add the link now.',
+        note: 'TikTok only lets you edit a description for 7 days after posting, once per day, then it locks permanently. If the video is already up, add the link now.',
       };
     case 'instagram':
       return {

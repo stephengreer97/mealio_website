@@ -182,7 +182,7 @@ export function publishBlockers(draft: {
 /** Shown on the Tags marker when the import found more than the form accepts. */
 export function tagsTrimmedNote(found: number, kept: number): string | null {
   if (found <= kept) return null;
-  return `We found ${found} tags and kept the first ${kept} — the form takes ${kept}.`;
+  return `We found ${found} tags and kept the first ${kept}. The form takes ${kept}.`;
 }
 
 /** Everything a successful import can write into the publish form. */
@@ -469,8 +469,8 @@ export function noticeFor(state: FieldState | null): FieldNotice | null {
     // page's only yield is "2 1/2 cups guacamole", which is a volume rather
     // than a head count. The span is the part they can act on.
     return quote
-      ? { kind: 'absent', text: 'We found this but couldn’t use it — add this.', evidence: quote }
-      : { kind: 'absent', text: 'Not found in the source — add this', evidence: null };
+      ? { kind: 'absent', text: 'We found this but couldn’t use it. Add this.', evidence: quote }
+      : { kind: 'absent', text: 'Not found in the source. Add this', evidence: null };
   }
 
   // Checked before the green shortcut below. A generated value is one we chose
@@ -502,8 +502,8 @@ export function noticeFor(state: FieldState | null): FieldNotice | null {
   return {
     kind: 'unverified',
     text: quote
-      ? 'We couldn’t find this in the source — check it.'
-      : 'Nothing in the source backed this up — check it.',
+      ? 'We couldn’t find this in the source. Check it.'
+      : 'Nothing in the source backed this up. Check it.',
     evidence: quote,
   };
 }
@@ -588,7 +588,7 @@ export function hostLabel(url: string): string {
 export function pathLabel(meta: ImportSuccess['meta']): string {
   if (meta.path === 'json-ld') return 'Read from the page’s structured recipe data.';
   if (meta.path === 'microdata') return 'Read from the page’s embedded recipe markup.';
-  return 'Read from the page text — no structured recipe data was published.';
+  return 'Read from the page text. No structured recipe data was published.';
 }
 
 // ── Rejection ────────────────────────────────────────────────────────────────
@@ -638,7 +638,7 @@ export function rejectionCopy(rejection: ImportRejection): RejectionCopy {
     return {
       heading: 'We couldn’t complete that import',
       detail: rejection.detail,
-      next: 'Nothing has been changed. Try again in a moment, or fill the form in below — your link is already in the Recipe URL box.',
+      next: 'Nothing has been changed. Try again in a moment, or fill the form in below. Your link is already in the Recipe URL box.',
     };
   }
 
@@ -647,7 +647,7 @@ export function rejectionCopy(rejection: ImportRejection): RejectionCopy {
     detail: rejection.detail,
     next:
       rejection.stage === 'gate'
-        ? 'If it is a recipe, fill the form in below — your link is already in the Recipe URL box.'
+        ? 'If it is a recipe, fill the form in below. Your link is already in the Recipe URL box.'
         : 'Fill the form in below instead. Nothing has been changed, and your link is already in the Recipe URL box.',
   };
 }

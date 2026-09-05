@@ -133,7 +133,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           {
             error:
-              'A meal from this link was published a moment ago — check your meals below before publishing it again.',
+              'A meal from this link was published a moment ago. Check your meals below before publishing it again.',
           },
           { status: 409 },
         );

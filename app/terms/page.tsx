@@ -81,7 +81,7 @@ export default function TermsPage() {
 
         <h3 id="4.3" style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>4.3 Exclusivity and Non-Compete Obligation</h3>
         <p>
-          By participating in the Creator Program, Creator Partners agree that, during the term of their participation, they will not enter into a partnership, sponsorship, affiliate arrangement, or any formal content-creation relationship with any application, platform, or service that substantially replicates or directly competes with the core functionality of Mealio — specifically, the automated addition of recipe-based grocery ingredients to online shopping carts ("Competing Service").
+          By participating in the Creator Program, Creator Partners agree that, during the term of their participation, they will not enter into a partnership, sponsorship, affiliate arrangement, or any formal content-creation relationship with any application, platform, or service that substantially replicates or directly competes with the core functionality of Mealio, specifically the automated addition of recipe-based grocery ingredients to online shopping carts ("Competing Service").
         </p>
         <p>
           This restriction does not prohibit Creator Partners from: (a) posting recipe content on general-purpose social media platforms (e.g., Instagram, TikTok, YouTube); (b) maintaining a personal food blog or website; (c) participating in unrelated brand sponsorships or partnerships; or (d) using any grocery store's own native application or website.

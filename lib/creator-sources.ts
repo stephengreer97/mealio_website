@@ -183,7 +183,7 @@ export function normalizePlatformUrl(source: PlatformSource, raw: unknown): Link
       if (pattern && pattern.test(host)) {
         return {
           ok: false,
-          error: `That is a link to ${SOURCE_LABELS[other]} — put it in the ${SOURCE_LABELS[other]} box. The website field is for your own site.`,
+          error: `That is a link to ${SOURCE_LABELS[other]}. Put it in the ${SOURCE_LABELS[other]} box. The website field is for your own site.`,
         };
       }
     }
@@ -306,7 +306,7 @@ export function checkPollingInvariants(
     // the incoherent combination here means the poller never has to wonder what
     // an opted-in creator with no source means.
     if (primarySource === 'none') {
-      return { ok: false, error: 'Choose a source of truth before turning import on — nothing is polled without one.' };
+      return { ok: false, error: 'Choose a source of truth before turning import on. Nothing is polled without one.' };
     }
     if (!row[SOURCE_COLUMNS[primarySource]] && !grants.includes(primarySource)) {
       return {
@@ -395,7 +395,7 @@ export function describeSourceHealth(row: PollingRow): SourceHealthNotice[] {
         kind: 'feed-host',
         label: 'Feed off-site',
         detail:
-          `${mismatch} Confirm a feed on the current website before turning import back on — until then this row ` +
+          `${mismatch} Confirm a feed on the current website before turning import back on. Until then this row ` +
           'cannot be polled, and the admin route will refuse the switch.',
         at: null,
       });
@@ -542,7 +542,7 @@ export const CREATOR_SOURCE_OPTIONS: readonly CreatorSourceOption[] = [
   { source: 'youtube', label: 'YouTube', blockedReason: null, note: null },
   {
     source: 'instagram',
-    label: 'Instagram — not available yet',
+    label: 'Instagram: not available yet',
     blockedReason:
       'Instagram is waiting on Meta’s app review. Until they approve Mealio, Instagram hands us nothing at ' +
       'all from your account, so there would be nothing to sync.',
@@ -664,7 +664,7 @@ export function chooseCreatorSource(
         requested === 'website'
           ? 'Save your website below first. Mealio reads your site and checks it can actually import recipes ' +
             'from it before it will sync from there.'
-          : `Connect your ${SOURCE_LABELS[requested]} account first — ${SOURCE_LABELS[requested]} shows Mealio ` +
+          : `Connect your ${SOURCE_LABELS[requested]} account first. ${SOURCE_LABELS[requested]} shows Mealio ` +
             'nothing until you do, so there would be nothing to sync.',
     };
   }
@@ -683,7 +683,7 @@ export function chooseCreatorSource(
     return {
       ok: false,
       error:
-        'Something about your import settings does not add up, so we have not started syncing — we would ' +
+        'Something about your import settings does not add up, so we have not started syncing. We would ' +
         'rather stop than publish the wrong thing under your name. Get in touch and we will sort it out.',
     };
   }
@@ -736,7 +736,7 @@ export function describeWebsiteImportFailure(site: string, result: WebsiteCheckO
   if (result.outcome === 'not-viable') {
     return (
       `We read the ${result.checked} most recent ${result.checked === 1 ? 'post' : 'posts'} on ${site} and none ` +
-      'of them looked like a recipe — no ingredients, no method. Mealio can only sync posts with the recipe ' +
+      'of them looked like a recipe: no ingredients, no method. Mealio can only sync posts with the recipe ' +
       'written out in them. If your recipes live somewhere else on your site, or on another site, point us ' +
       'there instead.'
     );
@@ -747,7 +747,7 @@ export function describeWebsiteImportFailure(site: string, result: WebsiteCheckO
   // "try again" they would spend the afternoon on.
   if (result.outcome === 'unsupported' && !result.reason) {
     return (
-      `${site} is on a platform that blocks Mealio outright — we cannot read posts from it, and no setting on ` +
+      `${site} is on a platform that blocks Mealio outright. We cannot read posts from it, and no setting on ` +
       'your side changes that. If your recipes are also on your own site, point us there instead.'
     );
   }
@@ -756,14 +756,14 @@ export function describeWebsiteImportFailure(site: string, result: WebsiteCheckO
     case 'blocked-by-robots':
       return (
         `${site} has a robots.txt file telling automated readers to stay away, and Mealio respects it. Allow ` +
-        'Mealio (or automated readers generally) in that file and save this again — until then we will not ' +
+        'Mealio (or automated readers generally) in that file and save this again. Until then we will not ' +
         'read your posts.'
       );
     case 'blocked-by-site':
       return (
         `${site} refused to let Mealio read it at all. Some hosts block anything that is not a person with a ` +
-        'browser, and there is nothing we can change from our end. If your recipes are also somewhere else — ' +
-        'your own domain, a different blog — point us there instead.'
+        'browser, and there is nothing we can change from our end. If your recipes are also somewhere else, ' +
+        'on your own domain or a different blog, point us there instead.'
       );
     case 'unreachable':
       return (
@@ -772,13 +772,13 @@ export function describeWebsiteImportFailure(site: string, result: WebsiteCheckO
       );
     case 'no-feed':
       return (
-        `We could not find a feed on ${site}. Mealio follows your posts through an RSS or Atom feed — most ` +
+        `We could not find a feed on ${site}. Mealio follows your posts through an RSS or Atom feed, and most ` +
         'blogging platforms publish one automatically, often at /feed or /rss. If yours is somewhere unusual, ' +
         'paste the feed address here instead of your homepage.'
       );
     case 'feed-off-site':
       return (
-        `The feed we found is not on ${site}, so we cannot be sure it is yours — and importing somebody else's ` +
+        `The feed we found is not on ${site}, so we cannot be sure it is yours, and importing somebody else's ` +
         'posts under your name is the one thing we will not risk. Paste the feed address on your own site.'
       );
     case 'no-entries':
@@ -789,19 +789,19 @@ export function describeWebsiteImportFailure(site: string, result: WebsiteCheckO
       );
     case 'unreadable-items':
       return (
-        `We found your posts on ${site} but could not open any of them — every one we tried refused us or timed ` +
+        `We found your posts on ${site} but could not open any of them. Every one we tried refused us or timed ` +
         'out. Try again in a few minutes; if it keeps happening, get in touch.'
       );
     case 'classifier-unavailable':
       return (
-        'We could not finish checking your site just now — the part of Mealio that reads posts was unavailable. ' +
+        'We could not finish checking your site just now. The part of Mealio that reads posts was unavailable. ' +
         'This says nothing about your site. Try again in a few minutes.'
       );
     case 'empty':
       return `We reached ${site} and found nothing posted yet. Publish a recipe and save this again.`;
     default:
       return (
-        `We could not read ${site}. Check the address is right and save it again — if it keeps failing, get in ` +
+        `We could not read ${site}. Check the address is right and save it again. If it keeps failing, get in ` +
         'touch and we will look at it with you.'
       );
   }
@@ -830,7 +830,7 @@ export const KNOWN_UNSUPPORTED_SOURCES: UnsupportedSource[] = [
     label: 'Medium',
     detail:
       'Medium blocks server-side fetches outright. MEAL-69 measured 12% of sampled creator URLs ' +
-      'returning 403 to our fetcher and every single one was Medium — that is IP-reputation and ' +
+      'returning 403 to our fetcher and every single one was Medium. That is IP-reputation and ' +
       'TLS-fingerprint blocking of datacenter egress, so it fails on request one and no ' +
       'User-Agent, header or cadence change alters it. Route this creator to another of their ' +
       'links, or tell them plainly that their Medium blog cannot be imported.',
@@ -943,14 +943,14 @@ export function summariseCreatorViability(
   const unsupported = present.filter((source) => outcomes[source] === 'unsupported');
   const ruledOut = unsupported.length > 0
     ? ` ${unsupported.map((source) => SOURCE_LABELS[source]).join(', ')} was ruled out without fetching ` +
-      'anything — the badge on that source says why.'
+      'anything. The badge on that source says why.'
     : '';
 
   return {
     importable: false,
     summary:
       'Every link this creator gave us has been ruled out, and none of them are importable.' +
-      `${ruledOut} This creator is not importable — tell them plainly rather than onboarding them ` +
+      `${ruledOut} This creator is not importable. Tell them plainly rather than onboarding them ` +
       'into a feature that will do nothing for them.',
     unchecked: [],
   };

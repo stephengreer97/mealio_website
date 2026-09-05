@@ -160,14 +160,14 @@ describe('AdminRunDrilldown', () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     // The verdict refuses rather than naming the last row it happened to read.
-    expect(screen.getByText(/unknown — trace incomplete/)).toBeTruthy();
+    expect(screen.getByText(/unknown, trace incomplete/)).toBeTruthy();
     expect(screen.getByText(/prefix, so “first” is not a fact/)).toBeTruthy();
     // Counts are marked as floors.
     expect(screen.getByText(/lower bounds/)).toBeTruthy();
     // …and so is the run_summary tile, whose terminal row is outside a prefix by
     // definition. A dash meaning "not reached" and a dash meaning "the run wrote no
     // code" are different facts and were drawn identically.
-    expect(screen.getByText(/not reached — the terminal row is outside this prefix/)).toBeTruthy();
+    expect(screen.getByText(/not reached. The terminal row is outside this prefix/)).toBeTruthy();
   });
 
   it('does not call a short read an uninstrumented run', async () => {
@@ -199,7 +199,7 @@ describe('AdminRunDrilldown', () => {
         concern: { running: true, abandoned: false, failed: false, partialAdds: true, clean: false },
       }],
       inFlight: 1,
-      caveats: ['1 of these run(s) are still IN FLIGHT — started less than 15 minutes ago…'],
+      caveats: ['1 of these run(s) are still IN FLIGHT: started less than 15 minutes ago…'],
     });
     render(<AdminRunDrilldown stores={['heb']} />);
     fireEvent.click(screen.getByRole('button', { name: 'List runs' }));

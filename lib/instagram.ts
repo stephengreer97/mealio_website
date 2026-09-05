@@ -193,7 +193,7 @@ export async function exchangeInstagramCode(
       ok: false,
       detail:
         'Instagram would not issue a long-lived token for that account. The one-hour token it did issue is ' +
-        'no use to a daily poller, so nothing was stored — try connecting again.',
+        'no use to a daily poller, so nothing was stored. Try connecting again.',
     };
   }
 
@@ -279,7 +279,7 @@ export async function fetchInstagramAccount(
     return {
       ok: false,
       detail:
-        'That is a personal Instagram account, and Instagram gives personal accounts no API access at all — ' +
+        'That is a personal Instagram account, and Instagram gives personal accounts no API access at all. ' +
         'so there is nothing we could read from it. Switch the account to Professional (Business or Creator) ' +
         'in the Instagram app, then connect again.',
     };

@@ -19,7 +19,7 @@ export async function generateMetadata(
 
   return {
     title: meal.name,
-    description: `Check out this meal on Mealio — save it to your account and add ingredients to your grocery cart in one click.`,
+    description: `Check out this meal on Mealio. Save it to your account and add ingredients to your grocery cart in one click.`,
     openGraph: meal.photo_url ? { images: [{ url: meal.photo_url }] } : undefined,
     twitter: meal.photo_url ? { images: [meal.photo_url] } : undefined,
   };

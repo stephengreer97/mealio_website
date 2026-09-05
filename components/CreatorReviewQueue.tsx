@@ -482,7 +482,7 @@ export default function CreatorReviewQueue() {
       delete next[id];
       return next;
     });
-    setNotice('Saved. It is still waiting on you — editing does not publish it.');
+    setNotice('Saved. It is still waiting on you, and editing does not publish it.');
   };
 
   // The read failed. Said plainly, because the badge on this same screen is
@@ -588,7 +588,7 @@ export default function CreatorReviewQueue() {
               a heading and a list that quietly disagree. */}
           {total > pending.length && (
             <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#aaa' }} data-testid="queue-truncated">
-              Showing the first {pending.length}. The rest are still here — decide these and reload for more.
+              Showing the first {pending.length}. The rest are still here. Decide these and reload for more.
             </p>
           )}
         </>
@@ -930,7 +930,7 @@ function DraftPanes({
                     data-field={blocker.field}
                   >
                     <span style={{ fontWeight: 700 }}>{FIELD_LABELS[blocker.field]}</span>
-                    {' — '}
+                    {': '}
                     {blocker.message}
                   </li>
                 ))}
@@ -992,7 +992,7 @@ function DraftPanes({
               </span>
             )}
             {row.summary.needALook === 0
-              ? 'Every field we filled matched the page we read. Nothing here needs checking — it is still yours to read before it goes out.'
+              ? 'Every field we filled matched the page we read. Nothing here needs checking, but it is still yours to read before it goes out.'
               : `${summaryLine(row.summary)} Each one below says which field it is about.`}
           </p>
 
@@ -1042,7 +1042,7 @@ function DraftPanes({
                        the field is not on the card because we could not fill it.
                        A link to an empty slot would be a link to nothing. */
                     <span style={{ display: 'block', fontSize: '11px', color: '#9ca3af', paddingTop: '2px' }} data-testid="comment-absent">
-                      Not on the card — nothing was filled in.
+                      Not on the card, so nothing was filled in.
                     </span>
                   )}
                 </li>

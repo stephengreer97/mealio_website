@@ -131,9 +131,9 @@ function open(name: string) {
 /** Every note in the right-hand pane, in the order it draws them. */
 const comments = () => screen.queryAllByTestId('draft-comment');
 
-/** The field a comment names — the bold lead before the em dash. */
+/** The field a comment names: the bold lead before the separator. */
 const commentField = (comment: HTMLElement) =>
-  (within(comment).getByTestId('import-notice').textContent ?? '').split(' — ')[0];
+  (within(comment).getByTestId('import-notice').textContent ?? '').split(': ')[0];
 
 /** The comment about a named field. */
 const commentFor = (field: string) =>
@@ -436,9 +436,9 @@ describe('the card is the card a saver would read', () => {
 
     const absent = screen.getAllByTestId('import-notice').filter((n) => n.dataset.kind === 'absent');
     expect(absent.length).toBeGreaterThan(1);
-    for (const notice of absent) expect(notice.textContent).toMatch(/^[^—]+ — /);
+    for (const notice of absent) expect(notice.textContent).toMatch(/^[^:]+: /);
     // And no two of them say the same thing.
-    const leads = absent.map((n) => (n.textContent ?? '').split(' — ')[0]);
+    const leads = absent.map((n) => (n.textContent ?? '').split(': ')[0]);
     expect(new Set(leads).size).toBe(leads.length);
   });
 

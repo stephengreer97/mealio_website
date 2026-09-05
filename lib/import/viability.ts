@@ -393,7 +393,7 @@ export function unreadVideoReason(document: {
     default:
       if (document.text.trim()) return null;
       return (
-        'Not gated: this video has no description, and it has no captions either — there was nothing to read. ' +
+        'Not gated: this video has no description, and it has no captions either, so there was nothing to read. ' +
         'That is a fact about the video, not about our access to the channel.'
       );
   }
@@ -480,7 +480,7 @@ function notConnectedYet(source: PlatformSource): ProbeResult {
       `Not measurable until connected. ${SOURCE_LABELS[source]} cannot be checked until this creator ` +
       `connects their account: there is nothing ${SOURCE_LABELS[source]} lets us read without a grant. ` +
       'Ask them to connect it from the creator portal, then run this again. Until then this is *not* a ' +
-      'pass and *not* a failure — do not set it as the source of truth, and do not rule the creator out ' +
+      'pass and *not* a failure. Do not set it as the source of truth, and do not rule the creator out ' +
       'on the strength of it.',
   };
 }
@@ -703,11 +703,11 @@ export async function runViabilityCheck(
       reason: emptyAccount ? 'empty' : unavailableVerdicts > 0 ? 'classifier-unavailable' : 'unreadable-items',
       summary: emptyAccount
         ? `We reached this ${SOURCE_LABELS[source]} source and it has nothing posted, so there was nothing to ` +
-          'measure. That is an answer rather than a failure — this is not a verdict on the creator, and it ' +
+          'measure. That is an answer rather than a failure. It is not a verdict on the creator, and it ' +
           'is not a pass either.'
         : unavailableVerdicts > 0
           ? `The classifier could not be reached for any of the ${probed.items.length} items, so nothing was ` +
-            'measured. This says nothing about the creator — retry once the classifier is back.'
+            'measured. This says nothing about the creator. Retry once the classifier is back.'
           : `None of the ${probed.items.length} most recent items could be read, so nothing was measured. ` +
             'Check the item list for what each one returned.',
     });
@@ -721,7 +721,7 @@ export async function runViabilityCheck(
       summary:
         `None of the ${checked} most recent ${SOURCE_LABELS[source]} items read as a recipe. ` +
         'Try another of their links. If every link they gave us comes back like this, this creator ' +
-        'is not importable — tell them so rather than onboarding them into a feature that will ' +
+        'is not importable. Tell them so rather than onboarding them into a feature that will ' +
         'silently do nothing.',
     });
   }
@@ -741,7 +741,7 @@ export async function runViabilityCheck(
     outcome: 'viable',
     summary:
       `${passed} of ${checked} recent ${SOURCE_LABELS[source]} items read as a recipe. This source is ` +
-      'importable — confirm the feed below, set it as the source of truth, and turn import on.',
+      'importable. Confirm the feed below, set it as the source of truth, and turn import on.',
   });
 }
 

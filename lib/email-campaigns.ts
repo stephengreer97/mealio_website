@@ -19,10 +19,10 @@ const greet = (name?: string | null) => p(`Hi ${name || 'there'},`);
 
 const UPSELL: Record<1 | 2 | 3, { subject: string; body: (name?: string | null) => string }> = {
   1: {
-    subject: "You've saved a few meals — ready for unlimited?",
+    subject: "You've saved a few meals. Ready for unlimited?",
     body: (name) =>
       greet(name) +
-      p("You've been saving meals and filling carts with Mealio — love to see it.") +
+      p("You've been saving meals and filling carts with Mealio. Love to see it.") +
       p("Quick heads up: free accounts top out at <strong>3 saved meals</strong>. With <strong>Full Access</strong> you get <strong>unlimited saved meals</strong>, so you never have to delete one to make room for a new favorite.") +
       btn(`${APP_URL}/pricing`, 'See Full Access'),
   },
@@ -30,15 +30,15 @@ const UPSELL: Record<1 | 2 | 3, { subject: string; body: (name?: string | null) 
     subject: 'Save every meal you love',
     body: (name) =>
       greet(name) +
-      p("New creators and meals hit the Discover feed every week — but on the free plan you can only keep <strong>3</strong> at a time.") +
-      p("<strong>Full Access</strong> unlocks <strong>unlimited saved meals</strong> so you can build your whole rotation — and your subscription helps pay the creators whose meals you save.") +
+      p("New creators and meals hit the Discover feed every week, but on the free plan you can only keep <strong>3</strong> at a time.") +
+      p("<strong>Full Access</strong> unlocks <strong>unlimited saved meals</strong> so you can build your whole rotation, and your subscription helps pay the creators whose meals you save.") +
       btn(`${APP_URL}/pricing`, 'Upgrade to Full Access'),
   },
   3: {
-    subject: 'Last call — unlimited meals on Mealio',
+    subject: 'Last call: unlimited meals on Mealio',
     body: (name) =>
       greet(name) +
-      p("You've been with Mealio for a few weeks on the free plan. If it's earned a spot in your kitchen, <strong>Full Access</strong> gives you <strong>unlimited saved meals</strong> — no more juggling your 3.") +
+      p("You've been with Mealio for a few weeks on the free plan. If it's earned a spot in your kitchen, <strong>Full Access</strong> gives you <strong>unlimited saved meals</strong> with no more juggling your 3.") +
       p("This is the last reminder we'll send about upgrading. You can do it anytime from your account.") +
       btn(`${APP_URL}/pricing`, 'Get Full Access'),
   },
@@ -46,13 +46,13 @@ const UPSELL: Record<1 | 2 | 3, { subject: string; body: (name?: string | null) 
 
 const creatorFirstMealBody = (name?: string | null) =>
   greet(name) +
-  p("You're approved as a Mealio creator — but you haven't published a meal yet. Your first one takes about two minutes and goes live on Discover immediately.") +
+  p("You're approved as a Mealio creator, but you haven't published a meal yet. Your first one takes about two minutes and goes live on Discover immediately.") +
   p("Remember: you earn based on how often your meals get saved, and the feed favors fresh, regular publishing. The sooner you start, the sooner the saves add up.") +
   btn(`${APP_URL}/creator`, 'Publish your first meal');
 
 const creatorReengageBody = (name?: string | null) =>
   greet(name) +
-  p("It's been a couple of weeks since your last meal on Mealio. Publishing regularly keeps you in front of savers — and keeps your earnings growing.") +
+  p("It's been a couple of weeks since your last meal on Mealio. Publishing regularly keeps you in front of savers, and keeps your earnings growing.") +
   p("Got a go-to dinner this week? Add it in a couple of minutes and it's live right away.") +
   btn(`${APP_URL}/creator`, 'Publish a meal');
 

@@ -149,7 +149,7 @@ export async function GET(
     if (!complete) {
       caveats.push(
         `This trace is INCOMPLETE (${reason}). The steps below are a prefix of the run, not the ` +
-        `run — do not read the last row as where it stopped, and treat every count here as a ` +
+        `run. Do not read the last row as where it stopped, and treat every count here as a ` +
         `lower bound.`,
       );
     }
@@ -157,7 +157,7 @@ export async function GET(
       caveats.push(
         'This run reported no search, candidates, add_click or confirm rows at all. That is the ' +
         'parallel/pre-search add pool reporting nothing (MEAL-122), or a store that adds through ' +
-        'the public API rather than the WebView — NOT a run that did nothing. Judge it on ' +
+        'the public API rather than the WebView, NOT a run that did nothing. Judge it on ' +
         'items_added and the run outcome.',
       );
     }
@@ -165,7 +165,7 @@ export async function GET(
       caveats.push(
         `The seq numbering has ${summary.seq.missing} hole(s)` +
         (summary.seq.startsLate ? ` and starts at ${summary.seq.min} rather than 1` : '') +
-        '. seq comes from the client, so a gap means rows are MISSING — ingest skips a step name ' +
+        '. seq comes from the client, so a gap means rows are MISSING. Ingest skips a step name ' +
         'or outcome it does not recognise, and a batch the client dropped after a 4xx is never ' +
         'retried. It does not mean the run did fewer things.',
       );
@@ -173,7 +173,7 @@ export async function GET(
     if (summary.runSummaryCode) {
       caveats.push(
         `run_summary reports "${summary.runSummaryCode}", which is the run's MOST FREQUENT code ` +
-        `and not its most severe (MEAL-123) — three confirm_failed and one waf_block reports ` +
+        `and not its most severe (MEAL-123): three confirm_failed and one waf_block reports ` +
         `confirm_failed. Trust the ordered steps below over it.`,
       );
     }

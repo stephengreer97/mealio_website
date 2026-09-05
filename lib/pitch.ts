@@ -88,7 +88,7 @@ export const PITCH_STEPS: ReadonlyArray<{ title: string; body: string }> = [
     // read from either surface. `/about` still enumerates them, which is where
     // someone goes to check.
     title: 'Pick the store you shop at',
-    body: 'Mealio supports most major grocery retailers — you\'ll see the full list when you pick yours.',
+    body: 'Mealio supports most major grocery retailers. You\'ll see the full list when you pick yours.',
   },
   {
     title: 'Mealio fills your cart',
@@ -102,7 +102,7 @@ export const PITCH_STEPS: ReadonlyArray<{ title: string; body: string }> = [
  * otherwise leaves instead of asking.
  */
 export const PITCH_NOTHING_ORDERED =
-  'Nothing is ordered — the items land in your own cart at your own store, and '
+  'Nothing is ordered. The items land in your own cart at your own store, and '
   + 'you check out there.';
 
 /** What it costs, in the same words as `/about` and `/pricing`. */

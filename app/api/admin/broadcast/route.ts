@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
         // that reached everyone.
         log({
           event: 'ADMIN:BROADCAST', status: 'error', userId: admin.userId,
-          detail: `push skipped — user list incomplete after ${read.rows.length}`,
+          detail: `push skipped: user list incomplete after ${read.rows.length}`,
         });
       } else {
         const result = await sendPushToCategory(read.rows.map((r) => r.id), 'broadcast', {

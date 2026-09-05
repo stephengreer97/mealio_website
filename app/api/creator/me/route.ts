@@ -204,7 +204,7 @@ async function grantNotices(
     .filter((platform) => connected.has(platform))
     .map(
       (platform) =>
-        `Your connected ${SOURCE_LABELS[platform]} account is still connected — removing the link here does not ` +
+        `Your connected ${SOURCE_LABELS[platform]} account is still connected. Removing the link here does not ` +
         `disconnect it, and Mealio can still read what you allowed it to. Disconnect it from the ` +
         `${SOURCE_LABELS[platform]} card if that is what you meant.`,
     );
@@ -322,16 +322,16 @@ export async function PATCH(request: NextRequest) {
         notices.push(
           edit.polledLink.to
             ? `Your ${SOURCE_LABELS[edit.polledLink.source]} link is saved. Mealio was syncing your recipes from ` +
-              'it, so we have paused that import — nothing is read from the new link until you choose it in ' +
+              'it, so we have paused that import. Nothing is read from the new link until you choose it in ' +
               '“Sync your content with Mealio” again.'
             : `Your ${SOURCE_LABELS[edit.polledLink.source]} link is removed. Mealio was syncing your recipes ` +
-              'from it, so that import has stopped — there is nothing left for us to read. Add the new link and ' +
+              'from it, so that import has stopped. There is nothing left for us to read. Add the new link and ' +
               'choose it again in “Sync your content with Mealio” to start it up.',
         );
       } else if (!verdict.ok) {
         notices.push(
           "We've paused importing your recipes automatically. The import settings on your account no longer add " +
-            "up, and we'd rather stop than publish the wrong thing under your name — get in touch and we'll sort " +
+            "up, and we'd rather stop than publish the wrong thing under your name. Get in touch and we'll sort " +
             'it out.',
         );
       }

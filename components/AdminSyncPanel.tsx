@@ -240,9 +240,9 @@ function Step({
 }
 
 function formatDate(value: string | null): string {
-  if (!value) return '—';
+  if (!value) return 'n/a';
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleDateString() : '—';
+  return Number.isFinite(parsed) ? new Date(parsed).toLocaleDateString() : 'n/a';
 }
 
 export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
@@ -476,7 +476,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
       const { res, data } = await authedPost('/api/admin/sync/worker', { runId });
       if (!mountedRef.current) return;
       if (!res.ok) {
-        setError(data.error || 'The sync worker failed. The run is saved — press Resume to carry on.');
+        setError(data.error || 'The sync worker failed. The run is saved. Press Resume to carry on.');
         return;
       }
       const next = data.run as SyncRun;
@@ -493,7 +493,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
       await new Promise(resolve => setTimeout(resolve, POLL_DELAY_MS));
       if (!mountedRef.current) return;
     }
-    setError('Stopped after a lot of chunks without finishing. The run is saved — press Resume to carry on.');
+    setError('Stopped after a lot of chunks without finishing. The run is saved. Press Resume to carry on.');
   };
 
   const start = async () => {
@@ -606,7 +606,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
         )}
       </div>
       <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
-        Imports run on behalf of the creator you pick and land in <strong>Review</strong> as drafts — nothing
+        Imports run on behalf of the creator you pick and land in <strong>Review</strong> as drafts. Nothing
         goes live until somebody opens the meal card there and approves it. Listing a catalog is free; running a
         selection is not.
       </p>
@@ -685,7 +685,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
               {loadingCatalog ? 'Reading feed…' : catalog ? 'Reload catalog' : 'List what they publish'}
             </button>
             <span style={hint}>
-              Reads the feed only — no pages are fetched and no model is called.
+              Reads the feed only. No pages are fetched and no model is called.
             </span>
           </div>
         ) : undefined}
@@ -736,7 +736,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             {!catalog && (
               <p style={{ margin: 0, fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
                 Nothing listed yet. Open <strong>Where from</strong> above and press
-                {' '}<em>List what they publish</em> — reading the feed costs nothing.
+                {' '}<em>List what they publish</em>. Reading the feed costs nothing.
               </p>
             )}
 
@@ -957,7 +957,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
               <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
                 Only meals we imported <em>from one of their videos</em> are offered, and only when the creator has
                 turned on description editing. Adding a link twice does nothing. Turning consent off stops future
-                writes — it does not remove links already added, because we cannot un-tell a viewer.
+                writes. It does not remove links already added, because we cannot un-tell a viewer.
               </p>
 
               {/* The refusal, in place of the list. Which of the three gates was
@@ -984,7 +984,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
               {appendTruncated && (
                 <p style={{ margin: '12px 0 0', fontSize: '11px', color: '#b45309' }} data-testid="append-truncated">
                   Showing the {appendable?.length ?? 0} most recently approved. This creator has more, and there is
-                  no way to reach them from here yet — link these, then reload.
+                  no way to reach them from here yet. Link these, then reload.
                 </p>
               )}
 

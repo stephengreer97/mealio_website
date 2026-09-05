@@ -35,7 +35,7 @@ export const CATEGORY_LABEL: Record<NotificationCategory, string> = {
 };
 
 export const CATEGORY_DESCRIPTION: Record<NotificationCategory, string> = {
-  broadcast: 'Occasional announcements — new stores, big changes.',
+  broadcast: 'Occasional announcements: new stores, big changes.',
   creator_draft: 'When a recipe you posted has been imported and needs a look.',
 };
 

@@ -435,4 +435,4 @@ export function hasRecipeText(video: TikTokVideo): boolean {
  */
 export const TIKTOK_NO_DESCRIPTION_DETAIL =
   'Not gated: this video has no title and no description, and the Display API returns no file and no ' +
-  'transcript — only an embed link. There is nothing here to read, and no sanctioned way to get it.';
+  'transcript, only an embed link. There is nothing here to read, and no sanctioned way to get it.';

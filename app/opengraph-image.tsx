@@ -3,7 +3,7 @@ import { readFile } from 'fs/promises';
 import path from 'path';
 
 export const runtime     = 'nodejs';
-export const alt         = "Mealio — Shop meals, we'll fill the cart";
+export const alt         = "Mealio: Shop meals, we'll fill the cart";
 export const size        = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 

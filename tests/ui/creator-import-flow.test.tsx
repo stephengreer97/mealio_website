@@ -231,7 +231,7 @@ describe('creator portal — only the exceptions are marked', () => {
     // The creator reads the evidence directly instead of decoding a symbol.
     const limeRow = adjusted.find(n => n.textContent?.includes('lime'));
     // The field it is about, said on screen rather than only to a screen reader.
-    expect(limeRow!.textContent).toContain('lime juice —');
+    expect(limeRow!.textContent).toContain('lime juice:');
     expect(withEvidence(limeRow!)).toContain('We read:');
     expect(limeRow!.textContent).toContain('3 tablespoons lime juice');
   });
@@ -264,7 +264,7 @@ describe('creator portal — only the exceptions are marked', () => {
     // — so the box stays empty and asks for input, with nothing to quote.
     expect(storyBox().value).toBe('');
     const story = absent.find(n => n.id === 'import-notice-story')!;
-    expect(story.textContent).toContain('Not found in the source — add this');
+    expect(story.textContent).toContain('Not found in the source. Add this');
     // Nothing to quote, so nothing to offer: no toggle, and no dangling
     // invitation to read a span that does not exist.
     expect(within(story).queryByTestId('evidence-toggle')).toBeNull();
@@ -277,7 +277,7 @@ describe('creator portal — only the exceptions are marked', () => {
     // box. Saying "not found in the source" here is simply untrue.
     expect(servesBox().value).toBe('');
     const serves = absent.find(n => n.id === 'import-notice-serves')!;
-    expect(serves.textContent).toContain('Serves —');
+    expect(serves.textContent).toContain('Serves:');
     expect(serves.textContent).toContain('We found this but couldn’t use it');
     expect(withEvidence(serves)).toContain('2 1/2 cups guacamole');
     expect(servesBox().getAttribute('aria-describedby')).toBe('import-notice-serves');
@@ -384,7 +384,7 @@ describe('creator portal — a generated photo is a placeholder, not a finding',
 
     const generated = notices().find(n => n.dataset.kind === 'generated');
     // The pipeline's reason, verbatim.
-    expect(generated!.textContent).toContain('No usable image on the page — this is a stock photo we picked.');
+    expect(generated!.textContent).toContain('No usable image on the page, so this is a stock photo we picked.');
 
     const hint = screen.getByTestId('photo-replace-hint');
     expect(hint.textContent).toMatch(/Choose photo/);

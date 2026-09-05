@@ -1611,7 +1611,7 @@ export default function CreatorPortal() {
                                       {linkCopied ? 'Copied!' : 'Copy'}
                                     </button>
                                   </div>
-                                  <p className="text-[11px] text-gray-400 mt-1">Share this link — new signups from it are credited to you.</p>
+                                  <p className="text-[11px] text-gray-400 mt-1">Share this link. New signups from it are credited to you.</p>
                                 </div>
                               )}
                             </div>
@@ -1722,7 +1722,7 @@ export default function CreatorPortal() {
                                 className="flex-1 px-3 py-2.5 text-sm text-gray-800 focus:outline-none bg-white"
                               />
                             </div>
-                            <p className="text-xs text-red-600 font-semibold mt-1">⚠ Permanent once saved — choose carefully. 3–30 characters: letters, numbers, hyphens, underscores.</p>
+                            <p className="text-xs text-red-600 font-semibold mt-1">⚠ Permanent once saved, so choose carefully. 3 to 30 characters: letters, numbers, hyphens, underscores.</p>
                           </>
                         )}
                       </div>
@@ -2264,7 +2264,7 @@ export default function CreatorPortal() {
                     data-testid="import-summary"
                   >
                     <p className="text-sm font-semibold" style={{ color: '#18181B' }}>
-                      Imported from {hostLabel(importInfo.url)} — {summaryLine(counts)}
+                      Imported from {hostLabel(importInfo.url)}: {summaryLine(counts)}
                     </p>
                     {importInfo.kept.length > 0 && (
                       <p className="text-xs mt-1.5 leading-relaxed font-medium" style={{ color: '#18181B' }}>
@@ -2287,7 +2287,7 @@ export default function CreatorPortal() {
                       </p>
                     )}
                     <p className="text-xs mt-1 leading-relaxed" style={{ color: '#A1A1AA' }}>
-                      {importInfo.path} Nothing here is final — edit anything, then publish.
+                      {importInfo.path} Nothing here is final. Edit anything, then publish.
                     </p>
                   </div>
                 )}
@@ -2472,7 +2472,7 @@ export default function CreatorPortal() {
                 <div>
                   <label className={pLabelCls}>Measurements <span className="text-red-500">*</span></label>
                   <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3 mb-3 text-xs text-gray-500 leading-relaxed">
-                    Name each ingredient as it would appear in a grocery store search — specific enough to find the right product, but generic enough to work across stores.
+                    Name each ingredient as it would appear in a grocery store search. Specific enough to find the right product, but generic enough to work across stores.
                     <div className="mt-1.5 space-x-3">
                       <span><span className="text-green-600 font-semibold">✓</span> &quot;Chicken Stock&quot; · &quot;Garlic&quot; · &quot;Rotisserie Chicken&quot;</span>
                       <span><span className="text-red-500 font-semibold">✗</span> &quot;Walmart Bananas&quot; · &quot;Fresh Herbs&quot;</span>

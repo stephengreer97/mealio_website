@@ -909,7 +909,7 @@ export default function DiscoverPage() {
           {isCreator && (
             <div className="flex items-center justify-between gap-4 my-4 px-4 py-3 rounded-xl" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)' }}>
               <p className="text-sm font-medium" style={{ color: 'var(--brand)' }}>
-                You&apos;re a Mealio Creator — manage your meals and track your stats in the Creator Portal.
+                You&apos;re a Mealio Creator. Manage your meals and track your stats in the Creator Portal.
               </p>
               <a
                 href="/creator"

@@ -87,7 +87,7 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
   const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to,
-    subject: "You're approved — start publishing on Mealio!",
+    subject: "You're approved: start publishing on Mealio!",
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
         <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
@@ -99,24 +99,24 @@ export async function sendCreatorApprovedEmail(to: string, displayName: string) 
         <ol style="color: #666; font-size: 14px; line-height: 2; margin: 0 0 12px; padding-left: 20px;">
           <li>Open <a href="${appUrl}/creator#settings" style="color: #dd0031;">Settings</a> in your Creator Portal and find <strong>Sync your content with Mealio</strong></li>
           <li>Pick one place: your <strong>website or blog</strong>, your <strong>YouTube</strong> channel, <strong>Instagram</strong> or <strong>TikTok</strong></li>
-          <li>For a website, save the link — we read your site and check we can actually import recipes from it before syncing. For YouTube, Instagram or TikTok, connect the account.</li>
-          <li>Review what arrives under <a href="${appUrl}/creator#drafts" style="color: #dd0031;">Drafts</a> — anything we weren't sure about is flagged for you</li>
+          <li>For a website, save the link. We read your site and check we can actually import recipes from it before syncing. For YouTube, Instagram or TikTok, connect the account.</li>
+          <li>Review what arrives under <a href="${appUrl}/creator#drafts" style="color: #dd0031;">Drafts</a>. Anything we weren't sure about is flagged for you</li>
           <li>Publish the ones you're happy with; the rest stay drafts until you say so</li>
         </ol>
-        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">Two things worth knowing. Mealio reads <strong>one</strong> place, so pick where you post recipes most — you can change it whenever you like. And the first sync marks everything you've already published as seen rather than importing it, so your back catalogue doesn't arrive all at once; there's a button in that same section for bringing it in when you want it.</p>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">Two things worth knowing. Mealio reads <strong>one</strong> place, so pick where you post recipes most. You can change it whenever you like. And the first sync marks everything you've already published as seen rather than importing it, so your back catalogue doesn't arrive all at once; there's a button in that same section for bringing it in when you want it.</p>
 
         <a href="${appUrl}/creator#settings" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 28px;">Set up syncing</a>
 
         <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">Prefer to add them yourself?</h3>
-        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">You can always publish a meal by hand — <strong>Publish a Meal</strong> in your <a href="${appUrl}/creator" style="color: #dd0031;">Creator Portal</a> takes a name, ingredients, a photo and tags, and puts it live on Discover straight away. Plenty of creators do both.</p>
+        <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">You can always publish a meal by hand. <strong>Publish a Meal</strong> in your <a href="${appUrl}/creator" style="color: #dd0031;">Creator Portal</a> takes a name, ingredients, a photo and tags, and puts it live on Discover straight away. Plenty of creators do both.</p>
 
         <h3 style="color: #222; font-size: 16px; margin: 0 0 12px;">Tips for more saves</h3>
         <ul style="color: #666; font-size: 14px; line-height: 1.9; margin: 0 0 24px; padding-left: 20px;">
-          <li><strong>Publish regularly.</strong> This is the single biggest lever. The Discover feed favors fresh meals, and consistent posting keeps you in front of savers — a steady weekly cadence far outperforms a one-time dump.</li>
-          <li><strong>Get featured.</strong> Our most consistent creators get featured on Discover, putting their meals in front of even more savers — so keep posting.</li>
+          <li><strong>Publish regularly.</strong> This is the single biggest lever. The Discover feed favors fresh meals, and consistent posting keeps you in front of savers. A steady weekly cadence far outperforms a one-time dump.</li>
+          <li><strong>Get featured.</strong> Our most consistent creators get featured on Discover, putting their meals in front of even more savers, so keep posting.</li>
           <li><strong>Great photo on every meal.</strong> Bright, top-down shots of real food get saved the most.</li>
-          <li><strong>Use specific ingredient names</strong> — "boneless chicken thighs," not "chicken."</li>
-          <li><strong>Tag accurately</strong> — savers filter by tags, so good tags get you found.</li>
+          <li><strong>Use specific ingredient names</strong>: "boneless chicken thighs," not "chicken."</li>
+          <li><strong>Tag accurately</strong>: savers filter by tags, so good tags get you found.</li>
           <li><strong>Share your profile link.</strong> Put your Mealio creator link in your Instagram/TikTok bio and posts to send your audience straight to your meals.</li>
         </ul>
 
@@ -240,10 +240,10 @@ export async function sendCreatorSourceMovedEmail(opts: {
   // renders HTML. The application email above predates this helper; anything
   // reaching a URL bar or a link text here goes through it.
   const name = escapeHtml(opts.creatorName);
-  const handle = opts.handle ? escapeHtml(opts.handle) : '—';
+  const handle = opts.handle ? escapeHtml(opts.handle) : 'none';
   const source = escapeHtml(opts.sourceLabel);
   const was = escapeHtml(opts.previousUrl);
-  const now = removed ? '— removed' : escapeHtml(opts.newUrl);
+  const now = removed ? 'removed' : escapeHtml(opts.newUrl);
   const sent = await resend.emails.send({
     from: 'Mealio <noreply@mealio.co>',
     to: opts.adminEmails,
@@ -251,7 +251,7 @@ export async function sendCreatorSourceMovedEmail(opts: {
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
         <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
-        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Polled link ${removed ? 'removed' : 'changed'} — import paused</h2>
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Polled link ${removed ? 'removed' : 'changed'}, import paused</h2>
         <p style="color: #666; font-size: 14px; margin: 0 0 24px;">
           ${removed
             ? 'This creator removed the link Mealio was importing from, so there is nothing left to poll. Nothing '
@@ -355,7 +355,7 @@ export async function sendPollHealthAlertEmail(opts: {
     // Every value below is either a creator's own text or a remote server's, on
     // its way into an inbox that renders HTML.
     const name = escapeHtml(source.creatorName);
-    const handle = source.handle ? escapeHtml(source.handle) : '—';
+    const handle = source.handle ? escapeHtml(source.handle) : 'none';
     const label = escapeHtml(source.sourceLabel);
     const silent = source.status === 'silent';
 
@@ -366,7 +366,7 @@ export async function sendPollHealthAlertEmail(opts: {
       ? source.quietDays === null
         ? 'Has never produced a post'
         : `Nothing new for ${source.quietDays} ${source.quietDays === 1 ? 'day' : 'days'}`
-      : `Failing — ${source.consecutiveFailures} ${source.consecutiveFailures === 1 ? 'poll' : 'polls'} in a row`;
+      : `Failing: ${source.consecutiveFailures} ${source.consecutiveFailures === 1 ? 'poll' : 'polls'} in a row`;
 
     const rows: Array<[string, string]> = [
       ['Creator', `<strong>${name}</strong>`],
@@ -414,7 +414,7 @@ export async function sendPollHealthAlertEmail(opts: {
         <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Open the Sources tab</a>
         <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 20px 0 0;">
           You get at most two of these per source: one when it first goes unhealthy, and one more if a quiet
-          source starts erroring outright. Nothing further is sent while it stays that way — only a source that
+          source starts erroring outright. Nothing further is sent while it stays that way. Only a source that
           is polling and producing again re-arms the alert.
         </p>
       </div>
@@ -489,11 +489,11 @@ const REASON_HEADLINE: Record<StoreAlertLine['reasons'][number], string> = {
 const ALERT_CODE_ROWS = 6;
 
 function pct(value: number | null): string {
-  return value == null ? '—' : `${(value * 100).toFixed(1)}%`;
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
 }
 
 function points(value: number | null): string {
-  return value == null ? '—' : `${(value * 100).toFixed(1)} pts`;
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)} pts`;
 }
 
 /**
@@ -524,7 +524,7 @@ export async function sendFunnelAlertEmail(opts: {
 
   const first = opts.stores[0];
   const subject = opts.stores.length === 1
-    ? `Cart automation: ${first.storeLabel} — ${REASON_HEADLINE[first.newReasons[0] ?? first.reasons[0]].toLowerCase()}`
+    ? `Cart automation: ${first.storeLabel}, ${REASON_HEADLINE[first.newReasons[0] ?? first.reasons[0]].toLowerCase()}`
     : `Cart automation: ${opts.stores.length} stores have regressed`;
 
   const cards = opts.stores.map((store) => {
@@ -542,7 +542,7 @@ export async function sendFunnelAlertEmail(opts: {
         'Items',
         `${store.itemsAdded} added of ${store.itemsRequested} asked for`
           + (store.itemsUnavailable > 0
-            ? ` — ${store.itemsUnavailable} the store was out of, not counted against it`
+            ? ` (${store.itemsUnavailable} the store was out of, not counted against it)`
             : ''),
       ],
     ];
@@ -553,7 +553,7 @@ export async function sendFunnelAlertEmail(opts: {
       rows.push([
         'Item success',
         `${pct(store.itemSuccessRecent)} in the last 24h, against a 7-day median of ${pct(store.itemSuccessMedian)}`
-          + (drop != null ? ` — <strong>down ${points(drop)}</strong>` : ''),
+          + (drop != null ? `, <strong>down ${points(drop)}</strong>` : ''),
       ]);
     }
     if (store.confirmRate != null) rows.push(['Confirm rate', pct(store.confirmRate)]);
@@ -567,7 +567,7 @@ export async function sendFunnelAlertEmail(opts: {
     const listed = store.failureCodes.slice(0, ALERT_CODE_ROWS);
     const codeRows = listed.length > 0
       ? listed.map((c) => `<tr><td style="padding: 3px 0; color: #666;">${escapeHtml(c.code)}</td><td style="padding: 3px 0; color: #222; text-align: right; font-weight: 600;">${c.count}</td></tr>`).join('')
-      : `<tr><td style="padding: 3px 0; color: #999;" colspan="2">No coded failures — the loss is not drift-shaped. Look at the wall and the run outcomes.</td></tr>`;
+      : `<tr><td style="padding: 3px 0; color: #999;" colspan="2">No coded failures. The loss is not drift-shaped. Look at the wall and the run outcomes.</td></tr>`;
 
     return `
       <div style="border: 1px solid #f0f0f0; border-left: 4px solid ${lead === 'blocked' ? '#dc2626' : '#f59e0b'}; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; background: #fcfcfc;">
@@ -591,14 +591,14 @@ export async function sendFunnelAlertEmail(opts: {
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">${opts.stores.length === 1 ? "A store's cart automation has regressed" : `${opts.stores.length} stores' cart automation has regressed`}</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
           These got worse since the last check. <strong>Item success</strong> is measured against each store's own
-          trailing 7-day median rather than a fixed bar, so this is a store that changed — not one that has always
+          trailing 7-day median rather than a fixed bar, so this is a store that changed, not one that has always
           been middling. Nobody sees this happen otherwise: a shopper just gets fewer items in the cart than they
           asked for.
         </p>
         ${cards}
         <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Open the automation funnel</a>
         <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 20px 0 0;">
-          One of these per store per problem. Nothing further is sent while it stays broken the same way — only a
+          One of these per store per problem. Nothing further is sent while it stays broken the same way. Only a
           store that is healthy again on every count re-arms the alert, and a store that breaks in a NEW way earns
           one more.
         </p>
@@ -716,13 +716,13 @@ export async function sendCreatorSyncPublishedEmail(
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${escapeHtml(displayName)},</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">
           We imported ${count === 1 ? 'a recipe' : `${count} recipes`} you published and put ${count === 1 ? 'it' : 'them'} on your Mealio creator profile.
-          <strong>${count === 1 ? 'It is' : 'They are'} live on Discover now</strong> — savers can see ${count === 1 ? 'it' : 'them'} today.
+          <strong>${count === 1 ? 'It is' : 'They are'} live on Discover now</strong>. Savers can see ${count === 1 ? 'it' : 'them'} today.
         </p>
         <ul style="margin: 0 0 20px; padding-left: 20px; line-height: 1.7;">${rows}</ul>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 16px;">
           Please have a look. We read ${count === 1 ? 'the recipe' : 'each recipe'} off your page automatically, so an ingredient or a step may not
           be quite how you'd write it. Open your <a href="${appUrl}/creator" style="color: #dd0031;">Creator Portal</a> to edit
-          anything, or to unpublish a meal entirely — unpublishing removes it from Discover straight away.
+          anything, or to unpublish a meal entirely. Unpublishing removes it from Discover straight away.
         </p>
         <a href="${appUrl}/creator" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 24px;">Review in Creator Portal</a>
         <p style="color: #999; font-size: 12px; margin: 0;">
@@ -788,7 +788,7 @@ export async function sendCreatorDraftsReadyEmail(
   // The subject says which of the two emails this is before it is opened: a
   // clean batch is a confirm, a flagged one is a job.
   const subject = flagged > 0
-    ? `${count === 1 ? 'A recipe' : `${count} recipes`} from your feed — ${flagged} ${flagged === 1 ? 'field needs' : 'fields need'} a look`
+    ? `${count === 1 ? 'A recipe' : `${count} recipes`} from your feed: ${flagged} ${flagged === 1 ? 'field needs' : 'fields need'} a look`
     : `${count === 1 ? 'A recipe' : `${count} recipes`} from your feed, ready to publish`;
 
   const rows = drafts
@@ -827,7 +827,7 @@ export async function sendCreatorDraftsReadyEmail(
         <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">Hi ${escapeHtml(displayName)},</h2>
         <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0 0 20px;">
           We spotted ${count === 1 ? 'a new recipe' : `${count} new recipes`} on your feed and read ${count === 1 ? 'it' : 'them'} into ${count === 1 ? 'a draft' : 'drafts'} for you.
-          <strong>Nothing is published</strong> — ${count === 1 ? 'it is' : 'they are'} waiting for you to look.
+          <strong>Nothing is published</strong>. ${count === 1 ? 'It is' : 'They are'} waiting for you to look.
         </p>
         ${rows}
         <!-- #drafts, not /creator: the portal opens on Meals, and a mail whose
@@ -837,7 +837,7 @@ export async function sendCreatorDraftsReadyEmail(
         <a href="${appUrl}/creator#drafts" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; margin: 8px 0 24px;">Review and publish</a>
         <p style="color: #666; font-size: 13px; line-height: 1.6; margin: 0 0 16px;">
           We read ${count === 1 ? 'this' : 'these'} off your page automatically, so a measure or a step may not be quite how you'd write it.
-          Edit anything on the review screen before you publish, or discard ${count === 1 ? 'it' : 'them'} — we won't ask about the same post twice.
+          Edit anything on the review screen before you publish, or discard ${count === 1 ? 'it' : 'them'}. We won't ask about the same post twice.
         </p>
         <p style="color: #999; font-size: 12px; line-height: 1.6; margin: 0;">
           You're getting this because automatic imports are turned on for your account. To turn them off, open your

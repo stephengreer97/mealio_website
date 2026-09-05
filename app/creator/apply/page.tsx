@@ -173,7 +173,7 @@ export default function CreatorApply() {
             <div style={{ background: 'white', borderRadius: '12px', padding: '28px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '20px' }}>
               <h2 style={{ margin: '0 0 8px', fontSize: '18px', color: '#222' }}>Share your recipes with the world</h2>
               <p style={{ margin: 0, color: '#666', lineHeight: 1.6, fontSize: '14px' }}>
-                As a Mealio creator partner, your meals appear in the Discover tab for all users. Popular meals earn a share of quarterly subscription profit — the more people add your meals, the more you earn.
+                As a Mealio creator partner, your meals appear in the Discover tab for all users. Popular meals earn a share of quarterly subscription profit. The more people add your meals, the more you earn.
               </p>
             </div>
 
@@ -239,7 +239,7 @@ export default function CreatorApply() {
                     />
                   </div>
                   <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#c40029', fontWeight: 600 }}>
-                    ⚠ This is your permanent referral link. It cannot be changed after you apply — choose carefully.
+                    ⚠ This is your permanent referral link. It cannot be changed after you apply, so choose carefully.
                   </p>
                   {handle.trim() && (
                     <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#666' }}>

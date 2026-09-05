@@ -21,7 +21,7 @@ import AppFooter from '@/components/AppFooter';
  */
 
 export const metadata: Metadata = {
-  title: 'About Mealio — save meals, fill your grocery cart',
+  title: 'About Mealio: save meals, fill your grocery cart',
   description:
     'Mealio saves the meals you want to cook and adds every ingredient to your online grocery cart in one step. '
     + 'Creators can connect their YouTube channel so their recipes arrive automatically.',
@@ -43,7 +43,7 @@ export default function AboutPage() {
         </h1>
         <p style={{ ...p, fontSize: '17px', color: '#555' }}>
           Mealio is a recipe app that does the shopping part. Save a meal you want to cook, pick your grocery
-          store, and Mealio adds every ingredient to your online cart — so deciding what to eat and buying
+          store, and Mealio adds every ingredient to your online cart, so deciding what to eat and buying
           what it needs stop being two separate chores.
         </p>
 
@@ -55,10 +55,10 @@ export default function AboutPage() {
             </li>
             <li style={{ marginBottom: '8px' }}>
               <strong>Send the ingredients to your grocery cart</strong> in one step. Mealio supports most
-              major grocery retailers — you&apos;ll see the full list when you pick your store.
+              major grocery retailers. You&apos;ll see the full list when you pick your store.
             </li>
             <li style={{ marginBottom: '8px' }}>
-              <strong>Adjust before you buy.</strong> Nothing is ordered — the items land in your own cart at
+              <strong>Adjust before you buy.</strong> Nothing is ordered. The items land in your own cart at
               your own store, and you check out there.
             </li>
             <li>
@@ -74,7 +74,7 @@ export default function AboutPage() {
             list into a shopping app by hand.
           </p>
           <p style={p}>
-            A creator can also <strong>connect the place they already publish</strong> — a website, or their
+            A creator can also <strong>connect the place they already publish</strong>: a website, or their
             YouTube channel. With their permission, Mealio reads new posts from that one source, pulls the
             ingredients and steps out of them, and puts the result in front of the creator to approve, edit or
             decline. Nothing is published under anyone&rsquo;s name without them saying so.
@@ -150,7 +150,7 @@ export default function AboutPage() {
         <div style={section}>
           <h2 style={h2}>What it costs</h2>
           <p style={p}>
-            Free to use for up to three saved meals. Full access is a paid subscription — see{' '}
+            Free to use for up to three saved meals. Full access is a paid subscription. See{' '}
             <Link href="/pricing" style={link}>pricing</Link> for the current plans.
           </p>
         </div>

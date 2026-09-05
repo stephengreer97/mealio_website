@@ -190,7 +190,7 @@ export async function GET(request: NextRequest) {
       if (!partialAddsFiltered) {
         caveats.push(
           'A run that reports outcome=success while adding fewer items than requested is NOT in ' +
-          'this list — PostgREST cannot compare two columns, and the `partial_adds` generated ' +
+          'this list. PostgREST cannot compare two columns, and the `partial_adds` generated ' +
           'column this route filters on has not been applied to this database yet. Use filter=all ' +
           'and look at the partialAdds flag for those, and note that filter=all is a page of ' +
           'recent runs of every kind, so at a busy store they arrive diluted.',
@@ -198,7 +198,7 @@ export async function GET(request: NextRequest) {
       }
       if (inFlight > 0) {
         caveats.push(
-          `${inFlight} of these run(s) are still IN FLIGHT — started less than 15 minutes ago and ` +
+          `${inFlight} of these run(s) are still IN FLIGHT: started less than 15 minutes ago and ` +
           `not yet reporting a finish. They carry concern.running, not concern.abandoned, and will ` +
           `most likely complete normally. They sort to the top because the list is newest-first; do ` +
           `not read them as a wave of abandonments.`,

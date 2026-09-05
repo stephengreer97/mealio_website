@@ -790,7 +790,7 @@ function emptyAccountCatalog(source: ConnectedPlatform): CatalogResult {
     reason: 'empty',
     detail:
       `We reached this creator's ${SOURCE_LABELS[source]} account and it has nothing posted that we can read. ` +
-      'That is an answer rather than a failure — there is nothing to import yet.',
+      'That is an answer rather than a failure. There is nothing to import yet.',
   };
 }
 
@@ -1148,7 +1148,7 @@ export async function processSyncItem(
     return {
       ...item,
       status: 'skipped',
-      detail: 'Already imported — skipped so the same recipe is not queued twice.',
+      detail: 'Already imported, so it is skipped and the same recipe is not queued twice.',
     };
   }
 
@@ -1334,7 +1334,7 @@ const EMPTY_DRAFT_FIELDS = {
  */
 export const CLAIM_DETAIL =
   'An import of this post started and has not reported back yet. If it still says this, ' +
-  'whatever was reading it stopped — the retry sweep will pick it up.';
+  'whatever was reading it stopped. The retry sweep will pick it up.';
 
 /**
  * How long a claim stands before the item is considered abandoned.

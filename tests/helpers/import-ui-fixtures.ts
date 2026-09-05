@@ -35,7 +35,7 @@ export const pixabayPhotoResolver: PhotoResolver = async () => ({
   url: 'https://storage.mealio.co/meal-photos/stock-guacamole.jpg',
   origin: 'pixabay',
   sourceUrl: null,
-  detail: 'No usable image on the page — this is a stock photo we picked.',
+  detail: 'No usable image on the page, so this is a stock photo we picked.',
 });
 
 /**
