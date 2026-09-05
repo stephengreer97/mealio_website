@@ -146,9 +146,33 @@ export async function POST(request: NextRequest) {
 
   if (rows.length === 0) return NextResponse.json({ ok: true, inserted: 0 });
 
-  const { error } = await supabase
-    .from('automation_steps')
-    .upsert(rows, { onConflict: 'run_id,seq', ignoreDuplicates: true });
+  const upsert = (batch: Record<string, unknown>[]) =>
+    supabase.from('automation_steps')
+      .upsert(batch, { onConflict: 'run_id,seq', ignoreDuplicates: true });
+
+  let { error } = await upsert(rows);
+
+  // THE DEPLOY ORDER MUST NOT MATTER. MEAL-219.
+  //
+  // The app ships httpStatus/phase/attempts/rail as soon as it is released; the
+  // columns appear only when someone runs the migration by hand. Between those
+  // two moments every insert here would fail on an unknown column and ALL step
+  // telemetry would stop — not just the new fields, the whole funnel — which is
+  // the opposite of this file's own rule that telemetry must never break
+  // automation.
+  //
+  // 42703 is Postgres for "column does not exist". Retrying once without the
+  // four new keys keeps the run's funnel arriving, minus the part the database
+  // cannot hold yet. Logged as a warning rather than swallowed, because a
+  // deploy that stays in this state is a migration someone forgot.
+  if (error && (error as { code?: string }).code === '42703') {
+    log({
+      event: 'USAGE:AUTOMATION_STEPS', status: 'error', userId: decoded.userId,
+      error: { message: 'automation_steps is missing the MEAL-219 columns; storing without them', code: '42703' },
+    });
+    const withoutNew = rows.map(({ http_status, phase, attempts, rail, ...rest }) => rest);
+    ({ error } = await upsert(withoutNew));
+  }
 
   if (error) {
     log({ event: 'USAGE:AUTOMATION_STEPS', status: 'error', userId: decoded.userId, error });

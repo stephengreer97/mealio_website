@@ -346,3 +346,62 @@ describe('POST /api/usage/automation/steps — request telemetry', () => {
     expect(upsertedRows()[0]).toMatchObject({ http_status: null, phase: null, attempts: null, rail: null });
   });
 });
+
+// ── The window between shipping the app and running the migration ──────────
+//
+// MEAL-219 adds four columns, and the migration is run BY HAND. The app starts
+// sending the fields the moment it is released, so between those two events an
+// insert naming a column the database does not have would fail — and take the
+// whole funnel with it, not just the new fields.
+//
+// That is the opposite of this file's own rule: telemetry must never break
+// automation. So a missing column costs the columns, not the run.
+describe('POST /api/usage/automation/steps — before the migration has run', () => {
+  let token: string;
+
+  beforeEach(async () => {
+    fakeDb.reset();
+    token = await createAccessToken('user-1', 'a@b.test');
+  });
+
+  /** 42703 is Postgres for "column does not exist". */
+  const MISSING_COLUMN = {
+    data: null,
+    error: { code: '42703', message: `column "http_status" of relation "automation_steps" does not exist` },
+  };
+
+  it('still stores the row, without the columns the database lacks', async () => {
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', MISSING_COLUMN);
+    const res = await POST(jsonRequest('/api/usage/automation/steps', {
+      token,
+      body: body([step({ step: 'search', outcome: 'error', httpStatus: 500, phase: 'search', attempts: 2, rail: 'heb' })]),
+    }));
+
+    expect(res.status).toBe(200);
+    // Two attempts: the first names the new columns, the retry does not.
+    const upserts = fakeDb.calls.filter((c) => c.table === 'automation_steps' && c.method === 'upsert');
+    expect(upserts).toHaveLength(2);
+    const retried = upserts[1].args[0][0];
+    expect(retried.step).toBe('search');
+    expect(retried.seq).toBe(0);
+    // The point: the row survives, minus what could not be stored.
+    expect(retried).not.toHaveProperty('http_status');
+    expect(retried).not.toHaveProperty('phase');
+    expect(retried).not.toHaveProperty('attempts');
+    expect(retried).not.toHaveProperty('rail');
+  });
+
+  it('does not retry a failure that is not a missing column', async () => {
+    // A real write error must still be a 500. Retrying it would hide a broken
+    // database behind a 200 and the funnel would look healthy while empty.
+    fakeDb.queue('automation_runs', OWNED_RUN);
+    fakeDb.queue('automation_steps', { data: null, error: { code: '23503', message: 'foreign key violation' } });
+    const res = await POST(jsonRequest('/api/usage/automation/steps', {
+      token, body: body([step()]),
+    }));
+    expect(res.status).toBe(500);
+    const upserts = fakeDb.calls.filter((c) => c.table === 'automation_steps' && c.method === 'upsert');
+    expect(upserts).toHaveLength(1);
+  });
+});
