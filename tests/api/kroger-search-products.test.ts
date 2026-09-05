@@ -586,3 +586,97 @@ describe('POST /api/kroger/search-products', () => {
     });
   });
 });
+
+/**
+ * MEAL-208 — the 8-word cap, MEASURED against the live Kroger Products API
+ * rather than inferred from one failure.
+ *
+ * Two sweeps thirty minutes apart, /v1/products at a real locationId, agreed
+ * on every value:
+ *
+ *   <= 8 whitespace terms  -> HTTP 200 with products
+ *      9 terms and beyond  -> HTTP 400, code PRODUCT-2019
+ *      "Field 'term' allows for a maximum of 8 individual terms per search"
+ *
+ * The boundary is therefore a REJECTION, not a 200 carrying an empty list —
+ * which matters, because those two are the same thing to a caller that only
+ * reads the array. 8 is exactly right: 9 is refused, and the full real title of
+ * a product this store stocks ("Pacific Foods Organic Free Range Chicken Broth
+ * 32 oz Carton", ten words) is refused at its natural length.
+ *
+ * A SECOND limit exists at the same endpoint and nothing here guards it:
+ *
+ *   3..128 characters -> HTTP 200
+ *   129 characters    -> HTTP 400, code PRODUCT-2017
+ *   1..2 characters   -> the same 400
+ *   "Field 'term' must have three or more characters and less than 128
+ *    characters"        (the message is off by one; 128 itself is accepted)
+ *
+ * Eight words do not bound a string to 128 characters, so a long-token name
+ * can still be refused. That gap is pinned below rather than quietly fixed —
+ * adding a second truncation is a behaviour change, not a measurement.
+ *
+ * Terms are counted on WHITESPACE alone. Commas and hyphens do not split one
+ * ("Mahatma, Basmati, Rice, Long, Grain, Uncooked, Rice, 32oz" is eight and
+ * passes); an attached trademark mark does not add one ("Simple(R) Truth(R)
+ * Organic Low Sodium Free Range Chicken" is eight and passes); a mark standing
+ * alone between spaces does. So the [TM][R][C] strip in krogerSearchProducts
+ * changes the count only in the bare-symbol case, never in the attached case
+ * its commit message described.
+ */
+describe('lib/kroger search term limits (MEAL-208, measured live 2026-09-05)', () => {
+  /** Ten words — the length Kroger answers with 400 PRODUCT-2019 if sent whole. */
+  const TEN_WORDS = 'Pacific Foods Organic Free Range Chicken Broth 32 oz Carton';
+
+  it('never sends more than the 8 terms Kroger accepts', async () => {
+    const calls = stubKroger({ status: 200, products: [] });
+
+    await krogerSearchProducts('access', TEN_WORDS, LOCATION, 10);
+
+    const term = new URL(calls[0]).searchParams.get('filter.term')!;
+    expect(term.split(/\s+/)).toHaveLength(8);
+  });
+
+  it('drops the TAIL, so the size suffix is what is lost', async () => {
+    const calls = stubKroger({ status: 200, products: [] });
+
+    await krogerSearchProducts('access', TEN_WORDS, LOCATION, 10);
+
+    const term = new URL(calls[0]).searchParams.get('filter.term');
+    expect(term).toBe('Pacific Foods Organic Free Range Chicken Broth 32');
+    expect(term).not.toContain('Carton');
+  });
+
+  it('leaves a term of 8 words or fewer exactly as it was given', async () => {
+    const calls = stubKroger({ status: 200, products: [] });
+
+    await krogerSearchProducts('access', 'Simple Truth Organic Low Sodium Free Range Chicken', LOCATION, 10);
+
+    expect(new URL(calls[0]).searchParams.get('filter.term'))
+      .toBe('Simple Truth Organic Low Sodium Free Range Chicken');
+  });
+
+  /**
+   * The measured gap, asserted so it cannot close by accident and cannot be
+   * forgotten. Eight words of long tokens exceed Kroger's 128-character limit
+   * and go out whole, and Kroger answers 400 PRODUCT-2017.
+   */
+  it('does NOT bound the term to the 128 characters Kroger also enforces', async () => {
+    const calls = stubKroger({ status: 200, products: [] });
+    // Eight whitespace terms. Hyphens do not split a term at Kroger (measured),
+    // so a name built from hyphenated tokens stays inside the word cap while
+    // sailing past the character one — which is exactly how a real product
+    // title gets refused today.
+    const eightLongWords = ['Simple-Truth-Organic', 'Grass-Fed-Free-Range',
+      'Boneless-Skinless-Chicken-Breast', 'Fillets', 'Family-Size-Value-Pack',
+      'Refrigerated', 'Antibiotic-Free', 'Individually-Quick-Frozen'].join(' ');
+    expect(eightLongWords.split(/\s+/)).toHaveLength(8);
+
+    await krogerSearchProducts('access', eightLongWords, LOCATION, 10);
+
+    const term = new URL(calls[0]).searchParams.get('filter.term')!;
+    expect(term.split(/\s+/)).toHaveLength(8);
+    // Over the live limit, and sent anyway.
+    expect(term.length).toBeGreaterThan(128);
+  });
+});
