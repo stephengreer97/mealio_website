@@ -64,6 +64,27 @@ function rlsEnabled(): Set<string> {
  */
 const CREATED_OUTSIDE_MIGRATIONS = ['user_profiles', 'meals', 'preset_meals'];
 
+/**
+ * THIS TEST HAS A BLIND SPOT AND IT HAS ALREADY COST US ONCE.
+ *
+ * It reads `CREATE TABLE` out of supabase/. Three tables were open after the
+ * first lockdown and none of them were visible here:
+ *
+ *   subscription_events            only ALTERed in the repo, never created in it
+ *   meals_backup_20260805          created in the dashboard, not in the repo at all
+ *   preset_meals_backup_20260805   same
+ *
+ * A repository test cannot see a table a human made in a web console, and
+ * pretending otherwise is worse than admitting it. The real guard is
+ * supabase/RUN-NOW-2-rls-round-two.sql, which sweeps pg_class and enables RLS
+ * on whatever it finds, and the Supabase advisor, which reads the database.
+ *
+ * What this file is still worth: it catches the case that IS in our control --
+ * a table added to a migration without an ENABLE line -- on the day it is
+ * written rather than whenever someone next reads a dashboard.
+ */
+
+
 describe('RLS is on for every table this repository creates', () => {
   const tables = declaredTables();
   const enabled = rlsEnabled();
