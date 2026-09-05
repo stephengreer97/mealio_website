@@ -43,15 +43,15 @@ describe('GET /api/admin/automation-requests', () => {
     expect(json.days).toBe(7);
   });
 
-  it('SAYS WHICH MIGRATION when the columns are not there yet', async () => {
+  it.each([
+    { code: '42703', message: 'column "phase" does not exist' },
+    { code: 'PGRST204', message: "Could not find the 'phase' column of 'automation_steps' in the schema cache" },
+  ])('SAYS WHICH MIGRATION when the columns are not there yet (%j)', async (err) => {
     // The columns arrive by a migration someone runs by hand, so "not run yet"
     // is a normal state for this endpoint to meet. Rendering it as a 500 would
     // tell the admin something broke; the answer is one SQL file away and the
     // message should name it.
-    fakeDb.queue('automation_steps', {
-      data: null,
-      error: { code: '42703', message: 'column "phase" does not exist' },
-    });
+    fakeDb.queue('automation_steps', { data: null, error: err });
     const res = await GET(jsonRequest(URL_, {}) as never);
     expect(res.status).toBe(409);
     const json = await res.json();

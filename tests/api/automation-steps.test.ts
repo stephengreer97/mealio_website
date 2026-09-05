@@ -364,15 +364,27 @@ describe('POST /api/usage/automation/steps — before the migration has run', ()
     token = await createAccessToken('user-1', 'a@b.test');
   });
 
-  /** 42703 is Postgres for "column does not exist". */
-  const MISSING_COLUMN = {
-    data: null,
-    error: { code: '42703', message: `column "http_status" of relation "automation_steps" does not exist` },
-  };
+  /**
+   * The two shapes this arrives in.
+   *
+   * 42703 is Postgres's code. PGRST204 is PostgREST's, and PostgREST is what
+   * supabase-js actually talks to — it validates the payload against its own
+   * cached schema and rejects it before the database sees anything. The first
+   * version of the guard knew only 42703, so it never fired in production, and
+   * the Pixel showed "/api/usage/automation/steps -> 500 Failed to record
+   * steps" with every step row lost.
+   */
+  const MISSING_COLUMN_SHAPES = [
+    { code: '42703', message: `column "http_status" of relation "automation_steps" does not exist` },
+    { code: 'PGRST204', message: "Could not find the 'http_status' column of 'automation_steps' in the schema cache" },
+    // A third code we have not met is still a missing column if it says so.
+    { code: 'XX999', message: "Could not find the 'phase' column in the schema cache" },
+  ];
+  const MISSING_COLUMN = { data: null, error: MISSING_COLUMN_SHAPES[0] };
 
-  it('still stores the row, without the columns the database lacks', async () => {
+  it.each(MISSING_COLUMN_SHAPES)('still stores the row when the write fails with %j', async (err) => {
     fakeDb.queue('automation_runs', OWNED_RUN);
-    fakeDb.queue('automation_steps', MISSING_COLUMN);
+    fakeDb.queue('automation_steps', { data: null, error: err });
     const res = await POST(jsonRequest('/api/usage/automation/steps', {
       token,
       body: body([step({ step: 'search', outcome: 'error', httpStatus: 500, phase: 'search', attempts: 2, rail: 'heb' })]),

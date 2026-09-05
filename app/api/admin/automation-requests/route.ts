@@ -49,7 +49,13 @@ export async function GET(request: NextRequest) {
     // A missing column means the MEAL-219 migration has not been run. Say so
     // plainly rather than returning a 500 the admin page renders as "something
     // broke" — the answer is one SQL file away and the message should say which.
-    const missingColumn = (read.error as { code?: string }).code === '42703';
+    // Both codes, and the message. 42703 is Postgres's; PGRST204 is
+    // PostgREST's, and PostgREST is what supabase-js talks to. Knowing only the
+    // first is what made the ingest's identical guard never fire.
+    const code = (read.error as { code?: string }).code ?? '';
+    const message = (read.error as { message?: string }).message ?? '';
+    const missingColumn = code === '42703' || code === 'PGRST204'
+      || /column .* does not exist|could not find the .* column|schema cache/i.test(message);
     log({ event: 'ADMIN:AUTOMATION_FUNNEL', status: 'error', userId: admin.userId, error: read.error });
     return NextResponse.json(
       missingColumn

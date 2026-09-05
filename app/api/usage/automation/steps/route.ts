@@ -161,14 +161,34 @@ export async function POST(request: NextRequest) {
   // the opposite of this file's own rule that telemetry must never break
   // automation.
   //
-  // 42703 is Postgres for "column does not exist". Retrying once without the
-  // four new keys keeps the run's funnel arriving, minus the part the database
-  // cannot hold yet. Logged as a warning rather than swallowed, because a
-  // deploy that stays in this state is a migration someone forgot.
-  if (error && (error as { code?: string }).code === '42703') {
+  // WHICH CODE MEANS "COLUMN DOES NOT EXIST" DEPENDS ON WHO NOTICED.
+  //
+  // 42703 is Postgres's. But supabase-js never reaches Postgres directly: it
+  // goes through PostgREST, which validates the payload against its own cached
+  // schema and rejects it as PGRST204 before the database sees anything. The
+  // first version of this guard knew only 42703, so it never fired — and the
+  // Pixel showed exactly what it was written to prevent:
+  // "/api/usage/automation/steps -> 500 Failed to record steps", every step row
+  // lost, because the app had shipped the new fields and the migration had not
+  // been run.
+  //
+  // The MESSAGE is checked as well. A schema-cache complaint arriving under
+  // some third code is still a missing column, and losing a run's whole funnel
+  // to a code we have not met is the outcome this exists to avoid.
+  //
+  // Retrying once without the four new keys keeps the funnel arriving, minus
+  // the part the database cannot hold yet. Logged at error level rather than
+  // swallowed, because a deploy that stays in this state is a migration someone
+  // forgot and is otherwise invisible.
+  const errCode = (error as { code?: string } | null)?.code ?? '';
+  const errMsg = (error as { message?: string } | null)?.message ?? '';
+  const missingColumn = errCode === '42703' || errCode === 'PGRST204'
+    || /column .* does not exist|could not find the .* column|schema cache/i.test(errMsg);
+
+  if (error && missingColumn) {
     log({
       event: 'USAGE:AUTOMATION_STEPS', status: 'error', userId: decoded.userId,
-      error: { message: 'automation_steps is missing the MEAL-219 columns; storing without them', code: '42703' },
+      error: { message: 'automation_steps is missing the MEAL-219 columns; storing without them', code: errCode },
     });
     const withoutNew = rows.map(({ http_status, phase, attempts, rail, ...rest }) => rest);
     ({ error } = await upsert(withoutNew));
