@@ -661,7 +661,7 @@ describe('lib/kroger search term limits (MEAL-208, measured live 2026-09-05)', (
    * forgotten. Eight words of long tokens exceed Kroger's 128-character limit
    * and go out whole, and Kroger answers 400 PRODUCT-2017.
    */
-  it('does NOT bound the term to the 128 characters Kroger also enforces', async () => {
+  it('bounds the term to the 128 characters Kroger also enforces', async () => {
     const calls = stubKroger({ status: 200, products: [] });
     // Eight whitespace terms. Hyphens do not split a term at Kroger (measured),
     // so a name built from hyphenated tokens stays inside the word cap while
@@ -675,8 +675,65 @@ describe('lib/kroger search term limits (MEAL-208, measured live 2026-09-05)', (
     await krogerSearchProducts('access', eightLongWords, LOCATION, 10);
 
     const term = new URL(calls[0]).searchParams.get('filter.term')!;
-    expect(term.split(/\s+/)).toHaveLength(8);
-    // Over the live limit, and sent anyway.
-    expect(term.length).toBeGreaterThan(128);
+    // Was the gap this test was written to document: eight terms, well past
+    // 128 characters, sent whole and refused with 400 PRODUCT-2017. Now capped.
+    expect(term.length).toBeLessThanOrEqual(128);
+    expect(term.split(/\s+/).length).toBeLessThanOrEqual(8);
+  });
+});
+
+// ── The character cap, added after MEAL-208 measured it ──────────────────────
+//
+// Kroger has TWO limits and only one was guarded. 400 PRODUCT-2017 fires above
+// 128 characters regardless of word count, and eight hyphenated tokens clear
+// 128 easily because hyphens do not split a term. So a long dashed product name
+// was a rejection nothing in the code expected — and a rejection reaches the
+// user as an ordinary empty shelf.
+//
+// What makes truncating safe at all: this is only the term SENT to the API. The
+// caller scores candidates against the ingredient's full, untruncated
+// searchTerm (`scoreTarget` in the route), so trimming costs recall on the
+// shelf and never precision in the match.
+describe('the Kroger character cap', () => {
+  const sentTerm = async (term: string) => {
+    const calls = stubKroger({ status: 200, products: [] });
+    await krogerSearchProducts('access', term, LOCATION, 10);
+    return new URL(calls[0]).searchParams.get('filter.term')!;
+  };
+
+  it('cuts on a WORD BOUNDARY, never mid-word', async () => {
+    // A hard slice would send "Basmat" — not a shorter query but a different
+    // and wrong one, which scores against nothing on the shelf while looking
+    // perfectly reasonable in the log.
+    // 125 + 1 + 7 = 133, so the last word genuinely has to go. The first
+    // version of this used 120 x's, which lands on exactly 128 -- inside the
+    // cap -- so nothing was trimmed and the test failed for the right reason.
+    const sent = await sentTerm(`${'x'.repeat(125)} Basmati`);
+    expect(sent).toBe('x'.repeat(125));
+    expect(sent.endsWith('Basmat')).toBe(false);
+  });
+
+  it('still sends something when a single word is longer than the cap', async () => {
+    // Nothing at all is its own 400 — PRODUCT-2017 fires below three characters
+    // too — so a prefix of the one long word beats an empty term. The only case
+    // where slicing mid-word is the better answer.
+    expect(await sentTerm('y'.repeat(300))).toHaveLength(128);
+  });
+
+  it('leaves an ordinary term completely alone', async () => {
+    expect(await sentTerm('Signature SELECT Rice Basmati')).toBe('Signature SELECT Rice Basmati');
+  });
+
+  it('applies the word cap first and the character cap after', async () => {
+    // Either limit refuses the whole query, so clearing one is not enough.
+    const sent = await sentTerm(Array.from({ length: 20 }, () => 'word').join(' '));
+    expect(sent.split(' ')).toHaveLength(8);
+  });
+
+  it('keeps a term that is exactly at the boundary', async () => {
+    // 128 passes and 129 fails — the API message is off by one, and a cap that
+    // trimmed at 128 would throw away a query Kroger accepts.
+    const exactly = 'a'.repeat(128);
+    expect(await sentTerm(exactly)).toHaveLength(128);
   });
 });

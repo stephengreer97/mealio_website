@@ -207,6 +207,27 @@ export type KrogerSearchOutcome =
   | { ok: false; status: number; detail: string };
 
 /** Fetch up to `limit` products from Kroger for a search term. */
+/**
+ * Kroger refuses more than eight whitespace-separated terms (MEAL-208).
+ *
+ * 400 PRODUCT-2019, and the API names the number itself: "Field 'term' allows
+ * for a maximum of 8 individual terms per search".
+ */
+export const KROGER_MAX_TERMS = 8;
+
+/**
+ * ...and separately refuses a term longer than 128 characters.
+ *
+ * 400 PRODUCT-2017, measured the same day. The message is off by one -- 128
+ * passes and 129 fails -- and the same code fires BELOW three characters.
+ *
+ * This one went unguarded for months because the word cap usually hides it:
+ * eight ordinary words rarely reach 128. Eight HYPHENATED tokens clear it
+ * easily, and hyphens do not split a term, so a long dashed product name was a
+ * rejection nothing in the code expected.
+ */
+export const KROGER_MAX_TERM_CHARS = 128;
+
 export async function krogerSearchProducts(
   userAccessToken: string,
   term: string,
@@ -227,13 +248,39 @@ export async function krogerSearchProducts(
   // The symbol strip is kept, but not for the reason its commit gave: terms are
   // counted on whitespace, so an ATTACHED mark ("Kroger(R) Basmati") never added
   // one. A mark standing alone between spaces does, and that is what this catches.
-  const truncatedTerm = term
+  // BOTH of Kroger's limits, measured in MEAL-208. Either one refuses the whole
+  // query with a 400, so a term that clears the word cap and busts the
+  // character cap is still a rejection — which is why the second is applied
+  // after the first rather than instead of it.
+  //
+  // THIS IS ONLY WHAT GOES TO THE API. The caller scores candidates against the
+  // ingredient's FULL, untruncated searchTerm (`scoreTarget` in
+  // app/api/kroger/search-products/route.ts), so trimming here costs recall on
+  // the shelf, never precision in the match. That is what makes truncating
+  // safe at all.
+  const words = term
     .replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '')  // strip weight suffix e.g. ", avg 5.1 lbs"
     .replace(/[™®©]/g, '')   // strip trademark symbols — only a bare one is a term
     .trim()
     .split(/\s+/)
-    .slice(0, 8)
-    .join(' ');
+    .slice(0, KROGER_MAX_TERMS);
+
+  // ON A WORD BOUNDARY, not at character 128. A hard slice sends a half-word --
+  // "Basmat" -- which is not a shorter query, it is a different and wrong one,
+  // and it would score against nothing on the shelf while looking like a
+  // reasonable search in the log.
+  let truncatedTerm = '';
+  for (const word of words) {
+    const next = truncatedTerm ? `${truncatedTerm} ${word}` : word;
+    if (next.length > KROGER_MAX_TERM_CHARS) break;
+    truncatedTerm = next;
+  }
+  // A single word longer than the cap leaves nothing at all, and an empty term
+  // is a 400 of its own (PRODUCT-2017 also fires below 3 characters). Send the
+  // head of it rather than nothing: a prefix of one long word is still a
+  // plausible search, which is the one case where slicing mid-word beats the
+  // alternative.
+  if (!truncatedTerm && words[0]) truncatedTerm = words[0].slice(0, KROGER_MAX_TERM_CHARS);
   const params = new URLSearchParams({
     'filter.term': truncatedTerm,
     'filter.locationId': locationId,
