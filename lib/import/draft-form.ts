@@ -35,6 +35,7 @@
  */
 
 import { canonicalizeTags, MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, tagCapError } from './vocab';
+import { prepCapError } from './ingredients';
 import type {
   DraftIngredient,
   FieldConfidence,
@@ -174,6 +175,21 @@ export function publishBlockers(draft: {
 
   if (!Array.isArray(draft.ingredients) || draft.ingredients.length === 0) {
     blockers.push({ field: 'ingredients', message: 'At least one ingredient is required.' });
+  } else {
+    // The same rule `editableDraft` refuses on, so the preview cannot say a
+    // draft is publishable that the save will then reject (MEAL-171). First
+    // offender only: a list of twelve identical sentences differing by
+    // ingredient name is a wall, and the fix for one is the fix for all.
+    for (const row of draft.ingredients as Array<Record<string, unknown>>) {
+      const tooLongPrep = prepCapError(
+        typeof row?.prep === 'string' ? row.prep : null,
+        typeof row?.ingredientName === 'string' ? row.ingredientName : undefined,
+      );
+      if (tooLongPrep) {
+        blockers.push({ field: 'ingredients', message: tooLongPrep });
+        break;
+      }
+    }
   }
 
   return blockers;

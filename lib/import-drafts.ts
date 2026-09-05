@@ -43,7 +43,7 @@ import {
   type ImportField,
   type ImportSummary,
 } from '@/lib/import/draft-form';
-import { canonicalizeIngredient } from '@/lib/import/ingredients';
+import { canonicalizeIngredient, prepCapError } from '@/lib/import/ingredients';
 import {
   duplicateCandidates,
   findDuplicates,
@@ -1155,6 +1155,21 @@ export function editableDraft(raw: unknown): { ok: true; draft: CreatorMealDraft
   if (!name) return { ok: false, error: 'A meal name is required.' };
 
   if (!Array.isArray(input.ingredients)) return { ok: false, error: 'ingredients must be a list.' };
+
+  // BEFORE canonicalisation, because canonicalisation is what would lose it
+  // (MEAL-171). Over the cap `canonicalPrep` returns nothing rather than a
+  // truncation, so without this the route answers 200 with the preparation
+  // silently gone. Neither editor can produce an over-cap value -- both prep
+  // boxes carry `maxLength` -- but that put the safety in two clients in two
+  // repositories rather than on the route, which is not where a rule lives.
+  for (const row of input.ingredients as Array<Record<string, unknown>>) {
+    const tooLongPrep = prepCapError(
+      typeof row?.prep === 'string' ? row.prep : null,
+      typeof row?.ingredientName === 'string' ? row.ingredientName : undefined,
+    );
+    if (tooLongPrep) return { ok: false, error: tooLongPrep };
+  }
+
   const ingredients = (input.ingredients as Array<Record<string, unknown>>)
     .map((row) =>
       canonicalizeIngredient({

@@ -273,9 +273,10 @@ function formatAmount(value: number): string {
  * worth being exact about why it is still open: because nothing can reach it
  * today, not because nothing else calls it.
  *
- * The fix is to refuse the write the way the tag cap and `serves` are refused,
- * with a `publishBlockers` sentence and a 400, rather than silently
- * canonicalising it away. Filed as MEAL-171.
+ * CLOSED BY MEAL-171. `prepCapError` below refuses an over-cap prep the way the
+ * tag cap and `serves` are refused: a `publishBlockers` sentence and a 400 from
+ * both PATCH routes, rather than a 200 with the sentence gone. The safety no
+ * longer rests on two clients in two repositories each remembering a number.
  *
  * Never bounded at all: `publishCreatorMeal`, `POST`/`PUT /api/meals` and
  * `/api/shared/[token]/save` pass ingredients through unvalidated. That matches
@@ -318,13 +319,48 @@ export function readPrep(raw: unknown): string | null {
  * diced" — and the renderer puts it back. Carrying it in the data would mean a
  * row that reads "1 onion, , finely diced" the moment both agree.
  */
-export function canonicalPrep(raw: string | null | undefined): { prep?: string } {
-  if (typeof raw !== 'string') return {};
-  const prep = raw
+/**
+ * The tidying half of `canonicalPrep`, on its own so the cap can be checked
+ * against the string that would actually be STORED.
+ *
+ * It matters which string is measured. A prep padded with runs of spaces can be
+ * 130 characters as typed and 118 once collapsed, and refusing that would be
+ * refusing a preparation that fits.
+ */
+export function normalizePrep(raw: string | null | undefined): string {
+  if (typeof raw !== 'string') return '';
+  return raw
     .replace(/\s+/g, ' ')
     .replace(/^[\s,;:–—-]+/, '')
     .replace(/[\s,;:]+$/, '')
     .trim();
+}
+
+/**
+ * WHERE THE LINE IS between "the canonicaliser may rewrite this" and "the route
+ * must refuse it", said once so neither side has to guess (MEAL-171).
+ *
+ * TIDYING IS ALLOWED. Collapsing runs of whitespace and stripping a leading
+ * comma or a trailing semicolon changes how the value is spelled, not what it
+ * says. A prep of "," that tidies away to nothing is not a preparation somebody
+ * lost; it is a preparation they never wrote, and refusing it would be an error
+ * message about a keystroke.
+ *
+ * LOSING THE WHOLE VALUE IS NOT. Over the cap, `canonicalPrep` returns nothing
+ * at all rather than a truncation, which is the right call for the reasons
+ * above but makes an over-cap save a silent deletion of a sentence somebody did
+ * write. That is what this refuses, in the same shape as the tag cap and
+ * `serves`: a message naming the field, and a 400.
+ */
+export function prepCapError(raw: string | null | undefined, ingredientName?: string): string | null {
+  const prep = normalizePrep(raw);
+  if (prep.length <= MAX_PREP_CHARS) return null;
+  const which = ingredientName?.trim() ? ` on "${ingredientName.trim()}"` : '';
+  return `That preparation${which} is ${prep.length} characters. A preparation takes at most ${MAX_PREP_CHARS}.`;
+}
+
+export function canonicalPrep(raw: string | null | undefined): { prep?: string } {
+  const prep = normalizePrep(raw);
   if (!prep || prep.length > MAX_PREP_CHARS) return {};
   return { prep };
 }

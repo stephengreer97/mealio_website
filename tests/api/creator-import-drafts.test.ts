@@ -537,6 +537,38 @@ describe('PATCH — an edit is a fix, not a decision', () => {
     expect(publishCreatorMeal).not.toHaveBeenCalled();
   });
 
+  // MEAL-171. This is the assertion the ticket was filed on, and it has to be
+  // made HERE rather than against `editableDraft`: the measured bug was a 200
+  // from the ROUTE with the preparation gone, and a unit test of the validator
+  // cannot tell you whether the route calls it.
+  it('refuses an over-cap preparation instead of answering 200 with it deleted', async () => {
+    asCreator();
+    fakeDb.seed('creator_import_drafts', [draftRow()]);
+    const before = fakeDb.row('creator_import_drafts', 'd1');
+
+    const tooLong = 'finely diced and then '.repeat(12);
+    expect(tooLong.length).toBeGreaterThan(120);
+
+    const res = await PATCH(jsonRequest('/api/creator/import-drafts', {
+      method: 'PATCH',
+      token,
+      body: {
+        id: 'd1',
+        draft: {
+          ...guacamole.draft,
+          ingredients: [{ ...(guacamole.draft.ingredients[0] as object), prep: tooLong }],
+        },
+      },
+    }));
+
+    expect(res.status).toBe(400);
+    const { error } = await res.json();
+    expect(error).toMatch(/preparation/i);
+    // And nothing was written. A refusal that still saved would be the same
+    // data loss wearing a different status code.
+    expect(fakeDb.row('creator_import_drafts', 'd1').draft).toEqual(before.draft);
+  });
+
   it('returns the same enriched shape GET does, so a client can swap it in place', async () => {
     asCreator();
     fakeDb.seed('creator_import_drafts', [draftRow()]);
