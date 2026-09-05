@@ -1,4 +1,5 @@
 import { Expo, type ExpoPushMessage, type ExpoPushReceipt, type ExpoPushTicket } from 'expo-server-sdk';
+import { mayNotify, type NotificationCategory, type NotificationPrefs } from './notification-prefs';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 import { fetchAllPages, chunkIds } from '@/lib/paged-select';
@@ -366,4 +367,91 @@ export async function checkPushReceipts(
 
   log({ event: 'PUSH:RECEIPTS', status: 'success', detail: `checked=${done.length} revoked=${revoked}` });
   return { checked: done.length, revoked };
+}
+
+/**
+ * Send a categorised notification, to the users who still want that category.
+ *
+ * MEAL-217. `sendPushToUsers` knows about devices and tokens and nothing about
+ * consent — its own comment is careful to say that a device grant is NOT "this
+ * user asked for notifications". This is the layer that asks.
+ *
+ * EVERY PRODUCT SEND SHOULD COME THROUGH HERE rather than calling
+ * sendPushToUsers directly. The raw sender stays exported because a genuinely
+ * uncategorised message may exist one day (an account-security notice is the
+ * usual example, and is not a thing a user opts out of), but a feature reaching
+ * for it should have to explain why.
+ *
+ * Filtering happens HERE and not in the token query, deliberately: the prefs
+ * live on user_profiles and the tokens on push_tokens, and joining them in one
+ * PostgREST call would tie the send path to a shape that is about to change.
+ * Reading prefs for the id list first is one extra query on a path that already
+ * makes several, and it keeps "who wants this" separate from "where do we send
+ * it".
+ */
+export async function sendPushToCategory(
+  userIds: string[],
+  category: NotificationCategory,
+  message: PushMessage,
+  opts: { client?: PushClient } = {},
+): Promise<PushSendResult & { suppressed: number }> {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (ids.length === 0) return { devices: 0, accepted: 0, revoked: 0, failed: 0, suppressed: 0 };
+
+  const supabase = createServerSupabaseClient();
+  const wanted: string[] = [];
+  let suppressed = 0;
+
+  // Chunked for the same reason the token read is: `ids` can be every user.
+  for (const chunk of chunkIds(ids)) {
+    // PAGED, not a bare select. A chunk can exceed PostgREST's 1000-row ceiling,
+    // and a truncated read here does not fail — it returns FEWER preference rows
+    // than there are users, and every user whose row fell off the end reads as
+    // "no preference stored", which mayNotify correctly treats as consent.
+    //
+    // That is the exact fail-OPEN this function exists to prevent, arriving
+    // silently and looking like a successful send. The repository's
+    // select-bounds guard caught it; nothing else would have until someone
+    // noticed opted-out users being notified.
+    const read = await fetchAllPages<{ id: string; notification_prefs: unknown }>((from, to) =>
+      supabase
+        .from('user_profiles')
+        .select('id, notification_prefs')
+        .in('id', chunk)
+        .order('id', { ascending: true })
+        .range(from, to));
+
+    if (read.error || !read.complete) {
+      // FAIL CLOSED. A prefs read that failed or stopped short is not consent,
+      // and sending anyway would push to people who had turned this off.
+      log({
+        event: 'PUSH:SEND', status: 'error', error: read.error ?? undefined,
+        detail: read.error ? 'prefs lookup' : `prefs lookup incomplete after ${read.rows.length}`,
+      });
+      return { devices: 0, accepted: 0, revoked: 0, failed: 0, suppressed: ids.length };
+    }
+
+    const byId = new Map(read.rows.map((r) => [r.id, r.notification_prefs]));
+    for (const id of chunk) {
+      // A user with no row read is treated as opted IN, matching mayNotify's
+      // rule that absent means on. A missing profile row is a data problem, not
+      // a refusal.
+      if (mayNotify(byId.get(id) as NotificationPrefs | undefined, category)) wanted.push(id);
+      else suppressed += 1;
+    }
+  }
+
+  if (wanted.length === 0) {
+    return { devices: 0, accepted: 0, revoked: 0, failed: 0, suppressed };
+  }
+
+  const sent = await sendPushToUsers(wanted, {
+    ...message,
+    // The app switches on data.type to route a tap, and it must agree with the
+    // category the user consented to — a notification that opts out under one
+    // name and lands under another is worse than not sending it.
+    data: { ...(message.data ?? {}), type: category },
+  }, opts);
+
+  return { ...sent, suppressed };
 }

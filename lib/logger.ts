@@ -148,6 +148,7 @@ export type EventType =
   // ── Account ───────────────────────────────────────────────────────────────
   | 'ACCOUNT:CHANGE_PASSWORD'
   | 'ACCOUNT:DELETE'
+  | 'ACCOUNT:NOTIFICATION_PREFS'
   // ── Client ────────────────────────────────────────────────────────────────
   | 'CLIENT:ERROR'
   | 'BUG_REPORT'
