@@ -215,9 +215,21 @@ export async function krogerSearchProducts(
   _retry = 0,
   debug = false
 ): Promise<KrogerSearchOutcome> {
+  // MEAL-208 measured this against the live API, twice, thirty minutes apart.
+  // 8 is right, and the boundary is a REJECTION rather than an empty shelf:
+  //   <= 8 whitespace terms -> 200 with products
+  //      9 terms            -> 400 PRODUCT-2019, "Field 'term' allows for a
+  //                           maximum of 8 individual terms per search"
+  // A second limit is NOT guarded here: the same endpoint answers 400
+  // PRODUCT-2017 below 3 characters and above 128, and eight hyphenated tokens
+  // clear 128 easily. See the MEAL-208 block in tests/api/kroger-search-products.
+  //
+  // The symbol strip is kept, but not for the reason its commit gave: terms are
+  // counted on whitespace, so an ATTACHED mark ("Kroger(R) Basmati") never added
+  // one. A mark standing alone between spaces does, and that is what this catches.
   const truncatedTerm = term
     .replace(/,\s*avg\s+[\d.]+\s*\w+\s*$/i, '')  // strip weight suffix e.g. ", avg 5.1 lbs"
-    .replace(/[™®©]/g, '')   // strip trademark symbols — Kroger counts each as a word
+    .replace(/[™®©]/g, '')   // strip trademark symbols — only a bare one is a term
     .trim()
     .split(/\s+/)
     .slice(0, 8)
