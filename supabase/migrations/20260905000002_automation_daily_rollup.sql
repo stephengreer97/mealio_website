@@ -140,3 +140,27 @@ COMMENT ON FUNCTION public.prune_automation_steps IS
 -- behind, so the dashboard can read `daily` for old windows and `steps` for
 -- recent ones without a gap between them. The prune is separate and slower-
 -- moving; scheduling both is in the checklist item that ships with this.
+
+-- ── 5 · These two are for the server, not for the internet ──────────────────
+--
+-- A function is created with EXECUTE granted to PUBLIC by default, and
+-- `prune_automation_steps` is SECURITY DEFINER and DELETES telemetry. Created
+-- without this, anyone with the anon key -- which ships in mealio.co's
+-- JavaScript bundle -- could call it and wipe the funnel.
+--
+-- PUBLIC IS REVOKED FIRST, and that ordering is the whole point: revoking a
+-- privilege from a role does not remove a grant made to PUBLIC, so revoking
+-- only from anon/authenticated would look correct and change nothing.
+--
+-- automation_daily is created above with RLS off, like every table. It is
+-- turned on here so it is never born open.
+
+ALTER TABLE public.automation_daily ENABLE ROW LEVEL SECURITY;
+
+REVOKE EXECUTE ON FUNCTION public.roll_up_automation_day(date)     FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.roll_up_automation_day(date)     FROM anon, authenticated;
+GRANT  EXECUTE ON FUNCTION public.roll_up_automation_day(date)     TO service_role;
+
+REVOKE EXECUTE ON FUNCTION public.prune_automation_steps(integer)  FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.prune_automation_steps(integer)  FROM anon, authenticated;
+GRANT  EXECUTE ON FUNCTION public.prune_automation_steps(integer)  TO service_role;
