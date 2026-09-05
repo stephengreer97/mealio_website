@@ -424,6 +424,13 @@ export async function sendPushToCategory(
     if (read.error || !read.complete) {
       // FAIL CLOSED. A prefs read that failed or stopped short is not consent,
       // and sending anyway would push to people who had turned this off.
+      //
+      // `!read.complete` is UNREACHABLE today and is kept deliberately: chunkIds
+      // caps a chunk at ID_CHUNK (100) rows, well under PAGE_ROWS (1000), so
+      // the first page is always short and the read always completes. A mutant
+      // deleting it survives, and should. The relationship that makes it
+      // unreachable is asserted in tests/lib/push-category.test.ts, because
+      // that is the thing that could actually change.
       log({
         event: 'PUSH:SEND', status: 'error', error: read.error ?? undefined,
         detail: read.error ? 'prefs lookup' : `prefs lookup incomplete after ${read.rows.length}`,

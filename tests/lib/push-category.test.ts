@@ -120,3 +120,21 @@ describe('a preference read that stopped short', () => {
     expect(res.suppressed).toBe(2);
   });
 });
+
+describe('why the incomplete-read guard is not reachable today', () => {
+  it('chunks ids far below a page, so a chunk always fits in one', async () => {
+    // A mutant that DELETED the `!read.complete` check survived every test
+    // here, and it survived correctly: ID_CHUNK is 100 and PAGE_ROWS is 1000,
+    // so each chunk's read is a short page on the first attempt and `complete`
+    // is always true. The guard is defence for a future where that stops being
+    // so — it is not what protects us now.
+    //
+    // What protects us now is this relationship, so this is what gets asserted.
+    // Raise ID_CHUNK past PAGE_ROWS and the prefs read starts truncating
+    // silently, every truncated user reads as "no preference stored", and
+    // mayNotify correctly treats that as consent — so people who opted out get
+    // notified, and it looks like a successful send.
+    const { ID_CHUNK, PAGE_ROWS } = await import('@/lib/paged-select');
+    expect(ID_CHUNK).toBeLessThan(PAGE_ROWS);
+  });
+});
