@@ -7,6 +7,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { checkPushReceipts } from '@/lib/push';
 import { runPollHealthAlerts } from '@/lib/poll-health-alerts';
 import { runFunnelAlerts } from '@/lib/funnel-alerts';
+import { runAutomationRollup } from '@/lib/automation-rollup';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,6 +70,13 @@ export async function GET(request: NextRequest) {
     storesAlerting: 0,
     storesAlerted: 0,
     storesRecovered: 0,
+    // MEAL-219 retention. Reported as four numbers because they answer
+    // different questions: whether the aggregate is current, and whether the
+    // raw table is actually shrinking.
+    rollupDays: 0,
+    rollupRows: 0,
+    prunedDays: 0,
+    prunedRows: 0,
   };
 
   // Isolate the passes so one failing doesn't drop the other.
@@ -100,6 +108,25 @@ export async function GET(request: NextRequest) {
     results.syncRunsResumed = await resumeStalledSyncRuns({ supabase: createServerSupabaseClient() });
   } catch (err: any) {
     log({ event: 'CRON:DAILY', status: 'error', detail: 'syncRuns', reason: err.message });
+  }
+
+  // MEAL-219 retention: roll the last few days into `automation_daily`, then
+  // prune raw steps past thirty days. Here rather than in pg_cron because this
+  // repository already runs three scheduled jobs through Vercel with a shared
+  // secret and this isolation pattern, and a second scheduler means a job that
+  // is invisible from the repository.
+  //
+  // Ordering is safe by construction: `prune_automation_steps` rolls every day
+  // it is about to delete into the aggregate first, inside the function, where
+  // a caller cannot get it wrong.
+  try {
+    const sweep = await runAutomationRollup({ supabase: createServerSupabaseClient() });
+    results.rollupDays = sweep.daysRolled.length;
+    results.rollupRows = sweep.rowsWritten;
+    results.prunedDays = sweep.prunedDaysRolled;
+    results.prunedRows = sweep.prunedRows;
+  } catch (err: any) {
+    log({ event: 'CRON:DAILY', status: 'error', detail: 'automationRollup', reason: err.message });
   }
 
   // Creator platform grants (MEAL-74 / MEAL-82 / MEAL-83). Every one of the
