@@ -92,3 +92,54 @@ describe('PATCH /api/account/notification-prefs', () => {
     expect((await PATCH(jsonRequest(URL, { body: { all: false } }) as never)).status).toBe(401);
   });
 });
+
+// ── When the migration has not been run ──────────────────────────────────────
+//
+// This is what Stephen actually hit: tapping "Show me my notifications" logged
+//
+//   ERROR [api] unexpected error: /api/account/notification-prefs → 500
+//                                 Failed to read preferences
+//
+// The column was not there. A bare 500 sends someone looking at the send path
+// or at push credentials, and the fix is one SQL file. The route should say
+// which, and a 409 rather than a 500 so the app can tell "not set up yet" from
+// "broken".
+describe('when the notification_prefs column is missing', () => {
+  let token: string;
+  beforeEach(async () => {
+    fakeDb.reset();
+    token = await createAccessToken('user-1', 'a@b.test');
+  });
+
+  const missingColumn = {
+    data: null,
+    error: { code: 'PGRST204', message: "Could not find the 'notification_prefs' column of 'user_profiles' in the schema cache" },
+  };
+
+  it('GET answers 409 and names the migration file', async () => {
+    fakeDb.queue('user_profiles', missingColumn);
+    const res = await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.needsMigration).toBe(true);
+    expect(body.error).toContain('20260905000003_notification_prefs.sql');
+  });
+
+  it('PATCH answers 409 too, rather than looking like a failed save', async () => {
+    fakeDb.queue('user_profiles', missingColumn);
+    const res = await PATCH(jsonRequest('/api/account/notification-prefs', {
+      method: 'PATCH', token, body: { broadcast: false },
+    }) as never);
+    expect(res.status).toBe(409);
+    expect((await res.json()).needsMigration).toBe(true);
+  });
+
+  it('a REAL failure is still a 500, so the two stay distinguishable', async () => {
+    // The whole point of the guard is telling "not migrated" from "broken". If
+    // every error became a 409 the distinction would be gone in the other
+    // direction.
+    fakeDb.queue('user_profiles', { data: null, error: { code: '08006', message: 'connection failure' } });
+    const res = await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never);
+    expect(res.status).toBe(500);
+  });
+});

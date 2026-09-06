@@ -21,6 +21,28 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * A read that failed because the MEAL-217 column is not there yet.
+ *
+ * Worth telling apart from every other 500, because it is not a fault: it is a
+ * migration that has not been run, the fix is one SQL file, and a bare "Failed
+ * to read preferences" sends someone looking at the send path instead.
+ *
+ * Both codes and the message. 42703 is Postgres's undefined_column; PGRST204 is
+ * PostgREST's, and PostgREST is what supabase-js actually talks to. Knowing
+ * only the Postgres one is what made an identical guard never fire in MEAL-219.
+ */
+function needsMigration(error: unknown): boolean {
+  const code = (error as { code?: string })?.code ?? '';
+  const message = (error as { message?: string })?.message ?? '';
+  return code === '42703' || code === 'PGRST204'
+    || /column .* does not exist|could not find the .* column|schema cache/i.test(message);
+}
+
+const MIGRATION_HINT =
+  'Notification preferences are not in the database yet. Run '
+  + 'supabase/migrations/20260905000003_notification_prefs.sql.';
+
 async function authed(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   if (!token) return null;
@@ -40,7 +62,9 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     log({ event: 'ACCOUNT:NOTIFICATION_PREFS', status: 'error', userId: decoded.userId, error });
-    return NextResponse.json({ error: 'Failed to read preferences' }, { status: 500 });
+    return needsMigration(error)
+      ? NextResponse.json({ error: MIGRATION_HINT, needsMigration: true }, { status: 409 })
+      : NextResponse.json({ error: 'Failed to read preferences' }, { status: 500 });
   }
 
   const isCreator = !!data?.is_creator;
@@ -78,7 +102,9 @@ export async function PATCH(request: NextRequest) {
 
   if (readErr) {
     log({ event: 'ACCOUNT:NOTIFICATION_PREFS', status: 'error', userId: decoded.userId, error: readErr });
-    return NextResponse.json({ error: 'Failed to read preferences' }, { status: 500 });
+    return needsMigration(readErr)
+      ? NextResponse.json({ error: MIGRATION_HINT, needsMigration: true }, { status: 409 })
+      : NextResponse.json({ error: 'Failed to read preferences' }, { status: 500 });
   }
 
   const merged: NotificationPrefs = {
@@ -93,7 +119,9 @@ export async function PATCH(request: NextRequest) {
 
   if (error) {
     log({ event: 'ACCOUNT:NOTIFICATION_PREFS', status: 'error', userId: decoded.userId, error });
-    return NextResponse.json({ error: 'Failed to save preferences' }, { status: 500 });
+    return needsMigration(error)
+      ? NextResponse.json({ error: MIGRATION_HINT, needsMigration: true }, { status: 409 })
+      : NextResponse.json({ error: 'Failed to save preferences' }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true, prefs: merged });
