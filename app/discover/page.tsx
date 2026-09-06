@@ -83,6 +83,36 @@ interface MealFilters {
 }
 const EMPTY_FILTERS: MealFilters = { authors: [], tags: [], ingredients: [], difficulty: [], excludeIngredients: [] };
 
+/**
+ * The filters, as a query string for /api/preset-meals.
+ *
+ * Every one of these used to be applied in the browser over the meals already
+ * loaded. The server is the only place that can see all of them at once, so it
+ * is the only place the filter can mean what it appears to mean.
+ */
+function filterQuery(f: MealFilters, search: string, creatorIds?: Set<string>): string {
+  const p = new URLSearchParams();
+  if (creatorIds && creatorIds.size > 0) p.set('creators', [...creatorIds].join(','));
+  if (f.tags.length) p.set('tags', f.tags.join(','));
+  if (f.difficulty.length) p.set('difficulty', f.difficulty.join(','));
+  if (f.authors.length) p.set('authors', f.authors.join(','));
+  if (f.ingredients.length) p.set('ingredients', f.ingredients.join(','));
+  if (f.excludeIngredients.length) p.set('excludeIngredients', f.excludeIngredients.join(','));
+  if (search.trim()) p.set('q', search.trim());
+  const s = p.toString();
+  return s ? `&${s}` : '';
+}
+
+/** Keeps a value still until typing stops, so a search box is not a request per keystroke. */
+function useDebounced<T>(value: T, ms: number): T {
+  const [held, setHeld] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setHeld(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return held;
+}
+
 function FilterPanel({ filters, onChange, onClose, authorSuggestions = [], extraTags = [], inline = false }: {
   filters: MealFilters; onChange: (f: MealFilters) => void; onClose: () => void;
   authorSuggestions?: string[]; extraTags?: string[]; inline?: boolean;
@@ -613,6 +643,18 @@ export default function DiscoverPage() {
   const [creatorPopupId, setCreatorPopupId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<MealFilters>(EMPTY_FILTERS);
+  // The search box is debounced because it now reaches the server. 300ms is
+  // long enough that typing "chicken" is one request rather than seven, and
+  // short enough that it still feels like the list is following you.
+  const debouncedSearch = useDebounced(search, 300);
+  // The infinite-scroll observer is created once and would otherwise close over
+  // the filters as they were when it was made, asking page 2 for a different
+  // question from page 1.
+  const filtersRef = useRef<MealFilters>(EMPTY_FILTERS);
+  const searchRef = useRef('');
+  const creatorsRef = useRef<Set<string>>(new Set());
+  filtersRef.current = filters;
+  searchRef.current = debouncedSearch;
   const [filterOpen, setFilterOpen] = useState(false);
   const filterBtnRef = useRef<HTMLDivElement>(null);
   const [meals, setMeals] = useState<PresetMeal[]>([]);
@@ -640,6 +682,7 @@ export default function DiscoverPage() {
 
   const [followedCreators, setFollowedCreators] = useState<{ id: string; display_name: string; photo_url?: string | null }[]>([]);
   const [selectedCreatorIds, setSelectedCreatorIds] = useState<Set<string>>(new Set());
+  creatorsRef.current = selectedCreatorIds;
   const [carouselMeal, setCarouselMeal] = useState<PresetMeal | null>(null);
   const [featuredCreators, setFeaturedCreators] = useState<FeaturedCreator[]>([]);
 
@@ -734,7 +777,7 @@ export default function DiscoverPage() {
     }
   };
 
-  const fetchMeals = useCallback(async (reset: boolean, currentSection: 'trending' | 'new' | 'following', currentToken: string) => {
+  const fetchMeals = useCallback(async (reset: boolean, currentSection: 'trending' | 'new' | 'following', currentToken: string, currentFilters: MealFilters, currentSearch: string, currentCreators: Set<string>) => {
     if (!reset && fetchingRef.current) return;
     fetchingRef.current = true;
     setFetching(true);
@@ -745,6 +788,11 @@ export default function DiscoverPage() {
       let query = '';
       if (currentSection === 'new') query = '&sort=new';
       else if (currentSection === 'following') query = '&followed=true';
+      // THE FILTERS GO UP. They used to be applied here, over the meals already
+      // loaded, so "vegetarian" meant "vegetarian among the 20 we happen to be
+      // holding" and scrolling revealed more. Anything that narrows a set has
+      // to run before the set is cut into pages.
+      query += filterQuery(currentFilters, currentSearch, currentCreators);
       const headers: Record<string, string> = {};
       if (currentToken) headers['Authorization'] = `Bearer ${currentToken}`;
       const res = await fetch(`/api/preset-meals?limit=${PAGE_SIZE}&offset=${offset}${query}`, { headers });
@@ -773,7 +821,7 @@ export default function DiscoverPage() {
     offsetRef.current = 0;
     setMeals([]);
     setHasMore(true);
-    fetchMeals(true, section, token);
+    fetchMeals(true, section, token, filters, debouncedSearch, selectedCreatorIds);
     if (section === 'following' && token) {
       setSelectedCreatorIds(new Set());
       fetch('/api/creators/following', { headers: { Authorization: `Bearer ${token}` } })
@@ -782,13 +830,13 @@ export default function DiscoverPage() {
         .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, section, token]);
+  }, [loading, section, token, filters, debouncedSearch, selectedCreatorIds]);
 
   useEffect(() => {
     if (!sentinelRef.current || !hasMore || fetching) return;
     const observer = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && !fetchingRef.current) {
-        fetchMeals(false, sectionRef.current, token);
+        fetchMeals(false, sectionRef.current, token, filtersRef.current, searchRef.current, creatorsRef.current);
       }
     }, { threshold: 0.1, rootMargin: '0px 0px 400px 0px' });
     observer.observe(sentinelRef.current);
@@ -799,20 +847,17 @@ export default function DiscoverPage() {
   const activeFilterCount = [filters.authors.length > 0, filters.tags.length > 0, filters.ingredients.length > 0, filters.difficulty.length > 0, filters.excludeIngredients.length > 0].filter(Boolean).length;
   const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
   const authorSuggestions = [...new Set(meals.flatMap(m => [m.author, m.creator_name]).filter((a): a is string => Boolean(a)))];
-  const ingName = (i: any) => ((i.ingredientName ?? i.productName ?? i.product_name ?? i.name ?? '') as string).toLowerCase();
-  const matchesMeal = (m: PresetMeal) => {
-    if (q && !(m.name.toLowerCase().includes(q) || m.author?.toLowerCase().includes(q) || m.creator_name?.toLowerCase().includes(q) || m.source?.toLowerCase().includes(q))) return false;
-    if (filters.authors.length > 0 && !filters.authors.some(a => m.author?.toLowerCase().includes(a.toLowerCase()) || m.creator_name?.toLowerCase().includes(a.toLowerCase()))) return false;
-    if (filters.tags.length > 0 && !filters.tags.some(t => m.tags?.includes(t))) return false;
-    if (filters.ingredients.length > 0 && !filters.ingredients.every(ing => m.ingredients?.some(i => ingName(i).includes(ing)))) return false;
-    if (filters.difficulty.length > 0 && !filters.difficulty.includes(m.difficulty ?? -1)) return false;
-    if (filters.excludeIngredients.length > 0 && filters.excludeIngredients.some(ex => m.ingredients?.some(i => ingName(i).includes(ex)))) return false;
-    return true;
-  };
-  const creatorFiltered = (m: PresetMeal) =>
-    section !== 'following' || selectedCreatorIds.size === 0 || (!!m.creator_id && selectedCreatorIds.has(m.creator_id));
-  const unsaved = meals.filter(m => !savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
-  const saved   = meals.filter(m =>  savedMealStores.has(m.id) && matchesMeal(m) && creatorFiltered(m));
+  // NO CLIENT-SIDE FILTERING. Every rule that narrows the catalogue now runs on
+  // the server, before the rows are cut into pages, because that is the only
+  // place all of them are visible at once. Re-applying them here would be
+  // harmless today and would be a second definition to drift tomorrow, and the
+  // drift is invisible: both sides look right on their own.
+  //
+  // The one split that stays local is saved-vs-unsaved, which is not a filter.
+  // It is a reordering of what came back, and `savedMealStores` is this
+  // browser's own state that the server has no reason to know about.
+  const unsaved = meals.filter(m => !savedMealStores.has(m.id));
+  const saved   = meals.filter(m =>  savedMealStores.has(m.id));
   const visible = unsaved;
 
   const handleAddMeal = (meal: PresetMeal) => {
@@ -1072,7 +1117,7 @@ export default function DiscoverPage() {
           {fetchError ? (
             <div className="text-center py-16">
               <p className="text-sm mb-3" style={{ color: 'var(--text-3)' }}>{fetchError}</p>
-              <button onClick={() => fetchMeals(true, section, token)} className="text-sm font-medium" style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer' }}>
+              <button onClick={() => fetchMeals(true, section, token, filters, debouncedSearch, selectedCreatorIds)} className="text-sm font-medium" style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer' }}>
                 Try again
               </button>
             </div>
