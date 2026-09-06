@@ -655,6 +655,7 @@ export default function DiscoverPage() {
   const creatorsRef = useRef<Set<string>>(new Set());
   filtersRef.current = filters;
   searchRef.current = debouncedSearch;
+  const [facets, setFacets] = useState<{ tags: string[]; authors: string[] }>({ tags: [], authors: [] });
   const [filterOpen, setFilterOpen] = useState(false);
   const filterBtnRef = useRef<HTMLDivElement>(null);
   const [meals, setMeals] = useState<PresetMeal[]>([]);
@@ -813,6 +814,18 @@ export default function DiscoverPage() {
     }
   }, []);
 
+  // Once. The facets come off the same 10-minute cached catalogue the feeds
+  // read, and they change only when a creator publishes, so refetching per
+  // section or per filter would be a request that returns the same answer.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/preset-meals/facets')
+      .then(r => r.ok ? r.json() : { tags: [], authors: [] })
+      .then(d => { if (!cancelled) setFacets({ tags: d.tags ?? [], authors: d.authors ?? [] }); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     if (loading) return; // wait until auth check completes
     fetchGenRef.current += 1;
@@ -845,8 +858,13 @@ export default function DiscoverPage() {
 
   const q = search.trim().toLowerCase();
   const activeFilterCount = [filters.authors.length > 0, filters.tags.length > 0, filters.ingredients.length > 0, filters.difficulty.length > 0, filters.excludeIngredients.length > 0].filter(Boolean).length;
-  const customMealTags = [...new Set(meals.flatMap(m => m.tags || []).filter(t => !ALL_TAGS.includes(t)))];
-  const authorSuggestions = [...new Set(meals.flatMap(m => [m.author, m.creator_name]).filter((a): a is string => Boolean(a)))];
+  // FROM THE SERVER, over the whole catalogue. These used to be derived from
+  // the meals already loaded, so an author on page 4 was never suggested and a
+  // custom tag nobody had scrolled to was missing from the tag list. Same
+  // defect as the filters themselves, and quieter: typing the name by hand
+  // still worked, so it degraded rather than failed.
+  const customMealTags = facets.tags.filter(t => !ALL_TAGS.includes(t));
+  const authorSuggestions = facets.authors;
   // NO CLIENT-SIDE FILTERING. Every rule that narrows the catalogue now runs on
   // the server, before the rows are cut into pages, because that is the only
   // place all of them are visible at once. Re-applying them here would be
