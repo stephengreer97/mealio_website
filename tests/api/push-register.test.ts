@@ -6,7 +6,7 @@ vi.mock('@/lib/supabase', async () =>
   (await import('../helpers/supabase-mock')).mockSupabaseModule());
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
-import { POST, DELETE } from '@/app/api/push/register/route';
+import { POST, DELETE, describeTokenShape } from '@/app/api/push/register/route';
 import { createAccessToken, clearRevocationCache } from '@/lib/tokens';
 
 const TOKEN_A = 'ExponentPushToken[aaaaaaaaaaaaaaaaaaaaaa]';
@@ -188,5 +188,49 @@ describe('DELETE /api/push/register', () => {
     expect(call('push_tokens', 'update')!.args[0]).toHaveProperty('revoked_at');
     const eqs = fakeDb.calls.filter((c) => c.table === 'push_tokens' && c.method === 'eq').map((c) => c.args);
     expect(eqs).toEqual([['token', TOKEN_A], ['user_id', 'user-1']]);
+  });
+});
+
+// ── What a rejected token gets recorded as ──────────────────────────────────
+//
+// Stephen, on an iPhone: "Invalid Expo push token" in the device log, and
+// NOTHING on the server -- this rejection logged nothing at all. That leaves
+// three very different causes indistinguishable: the client sent a native APNs
+// token, it sent an empty string, or the validator is wrong. Each has a
+// different fix, and guessing between them is what this removes.
+//
+// The constraint that shapes it: a push token is the ADDRESS OF A DEVICE.
+// Anyone holding one can push to that handset, so it belongs in a log no more
+// than a session cookie does.
+describe('describeTokenShape', () => {
+  it('never contains the token', () => {
+    const token = 'ExponentPushToken[SECRETVALUE123456]';
+    const shape = describeTokenShape(token);
+    expect(shape).not.toContain('SECRETVALUE123456');
+    expect(shape).not.toContain(token);
+  });
+
+  it('keeps the prefix, which is what identifies the kind', () => {
+    expect(describeTokenShape('ExponentPushToken[abc]')).toContain('ExponentPushToken[');
+  });
+
+  it('names a native hex token on sight, the likeliest wrong shape', () => {
+    // An APNs device token is 64 hex characters. Sending one here means the
+    // client called getDevicePushTokenAsync instead of getExpoPushTokenAsync,
+    // which is a client fix, not a credentials one.
+    const apns = 'a'.repeat(64);
+    const shape = describeTokenShape(apns);
+    expect(shape).toContain('looks=native-hex');
+    expect(shape).toContain('len=64');
+    expect(shape).not.toContain(apns);
+  });
+
+  it('says so when it is empty rather than reporting a zero-length prefix', () => {
+    expect(describeTokenShape('')).toBe('empty');
+  });
+
+  it('reports whether it closed, which separates truncation from a wrong kind', () => {
+    expect(describeTokenShape('ExponentPushToken[abc]')).toContain('closed=true');
+    expect(describeTokenShape('ExponentPushToken[abc')).toContain('closed=false');
   });
 });

@@ -17,6 +17,26 @@ import { log } from '@/lib/logger';
 // from "a second device" if it is told. Without it a rotating device leaves a
 // live row behind that we would send to forever until Expo happened to report
 // it dead.
+/**
+ * Enough to identify what arrived, and nothing that could be sent to.
+ *
+ * A push token addresses a DEVICE. Anyone holding one can push to that handset,
+ * so it belongs in a log no more than a session cookie does. Length, the prefix
+ * up to the opening bracket, and whether it closes are enough to tell an APNs
+ * hex token from an empty string from a genuine Expo token that the validator
+ * is wrong about.
+ */
+export function describeTokenShape(token: string): string {
+  if (!token) return 'empty';
+  const bracket = token.indexOf('[');
+  const prefix = bracket > 0 ? token.slice(0, bracket + 1) : `${token.slice(0, 6)}…`;
+  const closed = token.endsWith(']');
+  // Names the two shapes worth telling apart on sight.
+  const looksHex = /^[0-9a-f]+$/i.test(token);
+  return `len=${token.length} prefix=${JSON.stringify(prefix)} closed=${closed}`
+    + (looksHex ? ' looks=native-hex' : '');
+}
+
 export async function POST(request: NextRequest) {
   const user = await requireAuth(request);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -27,6 +47,23 @@ export async function POST(request: NextRequest) {
   // Reject anything that isn't an ExponentPushToken here rather than at send
   // time, where one junk row would sit in the table failing quietly.
   if (!Expo.isExpoPushToken(token)) {
+    // SAY WHAT SHAPE IT WAS, because this rejection used to log nothing at all.
+    // A device reporting "Invalid Expo push token" with no record on the server
+    // leaves you guessing between "the client sent a native APNs token", "it
+    // sent an empty string", and "the validator is wrong" -- and those have
+    // three different fixes. Measured on a real handset beats all three.
+    //
+    // NEVER THE TOKEN. It is the address of somebody's device: anyone holding
+    // it can be sent a notification, and it belongs in a log no more than a
+    // session cookie does. What goes in is the shape: how long, what it starts
+    // with up to the bracket, and whether it closes.
+    log({
+      event: 'PUSH:REGISTER',
+      status: 'error',
+      userId: user.userId,
+      detail: `rejected token: ${describeTokenShape(token)} platform=${
+        typeof body?.platform === 'string' ? body.platform : '-'}`,
+    });
     return NextResponse.json({ error: 'Invalid Expo push token' }, { status: 400 });
   }
 
