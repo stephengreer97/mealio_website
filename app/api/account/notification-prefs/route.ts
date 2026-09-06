@@ -35,8 +35,15 @@ export const dynamic = 'force-dynamic';
 function needsMigration(error: unknown): boolean {
   const code = (error as { code?: string })?.code ?? '';
   const message = (error as { message?: string })?.message ?? '';
-  return code === '42703' || code === 'PGRST204'
+  const missingColumn = code === '42703' || code === 'PGRST204'
     || /column .* does not exist|could not find the .* column|schema cache/i.test(message);
+  // AND IT HAS TO BE THAT COLUMN. The first version of this guard claimed the
+  // migration for ANY missing column, so when this route asked for
+  // `is_creator` -- a column that does not exist and that no migration was ever
+  // going to add -- it told Stephen to run a migration he had already run, and
+  // hid the real bug behind a confident, wrong instruction. A diagnostic that
+  // can only say one thing will say it when it is false.
+  return missingColumn && /notification_prefs/.test(message);
 }
 
 const MIGRATION_HINT =
@@ -56,7 +63,7 @@ export async function GET(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data, error } = await supabase
     .from('user_profiles')
-    .select('notification_prefs, is_creator')
+    .select('notification_prefs')
     .eq('id', decoded.userId)
     .maybeSingle();
 
@@ -67,7 +74,23 @@ export async function GET(request: NextRequest) {
       : NextResponse.json({ error: 'Failed to read preferences' }, { status: 500 });
   }
 
-  const isCreator = !!data?.is_creator;
+  // A ROW IN `creators`, not a flag on the profile. `user_profiles.is_creator`
+  // does not exist and never did: this route was the only place in either
+  // repository that named it, and every other caller asks the `creators` table
+  // keyed on `user_id`. So the select failed, the whole GET errored, and the
+  // settings screen said "Could not load your settings" -- on an account whose
+  // migration had been run and whose data was fine.
+  //
+  // Failing OPEN on a read error, deliberately. Not knowing whether someone is
+  // a creator should cost them one extra switch they may not need, not the
+  // whole screen. The switch itself is harmless: a preference stored for a
+  // category this account never receives changes nothing.
+  const { data: creator } = await supabase
+    .from('creators')
+    .select('id')
+    .eq('user_id', decoded.userId)
+    .maybeSingle();
+  const isCreator = !!creator;
   return NextResponse.json({
     prefs: (data?.notification_prefs ?? {}) as NotificationPrefs,
     // Only what this account can actually receive. A creator-only switch shown

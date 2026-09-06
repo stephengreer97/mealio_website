@@ -24,7 +24,8 @@ describe('GET /api/account/notification-prefs', () => {
   });
 
   it('returns the stored prefs and the catalogue', async () => {
-    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: { broadcast: false }, is_creator: false }]);
+    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: { broadcast: false } }]);
+    fakeDb.seed('creators', []);
     const res = await GET(jsonRequest(URL, { token }) as never);
     const json = await res.json();
     expect(json.prefs).toEqual({ broadcast: false });
@@ -36,13 +37,18 @@ describe('GET /api/account/notification-prefs', () => {
   });
 
   it('hides a creator-only category from a non-creator', async () => {
-    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: {}, is_creator: false }]);
+    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: {} }]);
+    fakeDb.seed('creators', []);
     const json = await (await GET(jsonRequest(URL, { token }) as never)).json();
     expect(json.categories.map((c: { id: string }) => c.id)).not.toContain('creator_draft');
   });
 
   it('offers it to a creator', async () => {
-    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: {}, is_creator: true }]);
+    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: {} }]);
+    // A ROW IN `creators`, which is what makes someone a creator. There is no
+    // `user_profiles.is_creator` and there never was; this test used to seed one
+    // and the fake happily returned it, which is how the bug shipped.
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'user-1' }]);
     const json = await (await GET(jsonRequest(URL, { token }) as never)).json();
     expect(json.categories.map((c: { id: string }) => c.id)).toContain('creator_draft');
   });
@@ -139,6 +145,91 @@ describe('when the notification_prefs column is missing', () => {
     // every error became a 409 the distinction would be gone in the other
     // direction.
     fakeDb.queue('user_profiles', { data: null, error: { code: '08006', message: 'connection failure' } });
+    const res = await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never);
+    expect(res.status).toBe(500);
+  });
+});
+
+// ── The bug this file did not catch, and why ────────────────────────────────
+//
+// Stephen, on an iPhone with the migration already run: "Could not load your
+// settings." The GET selected `notification_prefs, is_creator`, and
+// `user_profiles.is_creator` DOES NOT EXIST. This route was the only place in
+// either repository that named it; every other caller asks the `creators` table
+// keyed on `user_id`.
+//
+// The suite passed anyway because it SEEDED the phantom column. The fake stores
+// whatever you hand it, so a test that invents a column proves the code can read
+// a column it invented. [[supabase-mock-diverges-from-postgrest]]: right where
+// it has been exercised, silently wrong where it has not.
+//
+// Two tests below, and neither can be satisfied by seeding harder. One asserts
+// against the columns the route ASKS FOR, and one drives the creator case from
+// the table that actually decides it.
+describe('the columns this route depends on', () => {
+  let token: string;
+  beforeEach(async () => {
+    fakeDb.reset();
+    token = await createAccessToken('user-1', 'a@b.test');
+  });
+
+  it('asks user_profiles for nothing but notification_prefs', async () => {
+    // The fake records every select. Asserting on the REQUEST rather than the
+    // response is what makes this immune to the seeding problem: a column that
+    // does not exist cannot be smuggled in by a fixture.
+    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: {} }]);
+    fakeDb.seed('creators', []);
+    await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never);
+
+    const selects = (fakeDb.calls as Array<{ table: string; method: string; args: unknown[] }>)
+      .filter((c) => c.table === 'user_profiles' && c.method === 'select')
+      .map((c) => String(c.args[0]));
+    expect(selects.length).toBeGreaterThan(0);
+    expect(selects.join(' ')).not.toContain('is_creator');
+  });
+
+  it('decides creator from a `creators` row, not from a profile flag', async () => {
+    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: {} }]);
+    fakeDb.seed('creators', [{ id: 'c1', user_id: 'user-1' }]);
+    const body = await (await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never)).json();
+    expect(body.categories.map((c: { id: string }) => c.id)).toContain('creator_draft');
+  });
+
+  it('still answers when the creators lookup fails, rather than losing the screen', async () => {
+    // Failing open on purpose. Not knowing whether someone is a creator should
+    // cost them one switch they may not need, not the whole settings screen.
+    fakeDb.seed('user_profiles', [{ id: 'user-1', notification_prefs: {} }]);
+    fakeDb.queue('creators', { data: null, error: { code: '08006', message: 'connection failure' } });
+    const res = await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never);
+    expect(res.status).toBe(200);
+    expect((await res.json()).categories.length).toBeGreaterThan(0);
+  });
+});
+
+// The guard that hid it. It claimed the MEAL-217 migration for ANY missing
+// column, so a route asking for a column no migration would ever add told
+// Stephen to run one he had already run. A diagnostic that can only say one
+// thing will say it when it is false.
+describe('the migration hint is about ITS OWN column', () => {
+  let token: string;
+  beforeEach(async () => {
+    fakeDb.reset();
+    token = await createAccessToken('user-1', 'a@b.test');
+  });
+
+  it('claims the migration only when notification_prefs is the missing one', async () => {
+    fakeDb.queue('user_profiles', {
+      data: null,
+      error: { code: 'PGRST204', message: "Could not find the 'notification_prefs' column of 'user_profiles' in the schema cache" },
+    });
+    expect((await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never)).status).toBe(409);
+  });
+
+  it('does NOT claim it for a different missing column', async () => {
+    fakeDb.queue('user_profiles', {
+      data: null,
+      error: { code: 'PGRST204', message: "Could not find the 'is_creator' column of 'user_profiles' in the schema cache" },
+    });
     const res = await GET(jsonRequest('/api/account/notification-prefs', { method: 'GET', token }) as never);
     expect(res.status).toBe(500);
   });
