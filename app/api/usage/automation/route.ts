@@ -57,21 +57,48 @@ export async function POST(request: NextRequest) {
 
   if (body?.phase === 'start') {
     if (!body?.storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 });
-    const { data, error } = await supabase
+
+    // MEAL-214. WHICH meals this run was for, not just how many.
+    //
+    // Capped and de-duplicated: this is a handful of ids, and a client sending
+    // a thousand of them is a bug or an attack, not a shopping trip.
+    const mealIds = Array.isArray(body?.mealIds)
+      ? [...new Set(body.mealIds.filter((m: unknown) => typeof m === 'string' && m.length > 0 && m.length <= 64))].slice(0, 50)
+      : null;
+
+    const base = {
+      user_id: decoded.userId,
+      store_id: String(body.storeId).slice(0, 60),
+      source: body?.source === 'web' ? 'web' : 'app',
+      status: 'started',
+      meal_count: num(body?.mealCount),
+      items_requested: num(body?.itemsRequested),
+      config_version: num(body?.configVersion),
+      app_version: typeof body?.appVersion === 'string' ? body.appVersion.slice(0, 40) : null,
+      platform: body?.platform === 'ios' || body?.platform === 'android' ? body.platform : null,
+    };
+
+    let { data, error } = await supabase
       .from('automation_runs')
-      .insert({
-        user_id: decoded.userId,
-        store_id: String(body.storeId).slice(0, 60),
-        source: body?.source === 'web' ? 'web' : 'app',
-        status: 'started',
-        meal_count: num(body?.mealCount),
-        items_requested: num(body?.itemsRequested),
-        config_version: num(body?.configVersion),
-        app_version: typeof body?.appVersion === 'string' ? body.appVersion.slice(0, 40) : null,
-        platform: body?.platform === 'ios' || body?.platform === 'android' ? body.platform : null,
-      })
+      .insert(mealIds && mealIds.length ? { ...base, meal_ids: mealIds } : base)
       .select('id')
       .single();
+
+    // THE COLUMN MAY NOT BE THERE YET, and a run must never fail to start
+    // because of a pending migration. Narrow on purpose: only a missing
+    // `meal_ids` retries, and only once. A previous guard in this codebase was
+    // written to catch ANY missing column and quietly blamed the wrong ticket
+    // for an unrelated schema bug -- so this one names the column it forgives.
+    if (error && error.code === '42703' && String(error.message || '').includes('meal_ids')) {
+      log({ event: 'USAGE:AUTOMATION', status: 'error', userId: decoded.userId,
+            detail: 'meal_ids column missing — run logged without attribution (MEAL-214 migration pending)' });
+      ({ data, error } = await supabase
+        .from('automation_runs')
+        .insert(base)
+        .select('id')
+        .single());
+    }
+
     if (error || !data) {
       log({ event: 'USAGE:AUTOMATION', status: 'error', userId: decoded.userId, error, detail: 'start' });
       return NextResponse.json({ error: 'Failed to log run' }, { status: 500 });
