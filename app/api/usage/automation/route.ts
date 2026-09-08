@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
     // for an unrelated schema bug -- so this one names the column it forgives.
     if (error && error.code === '42703' && String(error.message || '').includes('meal_ids')) {
       log({ event: 'USAGE:AUTOMATION', status: 'error', userId: decoded.userId,
-            detail: 'meal_ids column missing — run logged without attribution (MEAL-214 migration pending)' });
+            detail: 'meal_ids column missing: run logged without attribution (MEAL-214 migration pending)' });
       ({ data, error } = await supabase
         .from('automation_runs')
         .insert(base)

@@ -109,7 +109,8 @@ export type EventType =
   | 'ADMIN:CREATOR_VIABILITY'   // the onboarding importability measurement (MEAL-81)
   | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
   | 'ADMIN:AUTOMATION_FUNNEL'
-  | 'ADMIN:AUTOMATION_NETWORK'   // per-store add-to-cart reliability dashboard
+  | 'ADMIN:AUTOMATION_NETWORK'
+  | 'ADMIN:CANARY'            // nightly canary plans and results (MEAL-7)   // per-store add-to-cart reliability dashboard
   | 'ADMIN:IMPORT_SPEND'       // what imports cost, creator vs user (MEAL-222)
   // The per-run drilldown behind that dashboard (MEAL-143). Two events, because
   // they fail for different reasons and only one of them means a lost trace:

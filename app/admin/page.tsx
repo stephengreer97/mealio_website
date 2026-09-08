@@ -22,6 +22,7 @@ import AdminImportSpend from '@/components/AdminImportSpend';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelChart';
 import AdminNetworkStats from '@/components/AdminNetworkStats';
+import AdminCanary from '@/components/AdminCanary';
 // The per-run drilldown (MEAL-143). Its own component and its own fetches: the
 // funnel is a set of rates over a window and this is one run's rows, so nothing is
 // shared but the store list the picker offers.
@@ -2110,6 +2111,15 @@ export default function AdminPage() {
                 First, because it is what the runs actually do now. The funnel
                 below it counts a DOM-era vocabulary over the same rows. */}
             <AdminNetworkStats token={token} />
+
+            {/* ── Nightly canary (MEAL-7) ────────────────────────────────────
+                Sits with the automation data rather than in its own tab: it is
+                the same question as the panels around it, asked on a schedule
+                against a meal built to fail in known ways. */}
+            <AdminCanary
+              token={token}
+              storeIds={['heb', 'walmart', 'aldi', 'wegmans', 'albertsons', 'publix']}
+            />
 
             {/* ── Funnel ─────────────────────────────────────────────────── */}
             <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
