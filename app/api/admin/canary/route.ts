@@ -4,7 +4,12 @@ import { requireAdmin } from '@/lib/requireAdmin';
 import { log } from '@/lib/logger';
 
 // GET  /api/admin/canary        the per-store plans, plus recent results
-// PUT  /api/admin/canary        { storeId, outOfStockItem?, unmatchedItem?, enabled? }
+// PUT  /api/admin/canary        { storeId, mealName?, enabled? }
+//
+// The out-of-stock and no-match items are NOT here any more. They are
+// ingredients of the canary meal, which is the one place a meal's contents
+// are described; having a second place meant the two could disagree about
+// what was being tested, with this one winning silently.
 //
 // MEAL-7. The two CURATED canary lines per store, edited by hand.
 //
@@ -76,12 +81,17 @@ export async function PUT(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data, error } = await supabase
     .from('canary_plans')
+    // ONLY WHAT WAS SENT. This used to write every column on every save, which
+    // was harmless while the panel had a field for each one and fatal the moment
+    // it did not: the item boxes are gone (the meal is where those lines belong
+    // now), so a plain ON/OFF toggle would have posted no mealName and reset
+    // every plan's meal to the literal 'Canary' -- and the runner selects the
+    // meal BY NAME, so every store would have started looking for a meal that
+    // does not exist.
     .upsert({
       store_id: storeId.slice(0, 60),
-      meal_name: text(body?.mealName) ?? 'Canary',
-      out_of_stock_item: text(body?.outOfStockItem),
-      unmatched_item: text(body?.unmatchedItem),
-      enabled: body?.enabled === false ? false : true,
+      ...(text(body?.mealName) ? { meal_name: text(body?.mealName) } : {}),
+      ...(body?.enabled === undefined ? {} : { enabled: body.enabled !== false }),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'store_id' })
     .select()

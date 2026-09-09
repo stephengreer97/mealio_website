@@ -18,8 +18,6 @@ import { useEffect, useState } from 'react';
 interface Plan {
   store_id: string;
   meal_name: string;
-  out_of_stock_item: string | null;
-  unmatched_item: string | null;
   enabled: boolean;
 }
 interface Run {
@@ -37,7 +35,7 @@ export default function AdminCanary({ token, storeIds }: { token: () => string |
   const [migrated, setMigrated] = useState(true);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [draft, setDraft] = useState<Record<string, { oos: string; un: string }>>({});
+  const [draft, setDraft] = useState<Record<string, { on: boolean }>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -49,21 +47,23 @@ export default function AdminCanary({ token, storeIds }: { token: () => string |
       setMigrated(d.migrated !== false);
       setPlans(d.plans ?? []);
       setRuns(d.runs ?? []);
-      const next: Record<string, { oos: string; un: string }> = {};
-      for (const p of d.plans ?? []) next[p.store_id] = { oos: p.out_of_stock_item ?? '', un: p.unmatched_item ?? '' };
+      const next: Record<string, { on: boolean }> = {};
+      for (const p of d.plans ?? []) {
+        next[p.store_id] = { on: p.enabled !== false };
+      }
       setDraft(next);
     } catch { setErr('Failed to load'); }
   };
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
-  const save = async (storeId: string) => {
+  const save = async (storeId: string, override?: { on: boolean }) => {
     setSaving(storeId); setErr(null);
     try {
-      const d = draft[storeId] ?? { oos: '', un: '' };
+      const d = override ?? draft[storeId] ?? { on: true };
       const res = await fetch('/api/admin/canary', {
         method: 'PUT',
         headers: { Authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ storeId, outOfStockItem: d.oos, unmatchedItem: d.un }),
+        body: JSON.stringify({ storeId, enabled: d.on }),
       });
       if (!res.ok) { setErr((await res.json().catch(() => ({}))).error ?? `Save failed (${res.status})`); return; }
       await load();
@@ -71,10 +71,6 @@ export default function AdminCanary({ token, storeIds }: { token: () => string |
   };
 
   const latest = (storeId: string) => runs.find((r) => r.store_id === storeId);
-  const input: React.CSSProperties = {
-    border: '1px solid #e0e0e0', borderRadius: '6px', padding: '6px 9px',
-    fontSize: '13px', width: '100%', boxSizing: 'border-box',
-  };
 
   return (
     <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
@@ -98,13 +94,28 @@ export default function AdminCanary({ token, storeIds }: { token: () => string |
       {migrated && (
         <div style={{ padding: '8px 24px 24px' }}>
           {storeIds.map((sid) => {
-            const d = draft[sid] ?? { oos: '', un: '' };
+            const d = draft[sid] ?? { on: true };
             const last = latest(sid);
-            const skipped = [!d.oos.trim() && 'out of stock', !d.un.trim() && 'no good match'].filter(Boolean);
             return (
               <div key={sid} style={{ borderTop: '1px solid #f0f0f0', padding: '14px 0' }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '8px' }}>
-                  <strong style={{ fontSize: '14px' }}>{sid}</strong>
+                  {/* OFF means the canary SKIPS this store entirely -- distinct from
+                      an empty text box, which skips one branch. A store being
+                      turned off is a decision; a branch being uncurated is a gap. */}
+                  <button
+                    onClick={() => { const n = { ...draft, [sid]: { ...d, on: !d.on } }; setDraft(n); void save(sid, n[sid]); }}
+                    title={d.on ? 'Canary runs this store' : 'Canary skips this store'}
+                    style={{
+                      border: '1px solid ' + (d.on ? '#0f9d58' : '#d0d0d0'),
+                      background: d.on ? '#0f9d58' : '#f2f2f2',
+                      color: d.on ? 'white' : '#999',
+                      borderRadius: '999px', padding: '2px 10px', fontSize: '11px',
+                      cursor: 'pointer', fontWeight: 700, minWidth: '46px',
+                    }}
+                  >
+                    {d.on ? 'ON' : 'OFF'}
+                  </button>
+                  <strong style={{ fontSize: '14px', opacity: d.on ? 1 : 0.5 }}>{sid}</strong>
                   {last ? (
                     <span style={{
                       fontSize: '12px',
@@ -121,43 +132,24 @@ export default function AdminCanary({ token, storeIds }: { token: () => string |
                   )}
                 </div>
 
-                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                  <div style={{ flex: '1 1 240px' }}>
-                    <label style={{ fontSize: '11px', color: '#666' }}>Out-of-stock item</label>
-                    <input
-                      style={input}
-                      value={d.oos}
-                      placeholder="leave empty to skip this branch"
-                      onChange={(e) => setDraft({ ...draft, [sid]: { ...d, oos: e.target.value } })}
-                    />
-                  </div>
-                  <div style={{ flex: '1 1 240px' }}>
-                    <label style={{ fontSize: '11px', color: '#666' }}>Item with no good match</label>
-                    <input
-                      style={input}
-                      value={d.un}
-                      placeholder="leave empty to skip this branch"
-                      onChange={(e) => setDraft({ ...draft, [sid]: { ...d, un: e.target.value } })}
-                    />
-                  </div>
-                  <button
-                    onClick={() => save(sid)}
-                    disabled={saving === sid}
-                    style={{
-                      alignSelf: 'flex-end', border: '1px solid #dd0031', background: '#fff1f3',
-                      color: '#dd0031', borderRadius: '6px', padding: '7px 14px',
-                      fontSize: '13px', cursor: 'pointer', fontWeight: 600,
-                    }}
-                  >
-                    {saving === sid ? 'saving…' : 'Save'}
-                  </button>
-                </div>
+                {/* THE ITEM BOXES ARE GONE (2026-09-09). Stephen: "lets remove the
+                    canary text boxes from the admin health dashboard. Instead, I
+                    will add out of stock and no match to the saved meals myself."
 
-                {skipped.length > 0 && (
+                    They were a second place to say what a canary meal contains,
+                    and the meal is the first. Curating a branch here meant the
+                    saved meal and this panel could disagree about what was being
+                    tested, with the panel winning silently. An out-of-stock line
+                    and a line with no good match are ingredients; they belong in
+                    the meal alongside the ones that do match. */}
+
+                {!d.on && (
                   <div style={{ fontSize: '11px', color: '#9aa0a6', marginTop: '6px' }}>
-                    Skipping: {skipped.join(', ')}. Those branches are not being tested.
+                    Off. The canary skips this store entirely, and its last result stays
+                    above rather than going stale silently.
                   </div>
                 )}
+
 
                 {last?.lines && last.lines.length > 0 && (
                   <div style={{ marginTop: '8px', fontSize: '12px' }}>
