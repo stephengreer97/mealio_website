@@ -562,7 +562,8 @@ export function MealDetailModal({
  * A creator with no uploaded photo gets their initial rather than nothing, so
  * "which creator" is answerable from the card either way.
  */
-function CreatorAvatar({ photo, name, size = 30 }: { photo?: string | null; name: string; size?: number }) {
+// The default size is 5% more area than the 30 it started at: 30 x sqrt(1.05).
+function CreatorAvatar({ photo, name, size = 30.7 }: { photo?: string | null; name: string; size?: number }) {
   const initial = name.replace(/^@/, '').trim().charAt(0).toUpperCase() || '?';
   return (
     <span
