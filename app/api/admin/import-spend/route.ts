@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     supabase
       .from('recipe_imports')
       .select(
-        'actor, outcome, stage, cached, gate_cost_usd, extract_cost_usd, total_cost_usd, '
+        'actor, creator_id, outcome, stage, cached, gate_cost_usd, extract_cost_usd, total_cost_usd, '
         + 'gate_input_tokens, gate_output_tokens, extract_input_tokens, extract_output_tokens, id',
       )
       .gte('occurred_at', since)

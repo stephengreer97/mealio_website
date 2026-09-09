@@ -25,6 +25,8 @@ import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelCha
 // Type-only: the aggregation itself runs on the server, and this is the shape
 // it answers with. Erased at compile time.
 import type { NetworkStoreStats } from '@/lib/automation-network-stats';
+// Type-only: the aggregation runs on the server; this is the shape it answers with.
+import type { SpendBucket } from '@/lib/import-spend';
 import AdminCanary from '@/components/AdminCanary';
 // The per-run drilldown (MEAL-143). Its own component and its own fetches: the
 // funnel is a set of rates over a window and this is one run's rows, so nothing is
@@ -298,6 +300,19 @@ interface NetworkResponse {
   headlines: string[];
 }
 
+/**
+ * A creator with no imports in the window, as opposed to one not read yet.
+ *
+ * `spendByCreator` only holds creators who spent something, so a creator absent
+ * from it has genuinely spent nothing — which is a fact, and different from the
+ * read not having happened. Both used to render as the same dash.
+ */
+const EMPTY_SPEND: SpendBucket = {
+  imports: 0, rejected: 0, cached: 0,
+  costUsd: 0, gateCostUsd: 0, extractCostUsd: 0,
+  medianTokens: { gateInput: null, gateOutput: null, extractInput: null, extractOutput: null },
+};
+
 /** The walls, which get colour. A spike here is a campaign, not a bug. */
 const WALL = new Set(['403', '429', '412', '418']);
 
@@ -545,8 +560,14 @@ function exactly(at: string | null): string | undefined {
 const ERROR_CHARS = 320;
 
 function PollHealthPanel({
-  health, now, pendingDrafts,
-}: { health: CreatorPollHealth; now: number; pendingDrafts: number | null | undefined }) {
+  health, now, pendingDrafts, spend, spendDays,
+}: {
+  health: CreatorPollHealth;
+  now: number;
+  pendingDrafts: number | null | undefined;
+  spend: SpendBucket | null;
+  spendDays: number;
+}) {
   const kind = pollStatus(health, now);
   const style = POLL_STATUS_STYLES[kind];
 
@@ -560,7 +581,8 @@ function PollHealthPanel({
   // Only a POSITIVE count keeps the panel open — a `null` we could not read is
   // already reported by the banner at the top of the tab, and the collapsed
   // subsection below this says the same number either way.
-  if (kind === 'unconfigured' && !health.lastPolledAt && health.draftedCount === 0 && !pendingDrafts) {
+  if (kind === 'unconfigured' && !health.lastPolledAt && health.draftedCount === 0
+      && !pendingDrafts && !spend?.imports) {
     return (
       <p data-testid={`poll-health-${health.creatorId}`} style={{ margin: '4px 0 16px', fontSize: '12px', color: '#aaa' }}>
         No source is being polled for this creator. Nothing here is broken, there is just nothing to report yet.
@@ -641,6 +663,22 @@ function PollHealthPanel({
           label="Pending drafts"
           value={pendingDrafts == null ? '—' : String(pendingDrafts)}
           note={pendingDrafts == null ? 'could not be counted' : 'waiting on a decision'}
+        />
+        {/* MEAL-222, moved onto the card. It used to live only on Manual sync
+            as one number per ACTOR TYPE — creators against users — which answers
+            a platform question. Beside the drafts it answers the one actually
+            asked while looking at a creator: what did THIS creator's imports
+            cost, and what did the money buy. */}
+        <Figure
+          label={`Import spend (${spendDays}d)`}
+          value={spend == null ? '—' : `$${spend.costUsd.toFixed(4)}`}
+          note={spend == null
+            ? 'not read'
+            : spend.imports === 0
+              ? 'no imports in this window'
+              : `${spend.imports} attempt${spend.imports === 1 ? '' : 's'}`
+                + (spend.rejected > 0 ? ` · ${spend.rejected} rejected` : '')
+                + (spend.cached > 0 ? ` · ${spend.cached} free from cache` : '')}
         />
       </div>
 
@@ -878,6 +916,16 @@ export default function AdminPage() {
   // from three months ago is worse than no answer.
   const [viability, setViability] = useState<Record<string, Partial<Record<PlatformSource, ViabilityReport>>>>({});
   const [sourceError, setSourceError] = useState<Record<string, string>>({});
+  /**
+   * What each creator's imports have cost, over the last 30 days (MEAL-222).
+   *
+   * One read for the whole tab, keyed by creator id, rather than a request per
+   * card — same reason the pending-draft counts are read that way. The full
+   * breakdown with a window selector stays on Manual sync; a card wants the
+   * number, not the dashboard.
+   */
+  const [spendByCreator, setSpendByCreator] = useState<Record<string, SpendBucket> | null>(null);
+  const [spendDays, setSpendDays] = useState(30);
   const [stats, setStats] = useState<Stats | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<AvailableQuarter | null>(null);
   const [emailStats, setEmailStats] = useState<EmailStats | null>(null);
@@ -950,6 +998,18 @@ export default function AdminPage() {
       const data = await res.json();
       setApplications(data.applications);
     }
+  };
+
+  const loadCreatorSpend = async (days = spendDays) => {
+    const res = await fetch(`/api/admin/import-spend?days=${days}`, {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    if (!res.ok) { setSpendByCreator({}); return; }
+    const data = await res.json().catch(() => null);
+    // `{}` rather than null on a failure: null means "not read yet" and the card
+    // says nothing at all, which is the right thing while it is in flight and the
+    // wrong thing forever after.
+    setSpendByCreator(data?.byCreator ?? {});
   };
 
   const loadCreators = async () => {
@@ -1118,6 +1178,7 @@ export default function AdminPage() {
   const switchTab = (t: Tab) => {
     setTab(t);
     if (t === 'sources' && creators.length === 0) loadCreators();
+    if (t === 'sources' && !spendByCreator) loadCreatorSpend();
     if (t === 'sync' && creators.length === 0) loadCreators();
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
@@ -1478,7 +1539,13 @@ export default function AdminPage() {
                       Above the link rows because it is what the operator came to
                       the tab to find out; the links are what they change after. */}
                   {creator.pollHealth && (
-                    <PollHealthPanel health={creator.pollHealth} now={pollNow} pendingDrafts={creator.pendingDraftCount} />
+                    <PollHealthPanel
+                      health={creator.pollHealth}
+                      now={pollNow}
+                      pendingDrafts={creator.pendingDraftCount}
+                      spend={spendByCreator ? (spendByCreator[creator.id] ?? EMPTY_SPEND) : null}
+                      spendDays={spendDays}
+                    />
                   )}
 
                   {/* What has arrived and not been decided, which used to be its

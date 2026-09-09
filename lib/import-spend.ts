@@ -13,6 +13,9 @@
 
 export interface SpendRow {
   actor: string | null;
+  /** Whose imports these are. Null for a user import, and for a creator row
+   *  written before this column was read. */
+  creator_id?: string | null;
   outcome: string | null;
   stage: string | null;
   cached: boolean | null;
@@ -45,6 +48,20 @@ export interface SpendBucket {
 export interface SpendView {
   total: SpendBucket;
   byActor: Record<string, SpendBucket>;
+  /**
+   * The same money, split by WHICH CREATOR (MEAL-222 follow-up).
+   *
+   * `byActor` answers "what do creator imports cost us against user imports",
+   * which is the platform question. This answers "what does THIS creator cost",
+   * which is the one asked while looking at a creator — and it is asked on their
+   * own card, beside the drafts those imports produced.
+   *
+   * Keyed by `creator_id`, and a row without one is simply absent rather than
+   * bucketed under a placeholder: unlike `byActor`, nothing here claims to be a
+   * total, so an unattributable row has no home to distort. `total` is still the
+   * sum of everything.
+   */
+  byCreator: Record<string, SpendBucket>;
 }
 
 /**
@@ -88,6 +105,7 @@ const money = (n: number) => Math.round(n * 1e6) / 1e6;
 
 export function buildSpendView(rows: SpendRow[]): SpendView {
   const buckets = new Map<string, ReturnType<typeof emptyBucket>>();
+  const creatorBuckets = new Map<string, ReturnType<typeof emptyBucket>>();
   const total = emptyBucket();
 
   const add = (b: ReturnType<typeof emptyBucket>, row: SpendRow) => {
@@ -115,6 +133,14 @@ export function buildSpendView(rows: SpendRow[]): SpendView {
     if (!bucket) { bucket = emptyBucket(); buckets.set(key, bucket); }
     add(bucket, row);
     add(total, row);
+
+    // Only when there is a creator to attribute it to. See `byCreator`.
+    const creatorId = row.creator_id && row.creator_id.trim() ? row.creator_id : null;
+    if (creatorId) {
+      let mine = creatorBuckets.get(creatorId);
+      if (!mine) { mine = emptyBucket(); creatorBuckets.set(creatorId, mine); }
+      add(mine, row);
+    }
   }
 
   const finish = (b: ReturnType<typeof emptyBucket>): SpendBucket => {
@@ -135,5 +161,7 @@ export function buildSpendView(rows: SpendRow[]): SpendView {
 
   const byActor: Record<string, SpendBucket> = {};
   for (const [key, bucket] of buckets) byActor[key] = finish(bucket);
-  return { total: finish(total), byActor };
+  const byCreator: Record<string, SpendBucket> = {};
+  for (const [key, bucket] of creatorBuckets) byCreator[key] = finish(bucket);
+  return { total: finish(total), byActor, byCreator };
 }

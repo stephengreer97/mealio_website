@@ -123,3 +123,35 @@ describe('the median token shape, which is the point as much as the money', () =
     expect(view.byActor).toEqual({});
   });
 });
+
+describe('spend per creator', () => {
+  // MEAL-222 shipped one number per ACTOR TYPE — creators against users — which
+  // answers a platform question. The question asked while looking at a creator
+  // is what THAT creator costs, and it is asked on their own card.
+  it('splits the same money by creator', () => {
+    const view = buildSpendView([
+      row({ creator_id: 'c1', total_cost_usd: '0.0100' }),
+      row({ creator_id: 'c1', total_cost_usd: '0.0031', outcome: 'rejected' }),
+      row({ creator_id: 'c2', total_cost_usd: '0.0200' }),
+    ]);
+
+    expect(view.byCreator.c1.imports).toBe(2);
+    expect(view.byCreator.c1.rejected).toBe(1);
+    expect(view.byCreator.c1.costUsd).toBeCloseTo(0.0131, 6);
+    expect(view.byCreator.c2.costUsd).toBeCloseTo(0.02, 6);
+    // The total is still everything, so the card and the tab cannot disagree.
+    expect(view.total.costUsd).toBeCloseTo(0.0331, 6);
+  });
+
+  it('leaves an unattributable row out of byCreator without losing it', () => {
+    // Unlike byActor, nothing in byCreator claims to be a total, so a row with
+    // no creator has no honest bucket to sit in. It must still reach the total.
+    const view = buildSpendView([
+      row({ creator_id: null, total_cost_usd: '0.0500' }),
+      row({ creator_id: 'c1', total_cost_usd: '0.0100' }),
+    ]);
+
+    expect(Object.keys(view.byCreator)).toEqual(['c1']);
+    expect(view.total.costUsd).toBeCloseTo(0.06, 6);
+  });
+});
