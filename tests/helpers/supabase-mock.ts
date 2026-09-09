@@ -305,7 +305,26 @@ export class FakeSupabase {
     return this;
   }
 
+  /**
+   * `supabase.auth.admin`, which the account-delete route reaches for after it
+   * has finished with the tables.
+   *
+   * A stub rather than a model: there is no auth schema in here to delete from,
+   * so what this exists for is (a) letting a route that calls it run to the end
+   * instead of throwing on `undefined`, and (b) letting a test assert that it
+   * WAS called — a deletion that erases the profile and leaves the auth user is
+   * an account that can still sign in, which is the failure worth pinning.
+   * Queue an error on it to drive the failure path.
+   */
+  auth = {
+    admin: {
+      deleteUser: deleteUser,
+    },
+  };
+
   reset(): void {
+    deleteUser.mockReset();
+    deleteUser.mockResolvedValue({ error: null });
     this.queues.clear();
     this.tables.clear();
     this.uniques.clear();
@@ -604,6 +623,13 @@ export class FakeSupabase {
 
 // Shared singletons so test files and the vi.mock('@/lib/supabase') factory
 // (which imports this module) see the same instances. Reset in beforeEach.
+/**
+ * `auth.admin.deleteUser`, hoisted out of the class so the module-level
+ * singleton and the `vi.mock` factory share one spy. Defaults to succeeding;
+ * `fakeDb.reset()` puts it back.
+ */
+export const deleteUser = vi.fn(async (_id: string) => ({ error: null as { message: string } | null }));
+
 export const fakeDb = new FakeSupabase();
 export const signInWithPassword = vi.fn();
 

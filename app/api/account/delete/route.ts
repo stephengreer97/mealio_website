@@ -77,28 +77,103 @@ export async function DELETE(request: NextRequest) {
       await supabase.from('creators').delete().eq('id', creator.id);
     }
 
-    // 2) The user's own rows with NOT NULL FKs to user_profiles (creator_follows
+    // 2) The cohort anchor, copied out BEFORE the profile goes.
+    //
+    //    Everything preserved below is activity, and activity with no signup date
+    //    cannot be cohorted — "of the people who joined in March, how many were
+    //    still opening it in June" is the only question retention asks, and the
+    //    March half of it lives on the row about to be deleted. So the handful of
+    //    non-PII facts that anchor a cohort are copied to `deleted_users` first.
+    //
+    //    Deliberately NOT copied: email, display name, phone, Stripe ids. What
+    //    goes in is timestamps, a tier word, and the creator handle the user
+    //    chose to arrive through. `user_id` is a uuid with nothing behind it once
+    //    the profile is gone; it is what lets two deleted users be counted as two
+    //    people rather than as an anonymous heap.
+    //
+    //    Non-fatal by design. A tombstone that cannot be written must not block a
+    //    person exercising a deletion right — the deletion is the obligation and
+    //    the analytics are the convenience, and that ordering is not close.
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('created_at, acquisition_source, subscribed_at, subscription_tier')
+      .eq('id', userId)
+      .maybeSingle();
+
+    const { error: tombstoneError } = await supabase
+      .from('deleted_users')
+      .upsert(
+        {
+          user_id: userId,
+          signed_up_at: profile?.created_at ?? null,
+          acquisition_source: profile?.acquisition_source ?? null,
+          subscribed_at: profile?.subscribed_at ?? null,
+          subscription_tier: profile?.subscription_tier ?? null,
+          deleted_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      );
+    if (tombstoneError) {
+      // Logged loudly and then ignored: the rows it would have anchored are
+      // still there and still countable, they simply lose their cohort. Silence
+      // here would mean discovering months later that a slice of the curve is
+      // uncohortable with nothing saying when it started.
+      log({ event: 'ACCOUNT:DELETE', status: 'error', userId, detail: `tombstone failed: ${tombstoneError.message}` });
+    }
+
+    // 3) The user's own rows with NOT NULL FKs to user_profiles (creator_follows
     //    follows by user_id, not follower_id).
-    await supabase.from('preset_meal_saves').delete().eq('user_id', userId);
+    //
+    //    `preset_meal_saves` and `subscription_events` are NO LONGER deleted here.
+    //    They are behaviour and money, they carry no PII beyond the uuid, and
+    //    deleting them is what made every historical figure move: a cohort that
+    //    was 400 people in March became 380 today, and the saves total on the
+    //    admin page fell for a month that had already ended. Their foreign keys
+    //    onto `user_profiles` are dropped in
+    //    supabase/migrations/20260908000001_preserve_analytics_on_delete.sql —
+    //    WITHOUT THAT MIGRATION the database still cascades them away and this
+    //    change does nothing.
+    //
+    //    What is still deleted is personal content: their saved recipes, the
+    //    devices they trusted, their one-time codes, their application.
     await supabase.from('creator_follows').delete().eq('user_id', userId);
     await supabase.from('creator_applications').delete().eq('user_id', userId);
-    await supabase.from('subscription_events').delete().eq('user_id', userId);
     await supabase.from('meals').delete().eq('user_id', userId);
     await supabase.from('remembered_devices').delete().eq('user_id', userId);
     await supabase.from('otp_codes').delete().eq('user_id', userId);
 
-    // 3) Anonymize the marketing/lifecycle send log (user_id is nullable): keep the
+    // 4) Anonymize the marketing/lifecycle send log (user_id is nullable): keep the
     //    rows for aggregate reporting but scrub the PII and detach the profile.
+    //
+    //    Detached rather than kept-with-uuid, unlike the tables above, and the
+    //    difference is what the row holds: this one has an email address in it.
+    //    Scrubbing that is the whole point, and once it is scrubbed the row is
+    //    only ever read as an aggregate, so there is nothing for a uuid to do.
     await supabase.from('email_sends').update({ email: '[deleted]', user_id: null }).eq('user_id', userId);
 
-    // 4) Detach any preset meals still authored by this user (nullable author_id).
+    // 5) Detach any preset meals still authored by this user (nullable author_id).
     await supabase.from('preset_meals').update({ author_id: null }).eq('author_id', userId);
 
-    // 5) The profile itself — check the error so any remaining FK surfaces as a
+    // 6) The profile itself — check the error so any remaining FK surfaces as a
     //    clear log line instead of a generic failure at deleteUser.
     const { error: profileError } = await supabase.from('user_profiles').delete().eq('id', userId);
     if (profileError) {
-      log({ event: 'ACCOUNT:DELETE', status: 'error', userId, email, ip, error: profileError });
+      // NAME THE LIKELY CAUSE RATHER THAN LOGGING A CONSTRAINT NAME. There is one
+      // way this fails that is not a bug in this file: the migration that drops
+      // the blocking foreign keys has not been run on this database. Step 3 above
+      // stopped deleting `preset_meal_saves`, whose `user_id` is NOT NULL
+      // REFERENCES user_profiles(id) with no ON DELETE clause — NO ACTION, so it
+      // blocks rather than cascades. Until
+      // supabase/migrations/20260908000001_preserve_analytics_on_delete.sql has
+      // run, every deletion lands here, and "Failed to delete account" is a
+      // sentence nobody can act on.
+      const looksLikeFk = /foreign key|violates|constraint/i.test(profileError.message ?? '');
+      log({
+        event: 'ACCOUNT:DELETE', status: 'error', userId, email, ip, error: profileError,
+        detail: looksLikeFk
+          ? 'profile delete blocked by a foreign key: is 20260908000001_preserve_analytics_on_delete.sql applied?'
+          : 'profile delete failed',
+      });
       return NextResponse.json({ error: 'Failed to delete account. Please try again.' }, { status: 500 });
     }
 

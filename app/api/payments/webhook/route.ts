@@ -59,10 +59,25 @@ export async function POST(request: NextRequest) {
 
       // Idempotent on the Stripe event id — retries of the same event no-op
       // instead of double-counting (see add-subscription-event-idempotency.sql).
+      //
+      // NO MONEY ON THIS ROW, deliberately. Stripe fires
+      // `invoice.payment_succeeded` for this same first payment, and that is
+      // where the amount is recorded (see the case below). Putting the first
+      // month's amount here as well would make `sum(amount_cents)` per user
+      // count month one twice, which is a wrong LTV that looks entirely
+      // plausible. `currency` and `interval` are plan shape rather than money
+      // and are safe to carry — but the session does not expand its line items,
+      // so only the currency is on hand here. The interval arrives with the
+      // first invoice moments later.
       const { error: insertErr } = await supabase
         .from('subscription_events')
         .upsert(
-          { user_id: userId, event: 'started', stripe_event_id: event.id },
+          {
+            user_id: userId,
+            event: 'started',
+            stripe_event_id: event.id,
+            currency: session.currency ?? null,
+          },
           { onConflict: 'stripe_event_id', ignoreDuplicates: true },
         );
       if (insertErr) {
@@ -125,13 +140,93 @@ export async function POST(request: NextRequest) {
       }).eq('id', dbUserId);
 
       // Idempotent on the Stripe event id (see the 'started' insert above).
+      //
+      // The plan they were on when they left, which the Subscription object does
+      // carry in full. No `amount_cents`: a cancellation collects nothing, and a
+      // final plan price recorded as money would be revenue that never happened.
+      const cancelledPrice = sub.items?.data?.[0]?.price ?? null;
       await supabase
         .from('subscription_events')
         .upsert(
-          { user_id: dbUserId, event: 'cancelled', stripe_event_id: event.id },
+          {
+            user_id: dbUserId,
+            event: 'cancelled',
+            stripe_event_id: event.id,
+            currency: cancelledPrice?.currency ?? null,
+            interval: cancelledPrice?.recurring?.interval ?? null,
+          },
           { onConflict: 'stripe_event_id', ignoreDuplicates: true },
         );
       log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: 'subscription.deleted→free' });
+      break;
+    }
+
+    // ── Every payment Stripe actually collected ─────────────────────────────
+    //
+    // THE ROW LTV IS SUMMED FROM, and the reason adding three columns to the
+    // existing events would not have been enough on its own: `started` fires
+    // once, so a user who paid for fourteen months and a user who paid for one
+    // were the same two rows in this table. Renewals were invisible. This is one
+    // row per collected invoice, so revenue-to-date per user is a sum with a
+    // WHERE on it, and it needs nothing from Stripe to answer.
+    //
+    // `amount_paid`, not `amount_due`: what was collected, not what was asked
+    // for. A partially paid or written-off invoice must not read as revenue.
+    // A zero — a fully discounted invoice, a 100% coupon — is recorded as a zero
+    // rather than skipped, because "they were a customer that month and paid
+    // nothing" is a fact retention wants and a missing row destroys.
+    case 'invoice.payment_succeeded': {
+      const invoice = event.data.object as Stripe.Invoice;
+      const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+
+      if (!stripeCustomerId) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'failed', reason: 'no customer on invoice', detail: event.type });
+        break;
+      }
+
+      const { data: rows } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .eq('stripe_customer_id', stripeCustomerId)
+        .limit(1);
+
+      const dbUserId = rows?.[0]?.id;
+      if (!dbUserId) {
+        // Not an error worth failing the webhook over — a payment for a customer
+        // whose account is gone is exactly what the deleted-user work expects to
+        // see. Logged so it is not silent, and dropped: with no user id there is
+        // nothing to attribute it to.
+        log({ event: 'PAYMENT:WEBHOOK', status: 'failed', reason: 'user not found', detail: event.type });
+        break;
+      }
+
+      // The interval, from the line the invoice was actually billed for. Optional
+      // chained the whole way down: an invoice with no recurring line (a one-off
+      // charge on the same customer) records its money and leaves the interval
+      // null rather than throwing inside a webhook Stripe will then retry.
+      const line = invoice.lines?.data?.[0] as { price?: { recurring?: { interval?: string } | null } | null } | undefined;
+
+      const { error: payErr } = await supabase
+        .from('subscription_events')
+        .upsert(
+          {
+            user_id: dbUserId,
+            event: 'payment_succeeded',
+            stripe_event_id: event.id,
+            amount_cents: invoice.amount_paid ?? null,
+            currency: invoice.currency ?? null,
+            interval: line?.price?.recurring?.interval ?? null,
+          },
+          { onConflict: 'stripe_event_id', ignoreDuplicates: true },
+        );
+      if (payErr) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'error', userId: dbUserId, reason: payErr.message, detail: 'payment_succeeded insert failed' });
+      }
+
+      log({
+        event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId,
+        detail: `invoice.payment_succeeded ${invoice.amount_paid ?? '?'} ${invoice.currency ?? '?'}`,
+      });
       break;
     }
 
