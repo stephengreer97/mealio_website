@@ -32,6 +32,17 @@ const KROGER_RAIL_STORES = new Set([
 export interface StoreProduct {
   upc: string;
   name: string;
+  /** The store's SKU, where it addresses a cart line by one. H-E-B does. */
+  sku?: string;
+  /** The real barcode, where the store gives one. Wegmans product ids are per
+   *  store, so this is the only part that survives a store change. */
+  barcode?: string;
+  /** What it cost when the user chose it, as the store said it. A string
+   *  because the rails do not agree on shape and nothing has decided what a
+   *  stored price means yet. */
+  price?: string;
+  /** When `price` was captured. ISO. Absent whenever `price` is. */
+  pricedAt?: string;
 }
 
 /** The key a store's chosen products are filed under — the rail, not the banner,
@@ -41,13 +52,41 @@ export function storeProductKey(storeId: string | null | undefined): string {
   return KROGER_RAIL_STORES.has(storeId) ? 'kroger' : storeId;
 }
 
-/** The product chosen for this store on this ingredient, or null. */
+/**
+ * The product chosen for this store on this ingredient, or null.
+ *
+ * READS EVERY FIELD THE APP WRITES, and that is not decoration. This function
+ * and `withStoreProduct` below are a round trip: anything the reader drops, a
+ * write that goes through the writer then erases from the row. Both used to stop
+ * at `{ upc, name }` while the app had been writing `sku` and `barcode` for
+ * months -- H-E-B addresses a cart line BY sku and refuses to build a write
+ * without one, and a Wegmans product id is per store so the barcode is the only
+ * part that survives a store change. Nothing called either function, so it never
+ * fired; it was a loaded gun for whoever wired it up.
+ *
+ * The rule this file now follows: every field on `StoreProduct` is read here and
+ * written below. See the same warning on `sanitizeStoreProducts` in the app.
+ */
 export function getStoreProduct(ing: any, storeId: string | null | undefined): StoreProduct | null {
   const key = storeProductKey(storeId);
   if (!key) return null;
   const entry = ing?.storeProducts?.[key];
   if (!entry || typeof entry.upc !== 'string' || !entry.upc.trim()) return null;
-  return { upc: entry.upc, name: typeof entry.name === 'string' ? entry.name : '' };
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v : undefined;
+  const sku = str(entry.sku);
+  const barcode = str(entry.barcode);
+  const price = str(entry.price);
+  const pricedAt = str(entry.pricedAt);
+  return {
+    upc: entry.upc,
+    name: typeof entry.name === 'string' ? entry.name : '',
+    ...(sku ? { sku } : {}),
+    ...(barcode ? { barcode } : {}),
+    // Together or not at all: a price with no date is a number nobody can judge
+    // the age of.
+    ...(price ? { price, ...(pricedAt ? { pricedAt } : {}) } : {}),
+  };
 }
 
 /** A copy of `ing` with this store's chosen product recorded. Other stores'
@@ -61,7 +100,20 @@ export function withStoreProduct<T extends Record<string, any>>(
   if (!key || !product.upc) return ing;
   return {
     ...ing,
-    storeProducts: { ...(ing.storeProducts ?? {}), [key]: { upc: product.upc, name: product.name } },
+    storeProducts: {
+      ...(ing.storeProducts ?? {}),
+      [key]: {
+        upc: product.upc,
+        name: product.name,
+        // Every optional field is written only when it has a value, so a store
+        // that has none serialises exactly as it did before the field existed.
+        ...(product.sku ? { sku: product.sku } : {}),
+        ...(product.barcode ? { barcode: product.barcode } : {}),
+        ...(product.price
+          ? { price: product.price, ...(product.pricedAt ? { pricedAt: product.pricedAt } : {}) }
+          : {}),
+      },
+    },
   };
 }
 
