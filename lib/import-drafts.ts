@@ -33,6 +33,7 @@ import { publishCreatorMeal, releaseImportedItem, type PublishedMeal, type Publi
 import { sendCreatorSyncPublishedEmail } from '@/lib/email';
 import { appendMealioLink } from '@/lib/youtube-append';
 import { log } from '@/lib/logger';
+import { fetchAllPages } from '@/lib/paged-select';
 import {
   fieldStatesFor,
   importedFormValues,
@@ -343,6 +344,45 @@ export async function countPendingDrafts(supabase: SupabaseClient, creatorId: st
     .eq('status', 'pending_review')
     .eq('review_by', 'creator');
   return count ?? 0;
+}
+
+/**
+ * Pending drafts per creator, for the count on a creator's own card.
+ *
+ * The Creator integrations tab draws one card per creator and each of them says
+ * how many drafts are waiting, beside "Published from those". That number is
+ * read at the same time as the creator list — one walk of the pending rows
+ * grouped in memory — rather than one `count` query per card, because a card is
+ * cheap and thirty of them each firing their own HEAD is not.
+ *
+ * Deliberately NOT `countPendingDrafts`'s query. That one filters
+ * `review_by = 'creator'` because it feeds the badge a CREATOR sees, and a draft
+ * an operator is still holding is not waiting on them. This is the operator's
+ * own view of the same creator, so every pending draft counts however it is
+ * queued: the card's subsection lists all of them and a header number the list
+ * beneath it contradicts is worse than no number.
+ *
+ * `complete: false` is passed back rather than absorbed. An undercount here reads
+ * as a creator with nothing waiting, which is precisely the answer that stops
+ * someone looking.
+ */
+export async function pendingDraftsByCreator(
+  supabase: SupabaseClient,
+): Promise<{ counts: Map<string, number>; complete: boolean }> {
+  const read = await fetchAllPages<{ id: string; creator_id: string }>((from, to) =>
+    supabase
+      .from('creator_import_drafts')
+      .select('id, creator_id')
+      .eq('status', 'pending_review')
+      .order('id', { ascending: true })
+      .range(from, to));
+
+  const counts = new Map<string, number>();
+  for (const row of read.rows) {
+    if (!row.creator_id) continue;
+    counts.set(row.creator_id, (counts.get(row.creator_id) ?? 0) + 1);
+  }
+  return { counts, complete: read.complete };
 }
 
 /**
@@ -842,13 +882,24 @@ export async function sendDraftToCreator(
  * poller's own drafts (`review_by` defaults to `'creator'`) are not swept into
  * an admin screen they do not belong on. Those were never the admin's to watch.
  */
-export async function listHandedOverDrafts(supabase: SupabaseClient, limit = 200): Promise<QueuedDraft[]> {
-  const { data } = await supabase
+export async function listHandedOverDrafts(
+  supabase: SupabaseClient,
+  limit = 200,
+  creatorId?: string,
+): Promise<QueuedDraft[]> {
+  let query = supabase
     .from('creator_import_drafts')
     .select(DRAFT_COLUMNS)
     .eq('status', 'pending_review')
     .eq('review_by', 'creator')
-    .not('sent_to_creator_at', 'is', null)
+    .not('sent_to_creator_at', 'is', null);
+
+  // Narrowed to one creator when the caller is a creator's own card rather than
+  // the queue that spans everybody (MEAL-91 review, folded into Creator
+  // integrations). Same rows, same order, asked about one creator.
+  if (creatorId) query = query.eq('creator_id', creatorId);
+
+  const { data } = await query
     .order('created_at', { ascending: true })
     .limit(limit);
 
@@ -968,13 +1019,21 @@ export interface AllPendingDrafts {
 export async function listAllPendingDrafts(
   supabase: SupabaseClient,
   limit = 500,
+  creatorId?: string,
 ): Promise<AllPendingDrafts> {
-  const { data, count } = await supabase
+  let query = supabase
     .from('creator_import_drafts')
     // `count: 'exact'` is a second aggregate over the same WHERE clause, not a
     // second round trip, and it is what makes the total independent of `limit`.
     .select(PENDING_COLUMNS, { count: 'exact' })
-    .eq('status', 'pending_review')
+    .eq('status', 'pending_review');
+
+  // The count moves with the filter, which is the point: a creator's card says
+  // how many drafts are pending for THAT creator, and a total counted over
+  // everybody would be a number the list below it never matches.
+  if (creatorId) query = query.eq('creator_id', creatorId);
+
+  const { data, count } = await query
     .order('created_at', { ascending: true })
     .limit(limit);
 

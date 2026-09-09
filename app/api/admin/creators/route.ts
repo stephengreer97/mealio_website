@@ -9,6 +9,7 @@ import {
   normalizePlatformUrl,
 } from '@/lib/creator-sources';
 import { pollHealthByCreator, POLL_HEALTH_LIMIT } from '@/lib/poll-health';
+import { pendingDraftsByCreator } from '@/lib/import-drafts';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /**
@@ -175,12 +176,20 @@ export async function GET(request: NextRequest) {
   // creators rather than one per creator, so the Sources tab stays one request no
   // matter how many creators it lists. Both reads are independent of each other,
   // hence in parallel.
-  const [accountsRes, health] = await Promise.all([
+  //
+  // Pending drafts alongside them: since the review queue moved onto this tab,
+  // each creator's card carries a count of what is waiting on it, and that
+  // count has to arrive with the list rather than as one HEAD request per card.
+  const [accountsRes, health, pendingDrafts] = await Promise.all([
     fetchAllPlatformAccounts(supabase),
     pollHealthByCreator(supabase, creatorIds, primarySource),
+    pendingDraftsByCreator(supabase),
   ]);
 
   if (!accountsRes.complete) incomplete.push('connections');
+  // A short walk of the drafts table would undercount somebody to zero, and a
+  // zero here is exactly the answer that means "nothing to review, move on".
+  if (!pendingDrafts.complete) incomplete.push('pendingDrafts');
 
   const byCreator = new Map<string, Array<Record<string, unknown>>>();
   for (const row of accountsRes.rows) {
@@ -199,6 +208,9 @@ export async function GET(request: NextRequest) {
     ...creator,
     connections: byCreator.get(creator.id) ?? [],
     pollHealth: health.get(creator.id) ?? null,
+    // `null` rather than a number when the read came back short — the tab draws
+    // that as "—" and says why, instead of printing a nought somebody trusts.
+    pendingDraftCount: pendingDrafts.complete ? (pendingDrafts.counts.get(creator.id) ?? 0) : null,
   }));
 
   if (incomplete.length > 0) {

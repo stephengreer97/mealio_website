@@ -57,7 +57,13 @@ type ReviewRow = QueuedDraft & { review: DraftReview };
  * no card to open here, so the `draft` and `confidence` jsonb and a computed
  * review would be several kilobytes a row shipped to draw three strings.
  */
-type StrandedRow = { id: string; name: string; sourceUrl: string; creatorName: string | null };
+type StrandedRow = {
+  id: string;
+  name: string;
+  sourceUrl: string;
+  creatorName: string | null;
+  createdAt: string | null;
+};
 
 /** A queue row, reduced to what the stranded list draws. */
 const stranded = (row: ReviewRow): StrandedRow => ({
@@ -65,7 +71,31 @@ const stranded = (row: ReviewRow): StrandedRow => ({
   name: row.draft?.name ?? '',
   sourceUrl: row.sourceUrl,
   creatorName: row.creatorName,
+  createdAt: row.createdAt,
 });
+
+/**
+ * When a draft was extracted, in the one place every row shows it.
+ *
+ * A queue is a backlog, and a backlog without dates cannot be triaged: "three
+ * drafts waiting" is a completely different situation depending on whether they
+ * arrived this morning or in June. The full timestamp goes in the `title` so the
+ * short form can stay short.
+ */
+function DraftDate({ at }: { at: string | null }) {
+  if (!at) return null;
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return null;
+  return (
+    <span
+      title={when.toLocaleString()}
+      style={{ fontSize: '11px', color: '#aaa', whiteSpace: 'nowrap', flexShrink: 0 }}
+      data-testid="draft-created-at"
+    >
+      {when.toLocaleDateString()}
+    </span>
+  );
+}
 
 /**
  * What `?scope=all` says about the database, as opposed to about the rows on
@@ -138,7 +168,29 @@ function asPresetMeal(row: ReviewRow): PresetMeal {
  */
 type Scope = 'default' | 'all';
 
-export default function AdminReviewQueue() {
+/**
+ * Where this queue is being drawn.
+ *
+ * `creatorId` set means it is the pending-drafts subsection of one creator's
+ * card on Creator integrations, rather than the standalone screen it used to be
+ * its own tab for. Two things change, and only two:
+ *
+ *  1. **The read is narrowed and widened at once.** Narrowed to the creator;
+ *     widened to every pending draft of theirs, whichever queue it sits in. The
+ *     reason the standalone screen asks narrowly — that a poller draft belongs
+ *     to its creator and would bury the operator's own work — cannot bite when
+ *     the whole list is one creator's.
+ *  2. **The framing goes.** No "Waiting on you" panel, no scope toggle: the card
+ *     around it already says whose drafts these are, and a per-creator escape
+ *     hatch is a mode with nothing to escape from.
+ *
+ * Everything else — the cards, the flag groups, approve / send / edit / decline,
+ * the batching — is the same component doing the same thing.
+ */
+export default function AdminReviewQueue(
+  { creatorId, onChanged }: { creatorId?: string; onChanged?: () => void } = {},
+) {
+  const scoped = Boolean(creatorId);
   const [rows, setRows] = useState<ReviewRow[] | null>(null);
   const [handedOver, setHandedOver] = useState<ReviewRow[]>([]);
   const [unqueued, setUnqueued] = useState<StrandedRow[]>([]);
@@ -169,7 +221,12 @@ export default function AdminReviewQueue() {
    * *response* carries, so the banner cannot claim a mode the data is not from.
    */
   const load = async (next: Scope = scope) => {
-    const query = next === 'all' ? '?scope=all' : '';
+    // A creator's card asks by creator, and the route reads that as the wide
+    // scope for that one creator. The toggle is not rendered in that mode, so
+    // `next` never disagrees with it.
+    const query = creatorId
+      ? `?creatorId=${encodeURIComponent(creatorId)}`
+      : next === 'all' ? '?scope=all' : '';
     const res = await fetch(`/api/admin/import-drafts${query}`, { headers: { Authorization: `Bearer ${token()}` } });
     const data = await res.json().catch(() => ({}));
     if (!mountedRef.current) return;
@@ -202,7 +259,7 @@ export default function AdminReviewQueue() {
     setSelected([]);
   };
 
-  useEffect(() => { load('default'); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { load(scoped ? 'all' : 'default'); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [creatorId]);
 
   const toggleScope = async () => {
     if (busy) return;
@@ -280,6 +337,11 @@ export default function AdminReviewQueue() {
       setEditingId(null);
     }
     await load();
+    // The count in the header above this queue was read with the creator list,
+    // not with these rows, so a decision here leaves it stale until something
+    // says otherwise. Fired after the reload so the two numbers are asked in the
+    // order they will be read.
+    onChanged?.();
   };
 
   const saveEdit = async (id: string, draft: CreatorMealDraft) => {
@@ -339,6 +401,7 @@ export default function AdminReviewQueue() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }} data-testid="admin-review-queue">
 
+      {!scoped && (
       <div style={{ background: '#f8f9fa', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '18px 20px' }}>
         <h2 style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: 700, color: '#374151' }}>Waiting on you</h2>
         <p style={{ margin: 0, fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }} data-testid="queue-totals">
@@ -365,8 +428,25 @@ export default function AdminReviewQueue() {
           {scope === 'all' ? 'Back to my queue' : 'Show every pending draft'}
         </button>
       </div>
+      )}
 
-      {scope === 'all' && (
+      {/* One sentence in place of the panel above, because the card this sits in
+          already names the creator and says how many are waiting. What it cannot
+          say is that these are ALL of them — the poller's own drafts included,
+          which the standalone screen hides behind a toggle. */}
+      {scoped && (
+        <p style={{ margin: 0, fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }} data-testid="creator-queue-note">
+          {rows.length === 0 && handedOver.length === 0 && unqueued.length === 0
+            ? 'Nothing pending for this creator. Synced and polled recipes land here as drafts and stay invisible to savers until approved.'
+            : <>
+                Every pending draft of this creator&apos;s, whichever queue it is in.{' '}
+                {rows.length} {rows.length === 1 ? 'is' : 'are'} yours to decide ·{' '}
+                {flagged.length} with something flagged. Open one to see the card as a saver would.
+              </>}
+        </p>
+      )}
+
+      {!scoped && scope === 'all' && (
         <div
           style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '14px 16px' }}
           data-testid="scope-banner"
@@ -504,9 +584,13 @@ export default function AdminReviewQueue() {
         <StrandedList
           testId="unqueued"
           title={`In their queue, never handed over (${unqueued.length})`}
-          blurb="Drafts the poller queued straight to a creator, so neither list above asks for them. Their creator can
-            see them; you cannot, until you turn this mode on. Nothing here is live, and no later sync re-imports the
-            post because it is already recorded as imported. Take one back to decide it here instead of waiting."
+          blurb={scoped
+            ? `Drafts the poller queued straight to this creator, so neither list above asks for them. They can see
+              these; nothing here is live, and no later sync re-imports the post because it is already recorded as
+              imported. Take one back to decide it here instead of waiting on them.`
+            : `Drafts the poller queued straight to a creator, so neither list above asks for them. Their creator can
+              see them; you cannot, until you turn this mode on. Nothing here is live, and no later sync re-imports the
+              post because it is already recorded as imported. Take one back to decide it here instead of waiting.`}
           rows={unqueued}
           busy={busy}
           onReclaim={id => act('reclaim', [id])}
@@ -550,6 +634,7 @@ function StrandedList({
               {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
             </span>
           </span>
+          <DraftDate at={row.createdAt} />
           <button onClick={() => onReclaim(row.id)} disabled={busy} style={secondaryButton}>
             Take it back
           </button>
@@ -599,6 +684,7 @@ function DraftRow({
               {row.creatorName ?? 'Unknown creator'} · {hostOf(row.sourceUrl)}
             </span>
           </span>
+          <DraftDate at={row.createdAt} />
           <FlagBadge summary={row.summary} />
         </button>
       </div>

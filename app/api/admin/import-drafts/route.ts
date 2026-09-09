@@ -52,23 +52,31 @@ export async function GET(request: NextRequest) {
   // purpose (poller drafts are not the admin's work), so widening the default
   // would put every creator's inbox on this screen. `?scope=all` is the escape
   // hatch for when a draft is in neither list and nobody can see it.
-  const scope = request.nextUrl.searchParams.get('scope') === 'all' ? 'all' : 'default';
+  //
+  // `?creatorId=` is the third mode, and it IMPLIES the wide read rather than
+  // sitting beside it. It serves one creator's card on Creator integrations,
+  // where the question is "what of this creator's is pending" — not "what is
+  // mine". Narrowed to one creator, the reason the default is narrow does not
+  // apply: nothing here can bury the operator's work under somebody else's,
+  // because there is only one somebody.
+  const creatorId = request.nextUrl.searchParams.get('creatorId') || null;
+  const scope = creatorId || request.nextUrl.searchParams.get('scope') === 'all' ? 'all' : 'default';
 
   const supabase = createServerSupabaseClient();
   // Three independent reads, so they go together. Nothing here depends on
   // anything else here — `unqueued` is decided from each row's own columns, not
   // by subtracting one result from another.
   const [drafts, handedOver, everything] = await Promise.all([
-    listDraftQueue(supabase, 'admin'),
+    listDraftQueue(supabase, 'admin', creatorId ? { creatorId } : {}),
     // What this operator has handed to creators and they have not decided yet.
     // Since MEAL-89 those rows are in a queue somebody actually reads, so this
     // is the record of a decision to stop deciding — visible here so it can be
     // taken back.
-    listHandedOverDrafts(supabase),
+    listHandedOverDrafts(supabase, 200, creatorId ?? undefined),
     // The escape hatch, and only when asked for. A poller draft is in neither
     // list above — `review_by` is `creator` but nobody handed it over — so an
     // operator cannot see it here even though its creator can.
-    scope === 'all' ? listAllPendingDrafts(supabase) : null,
+    scope === 'all' ? listAllPendingDrafts(supabase, 500, creatorId ?? undefined) : null,
   ]);
 
   // `queueOf` reads the row, so this is exact whether or not the two lists above
@@ -87,6 +95,9 @@ export async function GET(request: NextRequest) {
     // Echoed rather than assumed by the client: the screen states which mode it
     // is showing, and it should be saying so about the data it actually has.
     scope,
+    // Echoed for the same reason: a card rendering these rows should be able to
+    // check they are the creator it asked about, not whoever the last request was.
+    creatorId,
     drafts: drafts.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
     handedOver: handedOver.map((draft) => ({ ...draft, review: reviewDraft(draft) })),
     // Four fields, not a draft: this list renders a name, a creator and a host,
@@ -98,6 +109,10 @@ export async function GET(request: NextRequest) {
       name: draft.name,
       sourceUrl: draft.sourceUrl,
       creatorName: draft.creatorName,
+      // A fifth field, and it earns its place: every draft on this screen now
+      // shows when it was created, and a row with no date beside three that
+      // have one reads as a row nobody knows anything about.
+      createdAt: draft.createdAt,
     })),
     totals: {
       waiting: drafts.length,

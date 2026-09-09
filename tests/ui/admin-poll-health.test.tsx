@@ -69,7 +69,7 @@ async function openSourcesTab(creators: Array<Record<string, unknown>>) {
     return json({}, 404);
   }) as typeof fetch);
   render(<AdminPage />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Sources' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Creator integrations' }));
   await screen.findByTestId('poll-health-summary');
 }
 

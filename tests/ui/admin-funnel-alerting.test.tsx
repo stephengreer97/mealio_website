@@ -89,7 +89,7 @@ async function openFunnel(stores: Store[]) {
   }) as typeof fetch);
 
   render(<AdminPage />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Automation' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Health Dashboard' }));
   return screen.findByTestId(`funnel-store-${stores[0].storeId}`);
 }
 

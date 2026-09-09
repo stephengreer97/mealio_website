@@ -58,7 +58,7 @@ function stubApi(creator: Record<string, unknown>) {
 async function openSourcesTab(creator: Record<string, unknown> = PAUSED) {
   stubApi(creator);
   render(<AdminPage />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Sources' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Creator integrations' }));
   return await screen.findByText('Chef Sarah');
 }
 
@@ -139,7 +139,7 @@ describe('admin Sources tab — health that could not be read', () => {
   async function openWith(incomplete: string[]) {
     stubIncomplete(incomplete);
     render(<AdminPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Sources' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Creator integrations' }));
     return await screen.findByText('Chef Sarah');
   }
 
@@ -164,7 +164,7 @@ describe('admin Sources tab — health that could not be read', () => {
     // and stops being read on the day it matters.
     stubApi({ ...PAUSED, import_opt_in: true, pollHealth: null });
     render(<AdminPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Sources' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Creator integrations' }));
     await screen.findByText('Chef Sarah');
 
     expect(screen.queryByTestId('incomplete-banner')).toBeNull();

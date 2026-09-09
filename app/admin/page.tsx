@@ -17,11 +17,14 @@ import {
 import type { ViabilityReport } from '@/lib/import/viability';
 import { pollConcern, pollStatus, type CreatorPollHealth, type PollStatusKind } from '@/lib/poll-health';
 import { daysSince, relativeTime } from '@/lib/relative-time';
+import { withoutRetiredStoreIds, withoutRetiredStores } from '@/lib/retired-stores';
 import AdminSyncPanel from '@/components/AdminSyncPanel';
 import AdminImportSpend from '@/components/AdminImportSpend';
 import AdminReviewQueue from '@/components/AdminReviewQueue';
 import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelChart';
-import AdminNetworkStats from '@/components/AdminNetworkStats';
+// Type-only: the aggregation itself runs on the server, and this is the shape
+// it answers with. Erased at compile time.
+import type { NetworkStoreStats } from '@/lib/automation-network-stats';
 import AdminCanary from '@/components/AdminCanary';
 // The per-run drilldown (MEAL-143). Its own component and its own fetches: the
 // funnel is a set of rates over a window and this is one run's rows, so nothing is
@@ -33,11 +36,62 @@ import {
   DEFAULT_BLOCKED_RATE_THRESHOLD,
   DEFAULT_CONFIRM_RATE_THRESHOLD,
   DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD,
-  worstStep,
   type AlertReason,
 } from '@/lib/automation-funnel';
 
-type Tab = 'applications' | 'sources' | 'sync' | 'review' | 'meals' | 'stats' | 'broadcast' | 'storage' | 'email' | 'automation';
+/**
+ * The leaf a click lands on. Every one of these was a top-level tab of its own
+ * until the bar grew to ten and stopped being scannable; what changed is the
+ * navigation above them, not the screens.
+ *
+ * Three are gone rather than moved. `review` is now a subsection of each
+ * creator's card on Creator integrations — a queue that spans creators answered
+ * "what is waiting" and could not answer "what is waiting on THIS creator",
+ * which is the question an operator looking at a creator actually has. `meals`
+ * and `storage` were removed outright; the storage routes still exist and are
+ * still admin-only, they simply have no screen.
+ */
+type Tab = 'applications' | 'sources' | 'sync' | 'stats' | 'email' | 'broadcast' | 'automation';
+
+type Section = 'creators' | 'marketing' | 'health';
+
+/**
+ * The two-level bar, declared once so the sections, the subtabs and the
+ * section-of-a-tab lookup below cannot drift apart.
+ *
+ * A section with one tab draws no subtab row: Health Dashboard is a single
+ * screen, and a row of tabs containing one tab is a control with no choice in it.
+ */
+const SECTIONS: ReadonlyArray<{ id: Section; label: string; tabs: ReadonlyArray<{ id: Tab; label: string }> }> = [
+  {
+    id: 'creators',
+    label: 'Creators',
+    tabs: [
+      { id: 'applications', label: 'Creator applications' },
+      { id: 'sources', label: 'Creator integrations' },
+      { id: 'sync', label: 'Manual sync' },
+    ],
+  },
+  {
+    id: 'marketing',
+    label: 'Marketing',
+    tabs: [
+      { id: 'stats', label: 'Sign Ups and Saves' },
+      { id: 'email', label: 'Emails' },
+      { id: 'broadcast', label: 'Broadcast' },
+    ],
+  },
+  {
+    id: 'health',
+    label: 'Health Dashboard',
+    tabs: [{ id: 'automation', label: 'Health Dashboard' }],
+  },
+];
+
+/** Which section a leaf belongs to, derived so it cannot disagree with the bar. */
+const SECTION_OF = new Map<Tab, Section>(
+  SECTIONS.flatMap(section => section.tabs.map(tab => [tab.id, section.id] as const)),
+);
 
 // Store options for broadcast targeting (id → label).
 const BROADCAST_STORE_OPTIONS: { id: string; label: string }[] = [
@@ -225,6 +279,39 @@ const ALERT_REASON_BADGE: Record<AlertReason, { tag: string; title: string }> = 
   },
 };
 
+/**
+ * `GET /api/admin/automation-network` — the same `automation_steps` rows the
+ * funnel counted, read through the columns the network rail actually writes.
+ *
+ * Its coverage block is load-bearing rather than decoration, and it is why this
+ * panel says how many rows could answer before it says what they answered: every
+ * row written before MEAL-219 shipped carries NULL in `http_status`, `phase` and
+ * `attempts`, and a rate computed over the rows that can answer is a rate about a
+ * different window than the one the header names.
+ */
+interface NetworkResponse {
+  days: number;
+  rowsScanned: number;
+  truncated: boolean;
+  coverage: { rowsWithStatus: number; rowsWithPhase: number; rowsWithAttempts: number };
+  stores: NetworkStoreStats[];
+  headlines: string[];
+}
+
+/** The walls, which get colour. A spike here is a campaign, not a bug. */
+const WALL = new Set(['403', '429', '412', '418']);
+
+function statusColour(label: string): string {
+  if (WALL.has(label)) return '#dd0031';
+  if (label === '5xx') return '#e8710a';
+  if (label === '401') return '#8b5cf6';
+  if (label === '2xx') return '#0f9d58';
+  return '#9aa0a6';
+}
+
+/** A whole-number percentage. The funnel's `pct` keeps a decimal; this does not. */
+const wholePct = (n: number) => `${Math.round(n * 100)}%`;
+
 function Metric({ label, value, bad, note }: { label: string; value: string; bad?: boolean; note?: string }) {
   return (
     <div>
@@ -280,6 +367,14 @@ interface CreatorSource {
   connections?: Array<{ platform: string; externalName: string | null; brokenReason: string | null }>;
   /** Is polling working for this creator, and producing anything (MEAL-96). */
   pollHealth?: CreatorPollHealth | null;
+  /**
+   * Drafts of this creator's still waiting on somebody, whichever queue.
+   *
+   * `null` when the walk behind it came back short — drawn as “—”, never as a
+   * nought, because a nought here reads as "nothing to review" and is the one
+   * answer that stops an operator opening the subsection.
+   */
+  pendingDraftCount?: number | null;
 }
 
 const OUTCOME_STYLES: Record<ViabilityOutcome, { bg: string; fg: string; label: string }> = {
@@ -311,6 +406,7 @@ const READ_LABELS: Record<string, string> = {
   creators:    'the creator list',
   connections: 'connected platform accounts',
   pollHealth:  'poll health for creators past the first 500',
+  pendingDrafts: 'the pending draft counts on each creator',
   campaigns:   'the per-campaign funnel',
   totalSent:   'the total emails sent',
 };
@@ -448,14 +544,23 @@ function exactly(at: string | null): string | undefined {
  */
 const ERROR_CHARS = 320;
 
-function PollHealthPanel({ health, now }: { health: CreatorPollHealth; now: number }) {
+function PollHealthPanel({
+  health, now, pendingDrafts,
+}: { health: CreatorPollHealth; now: number; pendingDrafts: number | null | undefined }) {
   const kind = pollStatus(health, now);
   const style = POLL_STATUS_STYLES[kind];
 
   // Nothing is broken about a creator nobody has set polling up for, so they get
   // a grey sentence rather than a panel of empty columns and a "never polled"
   // that reads like a failure.
-  if (kind === 'unconfigured' && !health.lastPolledAt && health.draftedCount === 0) {
+  //
+  // Pending drafts join that test because they do not have to come from polling:
+  // a manual sync queues drafts for a creator nobody polls, and "nothing here is
+  // broken, there is nothing to report" is false while some of them are waiting.
+  // Only a POSITIVE count keeps the panel open — a `null` we could not read is
+  // already reported by the banner at the top of the tab, and the collapsed
+  // subsection below this says the same number either way.
+  if (kind === 'unconfigured' && !health.lastPolledAt && health.draftedCount === 0 && !pendingDrafts) {
     return (
       <p data-testid={`poll-health-${health.creatorId}`} style={{ margin: '4px 0 16px', fontSize: '12px', color: '#aaa' }}>
         No source is being polled for this creator. Nothing here is broken, there is just nothing to report yet.
@@ -528,6 +633,15 @@ function PollHealthPanel({ health, now }: { health: CreatorPollHealth; now: numb
         </div>
         <Figure label="Drafted by polling" value={String(health.draftedCount)} note="lifetime" />
         <Figure label="Published from those" value={String(health.publishedCount)} note="lifetime" />
+        {/* Beside the two lifetime counts because it is the third state of the
+            same thing — drafted, published, and the ones still in between. The
+            other two are history; this is the only one anybody can act on, and
+            the subsection that acts on it is directly below. */}
+        <Figure
+          label="Pending drafts"
+          value={pendingDrafts == null ? '—' : String(pendingDrafts)}
+          note={pendingDrafts == null ? 'could not be counted' : 'waiting on a decision'}
+        />
       </div>
 
       {(health.lastFailedAt || health.lastError) && (
@@ -560,6 +674,60 @@ function PollHealthPanel({ health, now }: { health: CreatorPollHealth; now: numb
               {health.lastError.length > ERROR_CHARS ? `${health.lastError.slice(0, ERROR_CHARS)}…` : health.lastError}
             </p>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One creator's pending drafts, folded into their card (was the Review tab).
+ *
+ * COLLAPSED BY DEFAULT, and that is what makes this affordable. The queue it
+ * mounts is the same component the standalone tab was — cards, flag groups,
+ * approve / send / edit / decline — and mounting one per creator eagerly would
+ * be one full queue read per card on every visit to the tab. Nothing fetches
+ * until somebody opens it, so a tab with thirty creators on it costs the same as
+ * it did before this existed.
+ *
+ * The count in the header comes from the creator list rather than from the queue
+ * below it, which is the only way it can be shown while closed. `onChanged`
+ * exists so it does not go stale the moment a draft is decided: a header saying
+ * "3" over a list of two is worse than a header saying nothing.
+ */
+function CreatorDrafts({
+  creatorId, count, onChanged,
+}: { creatorId: string; count: number | null | undefined; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const label = count == null ? 'Pending drafts' : `Pending drafts (${count})`;
+
+  return (
+    <div
+      data-testid={`creator-drafts-${creatorId}`}
+      style={{ margin: '4px 0 16px', border: '1px solid #f0f0f0', borderRadius: '10px', background: '#fcfcfc' }}
+    >
+      <button
+        onClick={() => setOpen(prev => !prev)}
+        aria-expanded={open}
+        style={{
+          display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '10px 14px',
+          background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
+          fontSize: '13px', fontWeight: 700, color: count ? '#b45309' : '#666',
+        }}
+      >
+        <span aria-hidden style={{ fontSize: '10px', color: '#aaa' }}>{open ? '▼' : '▶'}</span>
+        {label}
+        <span style={{ fontWeight: 400, fontSize: '12px', color: '#aaa' }}>
+          {count === 0
+            ? 'nothing waiting'
+            : count == null
+              ? 'the count could not be read'
+              : 'not live until approved'}
+        </span>
+      </button>
+      {open && (
+        <div style={{ borderTop: '1px solid #f0f0f0', padding: '14px' }}>
+          <AdminReviewQueue creatorId={creatorId} onChanged={onChanged} />
         </div>
       )}
     </div>
@@ -608,15 +776,6 @@ function FailureDots({ count }: { count: number }) {
 function byConcernFirst(creators: CreatorSource[], now: number): CreatorSource[] {
   const concern = (c: CreatorSource) => (c.pollHealth ? pollConcern(c.pollHealth, now) : 0);
   return [...creators].sort((a, b) => concern(b) - concern(a) || a.display_name.localeCompare(b.display_name));
-}
-
-interface Meal {
-  id: string;
-  name: string;
-  author: string;
-  creator_name: string | null;
-  difficulty: number | null;
-  trending_score: number;
 }
 
 interface AvailableQuarter { year: number; q: number; label: string }
@@ -675,27 +834,6 @@ const INCOMPLETE_LABELS: Record<string, string> = {
   subscriptionEvents: 'subscription events (net new paid)',
 };
 
-/**
- * What a bounded backfill reports back (MEAL-129).
- *
- * `complete` is the field that did not exist and had to: both of these routes
- * process an explicit batch, so "it returned 200" and "the job is done" are
- * different facts and the operator needs the second one.
- */
-interface BackfillResult {
-  total: number;
-  processed: number;
-  skipped: number;
-  errors: number;
-  /** Candidates found but not attempted this run. */
-  remaining: number;
-  /** False when another run is required. */
-  complete: boolean;
-  /** False when the scan hit its page bound, so `total` is a floor not a count. */
-  scanComplete: boolean;
-  batchLimit: number;
-}
-
 interface EmailCampaign {
   type: string;
   sent: number;
@@ -740,20 +878,29 @@ export default function AdminPage() {
   // from three months ago is worse than no answer.
   const [viability, setViability] = useState<Record<string, Partial<Record<PlatformSource, ViabilityReport>>>>({});
   const [sourceError, setSourceError] = useState<Record<string, string>>({});
-  const [meals, setMeals] = useState<Meal[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<AvailableQuarter | null>(null);
   const [emailStats, setEmailStats] = useState<EmailStats | null>(null);
   const [emailSearch, setEmailSearch] = useState('');
 
   const [funnel, setFunnel] = useState<FunnelResponse | null>(null);
-  // MEAL-219. The network rail's own view, kept beside the funnel rather than
-  // folded into it: the funnel measures a DOM run and its rows are still real.
+  // MEAL-219. The served rate and the per-phase latencies, drawn on each store's
+  // own card rather than in a panel of their own.
   const [requests, setRequests] = useState<RequestsResponse | null>(null);
   const [requestsErr, setRequestsErr] = useState<string | null>(null);
+  // The network rail's read of the same rows, folded into the per-store cards
+  // rather than sitting in a panel of its own (it was `AdminNetworkStats`). The
+  // run-level facts and the request-level facts are one story about one store,
+  // and they were two cards a screen apart.
+  const [network, setNetwork] = useState<NetworkResponse | null>(null);
+  const [networkErr, setNetworkErr] = useState<string | null>(null);
   // 30 by default: the trend line and the week-over-week comparison both need a
   // window wider than the week being judged, and this is the view the ticket's
   // "is HEB worse than last week" question is actually asked from.
+  //
+  // ONE window for all three reads. Runs, steps and requests are three readings
+  // of the same traffic, and two selectors over them is a card whose halves are
+  // answers about different fortnights with nothing on screen saying so.
   const [funnelDays, setFunnelDays] = useState(30);
   const [configVersions, setConfigVersions] = useState<ConfigVersion[]>([]);
   const [configDraft, setConfigDraft] = useState('');
@@ -768,35 +915,6 @@ export default function AdminPage() {
   const [bcForceShow, setBcForceShow] = useState(false);
   const [bcSaving, setBcSaving] = useState(false);
   const [bcStatus, setBcStatus] = useState('');
-
-  const [storageLoading, setStorageLoading] = useState(false);
-  // `wouldBlock`/`blockReason` are the cleanup route's own verdict on its result
-  // (MEAL-126): the orphan list is only worth acting on if the route considers it
-  // trustworthy, and that has to be on screen next to the number.
-  //
-  // MEAL-133: `warnings`, `ageFilterAvailable` and `objectsTooNewToDelete` are on
-  // the response too, and were being dropped on the floor here. The one that
-  // matters is `ageFilterAvailable: false` — the shape of the response until the
-  // `list_storage_objects` migration is applied by hand, in which no object's age
-  // is knowable and the sweep can still take a photo a user is part-way through
-  // attaching. The route says so; this is the screen an operator reads instead.
-  const [storageDryRunResult, setStorageDryRunResult] = useState<{ orphanCount: number; estimatedBytes: number; paths: string[]; wouldBlock?: boolean; blockReason?: string; warnings?: string[]; ageFilterAvailable?: boolean; objectsTooNewToDelete?: number } | null>(null);
-  // `hashInvalidationComplete` for the same reason (MEAL-132): a sweep that
-  // destroyed objects but could not prune their dedupe rows has left those bytes
-  // pointing at a dead URL for every future upload, and must not read as clean.
-  const [storageDeleteResult, setStorageDeleteResult] = useState<{ deleted: number; estimatedBytes: number; warnings?: string[]; hashInvalidationComplete?: boolean } | null>(null);
-  const [storageError, setStorageError] = useState('');
-  const [backfillLoading, setBackfillLoading] = useState(false);
-  /**
-   * A backfill result, including whether the job actually finished (MEAL-129).
-   *
-   * `complete` and `remaining` are load-bearing, not decoration: both backfills used
-   * to process at most 1000 rows and report success, so an operator had no way to
-   * tell a finished job from one that hit the page ceiling.
-   */
-  const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null);
-  const [photoBackfillLoading, setPhotoBackfillLoading] = useState(false);
-  const [photoBackfillResult, setPhotoBackfillResult] = useState<BackfillResult | null>(null);
 
   useEffect(() => {
     verifyAdmin();
@@ -880,16 +998,6 @@ export default function AdminPage() {
     setViability(prev => ({ ...prev, [id]: { ...prev[id], [source]: data.report as ViabilityReport } }));
   };
 
-  const loadMeals = async () => {
-    const res = await fetch('/api/admin/meals', {
-      headers: { Authorization: `Bearer ${token()}` },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setMeals(data.meals);
-    }
-  };
-
   const loadStats = async (qtr?: AvailableQuarter) => {
     const q = qtr ?? selectedQuarter;
     const params = q ? `?year=${q.year}&q=${q.q}` : '';
@@ -914,7 +1022,34 @@ export default function AdminPage() {
     const res = await fetch(`/api/admin/automation-funnel?days=${days}`, {
       headers: { Authorization: `Bearer ${token()}` },
     });
-    if (res.ok) setFunnel(await res.json());
+    if (!res.ok) return;
+    const data = (await res.json()) as FunnelResponse;
+    // Retired stores lose their card AND their name in the banners above it. A
+    // banner that names a store with no card below it sends an operator looking
+    // for something that is not on the page. The window totals are left alone:
+    // they describe the read, and shrinking them to match a filtered list makes
+    // the two disagree with nothing saying which is right.
+    setFunnel({
+      ...data,
+      stores: withoutRetiredStores(data.stores),
+      confirmRateAlerting: withoutRetiredStoreIds(data.confirmRateAlerting),
+      blockedAlerting: withoutRetiredStoreIds(data.blockedAlerting),
+      successDropAlerting: withoutRetiredStoreIds(data.successDropAlerting),
+    });
+  };
+
+  const loadNetwork = async (days = funnelDays) => {
+    setNetworkErr(null);
+    const res = await fetch(`/api/admin/automation-network?days=${days}`, {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    if (!res.ok) { setNetworkErr(`Could not read the network rail (${res.status})`); return; }
+    const data = (await res.json()) as NetworkResponse;
+    // Retired stores keep their rows and lose their card. `rowsScanned` and the
+    // coverage counts are left alone deliberately: they describe the read, and
+    // quietly shrinking them to match a filtered list would make the two
+    // disagree with nothing on screen saying which was wrong.
+    setNetwork({ ...data, stores: withoutRetiredStores(data.stores) });
   };
 
   const loadRequests = async (days = funnelDays) => {
@@ -923,7 +1058,11 @@ export default function AdminPage() {
       headers: { Authorization: `Bearer ${token()}` },
     });
     const data = await res.json().catch(() => null);
-    if (res.ok) { setRequests(data); return; }
+    // Retired stores lose their panel. `data` is still allowed to be null here —
+    // a 200 whose body would not parse — and a `{ stores: [] }` stand-in would
+    // draw "no request rows in the last undefined days" as though it were an
+    // answer, so that case stays exactly as it was.
+    if (res.ok) { setRequests(data ? { ...data, stores: withoutRetiredStores(data.stores) } : null); return; }
     // A 409 means the migration has not been run. That is a specific, fixable
     // thing and the page should say which file, not render "something broke".
     setRequestsErr(data?.error ?? 'Failed to load request telemetry');
@@ -980,12 +1119,12 @@ export default function AdminPage() {
     setTab(t);
     if (t === 'sources' && creators.length === 0) loadCreators();
     if (t === 'sync' && creators.length === 0) loadCreators();
-    if (t === 'meals' && meals.length === 0) loadMeals();
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
     if (t === 'email' && !emailStats) loadEmailStats();
     if (t === 'automation') {
       if (!funnel) loadFunnel();
+      if (!network && !networkErr) loadNetwork();
       if (!requests && !requestsErr) loadRequests();
       if (configVersions.length === 0) loadAutomationConfig();
     }
@@ -1044,88 +1183,6 @@ export default function AdminPage() {
     setActionLoading(null);
   };
 
-  const handleDeleteMeal = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
-    setActionLoading('meal' + id);
-    const res = await fetch('/api/admin/meals', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
-      body: JSON.stringify({ id }),
-    });
-    if (res.ok) {
-      setMeals(prev => prev.filter(m => m.id !== id));
-    }
-    setActionLoading(null);
-  };
-
-  const runStorageDryRun = async () => {
-    setStorageLoading(true);
-    setStorageError('');
-    setStorageDryRunResult(null);
-    setStorageDeleteResult(null);
-    const res = await fetch('/api/admin/storage/cleanup-orphans?dryRun=true', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token()}` },
-    });
-    setStorageLoading(false);
-    if (res.ok) {
-      const data = await res.json();
-      setStorageDryRunResult(data);
-    } else {
-      // The server's message, not a generic one: a 409 here means it refused to
-      // compute orphans because the reference read was incomplete, and "Dry run
-      // failed." would read as a hiccup worth retrying rather than a defect.
-      const data = await res.json().catch(() => null);
-      setStorageError(data?.error ?? 'Dry run failed.');
-    }
-  };
-
-  const runStorageDelete = async () => {
-    if (!confirm(`Delete ${storageDryRunResult?.orphanCount} orphaned files? This cannot be undone.`)) return;
-    setStorageLoading(true);
-    setStorageError('');
-    const res = await fetch('/api/admin/storage/cleanup-orphans', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token()}` },
-    });
-    setStorageLoading(false);
-    if (res.ok) {
-      const data = await res.json();
-      setStorageDeleteResult(data);
-      setStorageDryRunResult(null);
-    } else {
-      const data = await res.json().catch(() => null);
-      setStorageError(data?.error ?? 'Delete failed.');
-    }
-  };
-
-  const runPhotoBackfill = async () => {
-    if (!confirm('This will re-download and permanently store all Pixabay proxy photos in meals and preset_meals. May take several minutes. Continue?')) return;
-    setPhotoBackfillLoading(true);
-    setPhotoBackfillResult(null);
-    const res = await fetch('/api/admin/storage/backfill-photos', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token()}` },
-    });
-    setPhotoBackfillLoading(false);
-    if (res.ok) setPhotoBackfillResult(await res.json());
-  };
-
-  const runBackfill = async () => {
-    if (!confirm('This will download and hash all storage files not yet in photo_hashes. This may take several minutes. Continue?')) return;
-    setBackfillLoading(true);
-    setBackfillResult(null);
-    const res = await fetch('/api/admin/storage/backfill-hashes', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token()}` },
-    });
-    setBackfillLoading(false);
-    if (res.ok) {
-      const data = await res.json();
-      setBackfillResult(data);
-    }
-  };
-
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5' }}>
@@ -1134,21 +1191,53 @@ export default function AdminPage() {
     );
   }
 
-  const tabStyle = (t: Tab): React.CSSProperties => ({
-    padding: '8px 20px',
+  const section = SECTION_OF.get(tab) ?? 'creators';
+  const activeSection = SECTIONS.find(s => s.id === section)!;
+
+  const sectionStyle = (id: Section): React.CSSProperties => ({
+    padding: '10px 20px',
     border: 'none',
-    borderBottom: tab === t ? '2px solid #dd0031' : '2px solid transparent',
+    borderBottom: section === id ? '2px solid #dd0031' : '2px solid transparent',
     background: 'none',
+    fontWeight: section === id ? 700 : 500,
+    color: section === id ? '#dd0031' : '#666',
+    cursor: 'pointer',
+    fontSize: '15px',
+  });
+
+  const subTabStyle = (t: Tab): React.CSSProperties => ({
+    padding: '7px 14px',
+    border: '1px solid ' + (tab === t ? '#f5c2cb' : 'transparent'),
+    borderRadius: '99px',
+    background: tab === t ? '#fff1f3' : 'none',
     fontWeight: tab === t ? 700 : 400,
     color: tab === t ? '#dd0031' : '#666',
     cursor: 'pointer',
-    fontSize: '14px',
+    fontSize: '13px',
   });
 
   // One instant for the whole Sources tab, so the order and every "4 days ago"
   // on it are answers to the same "now".
   const pollNow = Date.now();
   const sourcesByConcern = byConcernFirst(creators, pollNow);
+
+  // The run half and the request half of each store, joined for the merged card.
+  // Keyed rather than searched: this is one lookup per store card, and a `find`
+  // inside the map would be quadratic over a list that grows with the catalogue.
+  const netByStore = new Map((network?.stores ?? []).map(n => [n.storeId, n]));
+  // Stores the rail saw and the runs did not. Named on the page rather than
+  // dropped — a store missing from a health screen reads as a store with nothing
+  // wrong, which is the one thing this page must never say by omission.
+  const funnelStoreIds = new Set((funnel?.stores ?? []).map(f => f.storeId));
+  const networkOnlyStores = (network?.stores ?? [])
+    .map(n => n.storeId)
+    .filter(id => !funnelStoreIds.has(id));
+  // The third read of the same traffic. `automation-network` and
+  // `automation-requests` aggregate the same table and neither is a superset:
+  // the first knows how many rows could not answer, which codes each phase died
+  // on and how many retries there were; the second knows the served rate and the
+  // p50/p95 of each phase. Both are on the card, from the store's own row.
+  const reqByStore = new Map((requests?.stores ?? []).map(r => [r.storeId, r]));
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
@@ -1160,21 +1249,34 @@ export default function AdminPage() {
         <h1 style={{ margin: 0, fontSize: '20px', fontWeight: 700 }}>Admin</h1>
       </div>
 
-      {/* Tabs */}
+      {/* Sections. Clicking one lands on its first subtab rather than on a
+          landing page: every section here is a set of screens, and an
+          intermediate page whose only content is links to three tabs is a click
+          nobody wanted. */}
       <div style={{ background: 'white', borderBottom: '1px solid #e0e0e0', display: 'flex', paddingLeft: '24px' }}>
-        <button style={tabStyle('applications')} onClick={() => switchTab('applications')}>Applications</button>
-        <button style={tabStyle('sources')} onClick={() => switchTab('sources')}>Sources</button>
-        <button style={tabStyle('sync')} onClick={() => switchTab('sync')}>Sync</button>
-        <button style={tabStyle('review')} onClick={() => switchTab('review')}>Review</button>
-        <button style={tabStyle('meals')} onClick={() => switchTab('meals')}>Meals</button>
-        <button style={tabStyle('stats')} onClick={() => switchTab('stats')}>Stats</button>
-        <button style={tabStyle('broadcast')} onClick={() => switchTab('broadcast')}>Broadcast</button>
-        <button style={tabStyle('storage')} onClick={() => switchTab('storage')}>Storage</button>
-        <button style={tabStyle('email')} onClick={() => switchTab('email')}>Email</button>
-        <button style={tabStyle('automation')} onClick={() => switchTab('automation')}>Automation</button>
+        {SECTIONS.map(entry => (
+          <button key={entry.id} style={sectionStyle(entry.id)} onClick={() => switchTab(entry.tabs[0].id)}>
+            {entry.label}
+          </button>
+        ))}
       </div>
 
-      <div style={{ maxWidth: '1000px', margin: '32px auto', padding: '0 20px' }}>
+      {/* Subtabs, and only where there is a choice to make. Health Dashboard is
+          one screen; a row of tabs containing one tab is a control with nothing
+          in it. */}
+      {activeSection.tabs.length > 1 && (
+        <div style={{ background: '#fafafa', borderBottom: '1px solid #eee', display: 'flex', gap: '6px', padding: '8px 24px' }}>
+          {activeSection.tabs.map(entry => (
+            <button key={entry.id} style={subTabStyle(entry.id)} onClick={() => switchTab(entry.id)}>
+              {entry.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* The Health Dashboard is two columns of panels; everything else is a
+          single column of forms and tables that reads worse the wider it gets. */}
+      <div style={{ maxWidth: tab === 'automation' ? '1500px' : '1000px', margin: '32px auto', padding: '0 20px' }}>
 
         {/* Applications Tab */}
         {tab === 'applications' && (
@@ -1375,7 +1477,20 @@ export default function AdminPage() {
                   {/* Is polling working, and is it producing anything (MEAL-96).
                       Above the link rows because it is what the operator came to
                       the tab to find out; the links are what they change after. */}
-                  {creator.pollHealth && <PollHealthPanel health={creator.pollHealth} now={pollNow} />}
+                  {creator.pollHealth && (
+                    <PollHealthPanel health={creator.pollHealth} now={pollNow} pendingDrafts={creator.pendingDraftCount} />
+                  )}
+
+                  {/* What has arrived and not been decided, which used to be its
+                      own tab spanning every creator. Directly under the counts it
+                      belongs with — drafted, published, and these — and closed
+                      until somebody asks, because the review queue inside it is a
+                      read of its own. */}
+                  <CreatorDrafts
+                    creatorId={creator.id}
+                    count={creator.pendingDraftCount}
+                    onChanged={loadCreators}
+                  />
 
                   {/* One row per link: check it, then choose it. */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -1539,51 +1654,6 @@ export default function AdminPage() {
                 who should see what the last fifty cost. */}
             <AdminImportSpend token={token() ?? ''} />
           </>
-        )}
-
-        {/* Where a synced recipe becomes live. Nothing published under a
-            creator's name skips this tab any more (MEAL-91). */}
-        {tab === 'review' && <AdminReviewQueue />}
-
-        {/* Meals Tab */}
-        {tab === 'meals' && (
-          <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
-            <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
-              <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#222' }}>All Preset Meals</h2>
-            </div>
-            {meals.length === 0 ? (
-              <p style={{ padding: '32px 24px', color: '#888', textAlign: 'center' }}>Loading…</p>
-            ) : (
-              <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '600px' }}>
-                <thead>
-                  <tr style={{ background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
-                    {['Name', 'Author', 'Difficulty', 'Trending Score', ''].map(h => (
-                      <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 600, color: '#555' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {meals.map(meal => (
-                    <tr key={meal.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                      <td style={{ padding: '12px 16px', fontWeight: 500 }}>{meal.name}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.creator_name || meal.author || '—'}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{meal.difficulty ?? '—'}</td>
-                      <td style={{ padding: '12px 16px', color: '#555' }}>{Number(meal.trending_score).toFixed(1)}</td>
-                      <td style={{ padding: '12px 16px' }}>
-                        <button
-                          onClick={() => handleDeleteMeal(meal.id, meal.name)}
-                          disabled={actionLoading === 'meal' + meal.id}
-                          style={{ padding: '5px 12px', background: '#fff0f0', color: '#c40029', border: '1px solid #ffcccc', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table></div>
-            )}
-          </div>
         )}
 
         {/* Stats Tab */}
@@ -1864,159 +1934,6 @@ export default function AdminPage() {
           </>
         )}
 
-        {tab === 'storage' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-
-            {/* Orphan Cleanup */}
-            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
-              <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Orphan Cleanup</h2>
-              <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
-                Finds storage files in the meal-photos bucket that are not referenced by any meal, preset meal, creator,
-                application, or pending import draft. Run a dry run first to preview what would be deleted.
-              </p>
-              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <button
-                  onClick={runStorageDryRun}
-                  disabled={storageLoading}
-                  style={{ background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: storageLoading ? 'not-allowed' : 'pointer', opacity: storageLoading ? 0.7 : 1 }}
-                >
-                  {storageLoading ? 'Running…' : 'Dry Run'}
-                </button>
-                {storageDryRunResult && storageDryRunResult.orphanCount > 0 && (
-                  <button
-                    onClick={runStorageDelete}
-                    disabled={storageLoading}
-                    style={{ background: '#c40029', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: storageLoading ? 'not-allowed' : 'pointer', opacity: storageLoading ? 0.7 : 1 }}
-                  >
-                    Delete {storageDryRunResult.orphanCount} Orphans
-                  </button>
-                )}
-                {storageError && <span style={{ fontSize: '13px', color: '#c40029' }}>{storageError}</span>}
-              </div>
-              {storageDryRunResult && (
-                <div style={{ marginTop: '16px', padding: '14px 16px', background: '#f8f9fa', borderRadius: '8px', fontSize: '13px' }}>
-                  <div style={{ fontWeight: 600, color: '#222', marginBottom: '6px' }}>
-                    Dry run: {storageDryRunResult.orphanCount} orphan{storageDryRunResult.orphanCount !== 1 ? 's' : ''} found
-                    , about {(storageDryRunResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB
-                  </div>
-                  {storageDryRunResult.wouldBlock && (
-                    <div style={{ margin: '0 0 8px', padding: '10px 12px', background: '#fff4e5', border: '1px solid #f0b37e', borderRadius: '6px', color: '#8a4b08', fontWeight: 600 }}>
-                      Delete will refuse: {storageDryRunResult.blockReason}
-                    </div>
-                  )}
-                  {/* The route's own warnings, same amber as the block notice above.
-                      `ageFilterAvailable: false` gets a headline of its own because it
-                      is the one an operator has to act on rather than read. */}
-                  {(storageDryRunResult.ageFilterAvailable === false || (storageDryRunResult.warnings?.length ?? 0) > 0) && (
-                    <div data-testid="storage-dry-run-warnings" style={{ margin: '0 0 8px', padding: '10px 12px', background: '#fff4e5', border: '1px solid #f0b37e', borderRadius: '6px', color: '#8a4b08' }}>
-                      {storageDryRunResult.ageFilterAvailable === false && (
-                        <div style={{ fontWeight: 600 }}>
-                          Age filter unavailable. A photo uploaded moments ago cannot be told from an
-                          abandoned one, and can still be deleted by this sweep.
-                        </div>
-                      )}
-                      {storageDryRunResult.warnings?.map((w, i) => (
-                        <div key={i} style={{ marginTop: '6px' }}>{w}</div>
-                      ))}
-                    </div>
-                  )}
-                  {(storageDryRunResult.objectsTooNewToDelete ?? 0) > 0 && (
-                    <div style={{ margin: '0 0 8px', color: '#555' }}>
-                      {storageDryRunResult.objectsTooNewToDelete} unreferenced object
-                      {storageDryRunResult.objectsTooNewToDelete !== 1 ? 's' : ''} held back as too new
-                      to delete, and not listed below. A later sweep will take them if nothing ever
-                      references them.
-                    </div>
-                  )}
-                  {storageDryRunResult.orphanCount === 0 ? (
-                    <div style={{ color: '#16a34a' }}>No orphans. Storage is clean.</div>
-                  ) : (
-                    <div style={{ maxHeight: '160px', overflowY: 'auto', marginTop: '8px' }}>
-                      {storageDryRunResult.paths.map(p => (
-                        <div key={p} style={{ color: '#555', fontFamily: 'monospace', fontSize: '12px', padding: '2px 0' }}>{p}</div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              {storageDeleteResult && (
-                <div style={{ marginTop: '16px', padding: '14px 16px', background: storageDeleteResult.hashInvalidationComplete === false ? '#fff4e5' : '#e6f9ed', borderRadius: '8px', fontSize: '13px', color: storageDeleteResult.hashInvalidationComplete === false ? '#8a4b08' : '#1a7a3a', fontWeight: 600 }}>
-                  Deleted {storageDeleteResult.deleted} file{storageDeleteResult.deleted !== 1 ? 's' : ''} (~{(storageDeleteResult.estimatedBytes / 1024 / 1024).toFixed(2)} MB freed)
-                  {/* A sweep that could not prune its dedupe rows is not a clean sweep
-                      (MEAL-132), and the route says which. */}
-                  {storageDeleteResult.warnings?.map((w, i) => (
-                    <div key={i} style={{ marginTop: '6px', fontWeight: 400 }}>{w}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Photo URL Backfill */}
-            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
-              <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Backfill Proxy Photos</h2>
-              <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
-                Finds all meals and preset meals whose <code>photo_url</code> is still a Pixabay proxy URL (these expire ~24h after generation),
-                re-downloads each image, and saves it permanently to Supabase Storage. Run this once to fix missing photos.
-              </p>
-              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                <button
-                  onClick={runPhotoBackfill}
-                  disabled={photoBackfillLoading}
-                  style={{ background: '#7c3aed', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: photoBackfillLoading ? 'not-allowed' : 'pointer', opacity: photoBackfillLoading ? 0.7 : 1 }}
-                >
-                  {photoBackfillLoading ? 'Backfilling…' : 'Backfill Proxy Photos'}
-                </button>
-              </div>
-              {photoBackfillResult && (
-                <div data-testid="photo-backfill-result" style={{ marginTop: '16px', padding: '14px 16px', background: photoBackfillResult.complete ? '#f5f3ff' : '#fffbeb', borderRadius: '8px', fontSize: '13px', color: photoBackfillResult.complete ? '#5b21b6' : '#92400e', fontWeight: 600 }}>
-                  {photoBackfillResult.complete ? 'Done' : 'Partial run'}: {photoBackfillResult.processed} resolved, {photoBackfillResult.skipped} skipped (already permanent or unchanged), {photoBackfillResult.errors} errors
-                  {' '}({photoBackfillResult.total} proxy URLs found)
-                  {/* The sentence that was missing. A batch of 500 out of 1200 used to
-                      read simply as "Done". */}
-                  {!photoBackfillResult.complete && (
-                    <div style={{ marginTop: '6px', fontWeight: 400 }}>
-                      {photoBackfillResult.remaining.toLocaleString()} still to do. This run is capped at{' '}
-                      {photoBackfillResult.batchLimit.toLocaleString()} rows. Run it again.
-                      {!photoBackfillResult.scanComplete && ' The scan was also truncated, so the total above is a floor.'}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Hash Backfill */}
-            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
-              <h2 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 600, color: '#222' }}>Backfill Photo Hashes</h2>
-              <p style={{ margin: '0 0 20px', fontSize: '13px', color: '#888' }}>
-                One-time operation: downloads and SHA-256 hashes all existing storage files not yet in the photo_hashes table.
-                This enables deduplication for files uploaded before the feature was added. May take several minutes.
-              </p>
-              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                <button
-                  onClick={runBackfill}
-                  disabled={backfillLoading}
-                  style={{ background: '#555', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: backfillLoading ? 'not-allowed' : 'pointer', opacity: backfillLoading ? 0.7 : 1 }}
-                >
-                  {backfillLoading ? 'Backfilling…' : 'Backfill Hashes'}
-                </button>
-              </div>
-              {backfillResult && (
-                <div data-testid="hash-backfill-result" style={{ marginTop: '16px', padding: '14px 16px', background: backfillResult.complete ? '#e6f9ed' : '#fffbeb', borderRadius: '8px', fontSize: '13px', color: backfillResult.complete ? '#1a7a3a' : '#92400e', fontWeight: 600 }}>
-                  {backfillResult.complete ? 'Done' : 'Partial run'}: {backfillResult.processed} hashed, {backfillResult.skipped} skipped, {backfillResult.errors} errors (of {backfillResult.total} total files)
-                  {!backfillResult.complete && (
-                    <div style={{ marginTop: '6px', fontWeight: 400 }}>
-                      {backfillResult.remaining.toLocaleString()} still to do. This run is capped at{' '}
-                      {backfillResult.batchLimit.toLocaleString()} files. Run it again.
-                      {!backfillResult.scanComplete && ' The scan was also truncated, so the total above is a floor.'}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-          </div>
-        )}
-
         {/* Broadcast Tab */}
         {tab === 'broadcast' && (
           <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', padding: '24px' }}>
@@ -2103,595 +2020,613 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* Automation Tab — add-to-cart reliability funnel + remote store config */}
+        {/* Health Dashboard — per-store reliability + remote store config */}
         {tab === 'automation' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          /* Two columns (`min-w-0` on each, or the wide phase tables refuse to
+             shrink and push the grid past the viewport), collapsing to one on a
+             narrow screen. Split by what the panel is FOR rather than by height:
+             the left column is the measurements — one card per store, everything
+             known about it — and the right is the things that act on them: the
+             nightly canary, one run walked step by step, and the config that
+             changes what the next run does. */
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
 
-            {/* ── Network rail (MEAL-219) ────────────────────────────────────
-                First, because it is what the runs actually do now. The funnel
-                below it counts a DOM-era vocabulary over the same rows. */}
-            <AdminNetworkStats token={token} />
+            {/* ── Left: what happened ─────────────────────────────────────── */}
+            <div className="flex flex-col gap-6 min-w-0">
 
-            {/* ── Nightly canary (MEAL-7) ────────────────────────────────────
-                Sits with the automation data rather than in its own tab: it is
-                the same question as the panels around it, asked on a schedule
-                against a meal built to fail in known ways. */}
-            <AdminCanary
-              token={token}
-              storeIds={['heb', 'walmart', 'aldi', 'wegmans', 'albertsons', 'publix']}
-            />
+              {/* ── Per-store health ────────────────────────────────────────
+                  One card per store, from all three reads of the same traffic:
+                  the runs (terminal success, items, blocks), the network rail
+                  (what the store answered, which phase asked, how hard the retry
+                  policy worked), and the code taxonomy over both.
 
-            {/* ── Funnel ─────────────────────────────────────────────────── */}
-            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
-              <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Add-to-cart funnel</h2>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  {[7, 14, 30].map((d) => (
-                    <button
-                      key={d}
-                      onClick={() => { setFunnelDays(d); loadFunnel(d); }}
-                      style={{
-                        border: '1px solid ' + (funnelDays === d ? '#dd0031' : '#e0e0e0'),
-                        background: funnelDays === d ? '#fff1f3' : 'white',
-                        color: funnelDays === d ? '#dd0031' : '#666',
-                        borderRadius: '6px', padding: '4px 12px', fontSize: '13px', cursor: 'pointer',
-                        fontWeight: funnelDays === d ? 600 : 400,
-                      }}
-                    >
-                      {d}d
-                    </button>
-                  ))}
-                </div>
-                <button
-                  onClick={() => loadFunnel()}
-                  style={{ marginLeft: 'auto', border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '4px 12px', fontSize: '13px', cursor: 'pointer', color: '#666' }}
-                >
-                  Refresh
-                </button>
-              </div>
+                  THIS USED TO BE TWO PANELS. "Add-to-cart funnel" counted a
+                  DOM-era vocabulary — search, candidates, add_click, confirm —
+                  and "Network rail" counted the same rows through the columns the
+                  rail actually writes. An operator asking "is HEB healthy" read
+                  two cards a screen apart and had to hold one in their head.
 
-              {!funnel && <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>Loading…</p>}
+                  THE STEP TABLE IS GONE, and it is the only thing that was
+                  deleted rather than moved. DOM automation was removed on
+                  2026-09-01 and its step names went with it: HEB, Walmart and
+                  Albertsons emit no per-item steps at all (the parallel and
+                  pre-search add pools, MEAL-122), Kroger adds through the public
+                  API and reports none, and "first-click confirm" had already been
+                  deleted because the only path that set `detail.attempt` was the
+                  deleted one. For every live store the table read
+                  `login_check → (nothing) → reconcile`, which is not a funnel, and
+                  a clean one meant NO DATA rather than no failures. Every banner
+                  and badge that existed to say so went with it.
 
-              {funnel && funnel.confirmRateAlerting?.length > 0 && (
-                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
-                  <strong>Confirm rate below threshold:</strong> {funnel.confirmRateAlerting.join(', ')}
-                </div>
-              )}
-
-              {/* Its own banner for the same reason the email gives it its own
-                  line: this is not "these stores are bad" but "these stores got
-                  worse", which is the shape a renamed selector makes and the one
-                  an absolute floor cannot see. It is also the only condition that
-                  can see the stores with no per-item step rows at all
-                  (MEAL-122) — it is read off run rows every store writes. */}
-              {funnel && funnel.successDropAlerting?.length > 0 && (
-                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
-                  <strong>Item success has fallen away from normal:</strong> {funnel.successDropAlerting.join(', ')}. More
-                  than {DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD * 100} points below each store&apos;s own trailing 7-day
-                  median. Compare the Item success tile with its median, not with the other stores.
-                </div>
-              )}
-
-              {/* Its own banner, because it is its own failure and the confirm
-                  rate cannot see it: blocked clicks leave that denominator, so a
-                  store with nearly all of its runs walled off reports a healthy
-                  confirm rate on the few that got through. */}
-              {funnel && funnel.blockedAlerting?.length > 0 && (
-                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
-                  <strong>Runs being walled off:</strong> {funnel.blockedAlerting.join(', ')}. A large share of
-                  these stores&apos; runs hit a WAF or robot wall. Nothing to the left of the WAF tile can show
-                  this (blocked clicks are excluded from those rates on purpose), so judge these stores on
-                  terminal success, not on their confirm rate.
-                </div>
-              )}
-
-              {funnel && funnel.truncated && (
-                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
-                  Showing a partial window. The row cap was hit. Every number below is an
-                  undercount. Narrow the range or filter to one store.
-                </div>
-              )}
-
-              {/* The most important caveat on the page, so it sits above the data
-                  rather than inside a card someone has to scroll to. */}
-              {funnel && funnel.partialInstrumentation.length > 0 && (
-                <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
-                  <strong>Funnel has no middle for:</strong> {funnel.partialInstrumentation.join(', ')}.
-                  No <code>search</code>, <code>candidates</code>, <code>add_click</code> or{' '}
-                  <code>confirm</code> rows at all, so the funnel is{' '}
-                  <code>login_check → (nothing) → reconcile</code>. Two known causes: the parallel and
-                  pre-search add pools emit no per-item steps (MEAL-122, and they are on for HEB,
-                  Walmart and Albertsons), and Kroger adds through the public API rather
-                  than the WebView, so it reports no steps at all. Either way a clean funnel here means{' '}
-                  <em>no data</em>, not no failures. Judge these stores on terminal success and items
-                  added, not on the step table.
-                </div>
-              )}
-
-              {funnel && funnel.stores.length === 0 && (
-                <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>
-                  No runs in the last {funnel.days} day{funnel.days === 1 ? '' : 's'}.
-                </p>
-              )}
-
-              {funnel && funnel.stores.map((s) => {
-                // The step the eye should go to first — or an explicit reason
-                // there isn't one. The rules (a 20-attempt floor, ranking by the
-                // optimistic reading rather than the raw rate, and no answer at
-                // all for a store whose per-item funnel isn't instrumented) live
-                // in lib/automation-funnel.ts with the tests that pin them.
-                const worst = worstStep(s);
-                // `?? []` only for a response served from before this deploy.
-                const reasons = s.alertReasons ?? [];
-                const badges = reasons.map((r) => ALERT_REASON_BADGE[r]).filter(Boolean);
-                const worstNote =
-                  worst.kind === 'dying'
-                    ? `${pct(worst.okRate)} ok over ${worst.attempted}`
-                    : worst.kind === 'unmeasured'
-                      ? 'per-item steps not reported for this store'
-                      : worst.kind === 'insufficient_sample'
-                        ? 'no step with a usable sample (20+ attempts)'
-                        : 'no step convincingly below 90%';
-
-                return (
-                <div key={s.storeId} data-testid={`funnel-store-${s.storeId}`} style={{ borderTop: '1px solid #f0f0f0', padding: '20px 24px' }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700 }}>{s.storeId}</h3>
-                    {s.alerting && (
-                      <span
-                        title={badges.map((b) => b.title).join(' ')}
-                        style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}
-                      >
-                        {/* Every reason, named. An unlabelled badge sends someone
-                            to the wrong number, and so does a labelled one that
-                            leaves a reason out: a store already known to be
-                            walled off and now also drifting is a second problem
-                            with a second fix. `reasons` is empty only for a
-                            response served from before this deploy. */}
-                        ALERTING{badges.map((b) => ` · ${b.tag}`).join('')}
-                      </span>
-                    )}
-                    {s.coverage.partialInstrumentation && (
-                      <span style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
-                        NO STEP DATA
-                      </span>
-                    )}
-                    <span style={{ fontSize: '13px', color: '#666' }}>
-                      {s.runs} run{s.runs === 1 ? '' : 's'} · {s.runsSucceeded} full success · {s.runsAbandoned} abandoned
-                      {/* Beside the run counts and not tucked into a tooltip: it is
-                          the qualifier on every other number in this card. An
-                          unverified run finished without reading the cart, so its
-                          item counts are the run's own report of itself with
-                          nothing able to contradict them (MEAL-190). Always shown,
-                          zero included — "0 unverified" is a statement about
-                          coverage, and only a number that is always there can be
-                          read as one. */}
-                      {' · '}
-                      <span title="Runs that finished without reading the cart. Their item counts are unchecked. The cart diff is the only thing that has ever disagreed with a run.">
-                        {s.runsUnverified} unverified
-                      </span>
-                    </span>
-                    <span style={{ fontSize: '13px', color: '#666', marginLeft: 'auto' }}>
-                      {s.itemsAdded}/{s.itemsRequested} items added
-                      {/* Named rather than left implicit: these are subtracted
-                          from the Item success denominator below (MEAL-29), so a
-                          reader who cannot see them cannot make the two agree. */}
-                      {s.itemsUnavailable > 0 && ` · ${s.itemsUnavailable} out of stock`}
-                    </span>
-                  </div>
-
-                  {/* Headline: where is it dying, and is that new? */}
-                  <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-start' }}>
-                    <Metric
-                      label="Terminal success"
-                      value={pct(s.terminalSuccessRate)}
-                      bad={s.terminalSuccessRate != null && s.terminalSuccessRate < 0.9}
-                      // Unverified runs stay in this denominator and out of its
-                      // numerator, so they pull the rate down exactly as a real
-                      // failure would. The note says how many, because otherwise a
-                      // store whose cart page starts redirecting reads as an
-                      // automation regression that never happened (MEAL-190).
-                      note={`${s.runsSucceeded}/${s.runs} runs`
-                        + (s.runsUnverified > 0 ? ` · ${s.runsUnverified} unverified` : '')}
-                    />
-                    <Metric
-                      label="Dying on"
-                      value={worst.kind === 'dying' ? worst.step : '—'}
-                      bad={worst.kind === 'dying'}
-                      note={worstNote}
-                    />
-                    {/* The number `success_drop` fires on, shown the way the
-                        alert reads it: the last 24h against this store's own
-                        trailing median, not against a bar every store shares. An
-                        email naming a store the page has no tile for is an
-                        operator with nothing to check. */}
-                    <Metric
-                      label="Item success"
-                      value={pct(s.itemSuccess?.recent ?? null)}
-                      bad={s.itemSuccess?.drop != null && s.itemSuccess.drop > DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD}
-                      note={
-                        (s.itemSuccess?.median != null
-                          ? `24h · median ${pct(s.itemSuccess.median)} over ${s.itemSuccess.baselineWindows}d`
-                          : '24h · too little history for a median')
-                        // The sample the alert gates on, shown only when the
-                        // subtraction actually moved it. Otherwise an operator
-                        // reading a quiet tile has no way to tell a store with a
-                        // real 24h sample from one whose sample is five items
-                        // because the other twenty were off the shelf.
-                        + (s.itemSuccess?.recentItemsUnavailable
-                          ? ` · over ${s.itemSuccess.recentItemsJudged} of ${s.itemSuccess.recentItemsRequested} items`
-                          : '')
-                      }
-                    />
-                    <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < DEFAULT_CONFIRM_RATE_THRESHOLD} />
-                    {/* "First-click confirm" was here and is gone (MEAL-219).
-                        It was computed from `detail.attempt`, which only the
-                        DELETED click path ever set — so for every live store it
-                        was mathematically identical to the Confirm rate beside
-                        it. Two tiles, one number, presented as two signals.
-                        Retries are a real thing again and are measured properly
-                        in the Requests panel below, from the retry policy's own
-                        count. */}
-                    {/* Blocks sit apart on purpose: they are excluded from every
-                        rate to the left of here, because a WAF wall and a renamed
-                        button need different people to fix them. */}
-                    <div style={{ paddingLeft: '16px', borderLeft: '2px solid #fde68a' }}>
-                      {/* A share of RUNS, so it reads as a percentage of this
-                          store's traffic and cannot exceed 100%. The step count
-                          stays beside it as a count, which is the only honest way
-                          to show it: one walled-off run emits a blocked row per
-                          item, so steps over runs is not a percentage of
-                          anything — it rendered "WAF blocked 450.0%". */}
-                      {/* Red at the alert's threshold, not at a second one of its
-                          own: a tile that colours at a number the email does not
-                          use is how a page and an inbox come to disagree. */}
-                      <Metric
-                        label="WAF blocked"
-                        value={pct(s.blockedRate)}
-                        bad={s.blockedRate != null && s.blockedRate >= DEFAULT_BLOCKED_RATE_THRESHOLD}
-                        note={`${s.blocked.runs} run${s.blocked.runs === 1 ? '' : 's'} walled off · ${s.blocked.steps} blocked step${s.blocked.steps === 1 ? '' : 's'} · excluded from the rates left`}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Week over week + 30-day trend, side by side. */}
-                  <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
-                        Terminal success, daily
-                      </div>
-                      <TrendSparkline daily={s.daily} />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
-                        Week over week
-                      </div>
-                      {s.weekOverWeek ? (
-                        <div style={{ fontSize: '13px', color: '#666', lineHeight: 1.7 }}>
-                          <div>
-                            <strong style={{ color: (s.weekOverWeek.terminalSuccessRateDelta ?? 0) < -0.05 ? '#b91c1c' : '#333' }}>
-                              {delta(s.weekOverWeek.terminalSuccessRateDelta)}
-                            </strong>{' '}
-                            terminal success
-                          </div>
-                          <div>
-                            this week {pct(s.weekOverWeek.current.terminalSuccessRate)} of {s.weekOverWeek.current.runs} run
-                            {s.weekOverWeek.current.runs === 1 ? '' : 's'}
-                          </div>
-                          <div>
-                            prior week {pct(s.weekOverWeek.previous.terminalSuccessRate)} of {s.weekOverWeek.previous.runs} run
-                            {s.weekOverWeek.previous.runs === 1 ? '' : 's'}
-                          </div>
-                          <div style={{ color: '#999' }}>
-                            blocks {s.weekOverWeek.current.blocked} vs {s.weekOverWeek.previous.blocked} · failures{' '}
-                            {s.weekOverWeek.current.failures} vs {s.weekOverWeek.previous.failures}
-                          </div>
-                        </div>
-                      ) : (
-                        <p style={{ fontSize: '13px', color: '#aaa', margin: 0, maxWidth: '260px' }}>
-                          Needs a 14-day window or wider. A seven-day fetch has no prior week to
-                          compare against, and half a week of data would invent a regression.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {s.coverage.partialInstrumentation ? (
-                    <p style={{ fontSize: '13px', color: '#92400e', margin: '0 0 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px' }}>
-                      This store reported no <code>search</code>, <code>candidates</code>, <code>add_click</code> or{' '}
-                      <code>confirm</code> rows at all: the parallel-add blind spot (MEAL-122), or a store
-                      that never runs the WebView engine. Not a flawless run: whatever is below cannot tell
-                      you where this store is dying.
-                    </p>
-                  ) : s.coverage.missingSteps.length > 0 ? (
-                    <p style={{ fontSize: '12px', color: '#999', margin: '0 0 12px' }}>
-                      No rows for {s.coverage.missingSteps.join(', ')} in this window. Either the run
-                      never got that far, or that pool does not report.
-                    </p>
-                  ) : null}
-
-                  {s.steps.length === 0 ? (
-                    <p style={{ fontSize: '13px', color: '#888', margin: 0 }}>
-                      No step telemetry at all in this window: a store that adds through the public API,
-                      a pool that reports nothing, or a build that predates step reporting. The runs above
-                      are real; there is simply nothing to break down.
-                    </p>
-                  ) : (
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', minWidth: '720px' }}>
-                        <thead>
-                          <tr style={{ textAlign: 'left', color: '#888', fontSize: '12px' }}>
-                            <th style={{ padding: '6px 8px' }}>Step</th>
-                            <th style={{ padding: '6px 8px' }} title="Rows where the automation got to try, blocked rows excluded">Attempted</th>
-                            <th style={{ padding: '6px 8px' }}>OK</th>
-                            <th style={{ padding: '6px 8px' }}>Failures</th>
-                            <th style={{ padding: '6px 8px' }} title="WAF/robot walls; never counted as a failure">Blocked</th>
-                            <th style={{ padding: '6px 8px' }}>Why (code)</th>
-                            <th style={{ padding: '6px 8px' }}>p50</th>
-                            <th style={{ padding: '6px 8px' }}>p95</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {s.steps.map((st) => (
-                            <tr
-                              key={st.step}
-                              style={{
-                                borderTop: '1px solid #f5f5f5',
-                                background: worst.kind === 'dying' && st.step === worst.step ? '#fff8f8' : undefined,
-                              }}
-                            >
-                              <td style={{ padding: '6px 8px', fontWeight: 600 }}>{st.step}</td>
-                              <td style={{ padding: '6px 8px' }}>
-                                {st.attempted}
-                                {st.blocked > 0 && <span style={{ color: '#aaa' }}> / {st.total}</span>}
-                              </td>
-                              <td style={{ padding: '6px 8px', color: st.okRate != null && st.okRate < 0.9 ? '#b91c1c' : '#333' }}>
-                                {pct(st.okRate)}
-                              </td>
-                              <td style={{ padding: '6px 8px', color: '#666' }}>
-                                {st.failures}
-                                {st.failures > 0 && (
-                                  <span style={{ color: '#999' }}>
-                                    {' '}
-                                    ({Object.entries(st.outcomes)
-                                      .filter(([k]) => k !== 'ok' && k !== 'blocked')
-                                      .map(([k, v]) => `${k} ${v}`)
-                                      .join(', ')})
-                                  </span>
-                                )}
-                              </td>
-                              <td style={{ padding: '6px 8px', color: st.blocked > 0 ? '#92400e' : '#ccc' }}>{st.blocked || '—'}</td>
-                              <td style={{ padding: '6px 8px' }}><CodeChips codes={st.codes} /></td>
-                              <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p50DurationMs)}</td>
-                              <td style={{ padding: '6px 8px', color: '#666' }}>{ms(st.p95DurationMs)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  <div style={{ marginTop: '12px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', fontSize: '12px', color: '#888' }}>
-                    <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>All failures</span>
-                    <CodeChips codes={s.failureCodes} empty="none in this window" />
-                    {s.coverage.uncodedFailures > 0 && (
-                      <span style={{ color: '#999' }}>
-                        {s.coverage.uncodedFailures} of them predate the code taxonomy and can never be attributed.
-                      </span>
-                    )}
-                  </div>
-
-                  {Object.keys(s.runSummaryCodes).length > 0 && (
-                    <div style={{ marginTop: '8px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', fontSize: '12px', color: '#888' }}>
-                      <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>run_summary says</span>
-                      <CodeChips codes={s.runSummaryCodes} />
-                      <span style={{ color: '#999' }}>
-                        This is the run&apos;s MOST FREQUENT code, not its most severe (MEAL-123). Three
-                        confirm_failed and one waf_block reports confirm_failed. Trust the per-step
-                        codes above over this.
-                      </span>
-                    </div>
-                  )}
-                </div>
-                );
-              })}
-            </div>
-
-            {/* ── Requests, by HTTP code (MEAL-219) ──────────────────────── */}
-            {/* Every store is on the network rail now, so every failure has a
-                status behind it. This panel is that status. It sits BELOW the
-                funnel rather than replacing it: the funnel's numbers are
-                computed over rows recorded under a DOM vocabulary that still
-                exists in the table, and those rows still answer the question
-                they were written for. */}
-            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
-              <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
-                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Requests</h2>
-                <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#888' }}>
-                  What each store actually answered, which phase of the run asked, and whether
-                  retrying worked. Rows recorded before the MEAL-219 columns shipped carry none of
-                  this and are not counted here &mdash; a blank store means no instrumented traffic
-                  yet, not a healthy one.
-                </p>
-              </div>
-
-              {requestsErr && (
-                <div style={{ padding: '16px 24px', background: '#fffbeb', color: '#92400e', fontSize: '13px' }}>
-                  {requestsErr}
-                </div>
-              )}
-
-              {!requestsErr && requests && requests.stores.length === 0 && (
-                <div style={{ padding: '16px 24px', color: '#888', fontSize: '13px' }}>
-                  No request rows in the last {requests.days} days.
-                </div>
-              )}
-
-              {!requestsErr && requests?.truncated && (
-                <div style={{ padding: '10px 24px', background: '#fffbeb', color: '#92400e', fontSize: '12px' }}>
-                  Showing a prefix, not the whole window &mdash; the read hit its page ceiling.
-                </div>
-              )}
-
-              {(requests?.stores ?? []).map((s) => (
-                <div key={s.storeId} style={{ padding: '18px 24px', borderTop: '1px solid #f6f6f6' }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
-                    <strong style={{ fontSize: '15px' }}>{s.storeId}</strong>
-                    {/* The implementation, not the banner: fifteen Albertsons
-                        banners share one, and a rail-level regression otherwise
-                        reads as fifteen unrelated store problems. */}
-                    {s.rails.length > 0 && (
-                      <span style={{ fontSize: '12px', color: '#888' }}>rail: {s.rails.join(', ')}</span>
-                    )}
-                    <span style={{ fontSize: '12px', color: '#888' }}>{s.requests} requests</span>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', margin: '10px 0' }}>
-                    <Metric label="Served" value={pct(s.okRate)} bad={s.okRate != null && s.okRate < 0.95} />
-                    <Metric label="Asked twice" value={pct(s.retryRate)} bad={s.retryRate != null && s.retryRate > 0.1} />
-                    {/* Null when nothing was retried. "0%" would read as a
-                        broken retry policy; it means there was nothing to retry. */}
-                    <Metric label="Retry worked" value={pct(s.retrySuccessRate)} />
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
-                    {s.statuses.map((b) => (
-                      <span
-                        key={b.bucket}
-                        title={b.bucket === 'none' ? 'No answer at all: dropped or aborted. Not a 5xx.' : undefined}
+                  What survived it: `confirmRate` stays a tile, because the MEAL-6
+                  alert email still fires on it and a store named in an inbox must
+                  have a number on the page to check. */}
+              <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+                <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                  <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Per-store health</h2>
+                  {/* One selector for all three reads. Two of them over the same
+                      traffic is a card whose halves answer about different
+                      fortnights with nothing saying so. */}
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {[7, 14, 30].map((d) => (
+                      <button
+                        key={d}
+                        onClick={() => { setFunnelDays(d); loadFunnel(d); loadNetwork(d); loadRequests(d); }}
                         style={{
-                          fontSize: '12px', padding: '3px 8px', borderRadius: '6px',
-                          background: b.bucket === '2xx' || b.bucket === '3xx' ? '#ecfdf5'
-                            : b.bucket === '429' || b.bucket === '403' || b.bucket === '412' || b.bucket === '418' ? '#fffbeb'
-                            : b.bucket === 'none' ? '#f4f4f5' : '#fef2f2',
-                          color: b.bucket === '2xx' || b.bucket === '3xx' ? '#065f46'
-                            : b.bucket === 'none' ? '#52525b' : '#92400e',
+                          border: '1px solid ' + (funnelDays === d ? '#dd0031' : '#e0e0e0'),
+                          background: funnelDays === d ? '#fff1f3' : 'white',
+                          color: funnelDays === d ? '#dd0031' : '#666',
+                          borderRadius: '6px', padding: '4px 12px', fontSize: '13px', cursor: 'pointer',
+                          fontWeight: funnelDays === d ? 600 : 400,
                         }}
                       >
-                        {b.bucket} · {b.count}
-                      </span>
+                        {d}d
+                      </button>
                     ))}
                   </div>
-
-                  <table style={{ width: '100%', fontSize: '13px', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ textAlign: 'left', color: '#888' }}>
-                        <th style={{ padding: '4px 0' }}>Phase</th>
-                        <th>Requests</th><th>Served</th><th>Failures</th><th>p50</th><th>p95</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {s.phases.map((ph) => (
-                        <tr key={ph.phase} style={{ borderTop: '1px solid #f6f6f6' }}>
-                          <td style={{ padding: '5px 0' }}>{ph.phase}</td>
-                          <td>{ph.requests}</td>
-                          <td>{pct(ph.okRate)}</td>
-                          <td>{ph.failures || ''}</td>
-                          <td>{ph.p50 != null ? `${ph.p50}ms` : ''}</td>
-                          <td>{ph.p95 != null ? `${ph.p95}ms` : ''}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  {s.codes.length > 0 && (
-                    <div style={{ marginTop: '8px', fontSize: '12px', color: '#888' }}>
-                      {s.codes.map((c) => `${c.code} ${c.count}`).join(' · ')}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            {/* ── Per-run drilldown ──────────────────────────────────────── */}
-            {/* Directly under the funnel, because it is the next question: the
-                funnel names the step a store is dying on and cannot show you a
-                single one of the runs that died. The store list is passed from the
-                funnel response so the picker offers the stores that actually have
-                traffic rather than the full 35-store broadcast list. */}
-            <AdminRunDrilldown stores={(funnel?.stores ?? []).map((s) => s.storeId)} />
-
-            {/* ── Remote config ──────────────────────────────────────────── */}
-            <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
-              <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
-                <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Store config</h2>
-                <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#888' }}>
-                  Partial overrides on top of the app&apos;s bundled defaults. Publishing creates a new
-                  version and activates it; clients pick it up on their next launch. Keys the app
-                  does not recognize, and values outside their safe range, are ignored by the client.
-                  {' '}<b>Selectors are no longer read by anything.</b> DOM automation was removed on
-                  2026-09-01 and the key is still parsed and validated, but nothing consumes it. The
-                  live levers are the per-store <code>networkSearch</code> / <code>networkAdd</code>
-                  {' '}switches and <code>flags.manualPrefetch</code>.
-                </p>
-              </div>
-
-              <div style={{ padding: '20px 24px' }}>
-                <textarea
-                  value={configDraft}
-                  onChange={(e) => { setConfigMsg(null); setConfigDraft(e.target.value); }}
-                  spellCheck={false}
-                  placeholder={'{\n  "stores": {\n    "albertsons": {\n      "networkSearch": true,\n      "networkAdd": false\n    }\n  }\n}'}
-                  style={{
-                    width: '100%', minHeight: '220px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                    fontSize: '13px', padding: '12px', border: '1px solid #e0e0e0', borderRadius: '8px',
-                    resize: 'vertical', boxSizing: 'border-box',
-                  }}
-                />
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '12px', flexWrap: 'wrap' }}>
-                  <input
-                    value={configNotes}
-                    onChange={(e) => setConfigNotes(e.target.value)}
-                    placeholder="What changed and why (shown in version history)"
-                    style={{ flex: 1, minWidth: '240px', padding: '8px 12px', border: '1px solid #e0e0e0', borderRadius: '8px', fontSize: '13px', boxSizing: 'border-box' }}
-                  />
                   <button
-                    onClick={publishConfig}
-                    disabled={actionLoading === 'publish-config'}
-                    style={{ background: '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: actionLoading === 'publish-config' ? 'not-allowed' : 'pointer', opacity: actionLoading === 'publish-config' ? 0.7 : 1 }}
+                    onClick={() => { loadFunnel(); loadNetwork(); loadRequests(); }}
+                    style={{ marginLeft: 'auto', border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '4px 12px', fontSize: '13px', cursor: 'pointer', color: '#666' }}
                   >
-                    Publish
+                    Refresh
                   </button>
                 </div>
-                {configMsg && (
-                  <p style={{ margin: '12px 0 0', fontSize: '13px', color: configMsg.startsWith('Failed') || configMsg.startsWith('Invalid') ? '#b91c1c' : '#16a34a' }}>
-                    {configMsg}
+
+                {!funnel && <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>Loading…</p>}
+
+                {funnel && funnel.confirmRateAlerting?.length > 0 && (
+                  <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                    <strong>Confirm rate below threshold:</strong> {funnel.confirmRateAlerting.join(', ')}
+                  </div>
+                )}
+
+                {/* Its own banner for the same reason the email gives it its own
+                    line: this is not "these stores are bad" but "these stores got
+                    worse", which is the shape a renamed selector makes and the one
+                    an absolute floor cannot see. It is also the only condition that
+                    can see the stores with no per-item step rows at all
+                    (MEAL-122) — it is read off run rows every store writes. */}
+                {funnel && funnel.successDropAlerting?.length > 0 && (
+                  <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                    <strong>Item success has fallen away from normal:</strong> {funnel.successDropAlerting.join(', ')}. More
+                    than {DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD * 100} points below each store&apos;s own trailing 7-day
+                    median. Compare the Item success tile with its median, not with the other stores.
+                  </div>
+                )}
+
+                {/* Its own banner, because it is its own failure and the confirm
+                    rate cannot see it: blocked clicks leave that denominator, so a
+                    store with nearly all of its runs walled off reports a healthy
+                    confirm rate on the few that got through. */}
+                {funnel && funnel.blockedAlerting?.length > 0 && (
+                  <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '13px', color: '#b91c1c' }}>
+                    <strong>Runs being walled off:</strong> {funnel.blockedAlerting.join(', ')}. A large share of
+                    these stores&apos; runs hit a WAF or robot wall. Nothing to the left of the WAF tile can show
+                    this (blocked clicks are excluded from those rates on purpose), so judge these stores on
+                    terminal success, not on their confirm rate.
+                  </div>
+                )}
+
+                {funnel && funnel.truncated && (
+                  <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
+                    Showing a partial window. The row cap was hit. Every number below is an
+                    undercount. Narrow the range or filter to one store.
+                  </div>
+                )}
+
+                {/* COVERAGE, above the numbers it qualifies. Every request-level
+                    rate on these cards is computed over the rows that can answer,
+                    and before MEAL-219 shipped none of them could. Its absence is
+                    said out loud rather than left to read as health. */}
+                {network && (
+                  <div style={{ margin: '16px 24px 0', fontSize: '12px', color: '#666', lineHeight: 1.6 }} data-testid="network-coverage">
+                    {network.rowsScanned.toLocaleString()} step rows in {network.days}d
+                    {network.truncated && <strong style={{ color: '#e8710a' }}> · truncated, showing the most recent</strong>}
+                    {' · '}carrying a status: <strong>{network.coverage.rowsWithStatus.toLocaleString()}</strong>
+                    {' · '}a phase: <strong>{network.coverage.rowsWithPhase.toLocaleString()}</strong>
+                    {' · '}attempts: <strong>{network.coverage.rowsWithAttempts.toLocaleString()}</strong>
+                    {network.coverage.rowsWithStatus < network.rowsScanned && (
+                      <span>. The rest predate the network columns and are excluded from the request rates
+                        below, not counted as clean.</span>
+                    )}
+                  </div>
+                )}
+
+                {networkErr && (
+                  <div style={{ margin: '16px 24px 0', padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', fontSize: '13px', color: '#92400e' }}>
+                    {networkErr}. The run-level numbers below are unaffected; the request half of each card is
+                    missing rather than empty.
+                  </div>
+                )}
+
+                {funnel && funnel.stores.length === 0 && (
+                  <p style={{ padding: '24px', color: '#888', fontSize: '14px', margin: 0 }}>
+                    No runs in the last {funnel.days} day{funnel.days === 1 ? '' : 's'}.
+                  </p>
+                )}
+
+                {funnel && funnel.stores.map((s) => {
+                  // `?? []` only for a response served from before this deploy.
+                  const reasons = s.alertReasons ?? [];
+                  const badges = reasons.map((r) => ALERT_REASON_BADGE[r]).filter(Boolean);
+                  // The same store's request-level half. `undefined` is a real
+                  // answer here — a store with runs and no instrumented steps —
+                  // and it is drawn as a sentence rather than as empty tiles.
+                  const net = netByStore.get(s.storeId);
+                  const req = reqByStore.get(s.storeId);
+                  // p50/p95 belong to the phase table below, and only
+                  // `automation-requests` measures them.
+                  const latency = new Map((req?.phases ?? []).map(ph => [ph.phase, ph]));
+
+                  return (
+                  <div key={s.storeId} data-testid={`funnel-store-${s.storeId}`} style={{ borderTop: '1px solid #f0f0f0', padding: '20px 24px' }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                      <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700 }}>{s.storeId}</h3>
+                      {s.alerting && (
+                        <span
+                          title={badges.map((b) => b.title).join(' ')}
+                          style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}
+                        >
+                          {/* Every reason, named. An unlabelled badge sends someone
+                              to the wrong number, and so does a labelled one that
+                              leaves a reason out: a store already known to be
+                              walled off and now also drifting is a second problem
+                              with a second fix. `reasons` is empty only for a
+                              response served from before this deploy. */}
+                          ALERTING{badges.map((b) => ` · ${b.tag}`).join('')}
+                        </span>
+                      )}
+                      {/* The implementation, not the banner: fifteen Albertsons
+                          banners share one, and a rail-level regression otherwise
+                          reads as fifteen unrelated store problems. */}
+                      {net && net.rails.length > 0 && (
+                        <span style={{ fontSize: '11px', color: '#9aa0a6' }}>rail: {net.rails.join(', ')}</span>
+                      )}
+                      <span style={{ fontSize: '13px', color: '#666' }}>
+                        {s.runs} run{s.runs === 1 ? '' : 's'} · {s.runsSucceeded} full success · {s.runsAbandoned} abandoned
+                        {/* Beside the run counts and not tucked into a tooltip: it is
+                            the qualifier on every other number in this card. An
+                            unverified run finished without reading the cart, so its
+                            item counts are the run's own report of itself with
+                            nothing able to contradict them (MEAL-190). Always shown,
+                            zero included — "0 unverified" is a statement about
+                            coverage, and only a number that is always there can be
+                            read as one. */}
+                        {' · '}
+                        <span title="Runs that finished without reading the cart. Their item counts are unchecked. The cart diff is the only thing that has ever disagreed with a run.">
+                          {s.runsUnverified} unverified
+                        </span>
+                      </span>
+                      <span style={{ fontSize: '13px', color: '#666', marginLeft: 'auto' }}>
+                        {s.itemsAdded}/{s.itemsRequested} items added
+                        {/* Named rather than left implicit: these are subtracted
+                            from the Item success denominator below (MEAL-29), so a
+                            reader who cannot see them cannot make the two agree. */}
+                        {s.itemsUnavailable > 0 && ` · ${s.itemsUnavailable} out of stock`}
+                      </span>
+                    </div>
+
+                    {/* Headline: is it working, and is that new? */}
+                    <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-start' }}>
+                      <Metric
+                        label="Terminal success"
+                        value={pct(s.terminalSuccessRate)}
+                        bad={s.terminalSuccessRate != null && s.terminalSuccessRate < 0.9}
+                        // Unverified runs stay in this denominator and out of its
+                        // numerator, so they pull the rate down exactly as a real
+                        // failure would. The note says how many, because otherwise a
+                        // store whose cart page starts redirecting reads as an
+                        // automation regression that never happened (MEAL-190).
+                        note={`${s.runsSucceeded}/${s.runs} runs`
+                          + (s.runsUnverified > 0 ? ` · ${s.runsUnverified} unverified` : '')}
+                      />
+                      {/* "Dying on" was here and went with the step table. It was
+                          `worstStep` over the per-item rows, so for every store
+                          still running it answered "per-item steps not reported
+                          for this store" — a tile whose only value was an excuse.
+                          Where a run dies now is the phase strip below. */}
+                      {/* The number `success_drop` fires on, shown the way the
+                          alert reads it: the last 24h against this store's own
+                          trailing median, not against a bar every store shares. An
+                          email naming a store the page has no tile for is an
+                          operator with nothing to check. */}
+                      <Metric
+                        label="Item success"
+                        value={pct(s.itemSuccess?.recent ?? null)}
+                        bad={s.itemSuccess?.drop != null && s.itemSuccess.drop > DEFAULT_ITEM_SUCCESS_DROP_THRESHOLD}
+                        note={
+                          (s.itemSuccess?.median != null
+                            ? `24h · median ${pct(s.itemSuccess.median)} over ${s.itemSuccess.baselineWindows}d`
+                            : '24h · too little history for a median')
+                          // The sample the alert gates on, shown only when the
+                          // subtraction actually moved it. Otherwise an operator
+                          // reading a quiet tile has no way to tell a store with a
+                          // real 24h sample from one whose sample is five items
+                          // because the other twenty were off the shelf.
+                          + (s.itemSuccess?.recentItemsUnavailable
+                            ? ` · over ${s.itemSuccess.recentItemsJudged} of ${s.itemSuccess.recentItemsRequested} items`
+                            : '')
+                        }
+                      />
+                      {/* The one step-vocabulary number that survived the table,
+                          and only because the MEAL-6 email still fires on it: a
+                          store named in an inbox has to have a number on the page
+                          to check. Reads "—" for every store whose adds do not go
+                          through a confirm step, which is most of them. */}
+                      <Metric label="Confirm rate" value={pct(s.confirmRate)} bad={s.confirmRate != null && s.confirmRate < DEFAULT_CONFIRM_RATE_THRESHOLD} />
+                      {/* Blocks sit apart on purpose: they are excluded from every
+                          rate to the left of here, because a WAF wall and a broken
+                          request need different people to fix them. */}
+                      <div style={{ paddingLeft: '16px', borderLeft: '2px solid #fde68a' }}>
+                        {/* A share of RUNS, so it reads as a percentage of this
+                            store's traffic and cannot exceed 100%. The step count
+                            stays beside it as a count, which is the only honest way
+                            to show it: one walled-off run emits a blocked row per
+                            item, so steps over runs is not a percentage of
+                            anything — it rendered "WAF blocked 450.0%". */}
+                        {/* Red at the alert's threshold, not at a second one of its
+                            own: a tile that colours at a number the email does not
+                            use is how a page and an inbox come to disagree. */}
+                        <Metric
+                          label="WAF blocked"
+                          value={pct(s.blockedRate)}
+                          bad={s.blockedRate != null && s.blockedRate >= DEFAULT_BLOCKED_RATE_THRESHOLD}
+                          note={`${s.blocked.runs} run${s.blocked.runs === 1 ? '' : 's'} walled off · ${s.blocked.steps} blocked step${s.blocked.steps === 1 ? '' : 's'} · excluded from the rates left`}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Week over week + 30-day trend, side by side. */}
+                    <div style={{ display: 'flex', gap: '32px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'flex-start' }}>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+                          Terminal success, daily
+                        </div>
+                        <TrendSparkline daily={s.daily} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+                          Week over week
+                        </div>
+                        {s.weekOverWeek ? (
+                          <div style={{ fontSize: '13px', color: '#666', lineHeight: 1.7 }}>
+                            <div>
+                              <strong style={{ color: (s.weekOverWeek.terminalSuccessRateDelta ?? 0) < -0.05 ? '#b91c1c' : '#333' }}>
+                                {delta(s.weekOverWeek.terminalSuccessRateDelta)}
+                              </strong>{' '}
+                              terminal success
+                            </div>
+                            <div>
+                              this week {pct(s.weekOverWeek.current.terminalSuccessRate)} of {s.weekOverWeek.current.runs} run
+                              {s.weekOverWeek.current.runs === 1 ? '' : 's'}
+                            </div>
+                            <div>
+                              prior week {pct(s.weekOverWeek.previous.terminalSuccessRate)} of {s.weekOverWeek.previous.runs} run
+                              {s.weekOverWeek.previous.runs === 1 ? '' : 's'}
+                            </div>
+                            <div style={{ color: '#999' }}>
+                              blocks {s.weekOverWeek.current.blocked} vs {s.weekOverWeek.previous.blocked} · failures{' '}
+                              {s.weekOverWeek.current.failures} vs {s.weekOverWeek.previous.failures}
+                            </div>
+                          </div>
+                        ) : (
+                          <p style={{ fontSize: '13px', color: '#aaa', margin: 0, maxWidth: '260px' }}>
+                            Needs a 14-day window or wider. A seven-day fetch has no prior week to
+                            compare against, and half a week of data would invent a regression.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* ── What the store answered ──────────────────────────── */}
+                    {/* The second half of the same story, in the same card. A
+                        store with runs but no instrumented rows says so: an empty
+                        histogram and a 0% retry rate would both read as a store
+                        behaving perfectly. */}
+                    <div style={{ borderTop: '1px dashed #eee', paddingTop: '14px' }} data-testid={`store-network-${s.storeId}`}>
+                      {!net || net.rows === net.rowsWithoutStatus ? (
+                        <div style={{ fontSize: '12px', color: '#999' }}>
+                          {networkErr
+                            ? 'The network rail could not be read this time, so what this store answered is unknown rather than clean.'
+                            : 'No rows carry an HTTP status yet: nothing to report rather than nothing wrong.'}
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '8px' }}>
+                            What the store answered · {net.rows.toLocaleString()} rows
+                            {req && ` · ${req.requests} instrumented requests`}
+                          </div>
+
+                          {/* The request-level headline. `Served` and the two
+                              retry rates were a panel of their own until the
+                              per-store cards absorbed it: they are three numbers
+                              about the store whose card this is, and they were
+                              being read a screen away from its terminal success. */}
+                          {req && (
+                            <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                              <Metric label="Served" value={pct(req.okRate)} bad={req.okRate != null && req.okRate < 0.95} />
+                              <Metric label="Asked twice" value={pct(req.retryRate)} bad={req.retryRate != null && req.retryRate > 0.1} />
+                              {/* Null when nothing was retried. "0%" would read as
+                                  a broken retry policy; it means there was nothing
+                                  to retry. */}
+                              <Metric label="Retry worked" value={pct(req.retrySuccessRate)} />
+                            </div>
+                          )}
+
+                          {/* Status histogram */}
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            {net.statuses.map((b) => (
+                              <span
+                                key={b.label}
+                                title={b.label === 'none' ? 'No answer at all: dropped or aborted. Not a 5xx.' : undefined}
+                                style={{
+                                  fontSize: '12px', padding: '3px 9px', borderRadius: '999px',
+                                  background: statusColour(b.label) + '18',
+                                  color: statusColour(b.label),
+                                  fontWeight: WALL.has(b.label) || b.label === '5xx' ? 700 : 500,
+                                }}
+                              >
+                                {b.label} · {b.count}
+                              </span>
+                            ))}
+                          </div>
+
+                          {/* The phase table, in the order a run walks it. This
+                              is where a run dies now that the step table is gone,
+                              and unlike `search` / `add_click` / `confirm` it is a
+                              vocabulary every rail actually writes — `phase` was
+                              added as a column precisely because `step` could not
+                              answer it (one of its values is literally
+                              `add_click`).
+
+                              Two sources, one table: the counts and the failure
+                              code come off the network read, the latencies off the
+                              request read, and a phase missing from either is
+                              blank rather than zero. */}
+                          <div style={{ overflowX: 'auto', marginTop: '12px' }}>
+                            <table style={{ width: '100%', fontSize: '13px', borderCollapse: 'collapse' }}>
+                              <thead>
+                                <tr style={{ textAlign: 'left', color: '#888', fontSize: '12px' }}>
+                                  <th style={{ padding: '4px 8px 4px 0' }}>Phase</th>
+                                  <th style={{ padding: '4px 8px' }}>OK</th>
+                                  <th style={{ padding: '4px 8px' }}>Failed</th>
+                                  <th style={{ padding: '4px 8px' }}>Why</th>
+                                  <th style={{ padding: '4px 8px' }}>p50</th>
+                                  <th style={{ padding: '4px 8px' }}>p95</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {net.phases.map((ph) => {
+                                  const lat = latency.get(ph.phase);
+                                  return (
+                                    <tr key={ph.phase} style={{ borderTop: '1px solid #f6f6f6' }}>
+                                      <td style={{ padding: '5px 8px 5px 0', fontWeight: 600 }}>{ph.phase}</td>
+                                      <td style={{ padding: '5px 8px', color: '#0f9d58' }}>{ph.ok}</td>
+                                      <td style={{ padding: '5px 8px', color: ph.failed > 0 ? '#dd0031' : '#ccc' }}>{ph.failed || '—'}</td>
+                                      <td style={{ padding: '5px 8px', color: '#9aa0a6' }}>{ph.topCode ?? '—'}</td>
+                                      <td style={{ padding: '5px 8px', color: '#666' }}>{lat?.p50 != null ? `${lat.p50}ms` : '—'}</td>
+                                      <td style={{ padding: '5px 8px', color: '#666' }}>{lat?.p95 != null ? `${lat.p95}ms` : '—'}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          {/* Retry pressure, from the retry policy's own count
+                              rather than from `detail.attempt` — which only the
+                              deleted click path ever set. */}
+                          <div style={{ fontSize: '12px', color: '#666', marginTop: '10px' }}>
+                            {net.retried > 0 ? (
+                              <>retried <strong>{wholePct(net.retryRate)}</strong> of answerable rows
+                                {' · '}<strong>{wholePct(net.retrySuccessRate)}</strong> of those recovered
+                                {' '}<span style={{ color: '#9aa0a6' }}>({net.retriedOk}/{net.retried})</span></>
+                            ) : (
+                              <span style={{ color: '#9aa0a6' }}>no retries recorded</span>
+                            )}
+                          </div>
+
+                          {/* Legacy, in its own line so a 2026-08 selector_miss is
+                              never read as a live problem. */}
+                          {net.legacyCodeRows > 0 && (
+                            <div style={{ fontSize: '11px', color: '#9aa0a6', marginTop: '6px' }}>
+                              {net.legacyCodeRows} row{net.legacyCodeRows === 1 ? '' : 's'} carrying pre-network codes
+                              (selector_miss / nav_failed) from before 2026-09-01, not live failures.
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    <div style={{ marginTop: '12px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', fontSize: '12px', color: '#888' }}>
+                      <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>All failures</span>
+                      <CodeChips codes={s.failureCodes} empty="none in this window" />
+                      {s.coverage.uncodedFailures > 0 && (
+                        <span style={{ color: '#999' }}>
+                          {s.coverage.uncodedFailures} of them predate the code taxonomy and can never be attributed.
+                        </span>
+                      )}
+                    </div>
+
+                    {Object.keys(s.runSummaryCodes).length > 0 && (
+                      <div style={{ marginTop: '8px', display: 'flex', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', fontSize: '12px', color: '#888' }}>
+                        <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>run_summary says</span>
+                        <CodeChips codes={s.runSummaryCodes} />
+                        <span style={{ color: '#999' }}>
+                          This is the run&apos;s MOST FREQUENT code, not its most severe (MEAL-123). Three
+                          confirm_failed and one waf_block reports confirm_failed. Trust the per-phase
+                          codes above over this.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  );
+                })}
+
+                {/* Stores the network rail saw and the runs did not. Rare and
+                    real: a run that started before this window emits steps inside
+                    it. Named rather than dropped, because a store missing from a
+                    health page is indistinguishable from a store with nothing
+                    wrong. */}
+                {networkOnlyStores.length > 0 && (
+                  <p
+                    style={{ margin: 0, padding: '14px 24px', borderTop: '1px solid #f0f0f0', fontSize: '12px', color: '#92400e', background: '#fffbeb' }}
+                    data-testid="network-only-stores"
+                  >
+                    <strong>Request rows but no runs in this window:</strong> {networkOnlyStores.join(', ')}.
+                    Their runs started before the window opened, so there is no card for them here. Widen the
+                    range to see one.
                   </p>
                 )}
               </div>
 
-              {configVersions.length > 0 && (
-                <div style={{ borderTop: '1px solid #f0f0f0', padding: '16px 24px' }}>
-                  <h3 style={{ margin: '0 0 10px', fontSize: '13px', color: '#888', fontWeight: 600 }}>Version history</h3>
-                  {configVersions.map((v) => (
-                    <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 0', borderTop: '1px solid #f8f8f8', fontSize: '13px', flexWrap: 'wrap' }}>
-                      <strong style={{ minWidth: '40px' }}>v{v.version}</strong>
-                      {v.is_active && (
-                        <span style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
-                          ACTIVE
-                        </span>
-                      )}
-                      <span style={{ color: '#888' }}>{new Date(v.created_at).toLocaleString()}</span>
-                      <span style={{ color: '#666', flex: 1, minWidth: '160px' }}>{v.notes ?? '—'}</span>
-                      <button
-                        onClick={() => setConfigDraft(JSON.stringify(v.config, null, 2))}
-                        style={{ border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#666' }}
-                      >
-                        Load
-                      </button>
-                      {!v.is_active && (
-                        <button
-                          onClick={() => activateConfigVersion(v.version)}
-                          disabled={actionLoading === `activate-${v.version}`}
-                          style={{ border: '1px solid #dd0031', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#dd0031' }}
-                        >
-                          Activate
-                        </button>
-                      )}
-                    </div>
-                  ))}
+              {/* The Requests panel stood here and is now the second half of
+                  each store's card above. It drew the same three facts — what the
+                  store answered, which phase asked, whether the retry worked —
+                  for the same stores, one panel below the numbers they qualify.
+                  Its p50/p95 came with it; nothing was dropped. The
+                  `automation-requests` route is unchanged and still read. */}
+
+              {/* What the request read could not cover, kept at panel level
+                  because it is a statement about that read as a whole rather than
+                  about any one store. */}
+              {requestsErr && (
+                <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '14px 20px', fontSize: '13px', color: '#92400e' }}>
+                  {requestsErr}. The served rate and the phase latencies are missing from the cards above,
+                  rather than showing as zero.
                 </div>
               )}
+              {!requestsErr && requests?.truncated && (
+                <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '14px 20px', fontSize: '12px', color: '#92400e' }}>
+                  Request telemetry is showing a prefix, not the whole window: the read hit its page
+                  ceiling, so the served rates and latencies above are computed over part of it.
+                </div>
+              )}
+
+            </div>
+
+            {/* ── Right: what to do about it ──────────────────────────────── */}
+            <div className="flex flex-col gap-6 min-w-0">
+              {/* ── Nightly canary (MEAL-7) ────────────────────────────────────
+                  Sits with the automation data rather than in its own tab: it is
+                  the same question as the panels around it, asked on a schedule
+                  against a meal built to fail in known ways. */}
+              <AdminCanary
+                token={token}
+                storeIds={['heb', 'walmart', 'aldi', 'wegmans', 'albertsons', 'publix']}
+              />
+
+              {/* ── Per-run drilldown ──────────────────────────────────────── */}
+              {/* The next question after the cards opposite: they name the phase a
+                  store is dying on and cannot show you a single one of the runs
+                  that died. The store list is passed from the funnel response so
+                  the picker offers the stores that actually have traffic rather
+                  than the full 35-store broadcast list. */}
+              <AdminRunDrilldown stores={(funnel?.stores ?? []).map((s) => s.storeId)} />
+
+              {/* ── Remote config ──────────────────────────────────────────── */}
+              <div style={{ background: 'white', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+                <div style={{ padding: '20px 24px', borderBottom: '1px solid #f0f0f0' }}>
+                  <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Store config</h2>
+                  <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#888' }}>
+                    Partial overrides on top of the app&apos;s bundled defaults. Publishing creates a new
+                    version and activates it; clients pick it up on their next launch. Keys the app
+                    does not recognize, and values outside their safe range, are ignored by the client.
+                    {' '}<b>Selectors are no longer read by anything.</b> DOM automation was removed on
+                    2026-09-01 and the key is still parsed and validated, but nothing consumes it. The
+                    step table that measured it came off this page for the same reason. The live levers
+                    are the per-store <code>networkSearch</code> / <code>networkAdd</code> switches and{' '}
+                    <code>flags.manualPrefetch</code>.
+                  </p>
+                </div>
+
+                <div style={{ padding: '20px 24px' }}>
+                  <textarea
+                    value={configDraft}
+                    onChange={(e) => { setConfigMsg(null); setConfigDraft(e.target.value); }}
+                    spellCheck={false}
+                    placeholder={'{\n  "stores": {\n    "albertsons": {\n      "networkSearch": true,\n      "networkAdd": false\n    }\n  }\n}'}
+                    style={{
+                      width: '100%', minHeight: '220px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontSize: '13px', padding: '12px', border: '1px solid #e0e0e0', borderRadius: '8px',
+                      resize: 'vertical', boxSizing: 'border-box',
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '12px', flexWrap: 'wrap' }}>
+                    <input
+                      value={configNotes}
+                      onChange={(e) => setConfigNotes(e.target.value)}
+                      placeholder="What changed and why (shown in version history)"
+                      style={{ flex: 1, minWidth: '240px', padding: '8px 12px', border: '1px solid #e0e0e0', borderRadius: '8px', fontSize: '13px', boxSizing: 'border-box' }}
+                    />
+                    <button
+                      onClick={publishConfig}
+                      disabled={actionLoading === 'publish-config'}
+                      style={{ background: '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 20px', fontSize: '14px', fontWeight: 600, cursor: actionLoading === 'publish-config' ? 'not-allowed' : 'pointer', opacity: actionLoading === 'publish-config' ? 0.7 : 1 }}
+                    >
+                      Publish
+                    </button>
+                  </div>
+                  {configMsg && (
+                    <p style={{ margin: '12px 0 0', fontSize: '13px', color: configMsg.startsWith('Failed') || configMsg.startsWith('Invalid') ? '#b91c1c' : '#16a34a' }}>
+                      {configMsg}
+                    </p>
+                  )}
+                </div>
+
+                {configVersions.length > 0 && (
+                  <div style={{ borderTop: '1px solid #f0f0f0', padding: '16px 24px' }}>
+                    <h3 style={{ margin: '0 0 10px', fontSize: '13px', color: '#888', fontWeight: 600 }}>Version history</h3>
+                    {configVersions.map((v) => (
+                      <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 0', borderTop: '1px solid #f8f8f8', fontSize: '13px', flexWrap: 'wrap' }}>
+                        <strong style={{ minWidth: '40px' }}>v{v.version}</strong>
+                        {v.is_active && (
+                          <span style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '999px', padding: '1px 10px', fontSize: '11px', fontWeight: 700 }}>
+                            ACTIVE
+                          </span>
+                        )}
+                        <span style={{ color: '#888' }}>{new Date(v.created_at).toLocaleString()}</span>
+                        <span style={{ color: '#666', flex: 1, minWidth: '160px' }}>{v.notes ?? '—'}</span>
+                        <button
+                          onClick={() => setConfigDraft(JSON.stringify(v.config, null, 2))}
+                          style={{ border: '1px solid #e0e0e0', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#666' }}
+                        >
+                          Load
+                        </button>
+                        {!v.is_active && (
+                          <button
+                            onClick={() => activateConfigVersion(v.version)}
+                            disabled={actionLoading === `activate-${v.version}`}
+                            style={{ border: '1px solid #dd0031', background: 'white', borderRadius: '6px', padding: '3px 10px', fontSize: '12px', cursor: 'pointer', color: '#dd0031' }}
+                          >
+                            Activate
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

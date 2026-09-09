@@ -259,19 +259,23 @@ describe('GET /api/admin/import-drafts', () => {
       expect(body.totals).toMatchObject({
         waiting: 0, handedOver: 0, allPending: 1, unqueued: 1, truncated: false, limit: 500,
       });
-      // Named, attributed and placed — enough to decide whether to take it back.
+      // Named, attributed, placed and dated — enough to decide whether to take
+      // it back. The date joined the other four when every draft on the screen
+      // started showing one: a row with no date beside rows that have one reads
+      // as a row nobody knows anything about.
       expect(body.unqueued[0]).toEqual({
         id: 'd-poll',
         name: 'Best Guacamole',
         sourceUrl: 'https://chefsarah.test/guacamole',
         creatorName: 'Chef Sarah',
+        createdAt: '2026-08-02T10:00:00.000Z',
       });
     });
 
-    it('sends three strings a row, not a recipe apiece', async () => {
-      // The list draws a name, a creator and a host, and posts the id back. The
-      // full `draft` and `confidence` jsonb plus a computed review is ~6 KB a row
-      // — megabytes at the cap — for a section with no card to open.
+    it('sends a handful of strings a row, not a recipe apiece', async () => {
+      // The list draws a name, a creator, a host and a date, and posts the id
+      // back. The full `draft` and `confidence` jsonb plus a computed review is
+      // ~6 KB a row — megabytes at the cap — for a section with no card to open.
       asAdmin();
       const stranded = { ...draftRow({ id: 'd-poll', review_by: 'creator' }), creators: { display_name: 'Chef Sarah' } };
       fakeDb.queue('creator_import_drafts', { data: [] });
@@ -280,7 +284,7 @@ describe('GET /api/admin/import-drafts', () => {
 
       const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
 
-      expect(Object.keys(body.unqueued[0]).sort()).toEqual(['creatorName', 'id', 'name', 'sourceUrl']);
+      expect(Object.keys(body.unqueued[0]).sort()).toEqual(['createdAt', 'creatorName', 'id', 'name', 'sourceUrl']);
       expect(JSON.stringify(body.unqueued[0]).length).toBeLessThan(500);
     });
 

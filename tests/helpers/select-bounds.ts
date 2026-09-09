@@ -262,7 +262,7 @@ function followVariable(
 /**
  * The name of the builder-returning factory a chain is the body of, if it is one.
  *
- * `app/api/admin/storage/cleanup-orphans/route.ts` writes the shape this exists
+ * The admin storage sweep (deleted with its tab) wrote the shape this exists
  * for, and it is a good shape rather than a bad one:
  *
  *   const rowsWithPhotos = () =>

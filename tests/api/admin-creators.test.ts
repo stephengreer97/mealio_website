@@ -149,11 +149,16 @@ describe('/api/admin/creators', () => {
 
     // The whole point of the shared helper: this page is a fixed handful of
     // queries, not one per creator. Two creators must cost what one does.
+    //
+    // Four, not three, since the review queue moved onto this tab: the fourth is
+    // one walk of the pending drafts, grouped in memory into the per-creator
+    // count each card shows. The number that matters here is that it does not
+    // move with the creator count, not that it is any particular value.
     const reads = fakeDb.calls.filter(
       (c) => c.method === 'select'
         && ['creator_source_state', 'creator_source_items', 'creator_import_drafts'].includes(c.table),
     );
-    expect(reads).toHaveLength(3);
+    expect(reads).toHaveLength(4);
   });
 
   /**
