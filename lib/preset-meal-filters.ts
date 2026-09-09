@@ -35,7 +35,7 @@ export interface PresetMealFilters {
   ingredients: string[];
   /** NONE-of. A meal containing any of these is out. */
   excludeIngredients: string[];
-  /** The search box: name, author, creator or source. */
+  /** The search box: name, author, creator, source or any of the meal's tags. */
   q: string;
 }
 
@@ -78,7 +78,20 @@ function ingredientNames(meal: FilterableMeal): string[] {
 export function matchesPresetMeal(meal: FilterableMeal, filters: PresetMealFilters): boolean {
   const q = filters.q.trim().toLowerCase();
   if (q) {
-    const haystack = [meal.name, meal.author, meal.creator_name, meal.source]
+    // TAGS ARE IN THE HAYSTACK (Stephen, 2026-09-09: "If I search Mexican, I
+    // should see meals with Mexican tags").
+    //
+    // They were filterable from the Filter sheet and invisible to the search
+    // box, so the most obvious way to look for a cuisine -- type it -- found
+    // nothing, and the user had no reason to think a sheet two taps away held
+    // the answer.
+    //
+    // Substring and case-insensitive, exactly like every other field here.
+    // Tags are stored as display strings ("Mexican", "Tex-Mex", "Under 30 Min")
+    // so nobody types the capital, and "30 min" ought to find the one with the
+    // space in it. It does widen results -- searching "salad" now also returns
+    // everything tagged Salad -- which is the point rather than a side effect.
+    const haystack = [meal.name, meal.author, meal.creator_name, meal.source, ...(meal.tags ?? [])]
       .map((v) => (v ?? '').toLowerCase());
     if (!haystack.some((h) => h.includes(q))) return false;
   }

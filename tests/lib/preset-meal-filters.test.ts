@@ -108,6 +108,43 @@ describe('authors and the search box', () => {
   it('treats a whitespace-only search as no search', () => {
     expect(matchesPresetMeal(meal(), filters({ q: '   ' }))).toBe(true);
   });
+
+  // Stephen, 2026-09-09: "If I search Mexican, I should see meals with Mexican
+  // tags." The tags were filterable from the Filter sheet and invisible to the
+  // search box, so the obvious way to look for a cuisine found nothing.
+  //
+  // One change covers both surfaces: the app sends `q` to this same endpoint and
+  // does no client-side filtering of its own.
+  it('searches the tags too', () => {
+    const m = meal({ name: 'Weeknight bowl', tags: ['Mexican', 'Under 30 Min'] });
+    expect(matchesPresetMeal(m, filters({ q: 'Mexican' }))).toBe(true);
+  });
+
+  it('matches a tag case-insensitively, the way every other field does', () => {
+    // Tags are stored as display strings ("Mexican", "Tex-Mex", "Under 30 Min")
+    // and nobody types the capital.
+    const m = meal({ name: 'Weeknight bowl', tags: ['Mexican'] });
+    expect(matchesPresetMeal(m, filters({ q: 'mexican' }))).toBe(true);
+    expect(matchesPresetMeal(m, filters({ q: 'MEXICAN' }))).toBe(true);
+  });
+
+  it('matches a tag by substring, so a partial word still finds it', () => {
+    const m = meal({ name: 'Weeknight bowl', tags: ['Under 30 Min'] });
+    expect(matchesPresetMeal(m, filters({ q: '30 min' }))).toBe(true);
+  });
+
+  it('still says no when nothing matches, tags included', () => {
+    // The guard against "add the field and everything matches": a meal with
+    // tags must still be excluded by a term none of them contain.
+    const m = meal({ name: 'Weeknight bowl', tags: ['Mexican'] });
+    expect(matchesPresetMeal(m, filters({ q: 'thai' }))).toBe(false);
+  });
+
+  it('survives a meal with no tags at all', () => {
+    // `tags` is nullable on the row and absent on plenty of seeded meals.
+    expect(matchesPresetMeal(meal({ tags: null }), filters({ q: 'shrimp' }))).toBe(true);
+    expect(matchesPresetMeal(meal({ tags: null }), filters({ q: 'mexican' }))).toBe(false);
+  });
 });
 
 describe('reading them off a request', () => {
