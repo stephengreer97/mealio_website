@@ -171,6 +171,7 @@ export interface PresetMeal {
   creator_id?: string | null;
   creator_name?: string | null;
   creator_social?: string | null;
+  creator_photo?: string | null;
   ingredients: Ingredient[];
   source?: string | null;
   recipe?: string | null;
@@ -550,6 +551,42 @@ export function MealDetailModal({
   );
 }
 
+/**
+ * The creator's face, sized to sit on the corner of the meal photo.
+ *
+ * It rides on the photo rather than inline beside the byline on purpose. The
+ * card's text column is already narrow -- name, byline, source host, difficulty,
+ * tags -- and an avatar in that column takes its width out of the byline, which
+ * is the line most likely to wrap. Over the photo it costs the text nothing.
+ *
+ * A creator with no uploaded photo gets their initial rather than nothing, so
+ * "which creator" is answerable from the card either way.
+ */
+function CreatorAvatar({ photo, name, size = 30 }: { photo?: string | null; name: string; size?: number }) {
+  const initial = name.replace(/^@/, '').trim().charAt(0).toUpperCase() || '?';
+  return (
+    <span
+      title={name}
+      className="rounded-full flex items-center justify-center overflow-hidden flex-shrink-0"
+      style={{
+        width: size,
+        height: size,
+        background: 'var(--brand)',
+        border: '2px solid var(--surface-raised)',
+        boxShadow: 'var(--shadow-sm)',
+      }}
+    >
+      {photo ? (
+        <img src={photo} alt="" className="w-full h-full object-cover block" />
+      ) : (
+        <span style={{ color: '#fff', fontSize: Math.round(size * 0.45), fontWeight: 600, lineHeight: 1 }}>
+          {initial}
+        </span>
+      )}
+    </span>
+  );
+}
+
 // ── Meal Card ─────────────────────────────────────────────────────────────────
 
 export default function MealCard({
@@ -567,6 +604,9 @@ export default function MealCard({
   const authorName = meal.creator_name
     ? (meal.creator_social || meal.creator_name)
     : meal.author ?? null;
+  // The face belongs to a creator, so an author-only meal (imported with a name
+  // but no creator row behind it) gets no avatar rather than a stranger's initial.
+  const creatorFace = meal.creator_name ?? null;
 
   return (
     <>
@@ -587,12 +627,12 @@ export default function MealCard({
         onMouseEnter={e => (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-md)'}
         onMouseLeave={e => (e.currentTarget as HTMLElement).style.boxShadow = 'var(--shadow-sm)'}
       >
-        <div className="flex-shrink-0">
+        <div className="flex-shrink-0 relative">
           {meal.photo_url ? (
             <img
               src={meal.photo_url}
               alt={meal.name}
-              className="object-cover rounded-xl w-48 h-[100px] sm:w-[240px] sm:h-[126px]"
+              className="object-cover rounded-xl w-48 h-[100px] sm:w-[240px] sm:h-[126px] block"
               style={{ border: '1px solid var(--border)' }}
             />
           ) : (
@@ -601,6 +641,11 @@ export default function MealCard({
                 <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
               </svg>
             </div>
+          )}
+          {creatorFace && (
+            <span className="absolute" style={{ left: 6, bottom: 6 }} data-testid="creator-avatar">
+              <CreatorAvatar photo={meal.creator_photo} name={creatorFace} />
+            </span>
           )}
         </div>
 

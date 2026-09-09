@@ -17,7 +17,7 @@ export async function GET(
 
   const { data: meal, error } = await supabase
     .from('preset_meals')
-    .select('id, name, author, creator_id, ingredients, source, story, recipe, photo_url, difficulty, serves, tags, creators!creator_id ( display_name, social_handle )')
+    .select('id, name, author, creator_id, ingredients, source, story, recipe, photo_url, difficulty, serves, tags, creators!creator_id ( display_name, social_handle, photo_url )')
     .eq('id', id)
     .single();
 
@@ -31,6 +31,7 @@ export async function GET(
       ...m,
       creator_name:   m.creators?.display_name  ?? null,
       creator_social: m.creators?.social_handle ?? null,
+      creator_photo:  m.creators?.photo_url      ?? null,
       creators:       undefined,
     },
   });

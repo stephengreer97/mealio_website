@@ -16,8 +16,47 @@ export interface TrendingMeal {
   creator_id: string;
   creator_name: string;
   creator_social: string;
+  /** The creator's own photo, for the face on a meal card. Null when there is
+   *  no creator (an author-only meal) or the creator has not uploaded one. */
+  creator_photo: string | null;
   trending_score: number;
   tags: string[];
+}
+
+/**
+ * Attaches each row's creator photo, read once for the whole feed.
+ *
+ * The trending RPC returns `creator_name` and `creator_social` but no photo, and
+ * widening its signature is a migration someone has to run by hand before the
+ * deploy that needs it. One read of `creators` avoids that, and it runs inside
+ * the same 10-minute cache as the rows it decorates, so a feed pays for it once
+ * per revalidate rather than once per request.
+ *
+ * Paged, because an unbounded select stops at PostgREST's `db-max-rows` and says
+ * nothing about the rest: the visible symptom would be that creators past the
+ * ceiling lose the face on every one of their cards, which looks like a missing
+ * upload rather than a truncated read. A failed or short read degrades to no
+ * photo rather than failing the feed: a card without a face still works.
+ */
+async function withCreatorPhotos<T extends { creator_id?: string | null }>(
+  supabase: ReturnType<typeof createServerSupabaseClient>,
+  rows: T[],
+): Promise<(T & { creator_photo: string | null })[]> {
+  const wanted = rows.some((r) => !!r.creator_id);
+  const byId = new Map<string, string | null>();
+  if (wanted) {
+    const read = await fetchAllPages<{ id: string; photo_url: string | null }>((from, to) =>
+      supabase
+        .from('creators')
+        .select('id, photo_url')
+        .order('id', { ascending: true })
+        .range(from, to));
+    for (const c of read.rows) byId.set(c.id, c.photo_url ?? null);
+  }
+  return rows.map((r) => ({
+    ...r,
+    creator_photo: r.creator_id ? byId.get(r.creator_id) ?? null : null,
+  }));
 }
 
 export const getCachedTrendingMeals = unstable_cache(
@@ -25,7 +64,7 @@ export const getCachedTrendingMeals = unstable_cache(
     const supabase = createServerSupabaseClient();
     const { data, error } = await supabase.rpc('get_preset_meals_with_trending', { partner_only: false });
     if (error) throw error;
-    return (data ?? []) as TrendingMeal[];
+    return withCreatorPhotos(supabase, (data ?? []) as TrendingMeal[]);
   },
   ['trending-meals'],
   { revalidate: 600, tags: ['trending-meals'] },
@@ -59,17 +98,20 @@ export const getCachedAllPresetMeals = unstable_cache(
         .from('preset_meals')
         .select(`
           id, name, source, recipe, story, ingredients, photo_url, author, difficulty, serves, creator_id, created_at, tags,
-          creators!creator_id ( display_name, social_handle )
+          creators!creator_id ( display_name, social_handle, photo_url )
         `)
         .order('created_at', { ascending: false })
         .range(from, to));
     if (read.error) throw read.error;
     return read.rows.map((m) => {
-      const creators = m.creators as { display_name?: string; social_handle?: string } | null;
+      const creators = m.creators as { display_name?: string; social_handle?: string; photo_url?: string } | null;
       return {
         ...m,
         creator_name: creators?.display_name ?? null,
         creator_social: creators?.social_handle ?? null,
+        // Embedded rather than read through withCreatorPhotos: this select is
+        // already joining the creator, so the photo rides along for free.
+        creator_photo: creators?.photo_url ?? null,
         creators: undefined,
       } as unknown as TrendingMeal;
     });
