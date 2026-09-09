@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import MealCard, { type PresetMeal } from '@/components/MealCard';
 
 /**
@@ -22,8 +22,8 @@ const base: PresetMeal = {
   photo_url: 'https://img/meal.jpg',
 };
 
-const draw = (meal: Partial<PresetMeal>) =>
-  render(<MealCard meal={{ ...base, ...meal }} onAdd={vi.fn()} />);
+const draw = (meal: Partial<PresetMeal>, onCreatorClick?: (id: string) => void) =>
+  render(<MealCard meal={{ ...base, ...meal }} onAdd={vi.fn()} onCreatorClick={onCreatorClick} />);
 
 describe('the creator face on a meal card', () => {
   it('shows the creator photo when there is one', () => {
@@ -57,5 +57,41 @@ describe('the creator face on a meal card', () => {
     // sibling column, and this test fails if the avatar is moved into it.
     expect(avatar.parentElement).toBe(mealPhoto.parentElement);
     expect(avatar.parentElement?.textContent).not.toContain('Sarah Lane');
+  });
+
+  it('opens the creator, the same as clicking their name', () => {
+    const onCreatorClick = vi.fn();
+    const onAdd = vi.fn();
+    render(
+      <MealCard
+        meal={{ ...base, creator_id: 'c1', creator_name: 'Sarah Lane', creator_photo: 'https://img/sarah.jpg' }}
+        onAdd={onAdd}
+        onCreatorClick={onCreatorClick}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('creator-avatar'));
+    expect(onCreatorClick).toHaveBeenCalledWith('c1');
+  });
+
+  it('does not open the meal underneath it on the way', () => {
+    // The card opens the detail modal on click. Without stopPropagation the
+    // avatar would open the creator AND the meal, one on top of the other.
+    const onCreatorClick = vi.fn();
+    render(
+      <MealCard
+        meal={{ ...base, creator_id: 'c1', creator_name: 'Sarah Lane' }}
+        onAdd={vi.fn()}
+        onCreatorClick={onCreatorClick}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('creator-avatar'));
+    // The modal is the only thing on this card that renders the meal name as a
+    // heading; the card itself uses a <p>.
+    expect(screen.queryByRole('heading', { name: base.name })).toBeNull();
+  });
+
+  it('is not a button when there is no profile to open', () => {
+    draw({ creator_id: 'c1', creator_name: 'Sarah Lane' });
+    expect(screen.getByTestId('creator-avatar').tagName).toBe('SPAN');
   });
 });

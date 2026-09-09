@@ -644,9 +644,26 @@ export default function MealCard({
             </div>
           )}
           {creatorFace && (
-            <span className="absolute" style={{ left: 6, bottom: 6 }} data-testid="creator-avatar">
-              <CreatorAvatar photo={meal.creator_photo} name={creatorFace} />
-            </span>
+            // The same target as the byline, because it names the same person.
+            // A button only when there is a profile to open: an avatar that
+            // swallows the click and does nothing would also stop the card from
+            // opening the meal, which is worse than not being clickable.
+            meal.creator_id && onCreatorClick ? (
+              <button
+                type="button"
+                className="absolute"
+                style={{ left: 6, bottom: 6, background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 0 }}
+                aria-label={`View ${creatorFace}'s profile`}
+                onClick={e => { e.stopPropagation(); onCreatorClick(meal.creator_id!); }}
+                data-testid="creator-avatar"
+              >
+                <CreatorAvatar photo={meal.creator_photo} name={creatorFace} />
+              </button>
+            ) : (
+              <span className="absolute" style={{ left: 6, bottom: 6 }} data-testid="creator-avatar">
+                <CreatorAvatar photo={meal.creator_photo} name={creatorFace} />
+              </span>
+            )
           )}
         </div>
 
