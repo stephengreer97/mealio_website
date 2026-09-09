@@ -828,6 +828,10 @@ export default function DiscoverPage() {
 
   useEffect(() => {
     if (loading) return; // wait until auth check completes
+    // DID THE SECTION ACTUALLY CHANGE, or is this the same tab re-fetching
+    // because a filter moved? The two were indistinguishable here, and that is
+    // what made Following spin -- see below.
+    const switchedSection = sectionRef.current !== section;
     fetchGenRef.current += 1;
     fetchingRef.current = false;
     sectionRef.current = section;
@@ -836,11 +840,29 @@ export default function DiscoverPage() {
     setHasMore(true);
     fetchMeals(true, section, token, filters, debouncedSearch, selectedCreatorIds);
     if (section === 'following' && token) {
-      setSelectedCreatorIds(new Set());
-      fetch('/api/creators/following', { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.ok ? r.json() : { creators: [] })
-        .then(d => setFollowedCreators(d.creators ?? []))
-        .catch(() => {});
+      // ONLY WHEN ARRIVING, AND ONLY IF THERE IS SOMETHING TO CLEAR.
+      //
+      // This was an unconditional `setSelectedCreatorIds(new Set())`, in an
+      // effect that DEPENDS on selectedCreatorIds. A fresh Set is a fresh
+      // reference, so the state always "changed" and the effect always re-ran.
+      // Every pass bumps fetchGenRef, and both the success path and the
+      // `finally` in fetchMeals are gated on the generation still matching -- so
+      // every request in flight was discarded before it could clear `fetching`.
+      // The grid stayed empty and the spinner never stopped. Trending and New
+      // never touched this setter, which is exactly why only Following span.
+      //
+      // The size check matters as much as the section check: without it,
+      // picking a creator chip inside Following would immediately clear the
+      // chip the user had just picked.
+      if (switchedSection && selectedCreatorIds.size > 0) setSelectedCreatorIds(new Set());
+      // The carousel above the feed. Only worth re-reading on arrival -- a
+      // filter change cannot alter who you follow.
+      if (switchedSection || followedCreators.length === 0) {
+        fetch('/api/creators/following', { headers: { Authorization: `Bearer ${token}` } })
+          .then(r => r.ok ? r.json() : { creators: [] })
+          .then(d => setFollowedCreators(d.creators ?? []))
+          .catch(() => {});
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, section, token, filters, debouncedSearch, selectedCreatorIds]);
