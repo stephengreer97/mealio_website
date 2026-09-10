@@ -3,7 +3,10 @@
 **Date:** 2026-07-29
 **Question:** Can Mealio replace its Walmart WebView automation with an API, the
 way it already did for the Kroger family?
-**Answer:** No — not today, and not with any currently-documented Walmart product.
+**Answer (2026-07-29):** No — not today, and not with any currently-documented Walmart product.
+**Corrected 2026-09-09:** the add-to-cart LINK does work for a signed-in shopper,
+and lands items in their real cart. See the addendum at the bottom. It is still
+not an API: no response to read, no way to learn what happened.
 Walmart has no equivalent of Kroger's `cart.basic:write`. The one cart-shaped
 thing it offers is a *link* for human clicks, not a cart-write API, and I measured
 it being served a bot challenge.
@@ -185,6 +188,49 @@ shipped will show exactly how much that's worth per store.
   purchasing, but they're paid, they insert a third party into checkout, and
   several are themselves scrapers wearing an API costume — which would hand our
   reliability problem to someone else while still owning the blame.
+
+---
+
+## Addendum, 2026-09-09: the ATC link DOES work, in a signed-in session (MEAL-17)
+
+Everything above was measured logged out. That turns out to be the whole story:
+run the same URLs inside a signed-in Walmart session and they work, land in the
+shopper's own cart, and never see a bot challenge.
+
+**Measured on a Pixel, in the Mealio app's WebView** (which is where the only
+signed-in Walmart session lives; Chrome has its own cookie jar and is not signed
+in). Two real item ids from `tests/fixtures/walmart/search-results-sour-cream.html`,
+different quantities on purpose:
+
+`/sc/cart/addToCart?items=12335111_2,10309448_1`
+
+| | Before | After |
+|---|---|---|
+| Cart | 73 items, $448.87 | **76 items, $454.29** |
+
+- +$5.42 is exactly 2 x $1.84 (Great Value Original Sour Cream, 16 oz) plus
+  1 x $1.74 (Daisy Pure and Natural, 8 oz).
+- Each item's product page then showed **"2 added"** and **"1 added"**, so both
+  landed as their own lines at the quantities asked for.
+- It rendered the shopper's real cart page: same pickup store, same 73 existing
+  items, no affiliate interstitial and nothing to click through.
+
+`/affil/cart/addToCart?items=12335111_2,10309448_1` behaved identically: 73 to 76,
+$448.87 to $454.29. **No PerimeterX challenge, no Impact onboarding, no `ap`
+parameter.** The `/blocked` "Robot or human?" result above is what an
+out-of-session request gets, not what the URL does.
+
+**Calling it twice stacks.** A second identical call took the cart 76 to 79
+($459.71), so the link ADDS to whatever is already there rather than setting a
+quantity. That matches Mealio's existing rule that cart writes add on top.
+
+**Not tested, and each one could still sink it:** more than two items in one
+URL, an out-of-stock or store-unavailable item (does it drop it silently, and can
+the caller tell?), weight-priced items, a second account, and what happens when
+the session has expired. Every measurement here is one account, one store, two
+grocery items.
+
+The cart was returned to exactly 73 items / $448.87 afterwards.
 
 ---
 
