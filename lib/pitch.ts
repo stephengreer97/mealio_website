@@ -37,31 +37,20 @@ export const PITCH_SUBHEAD =
   + 'you shop at, and every ingredient goes into your online cart there.';
 
 /**
- * Every store whose cart Mealio can fill, across both surfaces. Kept here
- * because `/about` and the Discover pitch both name them, and a store list
- * true in one place and stale in the other is worse than no list.
+ * NO STORE LIST LIVES HERE ANY MORE.
  *
- * **This is the product's list, not the web app's.** Cart automation for
- * everything except Kroger runs in the mobile app's WebView — `/help` states
- * the split, and `/my-meals` tells a web visitor "<store> cart integration is
- * available in the Mealio mobile app" when they pick one. Naming all of them
- * beside "your ingredients go into your cart" on the web front door promises
- * something that surface cannot do, which is a worse first impression than a
- * Nothing on the WEBSITE renders this any more — `/about` used to, and now says
- * "most major grocery retailers" like the pitch does. It stays because this file
- * is a hand-mirrored copy of `mealio_app/src/constants/pitch.ts`, where Help's
- * FAQ answers "which stores can Mealio fill?" with it directly. There the list
- * IS the answer; deleting it here would re-open the divergence between the two
- * files that removing it from `PITCH_STEPS` just closed.
+ * `PITCH_STORES` named eight retailers and was the last shared copy that did.
+ * Stephen, 2026-09-09: "I don't want specific stores named anywhere. Keep it
+ * generic." Naming them is also what kept going stale: the roster changes with
+ * a database row now, while a string in a shipped binary changes with a
+ * release, so the list was wrong somewhere the moment the two disagreed.
  *
- * There used to be a second, shorter `PITCH_STORES_WEB` for the website, because
- * cart automation for everything except Kroger runs in the RN app. Its only
- * consumer was step 2; once that stopped naming stores there was nothing left
- * for it to be right about.
+ * The picker is the answer instead, on both surfaces: it is generated from the
+ * catalog, so it is right the day a store is added or pulled. Copy that wants
+ * to gesture at the roster says "most major grocery retailers" and points at
+ * it. `tests/ui/no-store-names-in-copy.test.ts` keeps a brand name from
+ * reappearing in help, legal or marketing copy.
  */
-export const PITCH_STORES =
-  'H-E-B, Walmart, Kroger and its banners, Albertsons, Safeway, ALDI and '
-  + 'Wegmans';
 
 /**
  * The mechanism in three steps. Ordered; a surface with room for one shows the

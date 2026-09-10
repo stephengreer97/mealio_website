@@ -113,7 +113,7 @@ export default function PrivacyPage() {
           To add ingredients to your cart, Mealio interacts with grocery store websites on your behalf. How this works depends on where you shop:
         </p>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Kroger and its banners (web):</strong> You authorize Mealio through Kroger's own sign-in. Mealio uses that authorization solely to search products and add items to your cart. We never receive your Kroger password.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Connected store accounts (web):</strong> You authorize Mealio through the store's own sign-in. Mealio uses that authorization solely to search products and add items to your cart. We never receive your store password.</li>
           <li style={{ marginBottom: '6px' }}><strong>Other stores (mobile app):</strong> The Mealio app opens the store's website in a secure in-app browser where you log in directly with the retailer. Mealio reads product names and page elements only to locate items and complete the cart additions you initiate. This data is used locally to perform the action and is never transmitted to our servers.</li>
         </ul>
         <p style={{ marginTop: '12px' }}>

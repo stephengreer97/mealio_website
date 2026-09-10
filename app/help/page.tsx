@@ -23,7 +23,7 @@ export default function HelpPage() {
         <div style={{ maxWidth: '900px', margin: '0 auto', padding: '20px 24px' }}>
           <div style={{ fontWeight: 700, fontSize: '15px', color: '#111', marginBottom: '4px' }}>Two ways to fill your cart</div>
           <div style={{ fontSize: '13px', color: '#666' }}>
-            Connect your Kroger account to add ingredients on the web, or use the Mealio app for H-E-B, Walmart, the Albertsons family, and more.
+            Connect a supported store account to add ingredients on the web, or use the Mealio app to fill your cart at any store it supports.
           </div>
         </div>
       </div>
@@ -85,8 +85,8 @@ export default function HelpPage() {
               Mealio saves your meals and adds their ingredients to your online grocery cart. There are two ways to do this, depending on where you shop:
             </p>
             <ul style={ul}>
-              <li style={li}><strong>On the web</strong>: for Kroger and its sister banners, connect your Kroger account once and add ingredients to your cart directly from <a href="/my-meals" style={a}>mealio.co</a>.</li>
-              <li style={li}><strong>In the mobile app</strong>: for H-E-B, Walmart, the Albertsons family, and more, the Mealio app opens the store in a secure in-app browser and adds your ingredients automatically.</li>
+              <li style={li}><strong>On the web</strong>: some retailers let you connect your store account once and add ingredients to your cart directly from <a href="/my-meals" style={a}>mealio.co</a>.</li>
+              <li style={li}><strong>In the mobile app</strong>: for every other supported store, the Mealio app opens the store in a secure in-app browser and adds your ingredients automatically.</li>
             </ul>
 
             <h3 style={h3}>Logging in</h3>
@@ -107,11 +107,11 @@ export default function HelpPage() {
 
           {/* ── Adding to Cart on the Web ── */}
           <section id="web-cart" style={{ marginBottom: '56px' }}>
-            <h2 style={h2}>Adding to Cart on the Web (Kroger Brands)</h2>
+            <h2 style={h2}>Adding to Cart on the Web</h2>
 
-            <h3 style={h3}>Connecting your Kroger account</h3>
+            <h3 style={h3}>Connecting your store account</h3>
             <p style={p}>
-              Go to <a href="/account" style={a}>mealio.co/account</a> and click <strong>Connect Kroger Account</strong> under <strong>Kroger Brands Integration</strong>. You will be sent to Kroger to sign in and authorize Mealio, then returned to your account. This works with Kroger, Ralphs, Fred Meyer, King Soopers, Harris Teeter, and more than ten other Kroger banners.
+              Go to <a href="/account" style={a}>mealio.co/account</a> and use the grocery integration card to connect your store account. You will be sent to the store to sign in and authorize Mealio, then returned to your account. One connection covers that retailer's whole family of banners, so you only do this once however many of its stores you shop at.
             </p>
 
             <h3 style={h3}>Setting your store</h3>
@@ -121,7 +121,7 @@ export default function HelpPage() {
 
             <h3 style={h3}>Adding a meal to your cart</h3>
             <p style={p}>
-              On <a href="/my-meals" style={a}>My Meals</a>, pick a Kroger-family store from the store filter, select one or more meals, and click <strong>Add to Cart</strong>. Mealio matches each ingredient to a product and adds it to your Kroger cart. You then review and check out on the store's own site as usual.
+              On <a href="/my-meals" style={a}>My Meals</a>, pick a connected store from the store filter, select one or more meals, and click <strong>Add to Cart</strong>. Mealio matches each ingredient to a product and adds it to your cart at that store. You then review and check out on the store's own site as usual.
             </p>
 
             <h3 style={h3}>Choosing products</h3>
@@ -176,34 +176,12 @@ export default function HelpPage() {
           <section id="stores" style={{ marginBottom: '56px' }}>
             <h2 style={h2}>Supported Stores</h2>
 
-            <h3 style={h3}>On the web (connect your Kroger account)</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px 16px', margin: '0 0 16px' }}>
-              {[
-                'Kroger', 'Ralphs', 'Fred Meyer', 'King Soopers', "Smith's Food & Drug",
-                "Fry's Food", 'QFC', 'City Market', 'Dillons', "Baker's",
-                "Mariano's", "Pick 'n Save", 'Metro Market', 'Pay-Less', 'Harris Teeter',
-              ].map(name => (
-                <div key={name} style={{ fontSize: '13px', color: '#555', padding: '3px 0' }}>
-                  <strong style={{ color: '#333' }}>{name}</strong>
-                </div>
-              ))}
-            </div>
-
-            <h3 style={h3}>In the mobile app</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px 16px', margin: '0 0 12px' }}>
-              {[
-                'H-E-B', 'Walmart', 'ALDI', 'Wegmans',
-                'Albertsons', 'Safeway', 'Vons', 'Jewel-Osco', "Shaw's",
-                'Acme Markets', 'Tom Thumb', 'Randalls', 'Pavilions', 'Star Market',
-                'Haggen', 'Carrs', 'Kings Food Markets', "Balducci's",
-              ].map(name => (
-                <div key={name} style={{ fontSize: '13px', color: '#555', padding: '3px 0' }}>
-                  <strong style={{ color: '#333' }}>{name}</strong>
-                </div>
-              ))}
-            </div>
             <p style={p}>
-              Meals are stored separately per store. A meal saved at H-E-B will not appear when you switch to Walmart, since product names and availability differ across stores. We're always adding support for more retailers. If a store you use isn't listed, let us know.
+              Mealio supports most major grocery retailers, on the web and in the mobile app. Rather than a list here that goes stale, the store picker shows exactly which stores are available to you: open it when you save a meal, or use the store filter on <a href="/my-meals" style={a}>My Meals</a>. It is always the current list.
+            </p>
+
+            <p style={p}>
+              Meals are stored separately per store. A meal saved at one store will not appear when you switch to another, since product names and availability differ across stores. We're always adding support for more retailers. If a store you use isn't in the picker, let us know.
             </p>
           </section>
 
@@ -397,9 +375,9 @@ export default function HelpPage() {
               Items that can't be added are flagged so you can pick an alternative product or skip them.
             </p>
 
-            <h3 style={h3}>My Kroger account won't connect</h3>
+            <h3 style={h3}>My store account won't connect</h3>
             <p style={p}>
-              Make sure you complete the sign-in and authorization steps on Kroger's site and allow the pop-up to return to mealio.co. If the connection expires, reconnect from <a href="/account" style={a}>mealio.co/account</a>. Your saved meals are never affected by a disconnected store account.
+              Make sure you complete the sign-in and authorization steps on the store's own site and allow the pop-up to return to mealio.co. If the connection expires, reconnect from <a href="/account" style={a}>mealio.co/account</a>. Your saved meals are never affected by a disconnected store account.
             </p>
 
             <h3 style={h3}>The store won't keep me logged in (mobile app)</h3>
@@ -426,7 +404,7 @@ export default function HelpPage() {
               },
               {
                 q: 'Which grocery stores does Mealio support?',
-                a: 'On the web, Mealio works with Kroger and its sister banners (Ralphs, Fred Meyer, King Soopers, Harris Teeter, and more) once you connect your Kroger account. In the mobile app, Mealio supports H-E-B, Walmart, ALDI, Wegmans, and the Albertsons family (Safeway, Vons, Jewel-Osco, Acme, and more). See the Supported Stores section above for the full list.',
+                a: 'Mealio supports most major grocery retailers. On the web, you connect your store account once and add to cart from mealio.co. In the mobile app, you sign in to the store in a secure in-app browser. The store picker shows exactly which stores are available, and it is always the current list.',
               },
               {
                 q: 'Do my meals sync across devices?',
@@ -434,11 +412,11 @@ export default function HelpPage() {
               },
               {
                 q: 'Does Mealio have access to my grocery account or payment information?',
-                a: 'No. For Kroger, you authorize Mealio through Kroger\'s own sign-in, and we never see your password. In the mobile app, you log in directly with the store in a secure in-app browser. We never see or store your grocery credentials or payment details.',
+                a: 'No. On the web, you authorize Mealio through the store\'s own sign-in, and we never see your password. In the mobile app, you log in directly with the store in a secure in-app browser. We never see or store your grocery credentials or payment details.',
               },
               {
                 q: 'Why are my meals separate for each store?',
-                a: 'Each store sells different products under different names. A meal saved at H-E-B uses H-E-B product names which may not match what Walmart calls the same item. Keeping meals per-store ensures the cart automation works correctly.',
+                a: 'Each store sells different products under different names. A meal saved at one store uses that store\'s product names, which may not match what another store calls the same item. Keeping meals per-store ensures the cart automation works correctly.',
               },
               {
                 q: 'What happens if an ingredient is not found?',

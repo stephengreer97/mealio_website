@@ -129,7 +129,7 @@ export default function TermsPage() {
         {/* 7 */}
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>7. Third-Party Services</h2>
         <p>
-          The Service integrates with third-party grocery platforms (including but not limited to HEB, Walmart, and Kroger) to automate cart operations. These integrations rely on the publicly accessible interfaces of those platforms. We make no representations regarding the availability, accuracy, or reliability of any third-party platform. Changes to third-party platforms may affect Service functionality, and we are not responsible for any interruptions resulting from such changes.
+          The Service integrates with third-party grocery platforms to automate cart operations. These integrations rely on the publicly accessible interfaces of those platforms. We make no representations regarding the availability, accuracy, or reliability of any third-party platform. Changes to third-party platforms may affect Service functionality, and we are not responsible for any interruptions resulting from such changes.
         </p>
 
         {/* 8 */}

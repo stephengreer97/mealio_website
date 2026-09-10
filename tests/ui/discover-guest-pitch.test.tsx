@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { PITCH_HEADLINE, PITCH_STORES, PITCH_STEPS, PITCH_NOTHING_ORDERED } from '@/lib/pitch';
+import { PITCH_HEADLINE, PITCH_STEPS, PITCH_NOTHING_ORDERED } from '@/lib/pitch';
 
 /**
  * Discover, seen by someone who is not signed in (MEAL-86).
@@ -86,12 +86,12 @@ describe('Discover — the pitch a signed-out visitor sees', () => {
     // The claim, not just the branding. This is the assertion the ticket is
     // about: before MEAL-86 "cart" appeared zero times on this page.
     expect(text).toMatch(/cart/i);
-    // The step points at the picker instead of reciting a list. The property
-    // this replaces still holds and is the one that matters: cart automation for
-    // everything except Kroger runs in the mobile app, so this surface must not
-    // promise a signed-out visitor the product-wide list.
+    // The step points at the picker instead of reciting a list, which is now
+    // the rule everywhere rather than this page's own caution: no copy names a
+    // retailer, because the roster changes with a database row and a string in
+    // a shipped page does not.
     expect(text).toContain(PITCH_STEPS[1].body);
-    expect(text).not.toContain(PITCH_STORES);
+    expect(text).not.toMatch(/kroger|walmart|h-e-b|albertsons|safeway|wegmans|aldi/i);
     // People assume "fills your cart" means "spends your money". Say otherwise.
     expect(text).toContain(PITCH_NOTHING_ORDERED);
   });
