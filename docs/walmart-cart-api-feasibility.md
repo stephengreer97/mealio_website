@@ -234,6 +234,78 @@ The cart was returned to exactly 73 items / $448.87 afterwards.
 
 ---
 
+## Addendum 2, 2026-09-09: what it does at the edges, and under load
+
+Fifty-odd navigations on the Pixel, in the app's WebView, same signed-in account.
+Every number below is a cart total read back after the step, because the cart is
+the only thing that tells the truth here.
+
+### It only works as a NAVIGATION
+
+Calling the same URLs with `fetch()` from inside the walmart.com origin returns
+**200 with an identical 1761-byte SPA shell** for a real id, a bogus id and no id
+at all, and adds **nothing**: nine such calls left the cart untouched. The add is
+done by the page after it boots, so this cannot be fired quietly in the
+background, and anything built on it pays for a full page load per call.
+
+### The `items` parameter, case by case
+
+| Case | Result |
+|---|---|
+| Valid ids, fresh session | All land, at the quantities asked for |
+| Bogus id alone | Nothing added. No error, same page, cart unchanged |
+| Valid + bogus together | **The valid one lands, the bogus one is silently dropped** |
+| Eight real ids in one URL | All landed on a fresh session (+$13.38); a later run added only +$11.54 |
+| `qty 0` | No-op. Does not add, does not remove |
+| `qty 99` | **Nothing added at all.** Silently rejected rather than clamped |
+| Same id twice in one URL | Both apply (two units) |
+| Legacy pipe, `items=ID|1` | Works |
+| A UPC instead of an item id | Nothing |
+| No `items` at all | Nothing |
+| `offers=<offerId>_1`, which the docs list | **Nothing.** The documented parameter appears inert |
+| `items=...&storeId=2280` | Cart total fell $24.06 and two items went "currently unavailable". It changed the cart's fulfilment context, not just the add |
+
+The `storeId` result is the one to be careful with: an add-to-cart link that
+quietly re-points which store the whole cart is fulfilled from is a bigger side
+effect than the add itself. Cause not isolated -- the items could have gone out
+of stock on their own -- but the total moved at exactly that step.
+
+### The WAF never fired. Something quieter did.
+
+- Six identical adds back to back: no challenge, no `/blocked`, no error, and
+  **2 of 6 landed**.
+- The same burst again: **0 of 6**.
+- The same burst with a unique throwaway parameter on each URL, to rule out the
+  WebView serving a cached page: still **0 of 6**.
+- After a 90-second pause, adds worked again, but only partly: one of the four
+  valid cases in that run landed.
+
+So under sustained use the endpoint starts **silently not applying adds**. Every
+response still renders "Walmart Native Checkout | Review Order", every status is
+200, and nothing anywhere says an item was dropped. In ~50 navigations we never
+once saw the PerimeterX challenge from the original measurement.
+
+For a cart-filling product that is worse than a hard block: a block is a
+signal you can act on, and this is a success that is not one. Anything built on
+this has to read the cart back afterwards to know what actually happened -- which
+is precisely what the network rail already does.
+
+### Is there a search version? No.
+
+- `searchTerm=` and `q=` on the add-to-cart endpoint: no effect.
+- `https://www.walmart.com/search?q=sour%20cream` renders normally in-session
+  (title "sour cream - Walmart.com", no challenge), but it is a page for a
+  person, not a way to add anything.
+- Turning "sour cream" into a usItemId still needs a product search. Walmart's
+  documented one is the Affiliate API (`affil/product/v2/search`), behind an
+  Impact Radius publisher id and approval -- the same gate as the rest of
+  walmart.io. Our own GraphQL rail already does this without it.
+
+The cart was deliberately NOT cleaned up after this round (Stephen's call), so it
+is carrying the test items.
+
+---
+
 ## Sources
 
 - [Add To Cart — walmart.io](https://walmart.io/docs/atc/v1/add-to-cart)
