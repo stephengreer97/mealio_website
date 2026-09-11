@@ -390,7 +390,7 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
           you first.{' '}
           {needsConnect
             ? 'You can switch this off at any time, and left unticked nothing on your channel is ever edited.'
-            : 'Switching this off stops any future edits; links already added stay where they are.'}
+            : 'Switching this off stops any future edits; links already added stay where they are. It does not remove the permission from your Google Account, which you can do at any time in your Google Account permissions.'}
         </span>
       </label>
 

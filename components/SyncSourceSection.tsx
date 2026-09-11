@@ -1095,6 +1095,28 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
           <p className="text-xs text-gray-400 mt-2 leading-relaxed">
             Mealio stops reading your {label} and forgets the connection. Recipes you have already published stay
             exactly where they are.
+            {/* MEAL-196. Disconnecting deletes OUR copy of the grant and nothing
+                at Google: verified on a real channel on 2026-09-11, where the
+                app stayed listed under Linked apps with YouTube access after a
+                disconnect. Saying so is the difference between "we stopped" and
+                "the permission is gone", which a creator is entitled to read as
+                the same sentence unless we tell them otherwise. Only for the
+                Google-backed source, because it is the only one where we know
+                this is true and where the link is right. */}
+            {source === 'youtube' && (
+              <>
+                {' '}The permission itself stays on your Google Account until you remove it at{' '}
+                <a
+                  href="https://myaccount.google.com/permissions"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-gray-600"
+                >
+                  your Google Account permissions
+                </a>
+                .
+              </>
+            )}
           </p>
         </div>
       )}
