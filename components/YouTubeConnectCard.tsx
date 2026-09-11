@@ -189,9 +189,26 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
     }
   };
 
+  /**
+   * Said when ticking the box turned the append on WITHOUT a trip to Google
+   * (MEAL-196).
+   *
+   * Google sells caption reading and description editing as one scope, so a
+   * creator who ticked "let Mealio read my captions" already holds the write
+   * permission. Ticking this box then flips the setting with no consent screen
+   * in between, which is the right behaviour -- a second prompt would say
+   * "Mealio already has access" and teach people to click through prompts --
+   * but it leaves the one moment in the flow that nothing marks.
+   *
+   * The captions box promises "this does not turn it on". This is where that
+   * promise is kept: the moment it IS turned on, the screen says so.
+   */
+  const [justEnabled, setJustEnabled] = useState(false);
+
   const setAppendOptIn = async (next: boolean) => {
     setBusy(true);
     setError('');
+    setJustEnabled(false);
     try {
       const res = await fetch('/api/creator/youtube', {
         method: 'PATCH',
@@ -218,6 +235,10 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
       // Kept in step so a reconnect from a broken connection carries the choice
       // the creator has just made rather than the one they made last time.
       setAppendConsent(next);
+      // Only when it went on, and only on this path: reaching here with `next`
+      // true means the server accepted it outright, which is exactly the case
+      // where Google was never involved.
+      setJustEnabled(next);
     } finally {
       setBusy(false);
     }
@@ -393,6 +414,12 @@ export default function YouTubeConnectCard({ embedded = false, onConnectionChang
             : 'Switching this off stops any future edits; links already added stay where they are. It does not remove the permission from your Google Account, which you can do at any time in your Google Account permissions.'}
         </span>
       </label>
+
+      {justEnabled && (
+        <p className="text-sm text-gray-700 mt-2 ml-7" data-testid="append-just-enabled">
+          Mealio can now add the Mealio link to descriptions on this channel. Untick the box above to stop it.
+        </p>
+      )}
 
 
       {needsConnect && (

@@ -156,6 +156,35 @@ describe('YouTubeConnectCard — once connected', () => {
     expect(calls.find((call) => call.method === 'PATCH')?.body).toEqual({ appendOptIn: true });
   });
 
+  it('marks the moment the append goes on without a trip to Google (MEAL-196)', async () => {
+    // Google sells caption reading and description editing as one scope, so a
+    // creator who ticked the captions box already holds the write permission,
+    // and the PATCH is accepted outright with no consent screen in between.
+    // That silent path is the only point in the flow nothing used to mark,
+    // while the captions copy promises "this does not turn it on".
+    harness(CONNECTED, (url, init) =>
+      init?.method === 'PATCH' ? json({ ok: true, appendOptIn: true }) : null,
+    );
+    const box = await screen.findByRole('checkbox');
+    expect(screen.queryByTestId('append-just-enabled')).toBeNull();
+
+    fireEvent.click(box);
+
+    await waitFor(() => expect(screen.getByTestId('append-just-enabled')).toBeTruthy());
+    expect(screen.getByTestId('append-just-enabled').textContent).toMatch(/can now add/i);
+  });
+
+  it('says nothing of the sort when the box is being switched off', async () => {
+    harness({ ...CONNECTED, appendOptIn: true }, (url, init) =>
+      init?.method === 'PATCH' ? json({ ok: true, appendOptIn: false }) : null,
+    );
+    const box = await screen.findByRole('checkbox');
+    fireEvent.click(box);
+
+    await waitFor(() => expect((box as HTMLInputElement).checked).toBe(false));
+    expect(screen.queryByTestId('append-just-enabled')).toBeNull();
+  });
+
   it('leaves the toggle live on a grant that only has read', async () => {
     // Which is now every fresh connection. The write scope is asked for when
     // somebody ticks this box, so disabling it would disable the only way to
