@@ -262,13 +262,38 @@ background, and anything built on it pays for a full page load per call.
 | Legacy pipe, `items=ID|1` | Works |
 | A UPC instead of an item id | Nothing |
 | No `items` at all | Nothing |
-| `offers=<offerId>_1`, which the docs list | **Nothing.** The documented parameter appears inert |
-| `items=...&storeId=2280` | Cart total fell $24.06 and two items went "currently unavailable". It changed the cart's fulfilment context, not just the add |
+| `offers=<offerId>_1`, which the docs list | Nothing added. **Probably my offerId, not the parameter** -- see the correction below |
+| `items=...&storeId=2280` | Cart total fell $24.06 and two items went "currently unavailable". **The store id was invented** -- see the correction below |
 
-The `storeId` result is the one to be careful with: an add-to-cart link that
-quietly re-points which store the whole cart is fulfilled from is a bigger side
-effect than the add itself. Cause not isolated -- the items could have gone out
-of stock on their own -- but the total moved at exactly that step.
+### Correction, after reading the actual spec
+
+The two odd results above were mine, not Walmart's. `/docs/atc/v1/add-to-cart`
+renders for an unauthenticated reader (the service is Public access) and says:
+
+- `offers` takes `offerId` + quantity, exactly the shape I sent. The offerId I
+  used came out of a July fixture, so the likely explanation is a stale offer
+  rather than an inert parameter. **Re-test with a fresh offerId before
+  believing the row above.**
+- `storeId` is documented as "the fulfillmentStoreId corresponding to the
+  accessPointId obtained from the response of the storeLocator api", with a
+  sibling `ap` parameter for the accessPointId. I passed 2280, which I made up.
+  A cart that re-points itself to the store you named is what asking for that
+  store does, not a booby trap. The caution survives in weaker form: this
+  parameter moves the fulfilment context of the WHOLE cart, so it carries the
+  user's own store or nothing at all.
+
+Two other things that page settles:
+
+- **The endpoint I have been testing IS the sanctioned one**, in its documented
+  form, and "This service is available to partners/publishers whether they are
+  onboarded to Impact Radius or not" -- which is why it worked with no
+  credentials.
+- **Walmart's own documented failure mode is a modal shown to the CUSTOMER**:
+  "If any items from request is not added to Walmart cart, an error message
+  modal will be shown and customer will be taken to home page of Walmart site
+  when user choose to go to cart as the last step." The silence I measured is
+  silence toward the CALLER, by design. In this model the customer verifies the
+  cart, not the partner.
 
 ### The WAF never fired. Something quieter did.
 
