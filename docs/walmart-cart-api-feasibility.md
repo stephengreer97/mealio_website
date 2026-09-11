@@ -331,6 +331,89 @@ is carrying the test items.
 
 ---
 
+## Addendum 3, 2026-09-11: the Affiliate API works, and what it does not give us
+
+Walmart answered the Identity request by pointing at the **Affiliate Marketing
+API**, which is open: consumer id, key version, private key, no client secret and
+no approval. Credentials went into Vercel, `lib/walmart-io.ts` signs per their
+scheme, and an admin-only route made it measurable from the runtime that holds
+the key.
+
+### It authenticates and it answers
+
+| Test | Result |
+|---|---|
+| `taxonomy` | 200 in 805ms |
+| `search?query=sour cream` | 200 in 732ms, 54 results |
+| 12 real ingredient lines, sequential | 12/12 200, ~700ms each, 11s total |
+| 20 searches fired in parallel | **20/20 200**, 1.96s wall, median 660ms, no throttling |
+
+### Search ids ARE cart ids, proven end to end
+
+`search?query=sour cream` returned itemIds 43365585, 10309448, 10309449 and
+12335112 -- the same ids used in yesterday's add-to-cart tests. Then, as a clean
+run: searched "lemon juice", filtered the value packs out, took itemId 10294761
+(ReaLemon 15 fl oz), pushed it through `/sc/cart/addToCart?items=10294761_1` on
+the device, and the product page read **"1 added"**.
+
+So the loop closes with no approvals: **affiliate search for the id, ATC link for
+the add, cart page to verify.**
+
+### Every item carries its own add-to-cart URL
+
+`affiliateAddToCartUrl` is a field on every search result:
+
+```
+https://goto.walmart.com/c/|PUBID|/568844/9383?veh=aff&sourceid=...&u=http%3A%2F%2Faffil.walmart.com%2Fcart%2FaddToCart%3Fitems%3D15235450337
+```
+
+The `|PUBID|` placeholder wants the Impact publisher id. Items also carry
+`offerId`, which is the other thing the ATC service accepts.
+
+### The multipack problem, and that it is ours to fix
+
+Searching a bare ingredient name ranks value packs first. "Lemon juice" returns a
+**12 pack at $20.95**; "cornstarch" returns a **12 pack at $27.82**. Dropping
+results whose name matches `(N pack)` or whose `categoryPath` contains "Value
+packs" turns $20.95 into **$2.37 for a single 15 fl oz bottle**. One filter, and
+the fields to do it come back in the response.
+
+Treat affiliate search as **candidate generation, not top-1 selection**. This is
+also exactly what ITPM claims to do properly ("the right quantities at the lowest
+possible price or minimal waste"), which is the argument for still wanting it.
+
+### THE REAL LIMIT: this is the national catalogue, not the shopper's store
+
+- `storeId` and `zipCode` are accepted on search (200) and **change nothing**.
+  Same results, same order, same prices.
+- The ReaLemon that landed in the cart shows **Pickup: Not available, Delivery:
+  Not available** on its own product page. It is `offerType: ONLINE_ONLY` and
+  `marketplace: true`: a third-party shipped item, no use to a grocery pickup
+  flow.
+- The two sour creams that were addable yesterday now read `stock: "Not
+  available"`, `availableOnline: false` -- national online stock, which is not
+  the same question as "is it on the shelf at your store".
+
+`offerType` (`ONLINE_AND_STORE` vs `ONLINE_ONLY`) and `marketplace` are the
+usable filters for "could this be a grocery item at all". Neither tells us
+whether the shopper's store has it. **That is what OPD is for, and it stays
+gated.**
+
+### The price the search shows is not the price the cart charges
+
+Search returned ReaLemon at **$2.37**. The item lookup for the same itemId says
+**$11.45**, and the cart went up by exactly **$11.45**. Same itemId, different
+offer: `items=<id>` lets Walmart pick the default offer, which was not the one we
+showed.
+
+So a build on this must pass **`offers=<offerId>`** rather than `items=<id>`
+alone, or it will quote one price and charge another. Untested as of this
+addendum, and it is the first thing to verify next. It also retires the
+"`offers=` appears inert" line from Addendum 2 for good: the parameter is the
+answer to a real problem.
+
+---
+
 ## Sources
 
 - [Add To Cart — walmart.io](https://walmart.io/docs/atc/v1/add-to-cart)
