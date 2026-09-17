@@ -4,6 +4,7 @@ import { createAccessToken, createSessionToken, createTwoFactorToken, hashToken 
 import { generateOtp, hashOtp } from '@/lib/otp';
 import { sendOtpEmail } from '@/lib/email';
 import { log } from '@/lib/logger';
+import { loginThrottled } from '@/lib/login-throttle';
 
 /**
  * Accounts named in `MFA_EXEMPT_EMAILS` (comma-separated) skip the 2FA gate.
@@ -34,6 +35,24 @@ export async function POST(request: NextRequest) {
     }
 
     const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
+
+    // COUNTED BEFORE THE PASSWORD IS CHECKED.
+    //
+    // Nothing limited this endpoint: middleware.ts matches page paths only,
+    // vercel.json has no firewall rules, and the route counted nothing. 2FA means
+    // a guessed password alone lets nobody in, but it does not stop the guessing,
+    // and a CORRECT password sends an OTP email on every attempt -- so someone
+    // holding one could fill a customer's inbox for free.
+    //
+    // Before, not after, so a wrong password costs exactly as much as a right one
+    // and the count cannot be dodged by guessing badly. Fails open by design; see
+    // loginThrottled.
+    if (await loginThrottled(createServerSupabaseClient(), email, ip)) {
+      return NextResponse.json(
+        { error: 'Too many sign-in attempts. Please try again in a few minutes.' },
+        { status: 429 },
+      );
+    }
 
     // Use anon client for credential verification — calling signInWithPassword() on
     // the service role client sets a user JWT session in memory, causing subsequent

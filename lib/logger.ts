@@ -14,6 +14,7 @@ try {
 export type EventType =
   // ── Auth ──────────────────────────────────────────────────────────────────
   | 'AUTH:LOGIN'
+  | 'AUTH:LOGIN_THROTTLE'  // login attempt refused, or the throttle itself failing
   | 'AUTH:LOGOUT'
   | 'AUTH:LOGOUT_ALL'
   | 'AUTH:REGISTER'
