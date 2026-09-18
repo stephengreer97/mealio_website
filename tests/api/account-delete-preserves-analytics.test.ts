@@ -1,9 +1,20 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { fakeDb, deleteUser } from '../helpers/supabase-mock';
 import { jsonRequest } from '../helpers/request';
 
 vi.mock('@/lib/supabase', async () =>
-  (await import('../helpers/supabase-mock')).mockSupabaseModule());
+  (await import('../helpers/storage-mock')).mockSupabaseWithStorage());
+vi.mock('next/cache', () => ({ revalidateTag: vi.fn() }));
+// A Stripe customer with nothing live on it: the route asks before deleting.
+vi.mock('stripe', () => ({
+  default: class {
+    subscriptions = {
+      list: () => ({ async *[Symbol.asyncIterator]() { /* none */ } }),
+      retrieve: async () => ({ id: 'sub', status: 'canceled' }),
+      cancel: async () => ({}),
+    };
+  },
+}));
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
 import { DELETE } from '@/app/api/account/delete/route';
@@ -55,7 +66,11 @@ async function del() {
   return DELETE(jsonRequest('/api/account/delete', { method: 'DELETE', token }));
 }
 
-beforeEach(() => { fakeDb.reset(); });
+beforeEach(() => {
+  fakeDb.reset();
+  process.env.STRIPE_SECRET_KEY = 'sk_test_x';
+});
+afterEach(() => { delete process.env.STRIPE_SECRET_KEY; });
 
 describe('DELETE /api/account/delete — what survives', () => {
   it('keeps the saves and the subscription events, and still deletes the profile', async () => {
@@ -142,8 +157,9 @@ describe('DELETE /api/account/delete — what survives', () => {
     // Queues are FIFO per table and win over the seeded rows, so every
     // `user_profiles` read on the way down has to be fed before the error can
     // land on the delete itself: the token check, the revocation check, then the
-    // tombstone's own read.
+    // billing read before anything is deleted, then the tombstone's own read.
     fakeDb.queue('user_profiles', { data: { tokens_invalidated_at: null } });
+    fakeDb.queue('user_profiles', { data: { subscription_tier: 'free', stripe_customer_id: null } });
     fakeDb.queue('user_profiles', { data: { created_at: '2026-03-04T00:00:00.000Z' } });
     fakeDb.queue('user_profiles', {
       error: { message: 'update or delete on table "user_profiles" violates foreign key constraint' },

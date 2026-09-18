@@ -82,9 +82,11 @@ async function countEvents(
 
 type CreatorSaveRow = {
   saved_at: string | null;
+  user_id?: string | null;
+  preset_meal_id?: string | null;
   preset_meals?: {
     creator_id?: string | null;
-    creators?: { id: string; display_name: string } | null;
+    creators?: { id: string; display_name: string; user_id?: string | null } | null;
   } | null;
 };
 
@@ -126,7 +128,7 @@ async function fetchWindowedCreatorSaves(
   for (let page = 0; page < MAX_PAGES; page++) {
     const { data, error } = await supabase
       .from('preset_meal_saves')
-      .select('id, saved_at, preset_meals!preset_meal_id!inner ( creator_id, creators!creator_id!inner ( id, display_name ) )')
+      .select('id, saved_at, user_id, preset_meal_id, preset_meals!preset_meal_id!inner ( creator_id, creators!creator_id!inner ( id, display_name, user_id ) )')
       .gte('saved_at', since)
       .order('id', { ascending: true })
       .range(page * PAGE_ROWS, page * PAGE_ROWS + PAGE_ROWS - 1);
@@ -231,12 +233,24 @@ export async function GET(request: NextRequest) {
   const creatorMap: Record<string, CreatorEntry> = {};
 
   let totalCreatorAnnualSaves = 0;
+  // One save per user per meal. `UNIQUE (preset_meal_id, user_id)` already
+  // guarantees it in the table; counted here as well because this number is paid
+  // out, and a relaxed constraint would otherwise turn straight into money.
+  const counted = new Set<string>();
 
   for (const row of windowedSaves) {
     // Belt and braces against the join: a save whose creator row vanished cannot
     // be credited to anybody, and must not inflate the denominator either.
     const creator = row.preset_meals?.creators;
     if (!creator) continue;
+
+    // A creator saving their own meal is not an audience, and paying for it
+    // would let anyone with a creator account mint their own share of the pool.
+    if (row.user_id && creator.user_id && row.user_id === creator.user_id) continue;
+
+    const key = `${row.user_id}|${row.preset_meal_id}`;
+    if (counted.has(key)) continue;
+    counted.add(key);
 
     const { id: creatorId, display_name: creatorName } = creator;
     if (!creatorMap[creatorId]) {

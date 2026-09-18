@@ -36,6 +36,7 @@ export default function PrivacyPage() {
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#333', marginTop: '20px', marginBottom: '8px' }}>1.1 Information You Provide Directly</h3>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
           <li style={{ marginBottom: '6px' }}><strong>Account information:</strong> When you register, we collect your email address and a hashed password.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Sign in with Google or Apple:</strong> If you sign in with Google or Apple, that provider sends us your name, your email address, whether it has verified that address, and an account identifier it assigns for Mealio. Apple lets you share a private relay address instead of your real email, and sends your name only the first time you sign in. We never receive your Google or Apple password.</li>
           <li style={{ marginBottom: '6px' }}><strong>Creator application:</strong> If you apply to the Creator Partner Program, we collect your display name, phone number (optional), and social media or website links you choose to provide.</li>
           <li style={{ marginBottom: '6px' }}><strong>Meal and recipe data:</strong> Meal names, ingredients, recipes, photos, and associated store information that you save or publish through the Service.</li>
           <li style={{ marginBottom: '6px' }}><strong>Support communications:</strong> Any information you provide when contacting us at contact@mealio.co.</li>
@@ -78,7 +79,7 @@ export default function PrivacyPage() {
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>3. How We Share Your Information</h2>
         <p>We may share your information in the following limited circumstances:</p>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>Service providers:</strong> We share information with third-party vendors who help us operate the Service, including our hosting provider (Vercel), our database host (Supabase), the AI provider that reads a creator&rsquo;s own posts to draft recipes from them (Anthropic), payment processors (Stripe, and the Apple App Store and Google Play for in-app purchases), subscription-management provider (RevenueCat), email delivery provider (Resend), and payout provider (Tremendous). These providers are contractually obligated to protect your information and may only use it to provide services to us.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Service providers:</strong> We share information with third-party vendors who help us operate the Service, including our hosting provider (Vercel), which also provides the website analytics we use to count visits to pages, our database host (Supabase), the AI provider that reads a creator&rsquo;s own posts to draft recipes from them (Anthropic), the push notification service that delivers notifications to your phone using a device token and the text of the notification (Expo), payment processors (Stripe, and the Apple App Store and Google Play for in-app purchases), subscription-management provider (RevenueCat), email delivery provider (Resend), and payout provider (Tremendous). These providers are contractually obligated to protect your information and may only use it to provide services to us.</li>
           <li style={{ marginBottom: '6px' }}><strong>Legal requirements:</strong> We may disclose your information if required to do so by law, court order, or valid governmental request, or to protect the rights, property, or safety of Mealio, our users, or the public.</li>
           <li style={{ marginBottom: '6px' }}><strong>Requests from public authorities:</strong> When a government agency, court or other public authority asks us for information about a user, we review whether the request is lawful and valid before responding, and we challenge any request we consider unlawful, overly broad or not properly served. Where we must respond, we disclose only the minimum information the request legally requires. We keep a record of every such request, how we responded and the legal basis for that response.</li>
           <li style={{ marginBottom: '6px' }}><strong>Business transfers:</strong> If Mealio is involved in a merger, acquisition, or sale of assets, your information may be transferred as part of that transaction. We will notify you via email and/or a prominent notice on the Service before your information becomes subject to a different privacy policy.</li>
@@ -127,7 +128,7 @@ export default function PrivacyPage() {
           If you are a creator, you may connect a platform account so that Mealio can find recipes you have already published and prepare them for your review. This section describes what that connection allows, and applies in addition to the rest of this policy. Connecting an account is entirely optional. Creators who do not connect one publish to Mealio by hand, and nothing described here happens to them.
         </p>
         <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-          <li style={{ marginBottom: '6px' }}><strong>What we access:</strong> With your authorization, Mealio reads the list of videos on the YouTube channel you connect, together with each video&rsquo;s title, description, publication date and thumbnail. We use these to identify posts that contain recipes and to extract the ingredients and steps from them. We only ever read the channel you connected.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we access:</strong> With your authorization, Mealio reads the list of videos on the YouTube channel you connect, together with each video&rsquo;s title, description, publication date and thumbnail. If, when you connect, you also allow Mealio to read your captions, then for a video whose description is too short to hold a recipe we also download that video&rsquo;s captions (its transcript) and read them together with the description. We use these to identify posts that contain recipes and to extract the ingredients and steps from them. To do that, the title, description and any captions we read are sent to our AI provider (Anthropic), which processes them on our behalf to produce the draft. We only ever read the channel you connected.</li>
           <li style={{ marginBottom: '6px' }}><strong>What we do with it:</strong> An extracted recipe becomes a draft that is shown to you for approval. Nothing extracted from your channel is published on Mealio until you, or an administrator acting on your behalf, approves it. Drafts you decline are not published.</li>
           <li style={{ marginBottom: '6px' }}><strong>What we write, and only if you ask:</strong> Mealio can add a link to your Mealio recipe page at the end of the description of the video that recipe came from. This is a setting that is <strong>off unless you turn it on</strong>, it is offered only to creators who have connected a YouTube channel, and it applies only to videos on that channel. We append our link and do not remove or alter anything else in your description. Turning the setting off stops any further changes.</li>
           <li style={{ marginBottom: '6px' }}><strong>What we never do:</strong> We do not use data obtained from your channel for advertising, we do not sell or transfer it, we do not use it to train machine-learning or AI models, and we do not read, collect or store anything from YouTube beyond what is needed to produce the recipe drafts described above and, where you have enabled it, to append the link.</li>
@@ -185,10 +186,45 @@ export default function PrivacyPage() {
             <strong>Delete your whole Mealio account.</strong> Open <strong>Account</strong> in the
             app or on the website, choose <strong>Delete Account</strong>, and type{' '}
             <em>Delete Account</em> to confirm. This immediately and permanently removes your
-            profile, your saved meals, any meals you published as a creator, your creator
-            application and creator profile, who you follow, your saved preset meals, your
-            subscription history, your remembered devices and any one-time codes. It cannot be
-            undone and we do not keep a copy.
+            profile (your email address, name and password), your saved meals, any meals you
+            published as a creator, your creator application and creator profile, any Instagram,
+            YouTube or TikTok connection and the access tokens we held for it, who you follow,
+            your remembered devices, any one-time codes, and the photos you uploaded. It cannot be
+            undone. If you pay for Mealio on mealio.co, that subscription is cancelled when you
+            delete your account. A subscription you bought in the app through the App Store or
+            Google Play is not, because only Apple or Google can cancel it: cancel it in your App
+            Store or Google Play subscription settings.
+            <br /><br />
+            Some records are kept after deletion. None of them contain your email address or name:
+            <ul style={{ paddingLeft: '24px', marginTop: '6px' }}>
+              <li style={{ marginBottom: '4px' }}>
+                <strong>Billing records.</strong> Your subscription and payment history (dates,
+                amounts, currency and plan) is kept for legal, tax and accounting reasons. Stripe,
+                Apple and Google also keep their own records of your payments under their own
+                privacy policies.
+              </li>
+              <li style={{ marginBottom: '4px' }}>
+                <strong>Anonymous usage records.</strong> Which recipes from Discover you saved and when, when
+                you opened the app or website, and your cart runs (the store, how many items were
+                added, whether it worked, and technical details such as the app version). We also
+                keep a short summary of the account: when you signed up, your plan, when you
+                subscribed, which creator&rsquo;s link you signed up through (if any) and when you
+                deleted it. These records help us count things like how many people keep using
+                Mealio and how creator profit share is paid.
+              </li>
+              <li style={{ marginBottom: '4px' }}>
+                <strong>Our log of emails we sent you,</strong> with your email address removed, so
+                it can still be counted.
+              </li>
+            </ul>
+            The billing and usage records are linked only to a random account number, which after
+            deletion no longer connects to your email address, name or anything else that
+            identifies you.
+            <br /><br />
+            If you were a creator, copies of your recipes that other people saved to their own
+            accounts belong to them and stay there, which can include your creator name and a
+            photo you uploaded. Any photo of yours that someone else&rsquo;s meal still shows is
+            kept for as long as it does.
           </li>
           <li style={{ marginBottom: '10px' }}>
             <strong>Disconnect a linked account and keep your Mealio account.</strong> If you
@@ -201,7 +237,7 @@ export default function PrivacyPage() {
           <li style={{ marginBottom: '10px' }}>
             <strong>One thing disconnecting cannot undo.</strong> If you asked Mealio to add a
             link to a YouTube video&rsquo;s description, that edit is on your video and stays
-            there &mdash; we cannot un-tell anyone who has already read it. You can remove it
+            there, and we cannot un-tell anyone who has already read it. You can remove it
             yourself in YouTube Studio at any time.
           </li>
           <li style={{ marginBottom: '10px' }}>

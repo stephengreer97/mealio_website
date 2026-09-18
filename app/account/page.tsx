@@ -176,8 +176,14 @@ export default function AccountPage() {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (res.ok) setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
-    else alert('Failed to restore meal. Please try again.');
+    if (res.ok) {
+      setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
+      return;
+    }
+    // A free account at its meal limit gets the server's own sentence (it names
+    // the limit and the upgrade), not a generic "try again" that would never work.
+    const data = await res.json().catch(() => ({}));
+    alert(data.tierLimitReached && data.error ? data.error : 'Failed to restore meal. Please try again.');
   };
 
   const handlePermanentDelete = async (meal: DeletedMeal) => {
@@ -827,6 +833,11 @@ export default function AccountPage() {
           <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>
             Permanently delete your account, saved meals, and follows. If you&apos;re a creator, your published meals are taken down from Discover. This is immediate and cannot be undone.
           </p>
+          {user?.tier === 'paid' && (
+            <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>
+              A subscription you bought on mealio.co is cancelled automatically when you delete your account. If you subscribed in the Mealio app through the App Store or Google Play, deleting your account does <strong style={{ color: 'var(--text-1)' }}>not</strong> cancel it. Cancel it in your App Store or Google Play subscription settings first.
+            </p>
+          )}
           {!showDeleteConfirm ? (
             <button
               onClick={() => setShowDeleteConfirm(true)}
