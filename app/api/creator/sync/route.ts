@@ -8,6 +8,7 @@ import {
   isPlatformSource,
 } from '@/lib/creator-sources';
 import { buildSelectionItems, summariseRun, toSyncRun } from '@/lib/admin-sync';
+import { checkCreatorImportBudget } from '@/lib/import/creator-budget';
 
 /**
  * The creator importing their own back catalogue (MEAL-101).
@@ -68,6 +69,63 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: selection.error }, { status: 400 });
   }
 
+  // One run at a time per creator (review finding 6). Two runs over the same
+  // catalogue race each other for the same posts and double what a creator can
+  // spend in a sitting; the cap per run means nothing if runs can be stacked.
+  // The active run goes back with the refusal, so the screen can put its Carry
+  // on button up rather than leave a creator who lost the tab with no way back.
+  const { data: active } = await supabase
+    .from('creator_sync_runs')
+    .select('*')
+    .eq('creator_id', creator.id)
+    .neq('status', 'done')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (active) {
+    const activeRun = toSyncRun(active as Record<string, any>);
+    return NextResponse.json(
+      {
+        error: 'An import is already under way. Carry it on, or wait for it to finish, before starting another.',
+        run: activeRun,
+        totals: summariseRun(activeRun),
+      },
+      { status: 409 },
+    );
+  }
+
+  // A post the gate already read and called not-a-recipe, or whose draft a
+  // person declined, is re-read only when the creator ticked it on purpose,
+  // which the screen says with `reselect` (it keeps these out of "Tick the
+  // newest", so any in a selection were ticked one at a time). Without the flag
+  // they are dropped rather than paid for again to most likely hear the same no.
+  const reselected = new Set(
+    (body.items as Array<Record<string, unknown>>)
+      .filter((entry) => entry?.reselect === true && typeof entry?.itemId === 'string')
+      .map((entry) => entry.itemId as string),
+  );
+  // unbounded-select-ok: filtered to the selection's own item ids, which
+  // buildSelectionItems caps at CREATOR_SELECTION_MAX (100), one row per id
+  const { data: settledRows } = await supabase
+    .from('creator_source_items')
+    .select('item_id')
+    .eq('creator_id', creator.id)
+    .eq('source', body.source)
+    .in('status', ['rejected', 'declined'])
+    .in('item_id', selection.items.map((item) => item.itemId));
+  const settled = new Set(((settledRows ?? []) as Array<{ item_id: string }>).map((row) => row.item_id));
+  const items = selection.items.filter((item) => !settled.has(item.itemId) || reselected.has(item.itemId));
+  if (items.length === 0) {
+    return NextResponse.json(
+      { error: 'Every post you selected was already read and did not look like a recipe. Tick one on its own to have it read again.' },
+      { status: 400 },
+    );
+  }
+
+  // A daily ceiling per creator, in imports and in dollars (review finding 6).
+  const budget = await checkCreatorImportBudget(supabase, creator.id, items.length);
+  if (!budget.ok) return NextResponse.json({ error: budget.error }, { status: 429 });
+
   const { data: run, error } = await supabase
     .from('creator_sync_runs')
     .insert({
@@ -78,7 +136,7 @@ export async function POST(request: NextRequest) {
       // The creator's own user id. `requested_by` is who asked for this, and for
       // a back-catalogue import that is genuinely them.
       requested_by: user.userId,
-      items: selection.items,
+      items,
     })
     .select()
     .single();
@@ -93,7 +151,9 @@ export async function POST(request: NextRequest) {
     status: 'pending',
     userId: user.userId,
     email: user.email,
-    detail: `run=${run.id} creator=${creator.id} source=${body.source} items=${selection.items.length}`,
+    detail:
+      `run=${run.id} creator=${creator.id} source=${body.source} items=${items.length}` +
+      (items.length < selection.items.length ? ` dropped=${selection.items.length - items.length} already-rejected` : ''),
   });
 
   return NextResponse.json({ run: toSyncRun(run) }, { status: 201 });

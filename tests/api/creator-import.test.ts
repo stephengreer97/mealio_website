@@ -13,6 +13,7 @@ vi.mock('@/lib/import/pipeline', () => ({ runImport: (...args: unknown[]) => run
 
 import { POST } from '@/app/api/creator/import/route';
 import { createAccessToken } from '@/lib/tokens';
+import { CREATOR_DAILY_IMPORT_CAP } from '@/lib/import/creator-budget';
 
 const OK_RESULT = {
   status: 'ok',
@@ -52,6 +53,18 @@ describe('/api/creator/import', () => {
     fakeDb.queue('creators', { data: { id: 'c1', display_name: 'Ruth' } });
     const res = await POST(jsonRequest('/api/creator/import', { token, body: {} }));
     expect(res.status).toBe(400);
+    expect(runImport).not.toHaveBeenCalled();
+  });
+
+  it('429 once the creator has used the day\'s imports, before anything is fetched (review finding 6)', async () => {
+    fakeDb.queue('creators', { data: { id: 'c1', display_name: 'Ruth' } });
+    fakeDb.seed('recipe_imports', Array.from({ length: CREATOR_DAILY_IMPORT_CAP }, (_, i) => ({
+      id: i + 1, creator_id: 'c1', occurred_at: new Date().toISOString(), total_cost_usd: 0.01,
+    })));
+
+    const res = await POST(jsonRequest('/api/creator/import', { token, body: { url: 'https://x.example.com/p' } }));
+
+    expect(res.status).toBe(429);
     expect(runImport).not.toHaveBeenCalled();
   });
 
