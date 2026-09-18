@@ -57,6 +57,7 @@ import { isPlatformSource, SOURCE_LABELS, type PlatformSource } from '@/lib/crea
 import { sendCreatorDraftsReadyEmail, type DraftedRecipe } from '@/lib/email';
 import { log } from '@/lib/logger';
 import { captionFailureIsFinal } from '@/lib/youtube';
+import { classifierWasUnavailable } from '@/lib/import/gate';
 import type { ConditionalValidators } from '@/lib/import/ssrf';
 
 // ── The schedule, in one place ───────────────────────────────────────────────
@@ -232,6 +233,25 @@ function backoffMs(consecutiveFailures: number): number {
 const RETRY_WINDOW_MS = 3 * POLL_INTERVAL_MS;
 
 /**
+ * The retry window for an item the gate could not judge because the classifier
+ * was down (`classifierWasUnavailable`).
+ *
+ * A day, not three intervals, because the reasoning behind the short window does
+ * not hold for this failure. Four failures of the same page are evidence about
+ * the page; four failures inside 45 minutes of an Anthropic outage are evidence
+ * about Anthropic, and an outage longer than 45 minutes is not rare enough to
+ * lose recipes over. Each attempt is one page fetch and a gate call that fails
+ * for free, under the same five-item cap, so a day of them is cheap. Past a day
+ * the item still ends with a `lost` signal, which says it was never judged.
+ */
+const OUTAGE_RETRY_WINDOW_MS = 24 * 60 * MINUTE_MS;
+
+/** How long this failure stays retryable, from when we first met the item. */
+function retryWindowFor(record: CatalogEntry['record']): number {
+  return classifierWasUnavailable(record?.detail) ? OUTAGE_RETRY_WINDOW_MS : RETRY_WINDOW_MS;
+}
+
+/**
  * Listing size below which "everything is new" says nothing.
  *
  * A two-entry feed on a creator who publishes daily is all-new every pass and
@@ -390,13 +410,20 @@ function retryable(record: CatalogEntry['record'], at: number): boolean {
   // thing this is careful about — so it is left alone rather than retried on
   // faith.
   if (!Number.isFinite(firstSeen) || !Number.isFinite(touched)) return false;
-  return at - firstSeen < RETRY_WINDOW_MS && at - touched >= CLAIM_LEASE_MS;
+  return at - firstSeen < retryWindowFor(record) && at - touched >= CLAIM_LEASE_MS;
 }
 
-/** True when a failure now was this item's last permitted attempt. */
-function outOfAttempts(record: CatalogEntry['record'], at: number): boolean {
+/**
+ * True when a failure now was this item's last permitted attempt.
+ *
+ * Judged on the failure just recorded, not on the record we listed: that is the
+ * one the next pass's `retryable` will read, so an item that failed on a model
+ * timeout and then on an outage gets the outage's window, and the reverse.
+ */
+function outOfAttempts(record: CatalogEntry['record'], detail: string | null, at: number): boolean {
   const firstSeen = Date.parse(record?.firstSeenAt ?? '');
-  return Number.isFinite(firstSeen) && at + POLL_INTERVAL_MS - firstSeen >= RETRY_WINDOW_MS;
+  const window = classifierWasUnavailable(detail) ? OUTAGE_RETRY_WINDOW_MS : RETRY_WINDOW_MS;
+  return Number.isFinite(firstSeen) && at + POLL_INTERVAL_MS - firstSeen >= window;
 }
 
 /**
@@ -668,7 +695,7 @@ export async function pollCreator(
       // so to the creator who can grant it. Paging an operator to hand-import
       // forty videos that one tick would bring in is the wrong signal, and one
       // of them in a pass flips the cron line to `error` (MEAL-138).
-      if (!captionFailureIsFinal(processed.detail) && outOfAttempts(entry.record, now())) {
+      if (!captionFailureIsFinal(processed.detail) && outOfAttempts(entry.record, processed.detail, now())) {
         // The end of the road for one post. Nothing else in the system will ever
         // mention it again, so this is the only chance to say a recipe was lost.
         result.signals.push({

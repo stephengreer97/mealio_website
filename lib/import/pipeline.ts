@@ -467,6 +467,10 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     extractUsage: toImportUsage(extraction.usage),
   });
   } catch (err) {
+    // `internal-error` whatever the stage, and that reason is load-bearing: a
+    // throw while `stage` is `gate` is not the gate saying no, it is the gate not
+    // being asked, and `rejectionIsVerdict` reads the reason to keep this one
+    // retryable instead of recording a permanent "not a recipe".
     return finish(
       rejection(
         url,
@@ -478,6 +482,31 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
       {},
     );
   }
+}
+
+/**
+ * Is this rejection an answer about the post, rather than about our afternoon?
+ *
+ * Only a gate that was actually asked can say a post is not a recipe, and only
+ * that answer may be recorded as permanent. Everything else, including the two
+ * ways a `gate`-stage rejection can happen without a verdict, is retryable:
+ *
+ *  - **The classifier could not be reached.** `classifySource` turns an outage
+ *    into `unsure` with source `classifier-unavailable`, which is right for the
+ *    decision (an outage must never become a yes) and wrong for the record. The
+ *    poller resolves `unsure` as a stop, and a stop at the gate used to be
+ *    written as `rejected`: never retried, never mentioned. An hour of Anthropic
+ *    being down lost every post a creator published in it, for good.
+ *  - **The pipeline threw while `stage` was `gate`.** The catch-all reports it as
+ *    `internal-error`; nothing looked at the post.
+ *
+ * `link-in-bio` and a `no-content` verdict stay verdicts: they are deterministic
+ * reads of the page we fetched, and another attempt would say the same thing.
+ */
+export function rejectionIsVerdict(result: ImportRejection): boolean {
+  if (result.stage !== 'gate') return false;
+  if (result.reason === 'internal-error') return false;
+  return result.gate?.source !== 'classifier-unavailable';
 }
 
 /**

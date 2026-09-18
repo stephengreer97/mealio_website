@@ -5,6 +5,7 @@ import { publicLookup, stubFetch } from '../helpers/import-stubs';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 import type { ImportResult, ImportSuccess } from '@/lib/import/types';
 import type { RunImportOptions } from '@/lib/import/pipeline';
+import { classifierWasUnavailable } from '@/lib/import/gate';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
@@ -990,6 +991,40 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     expect(result.status).toBe('rejected');
     expect(result.detail).toMatch(/not a recipe/i);
     expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('calls a gate that could not be asked failed, not rejected (review finding 1)', async () => {
+    // `unsure` from an unreachable classifier stops the poller at the gate. That
+    // is a fact about Anthropic's afternoon, not the post, and `rejected` is
+    // permanent: the sweep never retries it and nothing ever mentions it again.
+    const result = await processSyncItem(
+      deps({
+        importer: async () => ({
+          ...rejection('gate', 'Unsure, skipping (automatic mode): Classifier could not be reached: 529'),
+          reason: 'gate-unsure',
+          gate: { verdict: 'unsure', reason: 'Classifier could not be reached: 529', source: 'classifier-unavailable' },
+        }),
+        gateMode: 'poller',
+      }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(classifierWasUnavailable(result.detail)).toBe(true);
+  });
+
+  it('calls a throw inside the gate stage failed, not rejected (review finding 1)', async () => {
+    const result = await processSyncItem(
+      deps({
+        importer: async () => ({ ...rejection('gate', 'The import failed unexpectedly.'), reason: 'internal-error' }),
+      }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
+    expect(result.status).toBe('failed');
   });
 
   it('calls a fetch failure failed, not rejected, so it stays retryable', async () => {

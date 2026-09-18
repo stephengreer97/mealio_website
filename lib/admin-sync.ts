@@ -47,7 +47,8 @@ import {
 import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
 import { loadConnection, usableAccessToken } from '@/lib/platform-tokens';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
-import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { rejectionIsVerdict, runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { CLASSIFIER_OUTAGE_NOTE } from '@/lib/import/gate';
 import { importLogSink } from '@/lib/import/import-log';
 import { robotsPerOrigin } from '@/lib/import/robots';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
@@ -1256,12 +1257,24 @@ export async function processSyncItem(
 
   if (result.status === 'rejected') {
     // The gate is an answer about the post; everything else is an answer about
-    // our afternoon. Only the first is permanent.
-    const rejectedByGate = result.stage === 'gate';
+    // our afternoon. Only the first is permanent, and "the gate could not be
+    // asked" is the second kind wearing the first one's stage: see
+    // `rejectionIsVerdict`. Recorded as `rejected`, an Anthropic outage during a
+    // poll lost every post it touched, with no retry and no signal.
+    if (rejectionIsVerdict(result)) {
+      return await recordItem(deps, creator, run, { ...item, status: 'rejected', detail: result.detail, costUsd: 0 });
+    }
+    const unjudged = result.stage === 'gate';
     return await recordItem(deps, creator, run, {
       ...item,
-      status: rejectedByGate ? 'rejected' : 'failed',
-      detail: result.detail,
+      status: 'failed',
+      // The sentinel is what gives this failure the poller's longer outage
+      // window (`classifierWasUnavailable`), so it goes on every unjudged gate
+      // stop, and the creator-facing half says nothing about their post.
+      detail: unjudged
+        ? `The recipe check was unavailable, so this post ${CLASSIFIER_OUTAGE_NOTE}. It will be tried again. ` +
+          `(${result.detail})`
+        : result.detail,
       costUsd: 0,
     });
   }

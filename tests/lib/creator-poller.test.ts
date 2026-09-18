@@ -2,10 +2,11 @@ import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fakeDb } from '../helpers/supabase-mock';
-import { publicLookup, stubFetch } from '../helpers/import-stubs';
+import { failingCaller, publicLookup, stubFetch } from '../helpers/import-stubs';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 import type { ImportResult, ImportSuccess } from '@/lib/import/types';
-import type { RunImportOptions } from '@/lib/import/pipeline';
+import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { CLASSIFIER_OUTAGE_NOTE, classifierWasUnavailable } from '@/lib/import/gate';
 import { CAPTIONS_MISSING_SCOPE_DETAIL } from '@/lib/youtube';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
@@ -680,6 +681,75 @@ describe('a failed item is retried, and its loss is said out loud', () => {
 
     expect(result.failed).toBe(1);
     expect(result.signals).toEqual([]);
+  });
+});
+
+// ── An outage is not a verdict ───────────────────────────────────────────────
+
+/**
+ * Review finding 1: an Anthropic outage permanently lost new posts.
+ *
+ * `classifySource` turns an unreachable classifier into `unsure`, the poller
+ * resolves `unsure` as a stop, and a stop at the gate was recorded `rejected`:
+ * never retried, never mentioned. Driven through the real pipeline here, with
+ * only the model call failing, because the defect lived in the hand-off between
+ * three files and a stubbed importer would have skipped two of them.
+ */
+describe('a classifier outage is retried, not recorded as a verdict', () => {
+  const polled = { lastPolledAt: '2027-01-14T08:00:00.000Z', etag: null, lastModified: null, pollAfter: null, consecutiveFailures: 0 };
+  const PAGE =
+    '<html><head><title>Weeknight Dal</title></head><body><article>' +
+    '<p>Rinse one cup of red lentils, soften an onion in oil, add garlic, ginger, cumin and turmeric, ' +
+    'then simmer the lentils in coconut milk until they fall apart. Season with salt and serve with rice. ' +
+    'This is the dal we make every week, and it takes about twenty minutes from start to finish.</p>' +
+    '</article></body></html>';
+
+  it('records a post the gate could not judge as failed, and says why', async () => {
+    const { impl } = stubFetch({
+      'https://chefsarah.test/robots.txt': { body: 'User-agent: *\nAllow: /' },
+      'https://chefsarah.test/feed': { body: feedWith(1), headers: { 'content-type': 'application/rss+xml' } },
+      'https://chefsarah.test/post-0': { body: PAGE },
+    });
+    const importer = (url: string, options: RunImportOptions) =>
+      runImport(url, { ...options, call: failingCaller('overloaded_error'), skipCache: true });
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.rejected).toBe(0);
+    expect(result.failed).toBe(1);
+    const row = items()[0];
+    expect(row.status).toBe('failed');
+    expect(classifierWasUnavailable(row.detail)).toBe(true);
+  });
+
+  it('keeps retrying it past the ordinary window, for as long as an outage plausibly lasts', async () => {
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    // Two hours old: well past the three-interval window a readable failure gets.
+    fakeDb.seed('creator_source_items', [{
+      creator_id: 'c1',
+      source: 'website',
+      item_id: postId(0),
+      url: 'https://chefsarah.test/post-0',
+      status: 'failed',
+      detail: `The recipe check was unavailable, so this post ${CLASSIFIER_OUTAGE_NOTE}. It will be tried again.`,
+      created_at: new Date(NOW - 2 * 3_600_000).toISOString(),
+      updated_at: new Date(NOW - 20 * 60_000).toISOString(),
+    }]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.retried).toBe(1);
+    expect(result.drafted).toBe(1);
+    expect(items()[0]).toMatchObject({ status: 'imported' });
   });
 });
 
