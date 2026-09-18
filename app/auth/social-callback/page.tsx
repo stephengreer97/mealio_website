@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 export default function SocialCallbackPage() {
   const router = useRouter();
@@ -43,7 +44,7 @@ export default function SocialCallbackPage() {
       localStorage.setItem('accessToken', token);
       localStorage.setItem('user', JSON.stringify(user));
 
-      router.replace(redirect.startsWith('/') ? redirect : '/discover');
+      router.replace(safeRedirectPath(redirect));
     } catch {
       router.replace('/signin');
     }

@@ -4,6 +4,7 @@ import { createAccessToken } from '@/lib/tokens';
 import { log, abbreviateUa } from '@/lib/logger';
 import { SignJWT } from 'jose';
 import { randomBytes } from 'crypto';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 const JWT_SECRET = () => new TextEncoder().encode(process.env.JWT_SECRET || '');
 
@@ -15,7 +16,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
-  const redirect = searchParams.get('redirect') || '/discover';
+  const redirect = safeRedirectPath(searchParams.get('redirect'));
 
   // CSRF: bind this auth attempt to a nonce cookie, echoed via state. Apple posts
   // the callback cross-site (form_post), so the cookie must be SameSite=None to be

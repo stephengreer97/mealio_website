@@ -3,6 +3,7 @@ import { verifyAppleIdentityToken, generateAppleClientSecret, upsertSocialUser }
 import { createAccessToken } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { SignJWT } from 'jose';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 const JWT_SECRET = () => new TextEncoder().encode(process.env.JWT_SECRET || '');
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://mealio.co';
@@ -40,7 +41,7 @@ export async function POST(request: NextRequest) {
     try {
       if (stateParam) {
         const decoded = JSON.parse(Buffer.from(stateParam, 'base64url').toString());
-        if (decoded.redirect?.startsWith('/')) redirectTo = decoded.redirect;
+        redirectTo = safeRedirectPath(decoded.redirect);
         stateNonce = decoded.nonce;
       }
     } catch {}
