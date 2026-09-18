@@ -44,13 +44,14 @@ import {
   type ConnectedPlatform,
   type PlatformSource,
 } from '@/lib/creator-sources';
-import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
+import { normalizeUrl, urlIdentity, REQUEST_TIMEOUT_MS as FETCH_TIMEOUT_MS } from '@/lib/import/ssrf';
 import { loadConnection, usableAccessToken } from '@/lib/platform-tokens';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
 import { rejectionIsVerdict, runImport, type RunImportOptions } from '@/lib/import/pipeline';
 import { CLASSIFIER_OUTAGE_NOTE } from '@/lib/import/gate';
 import { importLogSink } from '@/lib/import/import-log';
-import { robotsPerOrigin } from '@/lib/import/robots';
+import { robotsPerOrigin, ROBOTS_TIMEOUT_MS } from '@/lib/import/robots';
+import { MAX_RETRIES as MODEL_MAX_RETRIES, REQUEST_TIMEOUT_MS as MODEL_TIMEOUT_MS } from '@/lib/import/anthropic';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
 import {
   channelIdForCreator,
@@ -668,7 +669,7 @@ async function withImportRecords(
       // rather than by shipping the sentinel string to the browser.
       const claimedAt = Date.parse(String(row.updated_at ?? ''));
       const inFlight = String(row.status) === 'failed'
-        && row.detail === CLAIM_DETAIL
+        && isClaimDetail(row.detail)
         && Number.isFinite(claimedAt)
         && Date.now() - claimedAt < CLAIM_LEASE_MS;
 
@@ -1056,23 +1057,58 @@ export function buildSelectionItems(
  * that expires *while its holder is still importing* is worse than no lease: a
  * second worker claims the run, reads the same still-pending items and imports
  * them again, and one post ends up as two drafts. With the SDK bound at 30s and
- * one retry (`lib/import/anthropic.ts`), the arithmetic per item is a 10s fetch
- * plus a gate call and an extraction of at most ~61s each — 132s worst case,
- * and a wave runs its items in parallel. 90s did not cover that; 180s does.
+ * one retry (`lib/import/anthropic.ts`), `ITEM_WORST_CASE_MS` below sums one item
+ * to 165s, and a wave runs its items in parallel. 90s did not cover that; 180s
+ * does, and a test holds the two in that order.
  */
 export const LEASE_MS = 180_000;
 
 /**
- * Wall-clock budget for one worker invocation, under the 60s function limit with
- * room for the write-back and the notification. Whatever is left over is picked
- * up by the next call.
+ * The longest one item can take, summed from the timeouts that bound it rather
+ * than written down as a guess (review finding 3/5).
  *
- * The deadline is checked before *starting* a wave, never during one, so it
- * cannot bound the invocation: the arithmetic above allows a single item ~132s
- * worst case, and a wave beginning at 24s can outlive the function whatever this
- * says. Lowered from 40s to widen the gap, which makes the overrun rarer without
- * pretending to prevent it — a run that loses its invocation mid-wave is saved
- * and resumable, which is what the client is built around.
+ * robots.txt, the page, two model calls each allowed one retry, the photo copy
+ * and its stock-photo fallback, and ten seconds for the database writes and the
+ * backoff between retries. 165s today. Every clock that decides whether to
+ * *start* an item — the worker's chunk budget, the poller's item deadline — has
+ * to leave this much room before its function is killed, because an item killed
+ * after its draft is inserted and before its record is written is the one that
+ * gets drafted twice.
+ *
+ * `LEASE_MS` must stay above it: a wave runs its items in parallel, so a wave
+ * takes as long as its slowest item.
+ */
+export const ITEM_WORST_CASE_MS =
+  ROBOTS_TIMEOUT_MS +
+  FETCH_TIMEOUT_MS +
+  2 * MODEL_TIMEOUT_MS * (1 + MODEL_MAX_RETRIES) +
+  2 * FETCH_TIMEOUT_MS +
+  10_000;
+
+/**
+ * The worker routes' `maxDuration`, in milliseconds. Route segment config has to
+ * be a literal, so `app/api/{creator,admin}/sync/worker/route.ts` write `300`
+ * and a test holds them to this number.
+ *
+ * It was 60, while a single wave could take `ITEM_WORST_CASE_MS`. Vercel killed
+ * the worker mid-wave, the claimed items stayed claimed, and the next worker
+ * (after the run lease lapsed) read those claims as another import in flight and
+ * recorded the posts the creator had ticked as `skipped`, final for that run.
+ * 300 is what the poll cron already runs under, so it needs no plan change.
+ */
+export const WORKER_MAX_DURATION_MS = 300_000;
+
+/**
+ * Wall-clock budget for starting waves in one worker invocation. Whatever is
+ * left over is picked up by the next call.
+ *
+ * The deadline is checked before *starting* a wave, never during one, so what
+ * bounds the invocation is this plus one wave: `CHUNK_BUDGET_MS +
+ * ITEM_WORST_CASE_MS` (190s) has to fit inside `WORKER_MAX_DURATION_MS` with room
+ * for the write-back, and a test holds it there. Under the old 60s limit it did
+ * not, and a wave that began at 24s was routinely outlived by its function.
+ * Kept short rather than raised with the limit because the screen gets its
+ * answer when the chunk ends; the per-wave writes are what keep it current.
  */
 export const CHUNK_BUDGET_MS = 25_000;
 
@@ -1359,6 +1395,28 @@ export const CLAIM_DETAIL =
   'whatever was reading it stopped. The retry sweep will pick it up.';
 
 /**
+ * The claim detail a sync run writes: `CLAIM_DETAIL`, plus which run holds it.
+ *
+ * A claim used to say only that *somebody* was importing the post, and that is
+ * not enough for a run resuming after its own worker was killed mid-wave. The
+ * run lease lapses after three minutes and the item claim after ten, so the next
+ * worker found the claim still live and recorded the post as `skipped`, final
+ * for the run, while the only thing holding it was a dead copy of itself. With
+ * the owner on the claim, a run takes back its own and still stands down for
+ * anyone else's. No column exists for the owner, so it rides in the detail the
+ * way `CLAIM_DETAIL` itself does; see the report on MEAL review finding 3 for
+ * the column this ought to be.
+ */
+export function claimDetailFor(runId: string | null): string {
+  return runId ? `${CLAIM_DETAIL} Claimed by run ${runId}.` : CLAIM_DETAIL;
+}
+
+/** Whether a recorded detail is a claim, whoever made it. */
+export function isClaimDetail(detail: string | null | undefined): boolean {
+  return typeof detail === 'string' && detail.startsWith(CLAIM_DETAIL);
+}
+
+/**
  * How long a claim stands before the item is considered abandoned.
  *
  * Comfortably longer than an extraction — a fetch and two model calls — and far
@@ -1411,7 +1469,7 @@ async function claimItem(
       title: item.title,
       published_at: item.publishedAt,
       status: 'failed',
-      detail: CLAIM_DETAIL,
+      detail: claimDetailFor(run.id),
       updated_at: at,
     });
     return !error;
@@ -1420,14 +1478,22 @@ async function claimItem(
   // Somebody took it moments ago and is still working. The compare-and-swap
   // below cannot see this — they would swap on the value we just read — so the
   // live claim is what says no.
+  //
+  // Unless the somebody is this run. Items are only processed under the run's
+  // lease, so a claim carrying this run's id was made by a worker that has since
+  // lost the lease, and the lease outlasts any wave (`LEASE_MS` >
+  // `ITEM_WORST_CASE_MS`): that worker is dead, and standing down for it is how
+  // a killed worker's items became `skipped`. The swap below still guards the
+  // takeover against a second live claimant.
   const heldSince = Date.parse(existing.updated_at ?? '');
-  if (existing.detail === CLAIM_DETAIL && Number.isFinite(heldSince) && now - heldSince < CLAIM_LEASE_MS) {
+  const ours = run.id !== null && existing.detail === claimDetailFor(run.id);
+  if (!ours && isClaimDetail(existing.detail) && Number.isFinite(heldSince) && now - heldSince < CLAIM_LEASE_MS) {
     return false;
   }
 
   const claim = deps.supabase
     .from('creator_source_items')
-    .update({ status: 'failed', detail: CLAIM_DETAIL, updated_at: at })
+    .update({ status: 'failed', detail: claimDetailFor(run.id), updated_at: at })
     .eq('creator_id', creator.id)
     .eq('source', run.source)
     .eq('item_id', item.itemId);

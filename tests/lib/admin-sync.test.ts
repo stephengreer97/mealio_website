@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fakeDb } from '../helpers/supabase-mock';
@@ -25,6 +26,11 @@ vi.mock('@/lib/creator-meals', () => ({
 import {
   advanceRun,
   buildCatalog,
+  CHUNK_BUDGET_MS,
+  claimDetailFor,
+  ITEM_WORST_CASE_MS,
+  LEASE_MS,
+  WORKER_MAX_DURATION_MS,
   FEED_MAX_PAGES,
   createSourceDocumentResolver,
   processSyncItem,
@@ -1234,6 +1240,65 @@ describe('advanceRun', () => {
 
   it('returns null for a run that does not exist', async () => {
     expect(await advanceRun(deps(), 'nope')).toBeNull();
+  });
+});
+
+/**
+ * Review finding 3. The worker ran under a 60s limit while one wave could take
+ * minutes, and the item claims it left behind outlived the run lease: the next
+ * worker read its own dead predecessor's claim as "already in flight" and marked
+ * the creator's ticked posts `skipped`, final for the run.
+ */
+describe('advanceRun, resuming after its own worker was killed', () => {
+  const NOW = 1_800_000_000_000;
+  let success: ImportSuccess;
+  beforeEach(async () => { success = await importedGuacamole(); });
+
+  function abandoned(detail: string) {
+    // The run's lease has lapsed; the item claim, at four minutes, has not.
+    storeRun(runRow([item()], { status: 'running', lease_until: new Date(NOW - 60_000).toISOString() }));
+    fakeDb.seed('creator_source_items', [{
+      creator_id: 'c1',
+      source: 'website',
+      item_id: 'guid-1',
+      url: 'https://chefsarah.test/guacamole',
+      status: 'failed',
+      detail,
+      updated_at: new Date(NOW - 4 * 60_000).toISOString(),
+    }]);
+  }
+
+  it('takes back an item its own dead worker claimed, rather than skipping it', async () => {
+    abandoned(claimDetailFor('r1'));
+    const importer = vi.fn(async () => success);
+
+    const result = await advanceRun(deps({ importer: importer as unknown as SyncDeps['importer'] }), 'r1');
+
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(result?.items[0].status).toBe('drafted');
+    expect(fakeDb.rows('creator_source_items')[0]).toMatchObject({ status: 'imported', draft_id: 'draft-1' });
+  });
+
+  it('still stands down for a live claim that is somebody else\'s', async () => {
+    // The poller's claim, or another run's: that import may well be running.
+    abandoned(claimDetailFor(null));
+    const importer = vi.fn(async () => success);
+
+    const result = await advanceRun(deps({ importer: importer as unknown as SyncDeps['importer'] }), 'r1');
+
+    expect(importer).not.toHaveBeenCalled();
+    expect(result?.items[0].status).toBe('skipped');
+  });
+
+  it('gives a chunk room for its last wave inside the function limit', () => {
+    for (const route of ['app/api/creator/sync/worker/route.ts', 'app/api/admin/sync/worker/route.ts']) {
+      const declared = /export const maxDuration = (\d+);/.exec(readFileSync(route, 'utf8'));
+      expect(Number(declared?.[1]) * 1000, route).toBe(WORKER_MAX_DURATION_MS);
+    }
+    // The wave that starts last, plus thirty seconds for the write-back.
+    expect(CHUNK_BUDGET_MS + ITEM_WORST_CASE_MS + 30_000).toBeLessThanOrEqual(WORKER_MAX_DURATION_MS);
+    // And a wave cannot outlive the lease it runs under.
+    expect(ITEM_WORST_CASE_MS).toBeLessThan(LEASE_MS);
   });
 });
 

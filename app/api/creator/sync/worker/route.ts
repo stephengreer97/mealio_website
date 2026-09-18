@@ -27,8 +27,12 @@ import { advanceRun, summariseRun } from '@/lib/admin-sync';
  * attempting. The poller is the one that has to read a maybe as a no.
  */
 
-// Two imports per chunk, each a fetch plus a gate call plus an extraction.
-export const maxDuration = 60;
+// One chunk is `CHUNK_BUDGET_MS` of starting waves plus the wave that starts
+// last, which can take `ITEM_WORST_CASE_MS` (`lib/admin-sync.ts`): 190s. At 60
+// Vercel killed the worker mid-wave, and the posts it was holding came back
+// `skipped` on the next chunk. Must equal `WORKER_MAX_DURATION_MS`; a test reads
+// this line to hold it there, because route config has to be a literal.
+export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
   const user = await requireAuth(request);
