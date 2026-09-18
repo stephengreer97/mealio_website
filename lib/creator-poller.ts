@@ -402,6 +402,18 @@ function emptyResult() {
  * creator granting the permission — happens on human time, long past the window.
  */
 function retryable(record: CatalogEntry['record'], at: number): boolean {
+  if (!awaitingRetry(record, at)) return false;
+  return at - Date.parse(record!.at ?? '') >= CLAIM_LEASE_MS;
+}
+
+/**
+ * Whether a failed item still has attempts coming, now or on a later pass.
+ *
+ * `retryable` without the lease: an item claimed ten seconds ago is not ours to
+ * retry this pass, and it is still work the feed has not finished handing us —
+ * which is what decides whether this pass may store the feed's validators.
+ */
+function awaitingRetry(record: CatalogEntry['record'], at: number): boolean {
   if (!record || record.status !== 'failed') return false;
   if (captionFailureIsFinal(record.detail)) return false;
   const firstSeen = Date.parse(record.firstSeenAt ?? '');
@@ -410,7 +422,7 @@ function retryable(record: CatalogEntry['record'], at: number): boolean {
   // thing this is careful about — so it is left alone rather than retried on
   // faith.
   if (!Number.isFinite(firstSeen) || !Number.isFinite(touched)) return false;
-  return at - firstSeen < retryWindowFor(record) && at - touched >= CLAIM_LEASE_MS;
+  return at - firstSeen < retryWindowFor(record);
 }
 
 /**
@@ -651,6 +663,9 @@ export async function pollCreator(
     reviewBy: deps.reviewBy ?? 'creator',
   };
 
+  /** Items this pass finished one way or another, whatever their listed record says. */
+  const settled = new Set<string>();
+
   for (const entry of batch) {
     // Checked before the item, not after. An extraction is a fetch and two model
     // calls; starting one we cannot finish spends the money and loses the
@@ -666,6 +681,7 @@ export async function pollCreator(
     // the batch is unaffected.
     if (entry.record !== null) result.retried += 1;
     const processed = await processSyncItem(itemDeps, context, creator, toSyncItem(entry));
+    if (processed.status !== 'failed') settled.add(entry.itemId);
 
     if (processed.status === 'drafted') {
       result.drafted += 1;
@@ -712,7 +728,27 @@ export async function pollCreator(
     }
   }
 
-  await writeState(deps, creator, nextState);
+  // **The validators are only a promise that nothing is left in this feed for
+  // us.** Stored while an item is deferred or still has retries coming, they
+  // make the next request conditional, the publisher truthfully answers 304,
+  // and the 304 path returns before `unseen` or `retries` is ever computed. A
+  // blog that published six posts and then went quiet lost the sixth, and every
+  // failed extraction on it lost its three retries, for as long as the feed
+  // stayed unchanged, which on a small blog is weeks. Withheld, the next pass
+  // reads the feed in full, and the pass that finally finishes it stores them.
+  //
+  // `result.failed` and not only the records, because the listing in hand
+  // predates this pass's writes: an item that failed a moment ago still reads as
+  // new in it, and one this pass retried successfully still reads as failed.
+  const unfinished =
+    result.deferred > 0 ||
+    result.failed > 0 ||
+    catalog.entries.some((entry) => !settled.has(entry.itemId) && awaitingRetry(entry.record, now()));
+  await writeState(
+    deps,
+    creator,
+    unfinished ? { ...nextState, etag: null, lastModified: null } : nextState,
+  );
 
   log({
     event: 'POLL:SOURCE',

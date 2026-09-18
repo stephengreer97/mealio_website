@@ -906,6 +906,65 @@ describe('polling hygiene', () => {
     expect(state()).toMatchObject({ etag: '"v2"', last_modified: 'Tue, 14 Jan 2027 08:00:00 GMT' });
   });
 
+  /**
+   * Review finding 2. A 304 returns before unseen or retryable items are even
+   * computed, so validators stored over unfinished work strand it for as long
+   * as the feed stays unchanged. Two passes against a server that honours
+   * If-None-Match, because the loss only exists on the second one.
+   */
+  it('does not let a 304 strand the items a capped pass deferred', async () => {
+    const feed = feedWith(POLL_ITEM_CAP + 1);
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('robots.txt')) return new Response('', { status: 200, headers: { 'content-type': 'text/plain' } });
+      const sent = (init?.headers as Record<string, string> | undefined)?.['if-none-match'];
+      if (sent === '"v2"') return new Response(null, { status: 304 });
+      return new Response(feed, { status: 200, headers: { 'content-type': 'application/rss+xml', etag: '"v2"' } });
+    }) as unknown as typeof fetch;
+    const importer = vi.fn(async () => success);
+    const run = () => {
+      const stored = state();
+      return pollCreator(
+        deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+        creator(),
+        {
+          lastPolledAt: stored?.last_polled_at ?? polled.lastPolledAt,
+          etag: stored ? stored.etag : polled.etag,
+          lastModified: stored ? stored.last_modified : null,
+          pollAfter: null,
+          consecutiveFailures: 0,
+        },
+      );
+    };
+
+    const first = await run();
+    expect(first.deferred).toBe(1);
+    expect(state()?.etag).toBeNull();
+
+    const second = await run();
+    expect(second.status).toBe('polled');
+    expect(second.drafted).toBe(1);
+    expect(items().filter((row) => row.status === 'imported')).toHaveLength(POLL_ITEM_CAP + 1);
+    // Finished now, so the feed may go back to costing a 304.
+    expect(state()?.etag).toBe('"v2"');
+  });
+
+  it('does not store validators over an item that failed and will be retried', async () => {
+    const { impl } = feedRoutes(feedWith(1), { etag: '"v2"' });
+    const importer = vi.fn(async (url: string): Promise<ImportResult> => ({
+      status: 'rejected', url, stage: 'extract', reason: 'timeout', detail: 'The model timed out.', meta: { cached: false },
+    }));
+
+    await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(items()[0]).toMatchObject({ status: 'failed' });
+    expect(state()?.etag).toBeNull();
+  });
+
   it('honours an advertised TTL longer than our own interval', async () => {
     // The publisher asked, in writing, on their own feed. Weekly beats daily.
     const { impl } = feedRoutes(feedWith(1, '<sy:updatePeriod>weekly</sy:updatePeriod>'));
