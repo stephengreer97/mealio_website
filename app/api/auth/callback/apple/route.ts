@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAppleIdentityToken, generateAppleClientSecret, upsertSocialUser } from '@/lib/oauth';
+import { verifyAppleIdentityToken, generateAppleClientSecret, upsertSocialUser, findLinkedSocialUser } from '@/lib/oauth';
 import { createAccessToken } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { SignJWT } from 'jose';
@@ -7,6 +7,7 @@ import { safeRedirectPath } from '@/lib/safe-redirect';
 
 const JWT_SECRET = () => new TextEncoder().encode(process.env.JWT_SECRET || '');
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://mealio.co';
+const APPLE_NO_EMAIL = 'Apple did not share an email for this account. Please sign in with your email and password, or with Google.';
 
 // Apple sends a form_post to this endpoint — use 303 so redirects always become GET
 function redirect303(url: string) {
@@ -82,20 +83,26 @@ export async function POST(request: NextRequest) {
       // Non-fatal — we already have a verified identity token
     }
 
-    const email = claims.email || appleUser?.email;
-    if (!email) {
-      log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, reason: 'no email from Apple' });
-      return redirect303(`${APP_URL}/signin?error=apple_no_email`);
+    // The email comes from Apple's signed token or not at all. The `user` form
+    // field is unsigned, and creating or linking an account from its email
+    // would let anyone with an Apple ID claim any address, already confirmed.
+    // With no email in the token, only the account already linked to this
+    // Apple ID can be signed in.
+    const account = claims.email
+      ? await upsertSocialUser({
+          provider: 'apple',
+          providerId: claims.sub,
+          email: claims.email,
+          emailVerified: claims.email_verified,
+          firstName: appleUser?.name?.firstName,
+          lastName: appleUser?.name?.lastName,
+        })
+      : await findLinkedSocialUser('apple', claims.sub);
+    if (!account) {
+      log({ event: 'AUTH:OAUTH_APPLE', status: 'failed', ip, reason: 'no email in token and no linked account' });
+      return redirect303(`${APP_URL}/signin?error=${encodeURIComponent(APPLE_NO_EMAIL)}`);
     }
-
-    const { userId, email: resolvedEmail, tier, isAdmin } = await upsertSocialUser({
-      provider: 'apple',
-      providerId: claims.sub,
-      email,
-      emailVerified: claims.email_verified,
-      firstName: appleUser?.name?.firstName,
-      lastName: appleUser?.name?.lastName,
-    });
+    const { userId, email: resolvedEmail, tier, isAdmin } = account;
 
     const accessToken = await createAccessToken(userId, resolvedEmail);
     const sessionToken = await new SignJWT({ sub: userId, email: resolvedEmail, type: 'session' })
