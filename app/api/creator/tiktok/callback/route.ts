@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { log } from '@/lib/logger';
-import { backToPortal, readPlatformConnectState } from '@/lib/creator-connect';
+import { appCallbackRedirect, backToPortal, readPlatformConnectState } from '@/lib/creator-connect';
 import { finishTikTokConnect } from '@/lib/creator-connect-finish';
 
 /**
@@ -16,6 +16,11 @@ import { finishTikTokConnect } from '@/lib/creator-connect-finish';
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+
+  // The mobile app's round trip carries a signed state instead of a cookie, and
+  // is bounced back into the app unexchanged. See `appCallbackRedirect`.
+  const app = await appCallbackRedirect(request, 'tiktok');
+  if (app) return app;
 
   const verified = await readPlatformConnectState(request, 'tiktok', searchParams.get('state'));
   if (!verified.ok) return verified.response;

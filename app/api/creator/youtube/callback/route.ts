@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
 import { log } from '@/lib/logger';
 import { STATE_COOKIE } from '../connect/route';
-import type { ConnectFailure } from '@/lib/creator-connect';
+import { appCallbackRedirect, type ConnectFailure } from '@/lib/creator-connect';
 import { finishYouTubeConnect } from '@/lib/creator-connect-finish';
 
 /**
@@ -51,6 +51,11 @@ function back(outcome: string, reason?: ConnectFailure | 'consent-write' | 'cons
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+
+  // The mobile app's round trip carries a signed state instead of a cookie, and
+  // is bounced back into the app unexchanged. See `appCallbackRedirect`.
+  const app = await appCallbackRedirect(request, 'youtube');
+  if (app) return app;
 
   const stateCookie = request.cookies.get(STATE_COOKIE)?.value;
   if (!stateCookie) {

@@ -5,6 +5,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { requireAuth } from '@/lib/requireAuth';
 import { log } from '@/lib/logger';
 import { youtubeAuthUrl } from '@/lib/youtube';
+import { signAppConnectState } from '@/lib/creator-connect';
 
 /**
  * POST /api/creator/youtube/connect — start the YouTube OAuth round trip (MEAL-74).
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { appendOptIn?: unknown; captions?: unknown } = {};
+  let body: { appendOptIn?: unknown; captions?: unknown; client?: unknown } = {};
   try {
     body = await request.json();
   } catch {
@@ -88,6 +89,33 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Only approved creators can connect a channel.' }, { status: 403 });
   }
 
+  const creatorId = (creator as { id: string }).id;
+  // Absent rather than `false` when the question was not asked. The claim's
+  // absence is the third answer, and the callback reads it as "leave the flag
+  // alone", so it has to be genuinely absent, not a falsy stand-in.
+  const appendClaim = appendOptIn === undefined ? {} : { appendOptIn };
+
+  // The mobile app (`{"client":"app"}`): the state is a signed JWT carrying the
+  // same claims, and no cookie is set. See `signAppConnectState` in
+  // `lib/creator-connect.ts` for why and for what protects it instead.
+  if (body?.client === 'app') {
+    const appState = await signAppConnectState('youtube', user.userId, creatorId, appendClaim);
+    const appUrl = youtubeAuthUrl(appState, { write: appendOptIn === true, captions });
+    if (!appUrl) {
+      return NextResponse.json({ error: 'YouTube connection is not configured on this deployment.' }, { status: 500 });
+    }
+    log({
+      event: 'CREATOR:SOURCE_CONNECT',
+      status: 'pending',
+      userId: user.userId,
+      email: user.email,
+      detail:
+        `platform=youtube client=app appendOptIn=${appendOptIn === undefined ? 'unasked' : appendOptIn} ` +
+        `captions=${captions}`,
+    });
+    return NextResponse.json({ url: appUrl });
+  }
+
   const nonce = randomBytes(16).toString('hex');
   // `force-ssl` rides on one of the two ticks, not on connecting. Either is
   // enough to ask for it, and neither stands in for the other. An unanswered
@@ -99,12 +127,9 @@ export async function POST(request: NextRequest) {
 
   const state = await new SignJWT({
     sub: user.userId,
-    creatorId: (creator as { id: string }).id,
+    creatorId,
     nonce,
-    // Absent rather than `false` when the question was not asked. The claim's
-    // absence is the third answer, and the callback reads it as "leave the flag
-    // alone" — so it has to be genuinely absent, not a falsy stand-in.
-    ...(appendOptIn === undefined ? {} : { appendOptIn }),
+    ...appendClaim,
     type: 'youtube_connect',
   })
     .setProtectedHeader({ alg: 'HS256' })
