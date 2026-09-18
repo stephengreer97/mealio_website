@@ -22,6 +22,7 @@ import {
   sendCreatorSyncPublishedEmail,
   sendCreatorDraftsReadyEmail,
   sendCreatorSourceMovedEmail,
+  sendNewSubscriberEmail,
   sendFunnelAlertEmail,
   sendOtpEmail,
   sendPollHealthAlertEmail,
@@ -50,6 +51,10 @@ const senders: Array<{ name: string; call: () => Promise<unknown> }> = [
   { name: 'sendCreatorApprovedEmail', call: () => sendCreatorApprovedEmail('a@b.test', 'Chef Sarah') },
   { name: 'sendCreatorRejectedEmail', call: () => sendCreatorRejectedEmail('a@b.test', 'Chef Sarah') },
   { name: 'sendCreatorApplicationEmail', call: () => sendCreatorApplicationEmail('Chef Sarah', 'a@b.test', ['admin@mealio.co']) },
+  {
+    name: 'sendNewSubscriberEmail',
+    call: () => sendNewSubscriberEmail({ adminEmails: ['admin@mealio.co'], userEmail: 'a@b.test', channel: 'Web (Stripe)' }),
+  },
   { name: 'sendBugReportEmail', call: () => sendBugReportEmail({ description: 'the cart is empty', context: {}, source: 'app' }) },
   {
     name: 'sendCreatorSyncPublishedEmail',

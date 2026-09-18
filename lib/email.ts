@@ -194,6 +194,39 @@ export async function sendCreatorApplicationEmail(applicantName: string, applica
 }
 
 /**
+ * Someone just took out Full Access. Fired once per new subscription — Stripe
+ * checkout on the web, or a first store purchase through RevenueCat — never on
+ * renewals, which would turn this into a monthly echo of every subscriber.
+ */
+export async function sendNewSubscriberEmail(opts: {
+  adminEmails: string[];
+  userEmail: string | null;
+  channel: string;
+}) {
+  if (opts.adminEmails.length === 0) return;
+  const who = opts.userEmail ? escapeHtml(opts.userEmail) : 'an unknown user';
+  const channel = escapeHtml(opts.channel);
+  const sent = await resend.emails.send({
+    from: 'Mealio <noreply@mealio.co>',
+    to: opts.adminEmails,
+    subject: `New Full Access subscriber: ${opts.userEmail ?? 'unknown user'}`,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+        <img src="https://mealio.co/email-logo.png" alt="Mealio" width="130" height="45" style="display: block; border: 0; margin-bottom: 24px;" />
+        <h2 style="color: #222; font-size: 20px; margin: 0 0 8px;">New Full Access subscriber</h2>
+        <p style="color: #666; font-size: 14px; margin: 0 0 24px;">Someone just subscribed to Full Access.</p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 24px;">
+          <tr><td style="padding: 8px 0; color: #999; width: 120px;">Email</td><td style="padding: 8px 0; color: #222; font-weight: 600;">${who}</td></tr>
+          <tr><td style="padding: 8px 0; color: #999;">Via</td><td style="padding: 8px 0; color: #222;">${channel}</td></tr>
+        </table>
+        <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin" style="display: inline-block; background: #dd0031; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">Open Admin</a>
+      </div>
+    `,
+  });
+  throwIfRefused(sent, 'new subscriber');
+}
+
+/**
  * A creator has moved the link Mealio was polling, and the import is now off
  * (MEAL-94).
  *

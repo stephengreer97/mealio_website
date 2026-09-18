@@ -929,6 +929,10 @@ export default function AdminPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [selectedQuarter, setSelectedQuarter] = useState<AvailableQuarter | null>(null);
   const [emailStats, setEmailStats] = useState<EmailStats | null>(null);
+  // Admin email on each new Full Access subscriber. null until loaded.
+  const [newSubAlert, setNewSubAlert] = useState<boolean | null>(null);
+  const [newSubAlertSaving, setNewSubAlertSaving] = useState(false);
+  const [newSubAlertErr, setNewSubAlertErr] = useState('');
   const [emailSearch, setEmailSearch] = useState('');
 
   const [funnel, setFunnel] = useState<FunnelResponse | null>(null);
@@ -1078,6 +1082,29 @@ export default function AdminPage() {
     if (res.ok) setEmailStats(await res.json());
   };
 
+  const loadNotificationSettings = async () => {
+    const res = await fetch('/api/admin/notification-settings', {
+      headers: { Authorization: `Bearer ${token()}` },
+    });
+    if (res.ok) setNewSubAlert((await res.json()).newSubscriber);
+    else setNewSubAlertErr('Could not load this setting.');
+  };
+
+  const toggleNewSubAlert = async () => {
+    if (newSubAlert === null) return;
+    const next = !newSubAlert;
+    setNewSubAlertSaving(true);
+    setNewSubAlertErr('');
+    const res = await fetch('/api/admin/notification-settings', {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newSubscriber: next }),
+    }).catch(() => null);
+    setNewSubAlertSaving(false);
+    if (res?.ok) setNewSubAlert(next);
+    else setNewSubAlertErr('Could not save. The setting is unchanged.');
+  };
+
   const loadFunnel = async (days = funnelDays) => {
     const res = await fetch(`/api/admin/automation-funnel?days=${days}`, {
       headers: { Authorization: `Bearer ${token()}` },
@@ -1183,6 +1210,7 @@ export default function AdminPage() {
     if (t === 'stats' && !stats) loadStats();
     if (t === 'broadcast') loadBroadcasts();
     if (t === 'email' && !emailStats) loadEmailStats();
+    if (t === 'email' && newSubAlert === null) loadNotificationSettings();
     if (t === 'automation') {
       if (!funnel) loadFunnel();
       if (!network && !networkErr) loadNetwork();
@@ -1898,6 +1926,25 @@ export default function AdminPage() {
         {/* Storage Tab */}
         {tab === 'email' && (
           <>
+            {/* Operator notification, not marketing — but this is where email lives. */}
+            <div style={{ background: 'white', borderRadius: '12px', padding: '16px 20px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '20px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: '#222', cursor: newSubAlert === null || newSubAlertSaving ? 'default' : 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={newSubAlert ?? false}
+                  disabled={newSubAlert === null || newSubAlertSaving}
+                  onChange={toggleNewSubAlert}
+                />
+                <span style={{ fontWeight: 600 }}>Email admins when someone subscribes to Full Access</span>
+              </label>
+              <div style={{ fontSize: '12px', color: '#888', marginTop: '6px', marginLeft: '26px' }}>
+                Web checkouts and first App Store / Google Play purchases. Renewals never send.
+              </div>
+              {newSubAlertErr && (
+                <div style={{ fontSize: '12px', color: '#dd0031', marginTop: '6px', marginLeft: '26px' }}>{newSubAlertErr}</div>
+              )}
+            </div>
+
             {!emailStats ? (
               <p style={{ textAlign: 'center', color: '#888', padding: '32px' }}>Loading…</p>
             ) : (

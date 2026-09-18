@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 import { grantPaid, endPaid, canEnd, sourceFromRevenueCatStore } from '@/lib/subscription-source';
+import { notifyAdminsOfNewSubscriber } from '@/lib/new-subscriber-alert';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +74,10 @@ export async function POST(request: NextRequest) {
       log({ event: 'PAYMENT:RC_WEBHOOK', status: 'error', userId, reason: error.message, detail: eventType });
     } else {
       log({ event: 'PAYMENT:RC_WEBHOOK', status: 'success', userId, detail: `${eventType}→paid (${source})` });
+      // Only the first purchase is a new subscriber; renewals and the rest are not.
+      if (eventType === 'INITIAL_PURCHASE') {
+        await notifyAdminsOfNewSubscriber(supabase, userId, source);
+      }
     }
   } else if (LAPSED_EVENTS.has(eventType)) {
     const expiresAtMs: number | null = event.expiration_at_ms ?? null;

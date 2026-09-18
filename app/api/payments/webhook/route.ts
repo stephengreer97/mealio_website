@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
 import { grantPaid, endPaid } from '@/lib/subscription-source';
+import { notifyAdminsOfNewSubscriber } from '@/lib/new-subscriber-alert';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
       // and are safe to carry — but the session does not expand its line items,
       // so only the currency is on hand here. The interval arrives with the
       // first invoice moments later.
-      const { error: insertErr } = await supabase
+      const { data: startedRows, error: insertErr } = await supabase
         .from('subscription_events')
         .upsert(
           {
@@ -82,9 +83,16 @@ export async function POST(request: NextRequest) {
             currency: session.currency ?? null,
           },
           { onConflict: 'stripe_event_id', ignoreDuplicates: true },
-        );
+        )
+        .select('id');
       if (insertErr) {
         log({ event: 'PAYMENT:WEBHOOK', status: 'error', userId, reason: insertErr.message, detail: 'subscription_events insert failed' });
+      }
+
+      // Tell the admins — once. A redelivered event hits the conflict above and
+      // returns no row, so a Stripe retry does not email everyone a second time.
+      if (!insertErr && startedRows?.length) {
+        await notifyAdminsOfNewSubscriber(supabase, userId, 'stripe');
       }
 
       log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId, detail: 'checkout.session.completed→paid' });

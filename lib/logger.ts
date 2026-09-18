@@ -97,6 +97,7 @@ export type EventType =
   | 'PAYMENT:WEBHOOK'
   | 'PAYMENT:PORTAL'
   | 'PAYMENT:RC_WEBHOOK'
+  | 'PAYMENT:ADMIN_NOTIFY'  // admins emailed about a new Full Access subscriber
   // ── Kroger ────────────────────────────────────────────────────────────────
   | 'KROGER:CALLBACK'
   | 'KROGER:DISCONNECT'
@@ -108,6 +109,7 @@ export type EventType =
   | 'ADMIN:APPLICATION_EMAIL'   // telling the applicant; the decision is already written
   | 'ADMIN:MEAL_DELETE'
   | 'ADMIN:BROADCAST'
+  | 'ADMIN:NOTIFICATION_SETTINGS' // which operator emails are switched on
   | 'ADMIN:CREATOR_SOURCE'      // which of a creator's links we poll (MEAL-81)
   | 'ADMIN:CREATOR_VIABILITY'   // the onboarding importability measurement (MEAL-81)
   | 'ADMIN:AUTOMATION_CONFIG'   // publish / roll back the remote store config
