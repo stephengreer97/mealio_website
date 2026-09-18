@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
+import { grantPaid, endPaid, canEnd, sourceFromRevenueCatStore } from '@/lib/subscription-source';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,27 +66,26 @@ export async function POST(request: NextRequest) {
   const supabase = createServerSupabaseClient();
 
   if (ACTIVE_EVENTS.has(eventType)) {
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({ subscription_tier: 'paid', subscription_ends_at: null })
-      .eq('id', userId);
+    const source = sourceFromRevenueCatStore(event.store);
+    const { error } = await grantPaid(supabase, userId, source, { subscription_ends_at: null });
 
     if (error) {
       log({ event: 'PAYMENT:RC_WEBHOOK', status: 'error', userId, reason: error.message, detail: eventType });
     } else {
-      log({ event: 'PAYMENT:RC_WEBHOOK', status: 'success', userId, detail: `${eventType}→paid` });
+      log({ event: 'PAYMENT:RC_WEBHOOK', status: 'success', userId, detail: `${eventType}→paid (${source})` });
     }
   } else if (LAPSED_EVENTS.has(eventType)) {
     const expiresAtMs: number | null = event.expiration_at_ms ?? null;
     const endsAt = expiresAtMs ? new Date(expiresAtMs).toISOString() : null;
 
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({ subscription_tier: 'free', subscription_ends_at: endsAt })
-      .eq('id', userId);
+    // A store purchase lapsing ends only access a store gave: a web subscriber
+    // or a comped creator whose trial purchase expired keeps Full Access.
+    const { kept, error } = await endPaid(supabase, userId, 'revenuecat', { subscription_ends_at: endsAt });
 
     if (error) {
       log({ event: 'PAYMENT:RC_WEBHOOK', status: 'error', userId, reason: error.message, detail: eventType });
+    } else if (kept.length) {
+      log({ event: 'PAYMENT:RC_WEBHOOK', status: 'success', userId, detail: `${eventType}: tier kept (source ${kept[0].source})` });
     } else {
       log({ event: 'PAYMENT:RC_WEBHOOK', status: 'success', userId, detail: `${eventType}→free` });
     }
@@ -115,14 +115,14 @@ function uuidList(v: unknown): string[] {
  * transferred_to: string[] }`, with no app_user_id and usually no entitlement or
  * expiry. So:
  *
- *  - FROM users go to free, unless their paid tier is a Stripe subscription
- *    (`stripe_subscription_id` set): the purchase that left was a store
- *    purchase, and a web subscription is not affected by it.
+ *  - FROM users go to free, unless their access came from somewhere other than
+ *    a store (`subscription_source`: a web subscription or a comp is not
+ *    affected by a store purchase leaving).
  *  - TO users go to paid when the transferred purchase carries access. When the
  *    event lists `entitlement_ids`, that list decides (empty means nothing
  *    active moved). When it does not, the old owners decide: if any of them was
- *    paid through the store (paid with no Stripe subscription), what moved was
- *    live access. An expiry already in the past never upgrades.
+ *    paid through the store, what moved was live access. An expiry already in
+ *    the past never upgrades.
  *
  * Idempotent: every write sets an absolute state, so a redelivered TRANSFER
  * writes the same rows to the same values.
@@ -134,10 +134,10 @@ async function handleTransfer(supabase: ReturnType<typeof createServerSupabaseCl
   const { data: fromProfiles, error: readErr } = from.length
     ? await supabase
         .from('user_profiles')
-        .select('id, subscription_tier, stripe_subscription_id')
+        .select('id, subscription_tier, subscription_source')
         .in('id', from)
         .limit(from.length)
-    : { data: [] as Array<{ id: string; subscription_tier: string | null; stripe_subscription_id: string | null }>, error: null };
+    : { data: [] as Array<{ id: string; subscription_tier: string | null; subscription_source: string | null }>, error: null };
 
   if (readErr) {
     log({ event: 'PAYMENT:RC_WEBHOOK', status: 'error', reason: readErr.message, detail: 'TRANSFER read failed' });
@@ -145,15 +145,12 @@ async function handleTransfer(supabase: ReturnType<typeof createServerSupabaseCl
   }
 
   const rows = fromProfiles ?? [];
-  const storePaid = rows.filter((p) => p.subscription_tier === 'paid' && !p.stripe_subscription_id);
+  const storePaid = rows.filter((p) => p.subscription_tier === 'paid' && canEnd('revenuecat', p.subscription_source));
   const nowIso = new Date().toISOString();
 
   if (storePaid.length) {
     const ids = storePaid.map((p) => p.id);
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({ subscription_tier: 'free', subscription_ends_at: nowIso })
-      .in('id', ids);
+    const { error } = await endPaid(supabase, ids, 'revenuecat', { subscription_ends_at: nowIso });
     if (error) {
       log({ event: 'PAYMENT:RC_WEBHOOK', status: 'error', reason: error.message, detail: `TRANSFER downgrade ${ids.join(',')}` });
     } else {
@@ -168,10 +165,7 @@ async function handleTransfer(supabase: ReturnType<typeof createServerSupabaseCl
     : storePaid.length > 0;
 
   if (to.length && carriesAccess && !expired) {
-    const { error } = await supabase
-      .from('user_profiles')
-      .update({ subscription_tier: 'paid', subscription_ends_at: null })
-      .in('id', to);
+    const { error } = await grantPaid(supabase, to, sourceFromRevenueCatStore(event.store), { subscription_ends_at: null });
     if (error) {
       log({ event: 'PAYMENT:RC_WEBHOOK', status: 'error', reason: error.message, detail: `TRANSFER upgrade ${to.join(',')}` });
     } else {

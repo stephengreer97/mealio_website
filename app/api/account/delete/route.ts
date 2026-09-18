@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, checkTokenRevoked, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
+import { isStoreSource } from '@/lib/subscription-source';
 import { revalidateTag } from 'next/cache';
 import { fetchAllPages, chunkIds } from '@/lib/paged-select';
 import { purgeUserPhotos } from '@/lib/account-photos';
@@ -55,7 +56,7 @@ export async function DELETE(request: NextRequest) {
     //    cancellation cannot be made, nothing is deleted.
     const { data: billing, error: billingError } = await supabase
       .from('user_profiles')
-      .select('subscription_tier, stripe_customer_id, stripe_subscription_id')
+      .select('subscription_tier, subscription_source, stripe_customer_id, stripe_subscription_id')
       .eq('id', userId)
       .maybeSingle();
     if (billingError) return stepFailed('billing read', userId, billingError);
@@ -74,10 +75,12 @@ export async function DELETE(request: NextRequest) {
     if (stripeCancel.cancelled.length > 0) {
       log({ event: 'ACCOUNT:DELETE', status: 'pending', userId, detail: `cancelled stripe ${stripeCancel.cancelled.join(',')}` });
     }
-    // Paid with nothing live on Stripe: an in-app (App Store / Google Play)
-    // subscription, which only the store can cancel.
+    // Paid through a store (App Store / Google Play), which only the user can
+    // cancel. Read from `subscription_source` rather than guessed from a missing
+    // Stripe id, which told comped creators to cancel a subscription they never
+    // bought.
     const maybeInApp = billing?.subscription_tier === 'paid' && stripeCancel.cancelled.length === 0
-      && !billing?.stripe_subscription_id;
+      && isStoreSource(billing?.subscription_source);
 
     // Delete user data in a foreign-key-safe order. Several tables carry NOT NULL
     // FKs to user_profiles (or to a creator's preset_meals), so their rows must be

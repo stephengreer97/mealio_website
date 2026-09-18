@@ -160,10 +160,11 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: creatorError.message }, { status: 500 });
     }
 
-    // Comp Full Access for approved creators
+    // Comp Full Access for approved creators. Recorded as `comp` so no payment
+    // system's "ended" event can take it away (lib/subscription-source.ts).
     await supabase
       .from('user_profiles')
-      .update({ subscription_tier: 'paid' })
+      .update({ subscription_tier: 'paid', subscription_source: 'comp' })
       .eq('id', app.user_id);
   }
 
