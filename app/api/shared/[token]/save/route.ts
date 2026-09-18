@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
 import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
+import { freeTierLimitResponse } from '@/lib/free-tier';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -41,31 +42,9 @@ export async function POST(
     return NextResponse.json({ error: 'Shared meal not found' }, { status: 404 });
   }
 
-  // Enforce free-tier meal limit
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('subscription_tier')
-    .eq('id', decoded.userId)
-    .single();
-
-  const tier = profile?.subscription_tier ?? 'free';
-
-  if (tier === 'free') {
-    const { count } = await supabase
-      .from('meals')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', decoded.userId)
-      .eq('is_active', true);
-
-    if ((count ?? 0) >= 3) {
-      // TODO: use a dedicated event (e.g. MEAL:SAVE_SHARED) once added to logger's EventType
-      log({ event: 'MEAL:CREATE', status: 'failed', userId: decoded.userId, reason: 'tier limit reached (shared save)' });
-      return NextResponse.json(
-        { error: 'Free plan is limited to 3 meals. Upgrade to Full Access to add more.', tierLimitReached: true },
-        { status: 403 }
-      );
-    }
-  }
+  // Enforce free-tier meal limit: the same gate as create and restore.
+  const limited = await freeTierLimitResponse(supabase, decoded.userId, 'MEAL:CREATE');
+  if (limited) return limited;
 
   // Strip store-specific product data from ingredients — only keep generic fields
   const ingredients = (sharedMeal.ingredients ?? []).map((ing: any) => ({
