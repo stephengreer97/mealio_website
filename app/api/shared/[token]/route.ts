@@ -13,6 +13,9 @@ export async function GET(
     .from('meals')
     .select('id, name, store_id, ingredients, author, difficulty, serves, website, recipe, photo_url')
     .eq('share_token', token)
+    // A deleted meal's link must stop working. Deleting also clears the token,
+    // but links issued before that did not, so this is the check that counts.
+    .eq('is_active', true)
     .single();
 
   if (error || !meal) {
