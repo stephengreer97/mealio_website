@@ -5,6 +5,7 @@ import { log } from '@/lib/logger';
 import { resolvePhotoUrl } from '@/lib/photos';
 import { tagCapError } from '@/lib/import/vocab';
 import { fetchAllPages } from '@/lib/paged-select';
+import { freeTierLimitResponse } from '@/lib/free-tier';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -97,30 +98,10 @@ export async function POST(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
 
-  // Enforce free-tier meal limit
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('subscription_tier')
-    .eq('id', decoded.userId)
-    .single();
+  // Enforce free-tier meal limit (shared with restore, see lib/free-tier.ts).
+  const limited = await freeTierLimitResponse(supabase, decoded.userId, 'MEAL:CREATE');
+  if (limited) return limited;
 
-  const tier = profile?.subscription_tier ?? 'free';
-
-  if (tier === 'free') {
-    const { count } = await supabase
-      .from('meals')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', decoded.userId)
-      .eq('is_active', true);
-
-    if ((count ?? 0) >= 3) {
-      log({ event: 'MEAL:CREATE', status: 'failed', userId: decoded.userId, reason: 'tier limit reached' });
-      return NextResponse.json(
-        { error: 'Free plan is limited to 3 meals. Upgrade to Full Access to add more.', tierLimitReached: true },
-        { status: 403 }
-      );
-    }
-  }
   const resolvedPhotoUrl = await resolvePhotoUrl(photoUrl, decoded.userId).catch(() => photoUrl ?? null);
 
   const { data: meal, error } = await supabase

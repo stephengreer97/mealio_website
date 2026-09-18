@@ -176,8 +176,14 @@ export default function AccountPage() {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (res.ok) setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
-    else alert('Failed to restore meal. Please try again.');
+    if (res.ok) {
+      setDeletedMeals(prev => prev.filter(m => m.id !== meal.id));
+      return;
+    }
+    // A free account at its meal limit gets the server's own sentence (it names
+    // the limit and the upgrade), not a generic "try again" that would never work.
+    const data = await res.json().catch(() => ({}));
+    alert(data.tierLimitReached && data.error ? data.error : 'Failed to restore meal. Please try again.');
   };
 
   const handlePermanentDelete = async (meal: DeletedMeal) => {
