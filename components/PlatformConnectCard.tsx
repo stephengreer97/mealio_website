@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { connectCancelledCopy, connectFailureCopy, GENERIC_CONNECT_FAILURE } from '@/lib/connect-copy';
 
 /**
  * Connect an Instagram or TikTok account, from the creator portal
@@ -47,7 +48,6 @@ interface CardCopy {
   connectedNote: string;
   /** Tailwind classes for the platform's own colour on the action button. */
   buttonClass: string;
-  cancelled: string;
   showExpiry: boolean;
 }
 
@@ -64,7 +64,6 @@ const COPY: Record<SocialPlatform, CardCopy> = {
       'Mealio reads the captions on this account to import recipes from them. Nothing on your account is ever ' +
       'edited.',
     buttonClass: 'bg-pink-600 hover:bg-pink-700 focus:ring-pink-500',
-    cancelled: 'You cancelled on Instagram’s screen. Nothing was connected.',
     showExpiry: true,
   },
   tiktok: {
@@ -79,58 +78,17 @@ const COPY: Record<SocialPlatform, CardCopy> = {
       'Mealio reads the descriptions on this account to import recipes from them. Nothing on your account is ' +
       'ever edited.',
     buttonClass: 'bg-gray-900 hover:bg-black focus:ring-gray-700',
-    cancelled: 'You cancelled on TikTok’s screen. Nothing was connected.',
     showExpiry: false,
   },
 };
 
 /**
- * What a failed attempt says, keyed by the callback's reason code.
- *
- * The card owns every one of these sentences and the URL only picks between
- * them. See `ConnectFailure` in `lib/creator-connect.ts`: the callback used to
- * put the sentence itself in the query string, which meant anyone who could get
- * a creator to open a link chose the prose rendered inside our error styling on
- * our own domain. An unknown or absent code falls through to the generic line,
- * so a hand-written URL is at worst a wrong answer and never an attacker's.
+ * What a failed attempt says lives in `lib/connect-copy.ts`, keyed by the
+ * callback's reason code, because the mobile app's `/complete` response carries
+ * the same sentences and a second copy would drift. The card owns the words and
+ * the URL only picks between them; see `ConnectFailure` in
+ * `lib/creator-connect.ts`.
  */
-const FAILURE_COPY: Record<string, (label: string) => string> = {
-  expired: () => 'That connection attempt has expired. Start again from this page.',
-  unverified: () => 'That connection could not be verified. Start again from this page.',
-  'no-code': (label) => `${label} sent you back without an authorization code. Try connecting again.`,
-  exchange: (label) => `${label} would not complete that connection. Try connecting again.`,
-  /**
-   * The platform refused the account, rather than the creator declining
-   * (MEAL-101).
-   *
-   * The callback used to read *any* `error` on the redirect as "cancelled",
-   * which is the worst kind of wrong: it blames a creator for something they
-   * did not do and gives them nothing to do next.
-   *
-   * This wording changed when TikTok approved the app (2026-08-06). While the
-   * credentials were sandbox ones, a refusal was overwhelmingly the tester
-   * allow-list, and the copy said so and told the creator to ask us to add
-   * them. On production credentials that advice is actively wrong: a refusal is
-   * now a real refusal — a personal account TikTok will not grant, a revoked
-   * grant, a genuine cancel — and sending those creators to ask for an
-   * allow-list they are not on buries the real cause under a support thread.
-   *
-   * So it names what we can actually know from a redirect, which is only that
-   * the platform declined, and gives the two things that are worth trying.
-   * Deliberately does not assert a cause.
-   */
-  unavailable: (label) =>
-    `${label} would not connect that account. That usually means ${label} declined it rather than you ` +
-    `cancelling: a personal account it will not grant access to, or a permission that was turned down. ` +
-    `Try again, and if it keeps happening tell us which account and we will look at what ${label} sent back.`,
-  scope: () =>
-    'That connection came back without permission to read your posts, so there would be nothing to import. ' +
-    'Connect again and leave the permission ticked.',
-  account: (label) =>
-    `We could not use that ${label} account. If it is a personal Instagram account, switch it to Professional ` +
-    '(Business or Creator) in the Instagram app and try again.',
-  store: () => 'We could not store that connection. Try again.',
-};
 
 /** What the OAuth callback redirected back with, if anything. */
 function callbackOutcome(platform: SocialPlatform): { outcome: string; reason: string | null } | null {
@@ -271,10 +229,10 @@ export default function PlatformConnectCard({
 
       {callback?.outcome === 'failed' && (
         <p className="text-sm text-red-600 mb-3">
-          {(callback.reason && FAILURE_COPY[callback.reason]?.(copy.label)) || 'That connection did not complete.'}
+          {connectFailureCopy(platform, callback.reason) || GENERIC_CONNECT_FAILURE}
         </p>
       )}
-      {callback?.outcome === 'cancelled' && <p className="text-sm text-gray-500 mb-3">{copy.cancelled}</p>}
+      {callback?.outcome === 'cancelled' && <p className="text-sm text-gray-500 mb-3">{connectCancelledCopy(platform)}</p>}
 
       {/* A grant that has stopped working is the failure this whole feature is
           written around: it looks exactly like an account that posted nothing.
