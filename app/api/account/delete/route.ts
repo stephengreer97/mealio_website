@@ -5,6 +5,7 @@ import { log } from '@/lib/logger';
 import { revalidateTag } from 'next/cache';
 import { fetchAllPages, chunkIds } from '@/lib/paged-select';
 import { purgeUserPhotos } from '@/lib/account-photos';
+import { cancelStripeSubscriptions, IN_APP_SUBSCRIPTION_NOTICE } from '@/lib/stripe-cancel';
 
 /**
  * Every step below checks its own error and stops here on failure. Carrying on
@@ -46,6 +47,37 @@ export async function DELETE(request: NextRequest) {
     if (await checkTokenRevoked(supabase, decoded.userId, decoded.issuedAt)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    // 0) Money first, before anything is deleted. A deleted account with a live
+    //    Stripe subscription is charged every month for a product nobody can
+    //    sign in to, and once the profile is gone nothing links the Stripe
+    //    customer back to a person who could ask for it to stop. So if the
+    //    cancellation cannot be made, nothing is deleted.
+    const { data: billing, error: billingError } = await supabase
+      .from('user_profiles')
+      .select('subscription_tier, stripe_customer_id, stripe_subscription_id')
+      .eq('id', userId)
+      .maybeSingle();
+    if (billingError) return stepFailed('billing read', userId, billingError);
+
+    const stripeCancel = await cancelStripeSubscriptions(
+      billing?.stripe_customer_id,
+      billing?.stripe_subscription_id,
+    );
+    if (!stripeCancel.ok) {
+      log({ event: 'ACCOUNT:DELETE', status: 'error', userId, detail: `stripe cancel failed: ${stripeCancel.reason}` });
+      return NextResponse.json(
+        { error: 'We could not cancel your Mealio subscription, so your account was not deleted. Please try again, or cancel it from Manage Subscription first.' },
+        { status: 502 },
+      );
+    }
+    if (stripeCancel.cancelled.length > 0) {
+      log({ event: 'ACCOUNT:DELETE', status: 'pending', userId, detail: `cancelled stripe ${stripeCancel.cancelled.join(',')}` });
+    }
+    // Paid with nothing live on Stripe: an in-app (App Store / Google Play)
+    // subscription, which only the store can cancel.
+    const maybeInApp = billing?.subscription_tier === 'paid' && stripeCancel.cancelled.length === 0
+      && !billing?.stripe_subscription_id;
 
     // Delete user data in a foreign-key-safe order. Several tables carry NOT NULL
     // FKs to user_profiles (or to a creator's preset_meals), so their rows must be
@@ -262,7 +294,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     log({ event: 'ACCOUNT:DELETE', status: 'success', userId, email, ip });
-    return NextResponse.json({ success: true });
+    return NextResponse.json(maybeInApp ? { success: true, notice: IN_APP_SUBSCRIPTION_NOTICE } : { success: true });
   } catch (error) {
     log({ event: 'ACCOUNT:DELETE', status: 'error', ip, error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -833,6 +833,11 @@ export default function AccountPage() {
           <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>
             Permanently delete your account, saved meals, and follows. If you&apos;re a creator, your published meals are taken down from Discover. This is immediate and cannot be undone.
           </p>
+          {user?.tier === 'paid' && (
+            <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>
+              A subscription you bought on mealio.co is cancelled automatically when you delete your account. If you subscribed in the Mealio app through the App Store or Google Play, deleting your account does <strong style={{ color: 'var(--text-1)' }}>not</strong> cancel it. Cancel it in your App Store or Google Play subscription settings first.
+            </p>
+          )}
           {!showDeleteConfirm ? (
             <button
               onClick={() => setShowDeleteConfirm(true)}
