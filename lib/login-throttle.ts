@@ -60,3 +60,62 @@ export async function loginThrottled(
   }
   return false;
 }
+
+/**
+ * Wrong 2FA codes one account may enter, across every code it is sent, before
+ * verification and resend stop for the rest of the window.
+ *
+ * Each code allows five tries (MAX_ATTEMPTS in the verify route), but a resend
+ * every sixty seconds, or a fresh login, issues a new code with five more. On
+ * their own that is roughly three hundred guesses an hour against a six-digit
+ * code. Ten failures an hour is still generous to a person mistyping; it is not
+ * a rate at which anyone guesses a million-way code.
+ *
+ * Stored in `login_attempts` under `otp:<userId>`, the same table and RPC as
+ * the password throttle, so no migration.
+ */
+export const OTP_WINDOW_SECONDS = 60 * 60;
+export const MAX_OTP_FAILURES = 10;
+export const OTP_LOCKED_MESSAGE =
+  'Too many incorrect codes. For your security, please wait an hour and try again.';
+
+const otpKey = (userId: string) => `otp:${userId}`;
+
+/**
+ * True when this account has used up its wrong-code allowance. Reads without
+ * counting, so looking does not spend an attempt. Fails open, as loginThrottled
+ * does: a throttle that cannot read its own state must not lock anyone out.
+ */
+export async function otpLocked(supabase: SupabaseClient, userId: string): Promise<boolean> {
+  const since = new Date(Date.now() - OTP_WINDOW_SECONDS * 1000).toISOString();
+  const { count, error } = await supabase
+    .from('login_attempts')
+    .select('id', { count: 'exact', head: true })
+    .eq('key', otpKey(userId))
+    .gt('created_at', since);
+  if (error || typeof count !== 'number') {
+    log({ event: 'AUTH:OTP_THROTTLE', status: 'error', userId, reason: error?.message ?? 'no count returned' });
+    return false;
+  }
+  return count >= MAX_OTP_FAILURES;
+}
+
+/**
+ * Count one wrong code. Returns true when that failure used up the allowance,
+ * so the caller can say "locked" rather than "N attempts remaining".
+ */
+export async function recordOtpFailure(supabase: SupabaseClient, userId: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('record_login_attempt', {
+    p_key: otpKey(userId),
+    p_window_seconds: OTP_WINDOW_SECONDS,
+  });
+  if (error || typeof data !== 'number') {
+    log({ event: 'AUTH:OTP_THROTTLE', status: 'error', userId, reason: error?.message ?? 'no count returned' });
+    return false;
+  }
+  if (data >= MAX_OTP_FAILURES) {
+    log({ event: 'AUTH:OTP_THROTTLE', status: 'failed', userId, reason: `${data} wrong codes in window` });
+    return true;
+  }
+  return false;
+}

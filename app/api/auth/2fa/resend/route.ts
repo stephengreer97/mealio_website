@@ -4,6 +4,7 @@ import { verifyTwoFactorToken } from '@/lib/tokens';
 import { generateOtp, hashOtp } from '@/lib/otp';
 import { sendOtpEmail } from '@/lib/email';
 import { log } from '@/lib/logger';
+import { otpLocked, OTP_LOCKED_MESSAGE } from '@/lib/login-throttle';
 
 const COOLDOWN_SECONDS = 60;
 
@@ -20,6 +21,12 @@ export async function POST(request: NextRequest) {
 
     const { userId } = decoded;
     const supabase = createServerSupabaseClient();
+
+    // A locked account gets no new code: a fresh code is five fresh guesses.
+    if (await otpLocked(supabase, userId)) {
+      log({ event: 'AUTH:2FA_RESEND', status: 'failed', userId, ip, reason: 'locked: too many wrong codes' });
+      return NextResponse.json({ error: OTP_LOCKED_MESSAGE }, { status: 429 });
+    }
 
     // Rate limit: block if an OTP was sent within the cooldown window
     const cooldownThreshold = new Date(Date.now() - COOLDOWN_SECONDS * 1000).toISOString();

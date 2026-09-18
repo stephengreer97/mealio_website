@@ -171,7 +171,12 @@ export default function SignIn() {
         body: JSON.stringify({ twoFactorToken }),
       });
       if (res.ok) { setOtpResendStatus('sent'); setOtpResendCooldown(60); setOtpCode(''); }
-      else setOtpResendStatus('error');
+      else {
+        setOtpResendStatus('error');
+        // A lockout is worth saying in words; "could not resend" invites retrying.
+        const data = await res.json().catch(() => ({}));
+        if (data.error) setError(data.error);
+      }
     } catch { setOtpResendStatus('error'); }
   };
 

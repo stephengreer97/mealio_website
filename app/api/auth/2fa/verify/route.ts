@@ -4,6 +4,7 @@ import { createAccessToken, createSessionToken, verifyTwoFactorToken, hashToken 
 import { hashOtp } from '@/lib/otp';
 import { randomBytes } from 'crypto';
 import { log } from '@/lib/logger';
+import { otpLocked, recordOtpFailure, OTP_LOCKED_MESSAGE } from '@/lib/login-throttle';
 
 const MAX_ATTEMPTS = 5;
 
@@ -24,6 +25,14 @@ export async function POST(request: NextRequest) {
 
     const { userId } = decoded;
     const supabase = createServerSupabaseClient();
+
+    // Across codes, not just within one. Every login and every resend issues a
+    // fresh code with its own five tries, so the per-code limit below alone
+    // would let a guesser keep going for as long as they kept asking.
+    if (await otpLocked(supabase, userId)) {
+      log({ event: 'AUTH:2FA_VERIFY', status: 'failed', userId, ip, reason: 'locked: too many wrong codes' });
+      return NextResponse.json({ error: OTP_LOCKED_MESSAGE }, { status: 429 });
+    }
 
     // Fetch the latest valid OTP for this user
     const { data: otp, error: otpFetchError } = await supabase
@@ -55,6 +64,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (hashOtp(String(code)) !== otp.code_hash) {
+      if (await recordOtpFailure(supabase, userId)) {
+        log({ event: 'AUTH:2FA_VERIFY', status: 'failed', userId, ip, reason: 'wrong code; now locked' });
+        return NextResponse.json({ error: OTP_LOCKED_MESSAGE }, { status: 429 });
+      }
       const remaining = Math.max(0, MAX_ATTEMPTS - attemptsAfter);
       log({ event: 'AUTH:2FA_VERIFY', status: 'failed', userId, ip, reason: 'wrong code' });
       return NextResponse.json(
