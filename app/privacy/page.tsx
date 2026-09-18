@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 };
 
 export default function PrivacyPage() {
-  const effective = 'August 3, 2026';
+  const effective = 'September 18, 2026';
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
@@ -121,7 +121,7 @@ export default function PrivacyPage() {
         </p>
 
         {/* 7 */}
-        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>7. Creator Platform Connections (YouTube)</h2>
+        <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>7. Creator Platform Connections (YouTube, Instagram and TikTok)</h2>
         <p>
           If you are a creator, you may connect a platform account so that Mealio can find recipes you have already published and prepare them for your review. This section describes what that connection allows, and applies in addition to the rest of this policy. Connecting an account is entirely optional. Creators who do not connect one publish to Mealio by hand, and nothing described here happens to them.
         </p>
@@ -135,6 +135,22 @@ export default function PrivacyPage() {
         <p style={{ marginTop: '12px' }}>
           Mealio&rsquo;s use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>Google API Services User Data Policy</a>, including the Limited Use requirements. By connecting a YouTube channel you are also agreeing to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>YouTube Terms of Service</a>, and Google&rsquo;s handling of your information is described in the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>Google Privacy Policy</a>.
         </p>
+
+        <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#222', marginTop: '24px', marginBottom: '10px' }}>Instagram</h3>
+        <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
+          <li style={{ marginBottom: '6px' }}><strong>What we access:</strong> With your authorization, and only for an Instagram professional (Business or Creator) account, Mealio reads your account&rsquo;s ID, username and account type, and the list of posts on that account together with each post&rsquo;s caption, media type, link, publication time and media address. We use these to identify posts that contain recipes and to extract the ingredients and steps from the caption. We only ever read the account you connected, and we ask Instagram for read access only.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we do with it:</strong> The same as for YouTube above. An extracted recipe becomes a draft that is shown to you for approval, and nothing is published on Mealio until you, or an administrator acting on your behalf, approves it. We do not copy your photos or videos to Mealio; the media address Instagram provides expires within hours and is not used as a recipe photo.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we never do:</strong> Mealio never posts, comments, sends messages or changes anything on your Instagram account. We do not use data obtained from Instagram for advertising, we do not sell or transfer it, and we do not use it to train machine-learning or AI models.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Stopping and removing it:</strong> You can disconnect Instagram at any time from your creator settings, which stops all reading immediately and deletes the access token we hold. You can also remove Mealio in the Instagram app under <strong>Settings</strong>, <strong>Apps and websites</strong>. Your use of Instagram is also governed by the <a href="https://help.instagram.com/581066165581870" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>Instagram Terms of Use</a> and <a href="https://privacycenter.instagram.com/policy" target="_blank" rel="noopener noreferrer" style={{ color: '#dd0031' }}>Meta Privacy Policy</a>.</li>
+        </ul>
+
+        <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#222', marginTop: '24px', marginBottom: '10px' }}>TikTok</h3>
+        <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
+          <li style={{ marginBottom: '6px' }}><strong>What we access:</strong> With your authorization, Mealio reads the list of videos on the TikTok account you connect, together with each video&rsquo;s ID, title, description, duration, cover image, share and embed links and publication time, plus the account&rsquo;s own ID. We use these to identify videos that contain recipes and to extract the ingredients and steps from them. We only ever read the account you connected, and we ask TikTok for read access only.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we do with it:</strong> The same as for YouTube and Instagram above: an extracted recipe becomes a draft for your approval, and nothing is published without it.</li>
+          <li style={{ marginBottom: '6px' }}><strong>What we never do:</strong> Mealio never posts, comments or changes anything on your TikTok account. We do not use data obtained from TikTok for advertising, we do not sell or transfer it, and we do not use it to train machine-learning or AI models.</li>
+          <li style={{ marginBottom: '6px' }}><strong>Stopping and removing it:</strong> You can disconnect TikTok at any time from your creator settings, which stops all reading immediately and deletes the access and refresh tokens we hold. You can also remove Mealio in the TikTok app under <strong>Settings and privacy</strong>, <strong>Security and permissions</strong>, <strong>Manage app permissions</strong>.</li>
+        </ul>
 
         {/* 8 */}
         <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#222', marginTop: '32px', marginBottom: '12px' }}>8. Your Rights and Choices</h2>
