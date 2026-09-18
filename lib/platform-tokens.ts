@@ -210,6 +210,28 @@ export async function deleteConnection(
   if (error) throw new Error(error.message);
 }
 
+/** The row as it stands now, re-read by id. Null when it is gone or unreadable. */
+async function reloadConnection(
+  supabase: SupabaseClient,
+  connection: PlatformConnection,
+): Promise<PlatformConnection | null> {
+  const { data, error } = await supabase.from(TABLE).select(CONNECTION_FIELDS).eq('id', connection.id).maybeSingle();
+  if (error || !data) return null;
+  return toConnection(data as Record<string, any>);
+}
+
+/**
+ * Is `current` still the version of the row `read` was?
+ *
+ * By instant, not by string: a connection returned from `storeRefresh` carries a
+ * stamp JavaScript formatted, and the same instant read back from Postgres is
+ * spelled differently (`…49.370Z` against `…49.37+00:00`).
+ */
+function sameVersion(read: PlatformConnection, current: PlatformConnection): boolean {
+  if (read.updatedAt === null || current.updatedAt === null) return read.updatedAt === current.updatedAt;
+  return Date.parse(read.updatedAt) === Date.parse(current.updatedAt);
+}
+
 /**
  * Applies a write to one grant, but only while it is still the grant we read.
  *
@@ -678,7 +700,39 @@ async function storeRefresh(
   if (grant.refreshToken) update.refresh_token = grant.refreshToken;
   if (grant.scopes) update.scopes = grant.scopes.join(' ');
 
-  const applied = await updateUnchanged(supabase, connection, update);
+  let applied = await updateUnchanged(supabase, connection, update);
+
+  // The one conditional write that must win even though the row moved (review
+  // finding 7). On a platform that rotates, two refreshes of one grant at once
+  // (the daily sweep and a poll, say) both send the same refresh token; the
+  // provider honours the first and answers the second `invalid_grant`, because
+  // the first retired it. If the loser's broken-mark lands before our write,
+  // our write is refused as stale, the token the provider just issued is
+  // dropped, and the only refresh token that still works is lost with it: a
+  // connection that was fine is broken for good.
+  //
+  // So: a row that is now broken and still holds the very refresh token we just
+  // spent was broken by a verdict about that token, which our success proves
+  // stale. A reconnect cannot look like this, because `saveConnection` clears
+  // the flag and replaces the refresh token on a rotating platform. Retried
+  // conditional on the version we just read, so a reconnect landing in between
+  // still wins.
+  if (!applied && grant.refreshToken && connection.refreshToken && ROTATES_REFRESH_TOKEN[connection.platform]) {
+    const current = await reloadConnection(supabase, connection);
+    if (current?.brokenReason && current.refreshToken === connection.refreshToken) {
+      applied = await updateUnchanged(supabase, current, update);
+      if (applied) {
+        log({
+          event: 'CRON:TOKEN_REFRESH',
+          status: 'success',
+          userId: connection.creatorId,
+          detail:
+            `platform=${connection.platform} account=${connection.id} restored: broken by a concurrent refresh's ` +
+            'invalid_grant about the token this refresh had just rotated',
+        });
+      }
+    }
+  }
   if (!applied) return null;
 
   return {
@@ -739,8 +793,15 @@ export type RefreshResult =
   | { status: 'deferred'; reason: string }
   /** The provider says this grant is gone. Recorded, and the token cleared. */
   | { status: 'broken'; reason: string }
-  /** A newer grant landed under us. Nothing written; theirs wins. */
-  | { status: 'superseded' };
+  /**
+   * A newer grant landed under us. Nothing written; theirs wins.
+   *
+   * `connection` is that newer grant when it is a working one, so a caller with
+   * a request waiting can use it rather than failing: the usual way to get here
+   * is two refreshes of one TikTok grant at once, where the other one already
+   * holds the token we were after (review finding 7).
+   */
+  | { status: 'superseded'; connection?: PlatformConnection };
 
 /** Runs a refresher without letting a throw escape as anything but a failure. */
 async function attemptRefresh(
@@ -891,6 +952,23 @@ export async function refreshConnection(
         'than the window it is renewable in, and it holds no refresh token to fall back on. The creator has to ' +
         'reconnect.';
     }
+    // Before breaking anything, is the row still the one we read? (Review
+    // finding 7.) The usual way a TikTok grant reaches here is not a revocation
+    // but a race: the sweep and a poll refreshed the same grant at once, the
+    // other one spent the refresh token first, and ours was answered
+    // `invalid_grant` because theirs retired it. If their write has landed, the
+    // row has moved on and holds a working token, so this is not ours to break
+    // and the caller can have their token. The conditional write below already
+    // refused a stale break; this is what turns "refused" into "use theirs",
+    // and what stops a broken-mark landing first in the common ordering at all
+    // (the other half is in `storeRefresh`).
+    const current = await reloadConnection(deps.supabase, connection);
+    if (current && !sameVersion(connection, current)) {
+      return current.brokenReason || !current.accessToken
+        ? { status: 'superseded' }
+        : { status: 'superseded', connection: current };
+    }
+
     // Broken only if the flag actually landed. A write that matched nothing
     // means the grant this `invalid_grant` was about has already been replaced.
     const applied = await markConnectionBroken(deps.supabase, connection, reason, now);
@@ -940,7 +1018,14 @@ export async function usableAccessToken(
   // not to flag a row and a terrible reason to hand a caller a token that has
   // already expired. MEAL-82 and MEAL-83 land in that branch on day one.
   const result = await refreshConnection(deps, connection);
-  return result.status === 'refreshed' ? result.connection.accessToken : null;
+  if (result.status === 'refreshed') return result.connection.accessToken;
+  // Somebody else refreshed this grant a moment before us, which is theirs to
+  // have written and ours to use, provided it has not already lapsed.
+  if (result.status === 'superseded' && result.connection?.accessToken) {
+    const theirs = result.connection.expiresAt ? Date.parse(result.connection.expiresAt) : NaN;
+    if (Number.isFinite(theirs) && theirs - now() > EXPIRY_SKEW_MS) return result.connection.accessToken;
+  }
+  return null;
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────

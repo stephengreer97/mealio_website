@@ -638,6 +638,85 @@ describe('platform-tokens — a sweep must not overwrite a reconnect', () => {
   });
 });
 
+/**
+ * Review finding 7. TikTok rotates its refresh token on every refresh, so two
+ * refreshes of one grant at once (the daily sweep and a poll) both send the
+ * same token: the provider honours the first and answers the second
+ * `invalid_grant`. Neither ordering of the two database writes may end with a
+ * working connection broken.
+ */
+describe('platform-tokens — two refreshes of one rotating grant at once', () => {
+  const READ_AT = new Date(NOW - 3_600_000).toISOString();
+  const tiktokRow = () => row({
+    platform: 'tiktok', access_token: 'at-0', refresh_token: 'rt-0', scopes: 'video.list',
+    expires_at: new Date(NOW - 60_000).toISOString(), updated_at: READ_AT,
+  });
+  /** What both workers read before either called TikTok. */
+  const stale = () => connection({
+    platform: 'tiktok', accessToken: 'at-0', refreshToken: 'rt-0', scopes: ['video.list'],
+    expiresAt: new Date(NOW - 60_000).toISOString(), updatedAt: READ_AT,
+  });
+  const rotated: TokenRefresher = async () => ({
+    ok: true,
+    grant: { accessToken: 'at-1', refreshToken: 'rt-1', expiresAt: new Date(NOW + 86_400_000).toISOString() },
+  });
+  /** What TikTok tells the second one to arrive with the retired token. */
+  const retired: TokenRefresher = async () => ({
+    ok: false,
+    reason: 'TikTok refused to refresh this grant: invalid_grant',
+    terminal: true,
+  });
+
+  it('keeps the winner\'s token when the loser\'s broken-mark lands first', async () => {
+    fakeDb.seed(TABLE, [tiktokRow()]);
+    // The winner has its answer from TikTok but has not written it yet.
+    let release!: () => void;
+    const loserHasWritten = new Promise<void>((resolve) => { release = resolve; });
+    const slowWinner: TokenRefresher = async (conn, options) => {
+      await loserHasWritten;
+      return rotated(conn, options);
+    };
+
+    const winner = refreshConnection(
+      { supabase, now: () => NOW + 2_000, sleep, refreshers: { tiktok: slowWinner } },
+      stale(),
+    );
+    const loser = await refreshConnection({ supabase, now: () => NOW + 1_000, sleep, refreshers: { tiktok: retired } }, stale());
+    expect(loser.status).toBe('broken');
+    release();
+
+    const won = await winner;
+
+    expect(won.status).toBe('refreshed');
+    // The rotated refresh token is the only one TikTok will accept now. Losing
+    // it is the connection lost for good.
+    expect(fakeDb.row(TABLE, 'pa1')).toMatchObject({
+      access_token: 'at-1',
+      refresh_token: 'rt-1',
+      broken_reason: null,
+      broken_at: null,
+    });
+  });
+
+  it('hands the loser the winner\'s token when the winner wrote first, and breaks nothing', async () => {
+    fakeDb.seed(TABLE, [tiktokRow()]);
+    await refreshConnection({ supabase, now: () => NOW + 1_000, sleep, refreshers: { tiktok: rotated } }, stale());
+
+    // The poll, still holding the row it read before the sweep wrote.
+    const token = await usableAccessToken({ supabase, now: () => NOW + 2_000, sleep, refreshers: { tiktok: retired } }, stale());
+
+    expect(token).toBe('at-1');
+    expect(fakeDb.row(TABLE, 'pa1')).toMatchObject({ access_token: 'at-1', refresh_token: 'rt-1', broken_reason: null });
+  });
+
+  it('still breaks a grant TikTok really has revoked, when nobody else touched it', async () => {
+    fakeDb.seed(TABLE, [tiktokRow()]);
+    const result = await refreshConnection({ supabase, now, sleep, refreshers: { tiktok: retired } }, stale());
+    expect(result.status).toBe('broken');
+    expect(fakeDb.row(TABLE, 'pa1')?.broken_reason).toMatch(/invalid_grant/);
+  });
+});
+
 // ── Refresh on demand ────────────────────────────────────────────────────────
 
 describe('platform-tokens — the token a caller actually uses', () => {
