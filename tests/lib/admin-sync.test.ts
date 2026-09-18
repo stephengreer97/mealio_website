@@ -1105,6 +1105,54 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     expect(result.detail).toMatch(/boom/);
   });
 
+  it('retries a write-back the database refused, rather than leaving a drafted post retryable (review finding 4)', async () => {
+    // supabase-js answers a failed write with `{ error }`; it does not throw.
+    // The try/catch that used to wrap this never saw one, so the row stayed the
+    // claim (`failed`) under a draft that existed.
+    fakeDb.seed('creator_source_items', []);
+    fakeDb.queue('creator_source_items', { data: null }); // the existing-record read
+    fakeDb.queue('creator_source_items', { error: null }); // the claim
+    fakeDb.queue('creator_source_items', { error: { message: 'connection reset' } }); // write-back, once
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await processSyncItem(
+      deps({ importer: async () => success, sleep }),
+      run([item()]),
+      CREATOR,
+      item(),
+    );
+
+    expect(result.status).toBe('drafted');
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(fakeDb.rows('creator_source_items')).toEqual([
+      expect.objectContaining({ item_id: 'guid-1', status: 'imported', draft_id: 'draft-1' }),
+    ]);
+  });
+
+  it('does not queue a second draft for a post whose record never caught up with its first (review finding 4)', async () => {
+    // The state a refused write-back leaves: a claim past its lease, and a draft.
+    fakeDb.seed('creator_source_items', [{
+      creator_id: 'c1', source: 'website', item_id: 'guid-1', url: 'https://chefsarah.test/guacamole',
+      status: 'failed', detail: claimDetailFor(null),
+      updated_at: new Date(1_800_000_000_000 - 11 * 60_000).toISOString(),
+    }]);
+    fakeDb.seed('creator_import_drafts', [{ id: 'draft-first', creator_id: 'c1', source: 'website', item_id: 'guid-1' }]);
+    const importer = vi.fn(async () => success);
+    const queue = vi.fn(async () => 'draft-second');
+
+    const result = await processSyncItem(
+      deps({ importer: importer as unknown as SyncDeps['importer'], queue: queue as unknown as SyncDeps['queue'] }),
+      run([item()], { id: null as unknown as string }),
+      CREATOR,
+      item(),
+    );
+
+    expect(importer).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.status).toBe('skipped');
+    expect(fakeDb.rows('creator_source_items')[0]).toMatchObject({ status: 'imported', draft_id: 'draft-first' });
+  });
+
   it('keeps the cost when extraction succeeded but queuing did not', async () => {
     const result = await processSyncItem(
       deps({

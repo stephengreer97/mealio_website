@@ -227,6 +227,8 @@ export interface SyncDeps {
    */
   sourceDocument?: SourceDocumentResolver;
   now?: () => number;
+  /** Waits between write-back attempts (`recordItem`). Injected so a test does not spend it. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Null means "this source is a page — fetch it the normal way". */
@@ -1204,6 +1206,28 @@ export async function processSyncItem(
     };
   }
 
+  // A draft may already exist for a post whose record says otherwise. That is
+  // the write-back failing after the draft landed (`recordItem`): the row is
+  // left as a claim, which is `failed`, so ten minutes later the poller retried
+  // it, paid for a second extraction, queued a second draft and sent a second
+  // email. Asked here, after the claim and before anything is spent, and only
+  // of a post whose record is `failed`, which is the state that failure leaves:
+  // a post we have never met cannot have a draft, and `declined` or `withdrawn`
+  // mean something about their draft that this must not second-guess. The
+  // draft wins and the record is repaired to point at it.
+  if (existing?.status === 'failed') {
+    const draftId = await existingDraftFor(deps, creator, run.source, item.itemId);
+    if (draftId) {
+      await recordItem(deps, creator, run, { ...item, status: 'drafted', detail: null, draftId });
+      return {
+        ...item,
+        status: 'skipped',
+        detail: 'Already queued for review, so it is skipped and the same recipe is not queued twice.',
+        draftId,
+      };
+    }
+  }
+
   // A post on a connected platform is read from that platform's listing, not
   // from its public URL. A selected item no longer in the listing fails rather
   // than falling back to a page fetch: `watch?v=…` returns a JavaScript shell
@@ -1508,12 +1532,47 @@ async function claimItem(
 }
 
 /**
+ * The draft already queued for this post, if there is one.
+ *
+ * A read rather than a unique key because `creator_import_drafts` has none on
+ * `(creator_id, source, item_id)`; see the report on review finding 4 for the
+ * index that would make this a constraint instead of a courtesy. A failed read
+ * answers "none", which is the old behaviour and no worse than it.
+ */
+async function existingDraftFor(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  source: PlatformSource,
+  itemId: string,
+): Promise<string | null> {
+  const { data, error } = await deps.supabase
+    .from('creator_import_drafts')
+    .select('id')
+    .eq('creator_id', creator.id)
+    .eq('source', source)
+    .eq('item_id', itemId)
+    .limit(1);
+  if (error || !Array.isArray(data) || data.length === 0) return null;
+  return String((data[0] as { id: unknown }).id);
+}
+
+/** Pauses between write-back attempts. Short: a request is usually waiting. */
+export const RECORD_RETRY_DELAYS_MS = [200, 1_000];
+
+/**
  * Writes the durable per-item record.
  *
  * `creator_source_items` is what the poller and the next operator read, so it is
  * updated even when the batch row already knows — and a write failure here is
  * logged, not thrown: losing the bookkeeping is bad, losing the run because the
  * bookkeeping failed is worse.
+ *
+ * **supabase-js does not throw on a failed write; it returns `{ error }`.** This
+ * used to be a bare `await` in a try/catch, so a refused upsert was silent: the
+ * row stayed the claim (`failed`) under a draft that existed, and the poller's
+ * retry made a second draft and a second email. The error is now read, the write
+ * is retried, and if it still will not land the duplicate is stopped on the next
+ * attempt by `existingDraftFor` instead.
  */
 async function recordItem(
   deps: SyncDeps,
@@ -1529,25 +1588,41 @@ async function recordItem(
   // stay declined: the next sync or poll sees the record and skips the post.
   const recordStatus = item.status === 'drafted' ? 'imported' : item.status;
 
-  try {
-    await deps.supabase.from('creator_source_items').upsert(
-      {
-        creator_id: creator.id,
-        source: run.source,
-        item_id: item.itemId,
-        url: item.url,
-        title: item.title,
-        published_at: item.publishedAt,
-        status: recordStatus,
-        detail: item.detail,
-        draft_id: item.draftId,
-        updated_at: new Date(deps.now?.() ?? Date.now()).toISOString(),
-      },
-      { onConflict: 'creator_id,source,item_id' },
-    );
-  } catch (err) {
-    log({ event: 'ADMIN:SYNC_ITEM', status: 'error', userId: creator.id, detail: `run=${run.id} item=${JSON.stringify(item.itemId)}`, error: err });
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let failure: unknown = null;
+  for (let attempt = 0; attempt <= RECORD_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(RECORD_RETRY_DELAYS_MS[attempt - 1]);
+    try {
+      const { error } = await deps.supabase.from('creator_source_items').upsert(
+        {
+          creator_id: creator.id,
+          source: run.source,
+          item_id: item.itemId,
+          url: item.url,
+          title: item.title,
+          published_at: item.publishedAt,
+          status: recordStatus,
+          detail: item.detail,
+          draft_id: item.draftId,
+          updated_at: new Date(deps.now?.() ?? Date.now()).toISOString(),
+        },
+        { onConflict: 'creator_id,source,item_id' },
+      );
+      if (!error) return item;
+      failure = error;
+    } catch (err) {
+      failure = err;
+    }
   }
+  log({
+    event: 'ADMIN:SYNC_ITEM',
+    status: 'error',
+    userId: creator.id,
+    detail:
+      `run=${run.id} item=${JSON.stringify(item.itemId)} status=${item.status} record not written after ` +
+      `${RECORD_RETRY_DELAYS_MS.length + 1} attempts${item.draftId ? `; draft ${item.draftId} exists` : ''}`,
+    error: failure,
+  });
   return item;
 }
 

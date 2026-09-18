@@ -638,6 +638,34 @@ describe('a failed item is retried, and its loss is said out loud', () => {
    * and inside it every attempt is the identical refusal at 50 quota units.
    * A read-only channel with forty thin-description videos was 120 refusals.
    */
+  it('does not draft or announce a post twice when its first write-back was lost (review finding 4)', async () => {
+    // A draft landed and the record write after it did not, so the row is still
+    // the claim: `failed`, and inside the retry window.
+    const { impl } = feedRoutes(feedWith(1));
+    fakeDb.seed('creator_source_items', [{
+      ...failedItem(INTERVAL, 11 * 60_000),
+      detail: 'An import of this post started and has not reported back yet.',
+    }]);
+    fakeDb.seed('creator_import_drafts', [{ id: 'draft-first', creator_id: 'c1', source: 'website', item_id: postId(0) }]);
+    const importer = vi.fn(async () => success);
+    const queue = vi.fn(async () => 'draft-second');
+
+    const result = await pollCreator(
+      deps({
+        importer: importer as unknown as PollDeps['importer'],
+        queue: queue as unknown as PollDeps['queue'],
+        fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+      }),
+      creator(),
+      polled,
+    );
+
+    expect(importer).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.drafts).toEqual([]);
+    expect(items()[0]).toMatchObject({ status: 'imported', draft_id: 'draft-first' });
+  });
+
   it('does not retry a caption failure that would be refused identically', async () => {
     const { impl } = feedRoutes(feedWith(1));
     const importer = vi.fn(async () => success);
