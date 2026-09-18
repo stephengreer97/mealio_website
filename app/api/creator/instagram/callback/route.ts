@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!exchanged.grant.scopes.includes(INSTAGRAM_BASIC_SCOPE)) {
-    log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, detail: 'platform=instagram', reason: 'basic scope not granted' });
+    log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, detail: 'platform=instagram', reason: `basic scope not granted (${exchanged.grant.responseShape})` });
     return backToPortal('instagram', 'failed', 'scope');
   }
 

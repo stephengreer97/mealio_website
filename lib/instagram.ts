@@ -88,6 +88,12 @@ export interface InstagramGrant {
   accessToken: string;
   scopes: string[];
   expiresAt: string | null;
+  /**
+   * Field names of the code-exchange answer and the type of its `permissions`,
+   * never a value. Logged when the scope gate refuses, because the code is
+   * single-use and this is the only record of what Meta actually sent.
+   */
+  responseShape: string;
 }
 
 /**
@@ -110,12 +116,26 @@ function cleanAuthCode(code: string): string {
  * examples show. Accepting either costs four lines and removes a whole class of
  * "works in the docs, not in production".
  */
-function shortLivedToken(payload: Record<string, any> | null): { accessToken: string; permissions: string } | null {
+function shortLivedToken(
+  payload: Record<string, any> | null,
+): { accessToken: string; permissions: string; shape: string } | null {
   const entry = Array.isArray(payload?.data) ? payload.data[0] : payload;
   if (!entry || typeof entry.access_token !== 'string') return null;
+  // Documented as a comma-separated string, but a live Business Login grant on
+  // 2026-09-17 was refused as "basic scope not granted" by a parser that only
+  // read strings. An array is read the same way; anything else is nothing.
+  const raw = entry.permissions;
+  const permissions =
+    typeof raw === 'string'
+      ? raw
+      : Array.isArray(raw)
+        ? raw.filter((p: unknown): p is string => typeof p === 'string').join(',')
+        : '';
+  const rawType = Array.isArray(raw) ? 'array' : raw === undefined ? 'absent' : typeof raw;
   return {
     accessToken: entry.access_token,
-    permissions: typeof entry.permissions === 'string' ? entry.permissions : '',
+    permissions,
+    shape: `${Array.isArray(payload?.data) ? 'wrapped' : 'flat'} keys=${Object.keys(entry).sort().join('|')} permissions=${rawType}`,
   };
 }
 
@@ -217,6 +237,7 @@ export async function exchangeInstagramCode(
     grant: {
       accessToken: longPayload.access_token,
       scopes: granted,
+      responseShape: short.shape,
       expiresAt: expiresIn === null ? null : new Date(now() + expiresIn * 1000).toISOString(),
     },
   };

@@ -144,6 +144,22 @@ describe('instagram — the code exchange ends in a long-lived token', () => {
     expect(result.grant.scopes).toEqual([]);
   });
 
+  it('reads permissions sent as an array, not only as a comma string', async () => {
+    const { impl } = routed([
+      [/api\.instagram\.com/, () => json({ access_token: 'IGQ-short', user_id: '178', permissions: ['instagram_business_basic'] })],
+      [/graph\.instagram\.com/, () => json({ access_token: 'IGQ-long', expires_in: 100 })],
+    ]);
+
+    const result = await exchangeInstagramCode('c', { fetchImpl: impl });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.grant.scopes).toEqual([INSTAGRAM_BASIC_SCOPE]);
+    // The shape names fields and types only; the token never appears in it.
+    expect(result.grant.responseShape).toBe('flat keys=access_token|permissions|user_id permissions=array');
+    expect(result.grant.responseShape).not.toContain('IGQ');
+  });
+
   it('does not turn "granted nothing" into the scope we asked for', async () => {
     // `permissions: ''` is Meta's way of saying the creator ticked nothing on
     // the consent screen. The old fallback rewrote it into
