@@ -63,7 +63,9 @@ export async function verifyAppleIdentityToken(identityToken: string, audience?:
     return {
       sub: payload.sub as string,
       email: payload.email as string | undefined,
-      email_verified: !!(payload.email_verified),
+      // Apple has sent this as the STRING "true"/"false" as well as a boolean,
+      // and `!!"false"` is true. Only an explicit yes counts.
+      email_verified: payload.email_verified === true || payload.email_verified === 'true',
     };
   } catch {
     return null;
@@ -105,8 +107,45 @@ interface SocialUserParams {
   lastName?: string;
 }
 
+type SocialUser = { userId: string; email: string; tier: string; isAdmin: boolean };
+
+/**
+ * The Mealio user already linked to this provider identity, or null.
+ *
+ * The only lookup that is safe when the provider's verified token carries no
+ * email: it trusts nothing but the provider's own subject id.
+ */
+export async function findLinkedSocialUser(
+  provider: 'google' | 'apple',
+  providerId: string,
+): Promise<SocialUser | null> {
+  const supabase = createServerSupabaseClient();
+  const idColumn = provider === 'google' ? 'google_id' : 'apple_id';
+  const { data: existing } = await supabase
+    .from('user_profiles')
+    .select('id, email, subscription_tier, is_admin')
+    .eq(idColumn, providerId)
+    .maybeSingle();
+  if (!existing) return null;
+
+  await supabase
+    .from('user_profiles')
+    .update({ last_login_at: new Date().toISOString() })
+    .eq('id', existing.id);
+  return {
+    userId: existing.id,
+    email: existing.email,
+    tier: existing.subscription_tier ?? 'free',
+    isAdmin: existing.is_admin ?? false,
+  };
+}
+
 /**
  * Find or create a Mealio user for a verified social identity.
+ *
+ * `email` MUST come from the provider's verified token, never from the client:
+ * it is what a new account is created under (already confirmed) and what an
+ * existing account is linked by.
  * Returns { userId, email, tier, isAdmin }.
  */
 export async function upsertSocialUser({
@@ -116,29 +155,13 @@ export async function upsertSocialUser({
   emailVerified,
   firstName,
   lastName,
-}: SocialUserParams): Promise<{ userId: string; email: string; tier: string; isAdmin: boolean }> {
+}: SocialUserParams): Promise<SocialUser> {
   const supabase = createServerSupabaseClient();
   const idColumn = provider === 'google' ? 'google_id' : 'apple_id';
 
   // 1. Look up by provider ID
-  const { data: existing } = await supabase
-    .from('user_profiles')
-    .select('id, email, subscription_tier, is_admin')
-    .eq(idColumn, providerId)
-    .maybeSingle();
-
-  if (existing) {
-    await supabase
-      .from('user_profiles')
-      .update({ last_login_at: new Date().toISOString() })
-      .eq('id', existing.id);
-    return {
-      userId: existing.id,
-      email: existing.email,
-      tier: existing.subscription_tier ?? 'free',
-      isAdmin: existing.is_admin ?? false,
-    };
-  }
+  const linked = await findLinkedSocialUser(provider, providerId);
+  if (linked) return linked;
 
   // 2. Look up by email — link provider ID to existing account
   const { data: byEmail } = await supabase

@@ -34,6 +34,7 @@ export async function POST(
     .from('meals')
     .select('name, ingredients, author, difficulty, serves, website, recipe, photo_url, tags, story')
     .eq('share_token', token)
+    .eq('is_active', true) // a deleted meal is no longer shared
     .single();
 
   if (fetchError || !sharedMeal) {

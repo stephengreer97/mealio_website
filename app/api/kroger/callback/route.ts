@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { exchangeKrogerCode, encryptKrogerToken, verifyKrogerStateToken } from '@/lib/kroger';
 import { log } from '@/lib/logger';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,7 +53,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { userId, returnTo, popup, mobile } = stateData;
-  const returnBase = returnTo && returnTo.startsWith('/') ? returnTo : '/account';
+  const returnBase = safeRedirectPath(returnTo, '/account');
 
   const popupHtml = (result: 'connected' | 'denied' | 'error') =>
     new NextResponse(

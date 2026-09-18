@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import PasswordStrength from '@/components/PasswordStrength';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 export default function SignIn() {
   const router = useRouter();
@@ -39,8 +40,7 @@ export default function SignIn() {
     const params = new URLSearchParams(window.location.search);
     const accessToken = localStorage.getItem('accessToken');
     if (accessToken) {
-      const redirect = params.get('redirect');
-      router.push(redirect && redirect.startsWith('/') ? redirect : '/discover');
+      router.push(safeRedirectPath(params.get('redirect')));
     } else if (params.get('tab') === 'signup') {
       setActiveTab('signup');
     }
@@ -77,9 +77,7 @@ export default function SignIn() {
       return `/meal/${pendingToken}?autoSave=1`;
     }
     const params = new URLSearchParams(window.location.search);
-    const redirect = params.get('redirect');
-    if (redirect && redirect.startsWith('/')) return redirect;
-    return '/discover';
+    return safeRedirectPath(params.get('redirect'));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -173,7 +171,12 @@ export default function SignIn() {
         body: JSON.stringify({ twoFactorToken }),
       });
       if (res.ok) { setOtpResendStatus('sent'); setOtpResendCooldown(60); setOtpCode(''); }
-      else setOtpResendStatus('error');
+      else {
+        setOtpResendStatus('error');
+        // A lockout is worth saying in words; "could not resend" invites retrying.
+        const data = await res.json().catch(() => ({}));
+        if (data.error) setError(data.error);
+      }
     } catch { setOtpResendStatus('error'); }
   };
 

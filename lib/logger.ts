@@ -15,6 +15,7 @@ export type EventType =
   // ── Auth ──────────────────────────────────────────────────────────────────
   | 'AUTH:LOGIN'
   | 'AUTH:LOGIN_THROTTLE'  // login attempt refused, or the throttle itself failing
+  | 'AUTH:OTP_THROTTLE'    // 2FA locked after too many wrong codes, or its throttle failing
   | 'AUTH:LOGOUT'
   | 'AUTH:LOGOUT_ALL'
   | 'AUTH:REGISTER'

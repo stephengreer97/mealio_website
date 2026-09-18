@@ -129,7 +129,10 @@ export async function DELETE(
   } else {
     const { data: updated, error } = await supabase
       .from('meals')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
+      // The share link dies with the meal: without clearing it, anyone holding
+      // the link could still read and save a meal its owner deleted. A restored
+      // meal needs a fresh link, which is the owner's call to make.
+      .update({ is_active: false, share_token: null, updated_at: new Date().toISOString() })
       .eq('id', id)
       .eq('user_id', decoded.userId)
       .select('id');

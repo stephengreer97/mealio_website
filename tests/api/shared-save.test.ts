@@ -32,6 +32,7 @@ function seedShared(tags: string[] | null) {
   fakeDb.seed('meals', [{
     id: 'origin',
     share_token: 'share-abc',
+    is_active: true,
     name: 'Nine Tag Chili',
     ingredients: [{ ingredientName: 'beans', qty: 1, unit: 'qty', productName: 'Store brand beans' }],
     author: 'A Friend',
@@ -108,6 +109,7 @@ describe('POST /api/shared/:token/save — the tag cap on a copy', () => {
     fakeDb.seed('meals', [{
       id: 'origin',
       share_token: 'share-abc',
+      is_active: true,
       name: 'Chili',
       ingredients: [{
         ingredientName: 'beans',
@@ -139,6 +141,7 @@ describe('POST /api/shared/:token/save — the tag cap on a copy', () => {
     fakeDb.seed('meals', [{
       id: 'origin',
       share_token: 'share-abc',
+      is_active: true,
       name: 'Guacamole',
       ingredients: [
         { ingredientName: 'onion', qty: 1, unit: 'qty', measure: '1', prep: 'finely diced' },
@@ -165,6 +168,7 @@ describe('POST /api/shared/:token/save — the tag cap on a copy', () => {
     fakeDb.seed('meals', [{
       id: 'origin',
       share_token: 'share-abc',
+      is_active: true,
       name: 'Guacamole',
       ingredients: [{ ingredientName: 'onion', qty: 1, unit: 'qty', prep: 'finely diced' }],
       author: 'A Friend', difficulty: 2, serves: '4', website: null,
