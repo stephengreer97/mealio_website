@@ -513,11 +513,11 @@ export function describeHostMismatch(websiteUrl: string, feedUrl: string): strin
  * One entry in the creator's source picker.
  *
  * `blockedReason` travels *with* the option rather than being discovered after
- * it is picked. Instagram and TikTok are real places creators publish and both
- * are genuinely unavailable today, so leaving them out would read as "Mealio
- * does not know about Instagram" and offering them live would be a dead end
- * reached after a decision — which is the worst order to put those two things
- * in (MEAL-101). They are listed, unselectable, and say why.
+ * it is picked. A place creators publish that Mealio cannot read yet is listed,
+ * unselectable, and says why: leaving it out would read as "Mealio does not know
+ * about it", and offering it live would be a dead end reached after a decision,
+ * which is the worst order to put those two things in (MEAL-101). Instagram and
+ * TikTok both started here; neither is blocked today.
  */
 export interface CreatorSourceOption {
   source: PlatformSource;
@@ -542,11 +542,19 @@ export const CREATOR_SOURCE_OPTIONS: readonly CreatorSourceOption[] = [
   { source: 'youtube', label: 'YouTube', blockedReason: null, note: null },
   {
     source: 'instagram',
-    label: 'Instagram: not available yet',
-    blockedReason:
-      'Instagram is waiting on Meta’s app review. Until they approve Mealio, Instagram hands us nothing at ' +
-      'all from your account, so there would be nothing to sync.',
-    note: null,
+    label: 'Instagram',
+    blockedReason: null,
+    /**
+     * Unblocked on 2026-09-17, before Meta's app review is through, so the
+     * review video can show a real import. Until Meta approves, its consent
+     * screen refuses every account not added as an Instagram Tester on the app,
+     * and that refusal comes back to us looking like a cancel. This note is
+     * what stops a creator reading that as Mealio being broken. Delete it the
+     * day the review passes, as TikTok's was.
+     */
+    note:
+      'Instagram is still reviewing Mealio. Until Meta approves it, only accounts Mealio has invited as ' +
+      'testers can connect, and anyone else will see Instagram refuse on its own screen.',
   },
   {
     source: 'tiktok',

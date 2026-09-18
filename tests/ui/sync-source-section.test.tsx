@@ -17,10 +17,10 @@ import { CREATOR_SELECTION_MAX, CREATOR_SOURCE_OPTIONS } from '@/lib/creator-sou
  *  - **The baseline is said where the list is.** Existing posts are marked seen,
  *    not imported, which is exactly why the checklist exists — unsaid, the
  *    creator connects a source, watches nothing arrive, and concludes it broke.
- *  - **Instagram is visible, unselectable, and says why.** A dead end reached
- *    after a decision is the worst order to put those two things in. TikTok was
- *    in that state until its credentials landed; it is selectable now, and what
- *    is left of its caveat belongs after the choice rather than on it.
+ *  - **A source Mealio cannot read is visible, unselectable, and says why.** A
+ *    dead end reached after a decision is the worst order to put those two
+ *    things in. TikTok and then Instagram (2026-09-17) both left that state;
+ *    what is left of a caveat belongs after the choice rather than on it.
  *  - **The cap is visible while they tick**, not sprung on them at the button.
  */
 
@@ -183,53 +183,33 @@ describe('the source picker', () => {
     expect(picker().value).toBe('tiktok');
   });
 
-  it('sits on an unselectable prompt when no source has been chosen', () => {
-    // The state a row an operator left on Instagram opens in, and the one
-    // Disconnect returns to. It needs somewhere to rest in the control without
-    // being an answer a creator can give.
+  it('opens on Instagram for a creator whose source is Instagram', () => {
+    // It opened on the empty prompt while Instagram was blocked, which is the
+    // same trap TikTok fell into when it was unblocked.
     harness({ creator: { ...CREATOR, primary_source: 'instagram', import_opt_in: true } });
 
-    expect(picker().value).toBe('none');
-    const placeholder = Array.from(picker().options).find(o => o.value === 'none');
-    expect(placeholder?.disabled).toBe(true);
+    expect(picker().value).toBe('instagram');
   });
 
-  it('disables Instagram alone, and leaves the rest selectable', () => {
+  it('leaves every source selectable, Instagram included', () => {
     harness();
-    const disabled = Array.from(picker().options).filter(o => o.disabled).map(o => o.value);
+    const disabled = Array.from(picker().options)
+      .filter(o => o.disabled && o.value !== 'none')
+      .map(o => o.value);
 
-    // TikTok was in this list until its credentials landed. The integration was
-    // finished the whole time — what was missing was a client key — so it moves
-    // out the moment that is untrue, rather than staying disabled because the
-    // ticket was written when it was.
-    expect(disabled).toEqual(['instagram']);
+    // Instagram sat here until 2026-09-17, TikTok before it.
+    expect(disabled).toEqual([]);
+    const instagram = Array.from(picker().options).find(o => o.value === 'instagram');
+    expect(instagram?.textContent).toBe('Instagram');
   });
 
-  it('marks the disabled one unavailable on the option itself', () => {
+  it('shows the Instagram connect card, with the tester caveat, when Instagram is picked', async () => {
     harness();
 
-    // On the option, which is where a creator meets it. The paragraph that
-    // repeated each reason under the dropdown is gone: it restated a label
-    // nobody can select, and the section reads as instructions rather than a
-    // list of excuses without it.
-    for (const option of CREATOR_SOURCE_OPTIONS.filter(o => o.blockedReason)) {
-      const el = Array.from(picker().options).find(o => o.value === option.source);
-      expect(el?.textContent).toMatch(/not available yet/i);
-      expect(screen.queryByTestId(`blocked-${option.source}`)).toBeNull();
-    }
-  });
-
-  it('sends nothing for a source that cannot be chosen', async () => {
-    const { calls } = harness();
-
-    // jsdom will happily assign a disabled option's value where a browser will
-    // not let a user pick one, so this asserts the half that is ours: no write,
-    // and no body pretending Instagram is a thing they can set up. The server
-    // refuses it too, in `chooseCreatorSource`.
     fireEvent.change(picker(), { target: { value: 'instagram' } });
 
-    await waitFor(() => expect(calls.some(c => c.method === 'PATCH')).toBe(false));
-    expect(screen.queryByTestId('catalogue')).toBeNull();
+    expect(await screen.findByRole('button', { name: /connect instagram/i })).toBeTruthy();
+    expect(document.body.textContent).toMatch(/invited as testers/i);
   });
 
   it('shows the body for whichever source is picked, and only that one', async () => {
@@ -513,14 +493,13 @@ describe('choosing a source', () => {
   });
 
   it('writes nothing merely because the portal was opened', async () => {
-    // A row an operator set to Instagram, which this dropdown cannot show, so it
-    // opens on "Nothing". Turning that into a write would silently reverse the
-    // operator's decision for anybody who visited their own settings.
+    // A row an operator set to Instagram. Opening the page is not a choice, so
+    // it must not write, whatever the connect card reports on mount.
     const { calls } = harness({
       creator: { ...CREATOR, primary_source: 'instagram', import_opt_in: true },
     });
 
-    await waitFor(() => expect(screen.getByTestId('sync-off')).toBeTruthy());
+    expect(await screen.findByRole('button', { name: /connect instagram/i })).toBeTruthy();
     expect(calls.some(c => c.method === 'PATCH')).toBe(false);
   });
 

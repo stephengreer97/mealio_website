@@ -43,10 +43,10 @@ import type { CatalogEntry, CatalogResult, SyncRun, SyncRunTotals } from '@/lib/
  * concluding it did not work — and because it is the reason the checklist exists
  * at all rather than a limitation to be quiet about.
  *
- * **Instagram and TikTok are visible, unselectable and say why.** Leaving them
- * out reads as "Mealio has not heard of Instagram"; offering them live is a dead
- * end reached *after* a decision, which is the worst order to put those two
- * things in. The reason rides on the option itself.
+ * **A source Mealio cannot read yet is visible, unselectable and says why.**
+ * Leaving it out reads as "Mealio has not heard of it"; offering it live is a
+ * dead end reached *after* a decision, which is the worst order to put those two
+ * things in. The reason rides on the option itself. None is blocked today.
  *
  * Switching source keeps the OAuth grant and keeps `creator_source_items`.
  * Revoking a connection because somebody changed a dropdown is destructive and
@@ -143,10 +143,10 @@ function formatDate(value: string | null): string {
  * Three cases and they genuinely differ:
  *
  *   - A source this dropdown can show is shown. Obviously.
- *   - A row an operator left on **Instagram or TikTok** opens on `none`. The
+ *   - A row left on a source the dropdown **blocks** opens on `none`. The
  *     dropdown cannot display a value it will not let you select, and showing
  *     `website` instead would be a straightforward lie about what is being
- *     polled.
+ *     polled. Nothing is blocked today, so this is the unknown-value case only.
  *   - **Nothing chosen yet** opens on `website`, not on `none`. This is the
  *     state every newly approved creator is in, and landing them on an empty
  *     prompt with a paragraph about not reading them makes "no" the default
@@ -163,8 +163,9 @@ function storedSource(creator: SyncSectionCreator): PrimarySource {
   // line below while it was blocked, which meant a creator syncing from TikTok
   // opened their portal on an empty prompt with no sign of the source they had
   // chosen — and, because the catalogue keys off the selection, no checklist.
-  if (stored === 'website' || stored === 'youtube' || stored === 'tiktok') return stored;
-  if (stored === 'instagram') return 'none';
+  if (stored === 'website' || stored === 'youtube' || stored === 'instagram' || stored === 'tiktok') {
+    return creatorSourceBlockedReason(stored) ? 'none' : stored;
+  }
   return 'website';
 }
 
@@ -338,8 +339,8 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
       }, 0);
     }
 
-    // Instagram is not selectable, so a stray `?instagram=` must not strand the
-    // dropdown on a value it will not show.
+    // A blocked source is not selectable, so a stray `?<platform>=` for one
+    // must not strand the dropdown on a value it will not show.
     if (!returned || creatorSourceBlockedReason(returned)) return;
     chose.current = true;
     setSource(returned);
@@ -491,8 +492,8 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
    * finds nothing is syncing.
    *
    * Only ever after the creator has touched something. `chose` is what keeps a
-   * page load from writing anything: without it a row an operator had set to
-   * Instagram — which this dropdown cannot show, so it opens unanswered —
+   * page load from writing anything: without it a row an operator had set to a
+   * blocked source (which this dropdown cannot show, so it opens unanswered)
    * would have that decision silently reversed by somebody opening the portal.
    */
   useEffect(() => {
@@ -1055,10 +1056,9 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
         ) : source === 'youtube' ? (
           <YouTubeConnectCard embedded onConnectionChange={noteConnection('youtube')} />
         ) : (
-          // Instagram is in the dropdown but disabled, so `source` can only be
-          // 'tiktok' here. Keyed on the platform so switching between two
-          // connect cards remounts rather than reusing one card's status for
-          // the other's account.
+          // Instagram or TikTok. Keyed on the platform so switching between the
+          // two connect cards remounts rather than reusing one card's status
+          // for the other's account.
           <PlatformConnectCard
             key={source}
             platform={source}

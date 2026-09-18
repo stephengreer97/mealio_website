@@ -423,12 +423,21 @@ describe('creator-sources — chooseCreatorSource', () => {
     expect((choice as { error: string }).error).toMatch(/connect your youtube account first/i);
   });
 
-  it('refuses Instagram, with the reason on it', () => {
-    // Disabled in the dropdown, and disabled here: a request is not a dropdown,
-    // and a grant does not help while Meta has not approved the app.
-    const choice = chooseCreatorSource({}, 'instagram', ['instagram']);
-    expect(choice).toMatchObject({ ok: false });
-    expect((choice as { error: string }).error).toBe(creatorSourceBlockedReason('instagram'));
+  it('accepts Instagram on its grant, now that it is unblocked', () => {
+    // Blocked until 2026-09-17 on Meta's app review. Unblocked ahead of it so
+    // the review video can show a real import; a grant is still required.
+    expect(creatorSourceBlockedReason('instagram')).toBeNull();
+    expect(chooseCreatorSource({}, 'instagram', ['instagram'])).toMatchObject({ ok: true });
+    expect(chooseCreatorSource({}, 'instagram', [])).toMatchObject({ ok: false });
+  });
+
+  it('offers Instagram plainly, with the tester caveat after the choice', () => {
+    const instagram = CREATOR_SOURCE_OPTIONS.find(option => option.source === 'instagram');
+    expect(instagram?.label).toBe('Instagram');
+    // Until Meta approves, a non-tester is refused on Meta's own screen and it
+    // reaches us looking like a cancel, so the card has to say why first.
+    expect(instagram?.note).toMatch(/testers/i);
+    expect(instagram?.note).not.toMatch(/\u2014/);
   });
 
   it('accepts TikTok on its grant, now that the app has credentials', () => {

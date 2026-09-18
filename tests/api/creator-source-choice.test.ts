@@ -219,19 +219,29 @@ describe('a source the creator has not connected', () => {
   });
 });
 
-describe('a source no creator can use yet', () => {
-  it('refuses Instagram with the reason the dropdown shows', async () => {
+describe('the social sources, on their grants', () => {
+  it('accepts Instagram on its grant, now that it is unblocked', async () => {
     asUser();
     fakeDb.seed('creators', [creatorRow({ instagram_url: 'https://instagram.com/chefsarah' })]);
-    // Even with a grant. The dropdown disables Instagram because Meta has not
-    // approved the app, not because nobody connected it — a request is not a
-    // dropdown, so the server says the same thing.
     fakeDb.seed('creator_platform_accounts', [{ id: 'pa1', creator_id: 'c1', platform: 'instagram' }]);
+
+    // Refused with Meta's reason until 2026-09-17. Unblocked ahead of the app
+    // review so its video can show a real import.
+    const res = await patch({ primarySource: 'instagram' });
+
+    expect(res.status).toBe(200);
+    expect(fakeDb.row('creators', 'c1')?.primary_source).toBe('instagram');
+    expect(fakeDb.row('creators', 'c1')?.import_opt_in).toBe(true);
+  });
+
+  it('still refuses Instagram with a link but no grant', async () => {
+    asUser();
+    fakeDb.seed('creators', [creatorRow({ instagram_url: 'https://instagram.com/chefsarah' })]);
+    fakeDb.seed('creator_platform_accounts', []);
 
     const res = await patch({ primarySource: 'instagram' });
 
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/meta/i);
     expect(fakeDb.row('creators', 'c1')?.primary_source).toBe('none');
   });
 
@@ -566,15 +576,16 @@ describe('POST /api/creator/sync — the 100 cap', () => {
     expect(fakeDb.rows('creator_sync_runs')[0].requested_by).toBe('u1');
   });
 
-  it('refuses a source no creator can use yet', async () => {
+  it('refuses a source that is not one of the four', async () => {
     asUser();
-    fakeDb.seed('creators', [creatorRow({ instagram_url: 'https://instagram.com/chefsarah' })]);
+    fakeDb.seed('creators', [creatorRow()]);
     fakeDb.seed('creator_sync_runs', []);
 
+    // Instagram was the example here until it was unblocked on 2026-09-17.
     const res = await START_SYNC(
       jsonRequest('/api/creator/sync', {
         token,
-        body: { source: 'instagram', items: [{ itemId: 'x', url: 'https://instagram.com/p/x' }] },
+        body: { source: 'facebook', items: [{ itemId: 'x', url: 'https://facebook.com/p/x' }] },
       }),
     );
 
