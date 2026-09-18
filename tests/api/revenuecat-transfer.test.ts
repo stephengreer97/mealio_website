@@ -67,7 +67,7 @@ describe('RevenueCat TRANSFER', () => {
 
   it('leaves an old owner paid through Stripe on paid', async () => {
     fakeDb.seed('user_profiles', [
-      { id: WEB, subscription_tier: 'paid', stripe_subscription_id: 'sub_123' },
+      { id: WEB, subscription_tier: 'paid', subscription_source: 'stripe', stripe_subscription_id: 'sub_123' },
       { id: NEW, subscription_tier: 'free', stripe_subscription_id: null },
     ]);
 

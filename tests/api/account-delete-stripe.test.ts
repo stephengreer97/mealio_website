@@ -107,7 +107,7 @@ describe('DELETE /api/account/delete: subscriptions', () => {
   });
 
   it('tells an in-app subscriber that the store subscription is theirs to cancel', async () => {
-    seed({ subscription_tier: 'paid', stripe_customer_id: null, stripe_subscription_id: null });
+    seed({ subscription_tier: 'paid', subscription_source: 'app_store', stripe_customer_id: null, stripe_subscription_id: null });
 
     const res = await del();
 
@@ -116,5 +116,14 @@ describe('DELETE /api/account/delete: subscriptions', () => {
     expect(body.success).toBe(true);
     expect(body.notice).toMatch(/App Store or Google Play/);
     expect(body.notice).not.toContain('—');
+  });
+
+  it('does not tell a comped creator to cancel a store subscription they never bought', async () => {
+    seed({ subscription_tier: 'paid', subscription_source: 'comp', stripe_customer_id: null, stripe_subscription_id: null });
+
+    const body = await (await del()).json();
+
+    expect(body.success).toBe(true);
+    expect(body.notice).toBeUndefined();
   });
 });

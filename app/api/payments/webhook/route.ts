@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
+import { grantPaid, endPaid } from '@/lib/subscription-source';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,12 +42,11 @@ export async function POST(request: NextRequest) {
         break;
       }
 
-      const { error: updateErr } = await supabase.from('user_profiles').update({
-        subscription_tier: 'paid',
+      const { error: updateErr } = await grantPaid(supabase, userId, 'stripe', {
         stripe_customer_id: stripeCustomerId ?? null,
         stripe_subscription_id: stripeSubId ?? null,
         subscription_ends_at: null,
-      }).eq('id', userId);
+      });
 
       if (updateErr) {
         log({ event: 'PAYMENT:WEBHOOK', status: 'error', userId, reason: updateErr.message, detail: 'update failed' });
@@ -108,7 +108,18 @@ export async function POST(request: NextRequest) {
         break;
       }
 
-      await supabase.from('user_profiles').update({ subscription_tier: newTier }).eq('id', dbUserId);
+      // Only a subscription this system granted is ended here: a past_due or
+      // incomplete Stripe status used to set free outright, which took access
+      // from comped creators and App Store subscribers alike.
+      if (newTier === 'paid') {
+        await grantPaid(supabase, dbUserId, 'stripe');
+      } else {
+        const { kept } = await endPaid(supabase, dbUserId, 'stripe');
+        if (kept.length) {
+          log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: `subscription.updated→${sub.status}: tier kept (source ${kept[0].source})` });
+          break;
+        }
+      }
       if (newTier === 'paid') {
         // Set-once first paid conversion time (e.g. trial→active); never overwritten.
         await supabase.from('user_profiles')
@@ -165,10 +176,13 @@ export async function POST(request: NextRequest) {
           detail: `subscription.deleted ${sub.id}: tier kept (${stillSubscribed ? `${stillSubscribed.id} still ${stillSubscribed.status}` : `tier is from ${recordedSubId}`})`,
         });
       } else {
-        await supabase.from('user_profiles').update({
-          subscription_tier: 'free',
-          subscription_ends_at: endsAt,
-        }).eq('id', dbUserId);
+        const { kept } = await endPaid(supabase, dbUserId, 'stripe', { subscription_ends_at: endsAt });
+        if (kept.length) {
+          log({
+            event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId,
+            detail: `subscription.deleted ${sub.id}: tier kept (source ${kept[0].source})`,
+          });
+        }
       }
 
       // Idempotent on the Stripe event id (see the 'started' insert above).
