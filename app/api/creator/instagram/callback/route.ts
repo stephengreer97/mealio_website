@@ -1,9 +1,7 @@
 import { NextRequest } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase';
 import { log } from '@/lib/logger';
-import { saveConnection } from '@/lib/platform-tokens';
-import { backToPortal, readPlatformConnectState } from '@/lib/creator-connect';
-import { exchangeInstagramCode, fetchInstagramAccount, INSTAGRAM_BASIC_SCOPE } from '@/lib/instagram';
+import { appCallbackRedirect, backToPortal, readPlatformConnectState } from '@/lib/creator-connect';
+import { finishInstagramConnect } from '@/lib/creator-connect-finish';
 
 /**
  * GET /api/creator/instagram/callback — where Instagram sends the creator back
@@ -13,15 +11,17 @@ import { exchangeInstagramCode, fetchInstagramAccount, INSTAGRAM_BASIC_SCOPE } f
  * a forged callback never mints a token. Which creator this is comes from that
  * cookie and from nowhere else.
  *
- * Two failures get their own sentence rather than a generic one, because in both
- * cases the creator can act on the answer and cannot act on "something went
- * wrong": a **personal** account (Instagram grants those no API access at all),
- * and a grant that came back without the basic scope, which happens when someone
- * unticks it on Meta's own screen and would otherwise present as a connection
- * that reads nothing forever.
+ * Everything after the state check (exchange, scope and account checks, storing
+ * the grant) is `finishInstagramConnect`, shared with the mobile app's
+ * `/complete` so the two paths cannot drift.
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+
+  // The mobile app's round trip carries a signed state instead of a cookie, and
+  // is bounced back into the app unexchanged. See `appCallbackRedirect`.
+  const app = await appCallbackRedirect(request, 'instagram');
+  if (app) return app;
 
   const verified = await readPlatformConnectState(request, 'instagram', searchParams.get('state'));
   if (!verified.ok) return verified.response;
@@ -39,58 +39,6 @@ export async function GET(request: NextRequest) {
     return backToPortal('instagram', 'failed', 'no-code');
   }
 
-  const exchanged = await exchangeInstagramCode(code);
-  if (!exchanged.ok) {
-    log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=instagram', reason: exchanged.detail });
-    // Instagram's own sentence stays in the log line above; the card owns what
-    // the creator reads. See `ConnectFailure`.
-    return backToPortal('instagram', 'failed', 'exchange');
-  }
-
-  if (!exchanged.grant.scopes.includes(INSTAGRAM_BASIC_SCOPE)) {
-    log({ event: 'CREATOR:SOURCE_CONNECT', status: 'failed', userId, detail: 'platform=instagram', reason: `basic scope not granted (${exchanged.grant.responseShape})` });
-    return backToPortal('instagram', 'failed', 'scope');
-  }
-
-  const account = await fetchInstagramAccount(exchanged.grant.accessToken);
-  if (!account.ok) {
-    log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=instagram', reason: account.detail });
-    return backToPortal('instagram', 'failed', 'account');
-  }
-
-  const supabase = createServerSupabaseClient();
-
-  try {
-    await saveConnection(supabase, {
-      creatorId,
-      platform: 'instagram',
-      // From the grant, never typed by a creator and never taken off the link on
-      // their application.
-      externalId: account.account.id,
-      externalName: account.account.username,
-      accessToken: exchanged.grant.accessToken,
-      // Instagram has no refresh token: the long-lived access token renews
-      // itself while it is alive. `refreshInstagramGrant` is what keeps it that
-      // way, and `expires_at` is what puts this row in the sweep's sights.
-      refreshToken: null,
-      scopes: exchanged.grant.scopes,
-      expiresAt: exchanged.grant.expiresAt,
-    });
-  } catch (err) {
-    log({ event: 'CREATOR:SOURCE_CONNECT', status: 'error', userId, detail: 'platform=instagram', error: err });
-    return backToPortal('instagram', 'failed', 'store');
-  }
-
-  log({
-    event: 'CREATOR:SOURCE_CONNECT',
-    status: 'success',
-    userId,
-    // No tokens, ever. The account id and type are the useful half, and the
-    // expiry is the number anyone debugging this in two months will want.
-    detail:
-      `platform=instagram creator=${creatorId} account=${account.account.id} ` +
-      `type=${account.account.accountType ?? 'unknown'} expires=${exchanged.grant.expiresAt ?? 'never'}`,
-  });
-
-  return backToPortal('instagram', 'connected');
+  const finished = await finishInstagramConnect({ userId, creatorId, code });
+  return finished.ok ? backToPortal('instagram', 'connected') : backToPortal('instagram', 'failed', finished.reason);
 }
