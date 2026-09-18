@@ -47,9 +47,42 @@ export async function POST(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const { data: profile } = await supabase
     .from('user_profiles')
-    .select('stripe_customer_id')
+    .select('stripe_customer_id, subscription_tier')
     .eq('id', decoded.userId)
     .single();
+
+  // ALREADY PAYING? Then this is not a sale. Nothing stopped a paid user from
+  // starting a second Stripe subscription and being billed twice for the same
+  // Full Access. Stripe is asked directly rather than trusting the tier, which
+  // can lag the webhook: anyone with a live subscription is sent to the billing
+  // portal to manage the one they have.
+  if (profile?.stripe_customer_id) {
+    try {
+      const subs = await stripe.subscriptions.list({ customer: profile.stripe_customer_id, status: 'all', limit: 20 });
+      if (subs.data.some((s) => s.status === 'active' || s.status === 'trialing' || s.status === 'past_due')) {
+        const portal = await stripe.billingPortal.sessions.create({
+          customer: profile.stripe_customer_id,
+          return_url: `${APP_URL}/discover`,
+        });
+        log({ event: 'PAYMENT:CHECKOUT', status: 'failed', userId: decoded.userId, reason: 'already subscribed; sent to portal' });
+        return NextResponse.json({ url: portal.url, alreadySubscribed: true });
+      }
+    } catch (err: any) {
+      const detail = err?.message ?? String(err);
+      log({ event: 'PAYMENT:CHECKOUT', status: 'error', userId: decoded.userId, reason: detail, detail: 'subscription check failed' });
+      return NextResponse.json({ error: 'Could not check your current subscription. Please try again.' }, { status: 502 });
+    }
+  }
+
+  // Paid with no live Stripe subscription: bought in the app (RevenueCat) or
+  // granted by hand. A Stripe checkout on top would charge for what they have.
+  if (profile?.subscription_tier === 'paid') {
+    log({ event: 'PAYMENT:CHECKOUT', status: 'failed', userId: decoded.userId, reason: 'already paid (not via Stripe)' });
+    return NextResponse.json(
+      { error: 'You already have Full Access. Manage your subscription where you bought it.' },
+      { status: 409 },
+    );
+  }
 
   const sessionParams: Stripe.Checkout.SessionCreateParams = {
     mode: 'subscription',

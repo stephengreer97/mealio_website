@@ -5,6 +5,9 @@ import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
+/** Stripe statuses that still grant Full Access, the same two subscription.updated treats as paid. */
+const LIVE_SUBSCRIPTION_STATUSES = new Set<Stripe.Subscription.Status>(['active', 'trialing']);
+
 // Stripe requires the raw body for signature verification
 export async function POST(request: NextRequest) {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -124,7 +127,7 @@ export async function POST(request: NextRequest) {
 
       const { data: rows } = await supabase
         .from('user_profiles')
-        .select('id')
+        .select('id, stripe_subscription_id')
         .eq('stripe_customer_id', stripeCustomerId)
         .limit(1);
 
@@ -134,10 +137,39 @@ export async function POST(request: NextRequest) {
         break;
       }
 
-      await supabase.from('user_profiles').update({
-        subscription_tier: 'free',
-        subscription_ends_at: endsAt,
-      }).eq('id', dbUserId);
+      // ONE SUBSCRIPTION ENDING IS NOT THE CUSTOMER LEAVING. A customer can hold
+      // more than one (checkout used to let a paying user start a second), and
+      // downgrading on either one's deletion took Full Access from someone still
+      // being billed for it. So ask Stripe what is still live, and leave the tier
+      // alone if anything is. A failure to ask is a 500, so Stripe retries this
+      // event rather than it being decided on a guess.
+      let stillSubscribed: Stripe.Subscription | undefined;
+      try {
+        const live = await stripe.subscriptions.list({ customer: stripeCustomerId, status: 'all', limit: 20 });
+        stillSubscribed = live.data.find(
+          (s) => s.id !== sub.id && LIVE_SUBSCRIPTION_STATUSES.has(s.status),
+        );
+      } catch (err) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'error', userId: dbUserId, reason: String(err), detail: 'subscription.deleted: could not list subscriptions' });
+        return NextResponse.json({ error: 'Could not confirm remaining subscriptions' }, { status: 500 });
+      }
+
+      // Likewise when the subscription on record is a different one: the tier
+      // belongs to that subscription, and its own deletion event will end it.
+      const recordedSubId = rows?.[0]?.stripe_subscription_id ?? null;
+      const tierFromOtherSub = recordedSubId !== null && recordedSubId !== sub.id;
+
+      if (stillSubscribed || tierFromOtherSub) {
+        log({
+          event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId,
+          detail: `subscription.deleted ${sub.id}: tier kept (${stillSubscribed ? `${stillSubscribed.id} still ${stillSubscribed.status}` : `tier is from ${recordedSubId}`})`,
+        });
+      } else {
+        await supabase.from('user_profiles').update({
+          subscription_tier: 'free',
+          subscription_ends_at: endsAt,
+        }).eq('id', dbUserId);
+      }
 
       // Idempotent on the Stripe event id (see the 'started' insert above).
       //
@@ -157,7 +189,9 @@ export async function POST(request: NextRequest) {
           },
           { onConflict: 'stripe_event_id', ignoreDuplicates: true },
         );
-      log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: 'subscription.deleted→free' });
+      if (!stillSubscribed && !tierFromOtherSub) {
+        log({ event: 'PAYMENT:WEBHOOK', status: 'success', userId: dbUserId, detail: 'subscription.deleted→free' });
+      }
       break;
     }
 

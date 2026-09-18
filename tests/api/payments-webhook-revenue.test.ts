@@ -10,6 +10,8 @@ const constructEvent = vi.fn();
 vi.mock('stripe', () => ({
   default: class {
     webhooks = { constructEvent: (...a: unknown[]) => constructEvent(...a) };
+    // subscription.deleted asks what else the customer still has; nothing here.
+    subscriptions = { list: async () => ({ data: [] }) };
   },
 }));
 

@@ -56,6 +56,7 @@ export default function PricingPage() {
       });
       const data = await res.json();
       if (data.url) window.location.href = data.url;
+      else if (data.error) alert(data.error);
     } finally { setCheckoutLoading(false); }
   };
 
