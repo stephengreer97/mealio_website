@@ -48,10 +48,19 @@ const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).to
  * property the paged read depends on, and the reason a truncated read takes an
  * interleaved slice of both creators rather than all of one.
  */
-function save(i: number, creator: { id: string; display_name: string }, savedAt = nowIso()) {
+function save(
+  i: number,
+  creator: { id: string; display_name: string; user_id?: string },
+  savedAt = nowIso(),
+  who: { userId?: string; mealId?: string } = {},
+) {
   return {
     id: `save-${String(i).padStart(5, '0')}`,
     saved_at: savedAt,
+    // A distinct saver per row unless a test says otherwise, as the table's
+    // UNIQUE (preset_meal_id, user_id) makes it in production.
+    user_id: who.userId ?? `user-${i}`,
+    preset_meal_id: who.mealId ?? `meal-${creator.id}`,
     preset_meals: { creator_id: creator.id, creators: creator },
   };
 }
@@ -147,6 +156,28 @@ describe('GET /api/admin/stats', () => {
     expect(body.totals.totalCreatorAnnualSaves).toBe(1);
     expect(body.leaderboard).toEqual([
       { name: 'Chef Sarah', annualSaves: 1, sharePercent: 100 },
+    ]);
+  });
+
+  it('pays nothing for a creator saving their own meals, or for a repeated save', async () => {
+    // The profit share is paid out of these rows. A creator's own saves are not an
+    // audience, and one person saving the same meal twice is one save.
+    asAdmin();
+    const sarah = { ...SARAH, user_id: 'sarah-user' };
+    fakeDb.seed('preset_meal_saves', [
+      save(1, sarah, nowIso(), { userId: 'sarah-user', mealId: 'm-s1' }),
+      save(2, sarah, nowIso(), { userId: 'sarah-user', mealId: 'm-s2' }),
+      save(3, sarah, nowIso(), { userId: 'fan', mealId: 'm-s1' }),
+      save(4, sarah, nowIso(), { userId: 'fan', mealId: 'm-s1' }),
+      save(5, DEV, nowIso(), { userId: 'fan', mealId: 'm-d1' }),
+    ]);
+
+    const body = await getStats(token);
+
+    expect(body.totals.totalCreatorAnnualSaves).toBe(2);
+    expect(body.leaderboard).toEqual([
+      { name: 'Chef Sarah', annualSaves: 1, sharePercent: 50 },
+      { name: 'Chef Dev', annualSaves: 1, sharePercent: 50 },
     ]);
   });
 

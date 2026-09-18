@@ -146,9 +146,6 @@ export default function SharedPresetMealPage() {
         Authorization: `Bearer ${accessToken}`,
       };
 
-      // Record the save — counts toward creator stats (fire-and-forget)
-      fetch(`/api/preset-meals/${id}/save`, { method: 'POST', headers }).catch(() => {});
-
       // Create a personal copy
       const res = await fetch('/api/meals', {
         method: 'POST',
@@ -157,6 +154,7 @@ export default function SharedPresetMealPage() {
           name:        meal!.name,
           storeId:     selectedStore,
           ingredients: meal!.ingredients,
+          presetMealId: id,
           ...(meal!.author     ? { author:    meal!.author }     : {}),
           ...(meal!.difficulty ? { difficulty: meal!.difficulty } : {}),
           ...(meal!.source     ? { website:   meal!.source }     : {}),
@@ -178,6 +176,11 @@ export default function SharedPresetMealPage() {
         }
         return;
       }
+
+      // Record the save, which counts toward creator stats. AFTER the copy exists:
+      // the save route only records a save the user actually holds. keepalive so
+      // the navigation below does not cancel it.
+      fetch(`/api/preset-meals/${id}/save`, { method: 'POST', headers, keepalive: true }).catch(() => {});
 
       try {
         const updated = [selectedStore, ...recentStores.filter(id => id !== selectedStore)].slice(0, 3);
