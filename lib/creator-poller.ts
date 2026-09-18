@@ -48,6 +48,7 @@ import {
   buildCatalog,
   processSyncItem,
   CLAIM_LEASE_MS,
+  ITEM_WORST_CASE_MS,
   type CatalogEntry,
   type SyncCreator,
   type SyncDeps,
@@ -57,6 +58,7 @@ import { isPlatformSource, SOURCE_LABELS, type PlatformSource } from '@/lib/crea
 import { sendCreatorDraftsReadyEmail, type DraftedRecipe } from '@/lib/email';
 import { log } from '@/lib/logger';
 import { captionFailureIsFinal } from '@/lib/youtube';
+import { classifierWasUnavailable } from '@/lib/import/gate';
 import type { ConditionalValidators } from '@/lib/import/ssrf';
 
 // ── The schedule, in one place ───────────────────────────────────────────────
@@ -195,6 +197,27 @@ export const POLL_CREATOR_BATCH = 100;
  */
 export const POLL_PASS_BUDGET_MS = 240_000;
 
+/** The poll route's `maxDuration`, in milliseconds. A test holds the route literal to it. */
+export const POLL_MAX_DURATION_MS = 300_000;
+
+/** Room left after the last item for its record, the state write and the email. */
+const POLL_WRITE_BACK_MS = 15_000;
+
+/**
+ * How far into a pass an item may still be *started* (review finding 5).
+ *
+ * `POLL_PASS_BUDGET_MS` bounds when a creator is listed, and it was also the only
+ * bound on starting an item, so an extraction could begin at 239s and run for
+ * `ITEM_WORST_CASE_MS` (165s) against a 300s limit. Killed between the draft
+ * insert and the record write, that item is `failed` in the table with a draft
+ * behind it: paid for twice, and before finding 4 also drafted and emailed twice.
+ *
+ * Derived rather than chosen: whatever is left of the function once the worst
+ * item and the write-back are taken out. 120s today. An item not started has no
+ * record, so it is new again next pass, which is where a deferred one sits.
+ */
+export const POLL_ITEM_CUTOFF_MS = POLL_MAX_DURATION_MS - POLL_WRITE_BACK_MS - ITEM_WORST_CASE_MS;
+
 /**
  * Longest a publisher's advertised TTL may push us out.
  *
@@ -230,6 +253,25 @@ function backoffMs(consecutiveFailures: number): number {
  * same failure every day until the feed rolls over is worse than saying so once.
  */
 const RETRY_WINDOW_MS = 3 * POLL_INTERVAL_MS;
+
+/**
+ * The retry window for an item the gate could not judge because the classifier
+ * was down (`classifierWasUnavailable`).
+ *
+ * A day, not three intervals, because the reasoning behind the short window does
+ * not hold for this failure. Four failures of the same page are evidence about
+ * the page; four failures inside 45 minutes of an Anthropic outage are evidence
+ * about Anthropic, and an outage longer than 45 minutes is not rare enough to
+ * lose recipes over. Each attempt is one page fetch and a gate call that fails
+ * for free, under the same five-item cap, so a day of them is cheap. Past a day
+ * the item still ends with a `lost` signal, which says it was never judged.
+ */
+const OUTAGE_RETRY_WINDOW_MS = 24 * 60 * MINUTE_MS;
+
+/** How long this failure stays retryable, from when we first met the item. */
+function retryWindowFor(record: CatalogEntry['record']): number {
+  return classifierWasUnavailable(record?.detail) ? OUTAGE_RETRY_WINDOW_MS : RETRY_WINDOW_MS;
+}
 
 /**
  * Listing size below which "everything is new" says nothing.
@@ -320,6 +362,12 @@ export interface PollDeps extends SyncDeps {
   notifier?: typeof sendCreatorDraftsReadyEmail;
   /** Real-clock deadline for the whole pass. Defaults to `POLL_PASS_BUDGET_MS` from now. */
   deadline?: number;
+  /**
+   * Real-clock time after which no new item is started. Defaults to
+   * `POLL_ITEM_CUTOFF_MS` from the start of the pass. Earlier than `deadline`,
+   * because an item can take far longer than listing a creator does.
+   */
+  itemDeadline?: number;
 }
 
 // ── One creator ──────────────────────────────────────────────────────────────
@@ -382,6 +430,18 @@ function emptyResult() {
  * creator granting the permission — happens on human time, long past the window.
  */
 function retryable(record: CatalogEntry['record'], at: number): boolean {
+  if (!awaitingRetry(record, at)) return false;
+  return at - Date.parse(record!.at ?? '') >= CLAIM_LEASE_MS;
+}
+
+/**
+ * Whether a failed item still has attempts coming, now or on a later pass.
+ *
+ * `retryable` without the lease: an item claimed ten seconds ago is not ours to
+ * retry this pass, and it is still work the feed has not finished handing us —
+ * which is what decides whether this pass may store the feed's validators.
+ */
+function awaitingRetry(record: CatalogEntry['record'], at: number): boolean {
   if (!record || record.status !== 'failed') return false;
   if (captionFailureIsFinal(record.detail)) return false;
   const firstSeen = Date.parse(record.firstSeenAt ?? '');
@@ -390,13 +450,20 @@ function retryable(record: CatalogEntry['record'], at: number): boolean {
   // thing this is careful about — so it is left alone rather than retried on
   // faith.
   if (!Number.isFinite(firstSeen) || !Number.isFinite(touched)) return false;
-  return at - firstSeen < RETRY_WINDOW_MS && at - touched >= CLAIM_LEASE_MS;
+  return at - firstSeen < retryWindowFor(record);
 }
 
-/** True when a failure now was this item's last permitted attempt. */
-function outOfAttempts(record: CatalogEntry['record'], at: number): boolean {
+/**
+ * True when a failure now was this item's last permitted attempt.
+ *
+ * Judged on the failure just recorded, not on the record we listed: that is the
+ * one the next pass's `retryable` will read, so an item that failed on a model
+ * timeout and then on an outage gets the outage's window, and the reverse.
+ */
+function outOfAttempts(record: CatalogEntry['record'], detail: string | null, at: number): boolean {
   const firstSeen = Date.parse(record?.firstSeenAt ?? '');
-  return Number.isFinite(firstSeen) && at + POLL_INTERVAL_MS - firstSeen >= RETRY_WINDOW_MS;
+  const window = classifierWasUnavailable(detail) ? OUTAGE_RETRY_WINDOW_MS : RETRY_WINDOW_MS;
+  return Number.isFinite(firstSeen) && at + POLL_INTERVAL_MS - firstSeen >= window;
 }
 
 /**
@@ -624,9 +691,13 @@ export async function pollCreator(
     reviewBy: deps.reviewBy ?? 'creator',
   };
 
+  /** Items this pass finished one way or another, whatever their listed record says. */
+  const settled = new Set<string>();
+
   for (const entry of batch) {
-    // Checked before the item, not after. An extraction is a fetch and two model
-    // calls; starting one we cannot finish spends the money and loses the
+    // Checked before the item, not after, and against the item cutoff rather than
+    // the pass budget (`POLL_ITEM_CUTOFF_MS`). An extraction is a fetch and two
+    // model calls; starting one we cannot finish spends the money and loses the
     // result. An item not started has no record, so it is simply new again next
     // cycle — the same place a deferred item sits.
     if (Date.now() >= passDeadline(deps)) {
@@ -639,6 +710,7 @@ export async function pollCreator(
     // the batch is unaffected.
     if (entry.record !== null) result.retried += 1;
     const processed = await processSyncItem(itemDeps, context, creator, toSyncItem(entry));
+    if (processed.status !== 'failed') settled.add(entry.itemId);
 
     if (processed.status === 'drafted') {
       result.drafted += 1;
@@ -668,7 +740,7 @@ export async function pollCreator(
       // so to the creator who can grant it. Paging an operator to hand-import
       // forty videos that one tick would bring in is the wrong signal, and one
       // of them in a pass flips the cron line to `error` (MEAL-138).
-      if (!captionFailureIsFinal(processed.detail) && outOfAttempts(entry.record, now())) {
+      if (!captionFailureIsFinal(processed.detail) && outOfAttempts(entry.record, processed.detail, now())) {
         // The end of the road for one post. Nothing else in the system will ever
         // mention it again, so this is the only chance to say a recipe was lost.
         result.signals.push({
@@ -685,7 +757,27 @@ export async function pollCreator(
     }
   }
 
-  await writeState(deps, creator, nextState);
+  // **The validators are only a promise that nothing is left in this feed for
+  // us.** Stored while an item is deferred or still has retries coming, they
+  // make the next request conditional, the publisher truthfully answers 304,
+  // and the 304 path returns before `unseen` or `retries` is ever computed. A
+  // blog that published six posts and then went quiet lost the sixth, and every
+  // failed extraction on it lost its three retries, for as long as the feed
+  // stayed unchanged, which on a small blog is weeks. Withheld, the next pass
+  // reads the feed in full, and the pass that finally finishes it stores them.
+  //
+  // `result.failed` and not only the records, because the listing in hand
+  // predates this pass's writes: an item that failed a moment ago still reads as
+  // new in it, and one this pass retried successfully still reads as failed.
+  const unfinished =
+    result.deferred > 0 ||
+    result.failed > 0 ||
+    catalog.entries.some((entry) => !settled.has(entry.itemId) && awaitingRetry(entry.record, now()));
+  await writeState(
+    deps,
+    creator,
+    unfinished ? { ...nextState, etag: null, lastModified: null } : nextState,
+  );
 
   log({
     event: 'POLL:SOURCE',
@@ -700,7 +792,7 @@ export async function pollCreator(
 }
 
 function passDeadline(deps: PollDeps): number {
-  return deps.deadline ?? Number.POSITIVE_INFINITY;
+  return Math.min(deps.deadline ?? Number.POSITIVE_INFINITY, deps.itemDeadline ?? Number.POSITIVE_INFINITY);
 }
 
 /**
@@ -1056,8 +1148,10 @@ export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
   // Measured against the real clock even when `now` is injected: a test pinning
   // `now` to a constant is describing poll windows, not asking for an unbounded
   // pass.
-  const deadline = deps.deadline ?? Date.now() + POLL_PASS_BUDGET_MS;
-  const passDeps: PollDeps = { ...deps, deadline };
+  const startedAt = Date.now();
+  const deadline = deps.deadline ?? startedAt + POLL_PASS_BUDGET_MS;
+  const itemDeadline = deps.itemDeadline ?? startedAt + POLL_ITEM_CUTOFF_MS;
+  const passDeps: PollDeps = { ...deps, deadline, itemDeadline };
 
   /**
    * Origins that refused us during *this* pass.

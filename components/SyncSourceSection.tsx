@@ -884,12 +884,27 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
       source,
       items: entries
         .filter(entry => selected.includes(entry.itemId))
-        .map(entry => ({ itemId: entry.itemId, url: entry.url, title: entry.title, publishedAt: entry.publishedAt })),
+        // `reselect` on a post already read and refused, or declined: the server
+        // re-reads those only when asked to, and on this screen the only way one
+        // gets into a selection is a tick of its own (see `importable`).
+        .map(entry => ({
+          itemId: entry.itemId,
+          url: entry.url,
+          title: entry.title,
+          publishedAt: entry.publishedAt,
+          ...(isRejected(entry) ? { reselect: true } : {}),
+        })),
     });
     if (!mounted.current) return;
     if (!res.ok) {
       setBusy(false);
       setError(data.error || 'Could not start that import.');
+      // One run at a time: a refusal because one is already under way brings it
+      // back, and showing it is what puts Carry on in front of the creator.
+      if (res.status === 409 && data.run) {
+        setRun(data.run as SyncRun);
+        if (data.totals) setTotals(data.totals as SyncRunTotals);
+      }
       return;
     }
     const created = data.run as SyncRun;

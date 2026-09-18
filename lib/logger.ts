@@ -80,6 +80,7 @@ export type EventType =
   // The admin equivalent is `ADMIN:SYNC_RUN`; kept apart so "who started this"
   // is answerable from the log line rather than from the run row.
   | 'CREATOR:SYNC_RUN'
+  | 'CREATOR:IMPORT_BUDGET' // daily per-creator import cap refused or could not be read
   // Consent to let Mealio edit the creator's own YouTube descriptions. Separate
   // from `import_opt_in` on purpose: reading and writing are different
   // permissions over different property (MEAL-77).

@@ -2,11 +2,13 @@ import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fakeDb } from '../helpers/supabase-mock';
-import { publicLookup, stubFetch } from '../helpers/import-stubs';
+import { failingCaller, publicLookup, stubFetch } from '../helpers/import-stubs';
 import { importedGuacamole } from '../helpers/import-ui-fixtures';
 import type { ImportResult, ImportSuccess } from '@/lib/import/types';
-import type { RunImportOptions } from '@/lib/import/pipeline';
+import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { CLASSIFIER_OUTAGE_NOTE, classifierWasUnavailable } from '@/lib/import/gate';
 import { CAPTIONS_MISSING_SCOPE_DETAIL } from '@/lib/youtube';
+import { ITEM_WORST_CASE_MS } from '@/lib/admin-sync';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
@@ -27,6 +29,8 @@ import {
   POLL_CREATOR_BATCH,
   POLL_INTERVAL_MINUTES,
   POLL_ITEM_CAP,
+  POLL_ITEM_CUTOFF_MS,
+  POLL_MAX_DURATION_MS,
   type PollDeps,
   type PollableCreator,
 } from '@/lib/creator-poller';
@@ -637,6 +641,34 @@ describe('a failed item is retried, and its loss is said out loud', () => {
    * and inside it every attempt is the identical refusal at 50 quota units.
    * A read-only channel with forty thin-description videos was 120 refusals.
    */
+  it('does not draft or announce a post twice when its first write-back was lost (review finding 4)', async () => {
+    // A draft landed and the record write after it did not, so the row is still
+    // the claim: `failed`, and inside the retry window.
+    const { impl } = feedRoutes(feedWith(1));
+    fakeDb.seed('creator_source_items', [{
+      ...failedItem(INTERVAL, 11 * 60_000),
+      detail: 'An import of this post started and has not reported back yet.',
+    }]);
+    fakeDb.seed('creator_import_drafts', [{ id: 'draft-first', creator_id: 'c1', source: 'website', item_id: postId(0) }]);
+    const importer = vi.fn(async () => success);
+    const queue = vi.fn(async () => 'draft-second');
+
+    const result = await pollCreator(
+      deps({
+        importer: importer as unknown as PollDeps['importer'],
+        queue: queue as unknown as PollDeps['queue'],
+        fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+      }),
+      creator(),
+      polled,
+    );
+
+    expect(importer).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.drafts).toEqual([]);
+    expect(items()[0]).toMatchObject({ status: 'imported', draft_id: 'draft-first' });
+  });
+
   it('does not retry a caption failure that would be refused identically', async () => {
     const { impl } = feedRoutes(feedWith(1));
     const importer = vi.fn(async () => success);
@@ -680,6 +712,75 @@ describe('a failed item is retried, and its loss is said out loud', () => {
 
     expect(result.failed).toBe(1);
     expect(result.signals).toEqual([]);
+  });
+});
+
+// ── An outage is not a verdict ───────────────────────────────────────────────
+
+/**
+ * Review finding 1: an Anthropic outage permanently lost new posts.
+ *
+ * `classifySource` turns an unreachable classifier into `unsure`, the poller
+ * resolves `unsure` as a stop, and a stop at the gate was recorded `rejected`:
+ * never retried, never mentioned. Driven through the real pipeline here, with
+ * only the model call failing, because the defect lived in the hand-off between
+ * three files and a stubbed importer would have skipped two of them.
+ */
+describe('a classifier outage is retried, not recorded as a verdict', () => {
+  const polled = { lastPolledAt: '2027-01-14T08:00:00.000Z', etag: null, lastModified: null, pollAfter: null, consecutiveFailures: 0 };
+  const PAGE =
+    '<html><head><title>Weeknight Dal</title></head><body><article>' +
+    '<p>Rinse one cup of red lentils, soften an onion in oil, add garlic, ginger, cumin and turmeric, ' +
+    'then simmer the lentils in coconut milk until they fall apart. Season with salt and serve with rice. ' +
+    'This is the dal we make every week, and it takes about twenty minutes from start to finish.</p>' +
+    '</article></body></html>';
+
+  it('records a post the gate could not judge as failed, and says why', async () => {
+    const { impl } = stubFetch({
+      'https://chefsarah.test/robots.txt': { body: 'User-agent: *\nAllow: /' },
+      'https://chefsarah.test/feed': { body: feedWith(1), headers: { 'content-type': 'application/rss+xml' } },
+      'https://chefsarah.test/post-0': { body: PAGE },
+    });
+    const importer = (url: string, options: RunImportOptions) =>
+      runImport(url, { ...options, call: failingCaller('overloaded_error'), skipCache: true });
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.rejected).toBe(0);
+    expect(result.failed).toBe(1);
+    const row = items()[0];
+    expect(row.status).toBe('failed');
+    expect(classifierWasUnavailable(row.detail)).toBe(true);
+  });
+
+  it('keeps retrying it past the ordinary window, for as long as an outage plausibly lasts', async () => {
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    // Two hours old: well past the three-interval window a readable failure gets.
+    fakeDb.seed('creator_source_items', [{
+      creator_id: 'c1',
+      source: 'website',
+      item_id: postId(0),
+      url: 'https://chefsarah.test/post-0',
+      status: 'failed',
+      detail: `The recipe check was unavailable, so this post ${CLASSIFIER_OUTAGE_NOTE}. It will be tried again.`,
+      created_at: new Date(NOW - 2 * 3_600_000).toISOString(),
+      updated_at: new Date(NOW - 20 * 60_000).toISOString(),
+    }]);
+
+    const result = await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(result.retried).toBe(1);
+    expect(result.drafted).toBe(1);
+    expect(items()[0]).toMatchObject({ status: 'imported' });
   });
 });
 
@@ -834,6 +935,65 @@ describe('polling hygiene', () => {
     await pollCreator(deps({ fetchOptions: { fetchImpl: impl, lookup: publicLookup } }), creator(), polled);
 
     expect(state()).toMatchObject({ etag: '"v2"', last_modified: 'Tue, 14 Jan 2027 08:00:00 GMT' });
+  });
+
+  /**
+   * Review finding 2. A 304 returns before unseen or retryable items are even
+   * computed, so validators stored over unfinished work strand it for as long
+   * as the feed stays unchanged. Two passes against a server that honours
+   * If-None-Match, because the loss only exists on the second one.
+   */
+  it('does not let a 304 strand the items a capped pass deferred', async () => {
+    const feed = feedWith(POLL_ITEM_CAP + 1);
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('robots.txt')) return new Response('', { status: 200, headers: { 'content-type': 'text/plain' } });
+      const sent = (init?.headers as Record<string, string> | undefined)?.['if-none-match'];
+      if (sent === '"v2"') return new Response(null, { status: 304 });
+      return new Response(feed, { status: 200, headers: { 'content-type': 'application/rss+xml', etag: '"v2"' } });
+    }) as unknown as typeof fetch;
+    const importer = vi.fn(async () => success);
+    const run = () => {
+      const stored = state();
+      return pollCreator(
+        deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+        creator(),
+        {
+          lastPolledAt: stored?.last_polled_at ?? polled.lastPolledAt,
+          etag: stored ? stored.etag : polled.etag,
+          lastModified: stored ? stored.last_modified : null,
+          pollAfter: null,
+          consecutiveFailures: 0,
+        },
+      );
+    };
+
+    const first = await run();
+    expect(first.deferred).toBe(1);
+    expect(state()?.etag).toBeNull();
+
+    const second = await run();
+    expect(second.status).toBe('polled');
+    expect(second.drafted).toBe(1);
+    expect(items().filter((row) => row.status === 'imported')).toHaveLength(POLL_ITEM_CAP + 1);
+    // Finished now, so the feed may go back to costing a 304.
+    expect(state()?.etag).toBe('"v2"');
+  });
+
+  it('does not store validators over an item that failed and will be retried', async () => {
+    const { impl } = feedRoutes(feedWith(1), { etag: '"v2"' });
+    const importer = vi.fn(async (url: string): Promise<ImportResult> => ({
+      status: 'rejected', url, stage: 'extract', reason: 'timeout', detail: 'The model timed out.', meta: { cached: false },
+    }));
+
+    await pollCreator(
+      deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      creator(),
+      polled,
+    );
+
+    expect(items()[0]).toMatchObject({ status: 'failed' });
+    expect(state()?.etag).toBeNull();
   });
 
   it('honours an advertised TTL longer than our own interval', async () => {
@@ -1340,6 +1500,48 @@ describe('the pass', () => {
       'https://c.test/feed',
       'https://a.test/feed',
     ]);
+  });
+
+  /**
+   * Review finding 5. The pass budget (240s) bounded when an item could start,
+   * and an item can take `ITEM_WORST_CASE_MS` (165s): started at 239s it runs
+   * past the 300s kill, and a kill between the draft insert and the record write
+   * is a duplicate. Driven through `runPollPass` with no deadline injected, so
+   * it is the default the cron actually gets that is under test.
+   */
+  it('starts no item it could not finish before the function is killed', async () => {
+    fakeDb.seed('creators', [creatorRow()]);
+    fakeDb.seed('creator_source_state', [
+      { creator_id: 'c1', source: 'website', last_polled_at: '2027-01-14T08:00:00.000Z', poll_after: null, consecutive_failures: 0 },
+    ]);
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    // The pass starts, and every later reading is just past the item cutoff:
+    // still well inside the 240s budget for listing a creator.
+    const started = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValueOnce(started).mockReturnValue(started + POLL_ITEM_CUTOFF_MS + 1);
+
+    let pass;
+    try {
+      pass = await runPollPass(
+        deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      );
+    } finally {
+      clock.mockRestore();
+    }
+
+    expect(pass.polled).toBe(1);
+    expect(importer).not.toHaveBeenCalled();
+    expect(pass.deferred).toBe(1);
+    // Not started means no record, so it is simply new on the next pass.
+    expect(items()).toEqual([]);
+  });
+
+  it('leaves the worst item and the write-back room inside the poll route\'s limit', () => {
+    const declared = /export const maxDuration = (\d+);/.exec(readFileSync('app/api/cron/poll/route.ts', 'utf8'));
+    expect(Number(declared?.[1]) * 1000).toBe(POLL_MAX_DURATION_MS);
+    expect(POLL_ITEM_CUTOFF_MS).toBeGreaterThan(0);
+    expect(POLL_ITEM_CUTOFF_MS + ITEM_WORST_CASE_MS).toBeLessThan(POLL_MAX_DURATION_MS);
   });
 
   it('emails each creator as their drafts land, not after every creator has been polled', async () => {

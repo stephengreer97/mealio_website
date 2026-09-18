@@ -12,7 +12,7 @@
 import { safeFetch, USER_AGENT, type SafeFetchOptions } from './ssrf';
 
 const ROBOTS_MAX_BYTES = 128 * 1024;
-const ROBOTS_TIMEOUT_MS = 5_000;
+export const ROBOTS_TIMEOUT_MS = 5_000;
 
 /** Our token as it would appear in a robots.txt User-agent line. */
 export const ROBOTS_AGENT = 'mealiobot';

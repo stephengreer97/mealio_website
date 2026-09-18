@@ -44,12 +44,14 @@ import {
   type ConnectedPlatform,
   type PlatformSource,
 } from '@/lib/creator-sources';
-import { normalizeUrl, urlIdentity } from '@/lib/import/ssrf';
+import { normalizeUrl, urlIdentity, REQUEST_TIMEOUT_MS as FETCH_TIMEOUT_MS } from '@/lib/import/ssrf';
 import { loadConnection, usableAccessToken } from '@/lib/platform-tokens';
 import { discoverFeed, readFeed, type FeedDiscoveryResult } from '@/lib/import/feed-discovery';
-import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { rejectionIsVerdict, runImport, type RunImportOptions } from '@/lib/import/pipeline';
+import { CLASSIFIER_OUTAGE_NOTE } from '@/lib/import/gate';
 import { importLogSink } from '@/lib/import/import-log';
-import { robotsPerOrigin } from '@/lib/import/robots';
+import { robotsPerOrigin, ROBOTS_TIMEOUT_MS } from '@/lib/import/robots';
+import { MAX_RETRIES as MODEL_MAX_RETRIES, REQUEST_TIMEOUT_MS as MODEL_TIMEOUT_MS } from '@/lib/import/anthropic';
 import type { SafeFetchOptions } from '@/lib/import/ssrf';
 import {
   channelIdForCreator,
@@ -225,6 +227,8 @@ export interface SyncDeps {
    */
   sourceDocument?: SourceDocumentResolver;
   now?: () => number;
+  /** Waits between write-back attempts (`recordItem`). Injected so a test does not spend it. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Null means "this source is a page — fetch it the normal way". */
@@ -667,7 +671,7 @@ async function withImportRecords(
       // rather than by shipping the sentinel string to the browser.
       const claimedAt = Date.parse(String(row.updated_at ?? ''));
       const inFlight = String(row.status) === 'failed'
-        && row.detail === CLAIM_DETAIL
+        && isClaimDetail(row.detail)
         && Number.isFinite(claimedAt)
         && Date.now() - claimedAt < CLAIM_LEASE_MS;
 
@@ -1055,23 +1059,58 @@ export function buildSelectionItems(
  * that expires *while its holder is still importing* is worse than no lease: a
  * second worker claims the run, reads the same still-pending items and imports
  * them again, and one post ends up as two drafts. With the SDK bound at 30s and
- * one retry (`lib/import/anthropic.ts`), the arithmetic per item is a 10s fetch
- * plus a gate call and an extraction of at most ~61s each — 132s worst case,
- * and a wave runs its items in parallel. 90s did not cover that; 180s does.
+ * one retry (`lib/import/anthropic.ts`), `ITEM_WORST_CASE_MS` below sums one item
+ * to 165s, and a wave runs its items in parallel. 90s did not cover that; 180s
+ * does, and a test holds the two in that order.
  */
 export const LEASE_MS = 180_000;
 
 /**
- * Wall-clock budget for one worker invocation, under the 60s function limit with
- * room for the write-back and the notification. Whatever is left over is picked
- * up by the next call.
+ * The longest one item can take, summed from the timeouts that bound it rather
+ * than written down as a guess (review finding 3/5).
  *
- * The deadline is checked before *starting* a wave, never during one, so it
- * cannot bound the invocation: the arithmetic above allows a single item ~132s
- * worst case, and a wave beginning at 24s can outlive the function whatever this
- * says. Lowered from 40s to widen the gap, which makes the overrun rarer without
- * pretending to prevent it — a run that loses its invocation mid-wave is saved
- * and resumable, which is what the client is built around.
+ * robots.txt, the page, two model calls each allowed one retry, the photo copy
+ * and its stock-photo fallback, and ten seconds for the database writes and the
+ * backoff between retries. 165s today. Every clock that decides whether to
+ * *start* an item — the worker's chunk budget, the poller's item deadline — has
+ * to leave this much room before its function is killed, because an item killed
+ * after its draft is inserted and before its record is written is the one that
+ * gets drafted twice.
+ *
+ * `LEASE_MS` must stay above it: a wave runs its items in parallel, so a wave
+ * takes as long as its slowest item.
+ */
+export const ITEM_WORST_CASE_MS =
+  ROBOTS_TIMEOUT_MS +
+  FETCH_TIMEOUT_MS +
+  2 * MODEL_TIMEOUT_MS * (1 + MODEL_MAX_RETRIES) +
+  2 * FETCH_TIMEOUT_MS +
+  10_000;
+
+/**
+ * The worker routes' `maxDuration`, in milliseconds. Route segment config has to
+ * be a literal, so `app/api/{creator,admin}/sync/worker/route.ts` write `300`
+ * and a test holds them to this number.
+ *
+ * It was 60, while a single wave could take `ITEM_WORST_CASE_MS`. Vercel killed
+ * the worker mid-wave, the claimed items stayed claimed, and the next worker
+ * (after the run lease lapsed) read those claims as another import in flight and
+ * recorded the posts the creator had ticked as `skipped`, final for that run.
+ * 300 is what the poll cron already runs under, so it needs no plan change.
+ */
+export const WORKER_MAX_DURATION_MS = 300_000;
+
+/**
+ * Wall-clock budget for starting waves in one worker invocation. Whatever is
+ * left over is picked up by the next call.
+ *
+ * The deadline is checked before *starting* a wave, never during one, so what
+ * bounds the invocation is this plus one wave: `CHUNK_BUDGET_MS +
+ * ITEM_WORST_CASE_MS` (190s) has to fit inside `WORKER_MAX_DURATION_MS` with room
+ * for the write-back, and a test holds it there. Under the old 60s limit it did
+ * not, and a wave that began at 24s was routinely outlived by its function.
+ * Kept short rather than raised with the limit because the screen gets its
+ * answer when the chunk ends; the per-wave writes are what keep it current.
  */
 export const CHUNK_BUDGET_MS = 25_000;
 
@@ -1167,6 +1206,28 @@ export async function processSyncItem(
     };
   }
 
+  // A draft may already exist for a post whose record says otherwise. That is
+  // the write-back failing after the draft landed (`recordItem`): the row is
+  // left as a claim, which is `failed`, so ten minutes later the poller retried
+  // it, paid for a second extraction, queued a second draft and sent a second
+  // email. Asked here, after the claim and before anything is spent, and only
+  // of a post whose record is `failed`, which is the state that failure leaves:
+  // a post we have never met cannot have a draft, and `declined` or `withdrawn`
+  // mean something about their draft that this must not second-guess. The
+  // draft wins and the record is repaired to point at it.
+  if (existing?.status === 'failed') {
+    const draftId = await existingDraftFor(deps, creator, run.source, item.itemId);
+    if (draftId) {
+      await recordItem(deps, creator, run, { ...item, status: 'drafted', detail: null, draftId });
+      return {
+        ...item,
+        status: 'skipped',
+        detail: 'Already queued for review, so it is skipped and the same recipe is not queued twice.',
+        draftId,
+      };
+    }
+  }
+
   // A post on a connected platform is read from that platform's listing, not
   // from its public URL. A selected item no longer in the listing fails rather
   // than falling back to a page fetch: `watch?v=…` returns a JavaScript shell
@@ -1256,12 +1317,24 @@ export async function processSyncItem(
 
   if (result.status === 'rejected') {
     // The gate is an answer about the post; everything else is an answer about
-    // our afternoon. Only the first is permanent.
-    const rejectedByGate = result.stage === 'gate';
+    // our afternoon. Only the first is permanent, and "the gate could not be
+    // asked" is the second kind wearing the first one's stage: see
+    // `rejectionIsVerdict`. Recorded as `rejected`, an Anthropic outage during a
+    // poll lost every post it touched, with no retry and no signal.
+    if (rejectionIsVerdict(result)) {
+      return await recordItem(deps, creator, run, { ...item, status: 'rejected', detail: result.detail, costUsd: 0 });
+    }
+    const unjudged = result.stage === 'gate';
     return await recordItem(deps, creator, run, {
       ...item,
-      status: rejectedByGate ? 'rejected' : 'failed',
-      detail: result.detail,
+      status: 'failed',
+      // The sentinel is what gives this failure the poller's longer outage
+      // window (`classifierWasUnavailable`), so it goes on every unjudged gate
+      // stop, and the creator-facing half says nothing about their post.
+      detail: unjudged
+        ? `The recipe check was unavailable, so this post ${CLASSIFIER_OUTAGE_NOTE}. It will be tried again. ` +
+          `(${result.detail})`
+        : result.detail,
       costUsd: 0,
     });
   }
@@ -1346,6 +1419,28 @@ export const CLAIM_DETAIL =
   'whatever was reading it stopped. The retry sweep will pick it up.';
 
 /**
+ * The claim detail a sync run writes: `CLAIM_DETAIL`, plus which run holds it.
+ *
+ * A claim used to say only that *somebody* was importing the post, and that is
+ * not enough for a run resuming after its own worker was killed mid-wave. The
+ * run lease lapses after three minutes and the item claim after ten, so the next
+ * worker found the claim still live and recorded the post as `skipped`, final
+ * for the run, while the only thing holding it was a dead copy of itself. With
+ * the owner on the claim, a run takes back its own and still stands down for
+ * anyone else's. No column exists for the owner, so it rides in the detail the
+ * way `CLAIM_DETAIL` itself does; see the report on MEAL review finding 3 for
+ * the column this ought to be.
+ */
+export function claimDetailFor(runId: string | null): string {
+  return runId ? `${CLAIM_DETAIL} Claimed by run ${runId}.` : CLAIM_DETAIL;
+}
+
+/** Whether a recorded detail is a claim, whoever made it. */
+export function isClaimDetail(detail: string | null | undefined): boolean {
+  return typeof detail === 'string' && detail.startsWith(CLAIM_DETAIL);
+}
+
+/**
  * How long a claim stands before the item is considered abandoned.
  *
  * Comfortably longer than an extraction — a fetch and two model calls — and far
@@ -1398,7 +1493,7 @@ async function claimItem(
       title: item.title,
       published_at: item.publishedAt,
       status: 'failed',
-      detail: CLAIM_DETAIL,
+      detail: claimDetailFor(run.id),
       updated_at: at,
     });
     return !error;
@@ -1407,14 +1502,22 @@ async function claimItem(
   // Somebody took it moments ago and is still working. The compare-and-swap
   // below cannot see this — they would swap on the value we just read — so the
   // live claim is what says no.
+  //
+  // Unless the somebody is this run. Items are only processed under the run's
+  // lease, so a claim carrying this run's id was made by a worker that has since
+  // lost the lease, and the lease outlasts any wave (`LEASE_MS` >
+  // `ITEM_WORST_CASE_MS`): that worker is dead, and standing down for it is how
+  // a killed worker's items became `skipped`. The swap below still guards the
+  // takeover against a second live claimant.
   const heldSince = Date.parse(existing.updated_at ?? '');
-  if (existing.detail === CLAIM_DETAIL && Number.isFinite(heldSince) && now - heldSince < CLAIM_LEASE_MS) {
+  const ours = run.id !== null && existing.detail === claimDetailFor(run.id);
+  if (!ours && isClaimDetail(existing.detail) && Number.isFinite(heldSince) && now - heldSince < CLAIM_LEASE_MS) {
     return false;
   }
 
   const claim = deps.supabase
     .from('creator_source_items')
-    .update({ status: 'failed', detail: CLAIM_DETAIL, updated_at: at })
+    .update({ status: 'failed', detail: claimDetailFor(run.id), updated_at: at })
     .eq('creator_id', creator.id)
     .eq('source', run.source)
     .eq('item_id', item.itemId);
@@ -1429,12 +1532,47 @@ async function claimItem(
 }
 
 /**
+ * The draft already queued for this post, if there is one.
+ *
+ * A read rather than a unique key because `creator_import_drafts` has none on
+ * `(creator_id, source, item_id)`; see the report on review finding 4 for the
+ * index that would make this a constraint instead of a courtesy. A failed read
+ * answers "none", which is the old behaviour and no worse than it.
+ */
+async function existingDraftFor(
+  deps: SyncDeps,
+  creator: SyncCreator,
+  source: PlatformSource,
+  itemId: string,
+): Promise<string | null> {
+  const { data, error } = await deps.supabase
+    .from('creator_import_drafts')
+    .select('id')
+    .eq('creator_id', creator.id)
+    .eq('source', source)
+    .eq('item_id', itemId)
+    .limit(1);
+  if (error || !Array.isArray(data) || data.length === 0) return null;
+  return String((data[0] as { id: unknown }).id);
+}
+
+/** Pauses between write-back attempts. Short: a request is usually waiting. */
+export const RECORD_RETRY_DELAYS_MS = [200, 1_000];
+
+/**
  * Writes the durable per-item record.
  *
  * `creator_source_items` is what the poller and the next operator read, so it is
  * updated even when the batch row already knows — and a write failure here is
  * logged, not thrown: losing the bookkeeping is bad, losing the run because the
  * bookkeeping failed is worse.
+ *
+ * **supabase-js does not throw on a failed write; it returns `{ error }`.** This
+ * used to be a bare `await` in a try/catch, so a refused upsert was silent: the
+ * row stayed the claim (`failed`) under a draft that existed, and the poller's
+ * retry made a second draft and a second email. The error is now read, the write
+ * is retried, and if it still will not land the duplicate is stopped on the next
+ * attempt by `existingDraftFor` instead.
  */
 async function recordItem(
   deps: SyncDeps,
@@ -1450,25 +1588,41 @@ async function recordItem(
   // stay declined: the next sync or poll sees the record and skips the post.
   const recordStatus = item.status === 'drafted' ? 'imported' : item.status;
 
-  try {
-    await deps.supabase.from('creator_source_items').upsert(
-      {
-        creator_id: creator.id,
-        source: run.source,
-        item_id: item.itemId,
-        url: item.url,
-        title: item.title,
-        published_at: item.publishedAt,
-        status: recordStatus,
-        detail: item.detail,
-        draft_id: item.draftId,
-        updated_at: new Date(deps.now?.() ?? Date.now()).toISOString(),
-      },
-      { onConflict: 'creator_id,source,item_id' },
-    );
-  } catch (err) {
-    log({ event: 'ADMIN:SYNC_ITEM', status: 'error', userId: creator.id, detail: `run=${run.id} item=${JSON.stringify(item.itemId)}`, error: err });
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let failure: unknown = null;
+  for (let attempt = 0; attempt <= RECORD_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(RECORD_RETRY_DELAYS_MS[attempt - 1]);
+    try {
+      const { error } = await deps.supabase.from('creator_source_items').upsert(
+        {
+          creator_id: creator.id,
+          source: run.source,
+          item_id: item.itemId,
+          url: item.url,
+          title: item.title,
+          published_at: item.publishedAt,
+          status: recordStatus,
+          detail: item.detail,
+          draft_id: item.draftId,
+          updated_at: new Date(deps.now?.() ?? Date.now()).toISOString(),
+        },
+        { onConflict: 'creator_id,source,item_id' },
+      );
+      if (!error) return item;
+      failure = error;
+    } catch (err) {
+      failure = err;
+    }
   }
+  log({
+    event: 'ADMIN:SYNC_ITEM',
+    status: 'error',
+    userId: creator.id,
+    detail:
+      `run=${run.id} item=${JSON.stringify(item.itemId)} status=${item.status} record not written after ` +
+      `${RECORD_RETRY_DELAYS_MS.length + 1} attempts${item.draftId ? `; draft ${item.draftId} exists` : ''}`,
+    error: failure,
+  });
   return item;
 }
 

@@ -19,7 +19,9 @@ export const dynamic = 'force-dynamic';
  * (`POLL_PASS_BUDGET_MS`) so it stops on its own terms rather than being killed
  * mid-extraction. A killed pass is not merely truncated — an item whose fetch
  * and model calls were paid for but whose record was never written costs the
- * money twice.
+ * money twice. No item is started past `POLL_ITEM_CUTOFF_MS`, which is derived
+ * from this number; it must equal `POLL_MAX_DURATION_MS`, and a test reads this
+ * line to hold it there.
  */
 export const maxDuration = 300;
 

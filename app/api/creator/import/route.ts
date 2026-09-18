@@ -5,6 +5,7 @@ import { log } from '@/lib/logger';
 import { runImport } from '@/lib/import/pipeline';
 import { importLogSink } from '@/lib/import/import-log';
 import { formatTelemetry } from '@/lib/import/telemetry';
+import { checkCreatorImportBudget } from '@/lib/import/creator-budget';
 
 /**
  * POST /api/creator/import — paste a link, get a filled-in meal draft.
@@ -59,6 +60,11 @@ export async function POST(request: NextRequest) {
   if (!url) {
     return NextResponse.json({ error: 'url is required' }, { status: 400 });
   }
+
+  // A daily ceiling per creator, in imports and in dollars (review finding 6).
+  // Checked before the fetch, because the fetch is where the spending starts.
+  const budget = await checkCreatorImportBudget(createServerSupabaseClient(), auth.creator.id, 1);
+  if (!budget.ok) return NextResponse.json({ error: budget.error }, { status: 429 });
 
   // The pipeline emits its own CREATOR:MEAL_IMPORT telemetry line (platform,
   // path, gate verdict, confidence spread); this sink adds who asked, and since

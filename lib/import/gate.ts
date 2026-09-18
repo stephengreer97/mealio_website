@@ -191,6 +191,23 @@ export async function classifySource(
   }
 }
 
+/**
+ * The phrase every "the classifier could not be asked" failure carries into its
+ * recorded detail, and the one thing `classifierWasUnavailable` looks for.
+ *
+ * A sentinel string for the same reason `CAPTIONS_NO_AUTO_RETRY` is one: the
+ * detail is the only per-item column the retry sweep reads, and the status set
+ * is fixed by a CHECK constraint. Written into sentences by `admin-sync`; the
+ * poller reads it to give an outage a longer retry window than a post we
+ * genuinely cannot read.
+ */
+export const CLASSIFIER_OUTAGE_NOTE = 'has not been judged yet';
+
+/** Whether a recorded failure detail says the gate could not be asked. */
+export function classifierWasUnavailable(detail: string | null | undefined): boolean {
+  return typeof detail === 'string' && detail.includes(CLASSIFIER_OUTAGE_NOTE);
+}
+
 export interface GateDecision {
   proceed: boolean;
   /** Why we proceeded or stopped — the poller writes this to its skip log. */

@@ -795,6 +795,52 @@ describe('the back-catalogue checklist', () => {
     expect(screen.getByTestId('selection-count').textContent).toBe(`1 of ${CREATOR_SELECTION_MAX} chosen`);
   });
 
+  it('marks a refused post it sends as re-selected on purpose, and only that one (review finding 6)', async () => {
+    // The server drops an already-refused post unless the request says it was
+    // ticked deliberately, so the screen has to say so, and must not say it of
+    // anything else.
+    const rejected = { ...entry(2), record: { status: 'rejected', detail: 'No ingredient list on the page.', at: null, firstSeenAt: null } };
+    const { calls } = harness({
+      creator: SYNCING,
+      entries: [entry(1), rejected],
+      routes: {
+        '/api/creator/sync': () => json({ run: { id: 'r1', status: 'queued', items: [] } }, 201),
+        '/api/creator/sync/worker': () => json({ run: { id: 'r1', status: 'done', items: [] }, totals: { selected: 2, pending: 0, drafted: 2, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 } }),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[1]);
+    fireEvent.click(screen.getByRole('button', { name: /Import 2 posts/ }));
+
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith('/api/creator/sync') && call.method === 'POST')).toBe(true));
+    const sent = calls.find((call) => call.url.endsWith('/api/creator/sync') && call.method === 'POST')!.body.items;
+    expect(sent.map((item: { reselect?: boolean }) => item.reselect ?? false)).toEqual([false, true]);
+  });
+
+  it('puts Carry on in front of a creator whose import is already under way (review finding 6)', async () => {
+    harness({
+      creator: SYNCING,
+      entries: [entry(1)],
+      routes: {
+        '/api/creator/sync': () => json({
+          error: 'An import is already under way. Carry it on, or wait for it to finish, before starting another.',
+          run: { id: 'r-open', status: 'queued', items: [] },
+          totals: { selected: 0, pending: 0, drafted: 0, rejected: 0, failed: 0, skipped: 0, costUsd: 0, needALook: 0 },
+        }, 409),
+      },
+    });
+    await screen.findByTestId('catalogue');
+
+    tickAll();
+    fireEvent.click(screen.getByRole('button', { name: /Import 1 post/ }));
+
+    expect(await screen.findByRole('button', { name: 'Carry on' })).toBeTruthy();
+    expect(screen.getByText(/already under way/)).toBeTruthy();
+  });
+
   it('says a declined post was declined, and offers it back', async () => {
     // The post produced a draft and a person said no, so `imported` would be a
     // lie — there is no meal. `Declined` is the tag, the box is live, and the
