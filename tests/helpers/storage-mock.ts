@@ -82,6 +82,8 @@ export class FakeStorage {
   undeletable = new Set<string>();
   /** When set, `remove()` fails outright, the way a storage outage does. */
   removeError: { message: string } | null = null;
+  /** When set, `list()` fails. */
+  listError: { message: string } | null = null;
 
   /** Every path handed to `upload()`, in order. */
   uploaded: string[] = [];
@@ -109,6 +111,7 @@ export class FakeStorage {
     this.removed = [];
     this.undeletable = new Set();
     this.removeError = null;
+    this.listError = null;
     this.uploaded = [];
     this.uploadError = null;
     this.existsCalls = [];
@@ -157,6 +160,30 @@ export class FakeStorage {
           createdAt: new Date(Date.now()).toISOString(),
         });
         return { data: { path }, error: null };
+      },
+
+      /**
+       * `list(prefix, { limit, offset })`: ONE level under the prefix, as the
+       * storage API answers it. Names come back RELATIVE to the prefix, a
+       * sub-folder is one entry with `id: null`, and a page holds `limit` entries
+       * (storage's default is 100), so a caller that reads one page of a big
+       * folder gets a prefix of it and nothing saying so.
+       */
+      list: async (prefix = '', opts: { limit?: number; offset?: number } = {}) => {
+        if (this.listError) return { data: null, error: this.listError };
+        const base = prefix ? `${prefix.replace(/\/$/, '')}/` : '';
+        const seen = new Map<string, { name: string; id: string | null }>();
+        for (const o of this.objects) {
+          if (!o.name.startsWith(base)) continue;
+          const rest = o.name.slice(base.length);
+          const slash = rest.indexOf('/');
+          const name = slash === -1 ? rest : rest.slice(0, slash);
+          if (!seen.has(name)) seen.set(name, { name, id: slash === -1 ? `obj:${o.name}` : null });
+        }
+        const all = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+        const offset = opts.offset ?? 0;
+        const limit = opts.limit ?? 100;
+        return { data: all.slice(offset, offset + limit), error: null };
       },
 
       getPublicUrl: (path: string) => ({ data: { publicUrl: `${STORAGE_BASE_URL}${path}` } }),
@@ -242,6 +269,7 @@ export async function mockSupabaseWithStorage() {
         return fakeDb.rpc(fn, args);
       },
       storage: { from: () => fakeStorage.bucket() },
+      auth: fakeDb.auth,
     }),
     createAnonSupabaseClient: () => ({ auth: { signInWithPassword: vi.fn() } }),
   };

@@ -3,7 +3,8 @@ import { fakeDb, deleteUser } from '../helpers/supabase-mock';
 import { jsonRequest } from '../helpers/request';
 
 vi.mock('@/lib/supabase', async () =>
-  (await import('../helpers/supabase-mock')).mockSupabaseModule());
+  (await import('../helpers/storage-mock')).mockSupabaseWithStorage());
+vi.mock('next/cache', () => ({ revalidateTag: vi.fn() }));
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
 import { DELETE } from '@/app/api/account/delete/route';
