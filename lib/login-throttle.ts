@@ -119,3 +119,25 @@ export async function recordOtpFailure(supabase: SupabaseClient, userId: string)
   }
   return false;
 }
+
+/**
+ * Bug reports one IP may send per window. The route needs no sign-in (the
+ * app's crash screen posts to it before anyone may be signed in) and every
+ * report is an email, sent on the same Resend quota as login codes, so an
+ * unlimited endpoint was a way to spend that quota and bury the inbox.
+ */
+export const BUG_REPORT_WINDOW_SECONDS = 15 * 60;
+export const MAX_BUG_REPORTS_PER_IP = 5;
+
+/** Count one bug report from `ip`; true when it should be refused. Fails open. */
+export async function bugReportThrottled(supabase: SupabaseClient, ip: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('record_login_attempt', {
+    p_key: `bug:${ip}`,
+    p_window_seconds: BUG_REPORT_WINDOW_SECONDS,
+  });
+  if (error || typeof data !== 'number') {
+    log({ event: 'BUG_REPORT', status: 'error', ip, reason: `throttle: ${error?.message ?? 'no count returned'}` });
+    return false;
+  }
+  return data > MAX_BUG_REPORTS_PER_IP;
+}

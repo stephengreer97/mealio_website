@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { sendBugReportEmail } from '@/lib/email';
 import { log } from '@/lib/logger';
+import { createServerSupabaseClient } from '@/lib/supabase';
+import { bugReportThrottled } from '@/lib/login-throttle';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,6 +35,19 @@ export async function POST(request: NextRequest) {
   const decoded = token ? await verifyAccessToken(token) : null;
 
   try {
+    // Counted before anything else, so a malformed report costs the same as a
+    // good one. No sign-in is required here on purpose (the app's crash screen
+    // posts to it), which is why the key is the IP.
+    const ip = (request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown')
+      .split(',')[0].trim();
+    if (await bugReportThrottled(createServerSupabaseClient(), ip)) {
+      log({ event: 'BUG_REPORT', status: 'failed', ip, reason: 'rate limited' });
+      return NextResponse.json(
+        { error: 'Too many reports from this network. Please try again in a few minutes.' },
+        { status: 429 },
+      );
+    }
+
     const body = await request.json();
     const description = String(body?.description ?? '').trim().slice(0, MAX_DESC);
     if (description.length < 5) {

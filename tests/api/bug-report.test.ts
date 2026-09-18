@@ -10,6 +10,7 @@ vi.mock('@/lib/email', () => ({ sendBugReportEmail: vi.fn().mockResolvedValue(un
 import { POST } from '@/app/api/bug-report/route';
 import { sendBugReportEmail } from '@/lib/email';
 import { clearRevocationCache, createAccessToken } from '@/lib/tokens';
+import { MAX_BUG_REPORTS_PER_IP, BUG_REPORT_WINDOW_SECONDS } from '@/lib/login-throttle';
 
 /**
  * Filing a bug report.
@@ -116,5 +117,33 @@ describe('POST /api/bug-report', () => {
   it('caps a description rather than mailing an essay', async () => {
     await POST(bugRequest({ description: 'x'.repeat(9000) }));
     expect((sent().description as string).length).toBe(4000);
+  });
+
+  // ── The rate limit ──────────────────────────────────────────────────────────
+  //
+  // No sign-in here, and every report is an email on the same Resend quota as
+  // login codes, so an unlimited endpoint could spend that quota for anyone.
+
+  it('refuses a signed-out sender over the per-IP limit, and sends nothing', async () => {
+    fakeDb.queue('rpc:record_login_attempt', { data: MAX_BUG_REPORTS_PER_IP + 1 } as never);
+
+    const res = await POST(jsonRequest('/api/bug-report', {
+      body: report,
+      headers: { 'x-forwarded-for': '9.9.9.9, 10.0.0.1' },
+    }));
+
+    expect(res.status).toBe(429);
+    expect(sendBugReportEmail).not.toHaveBeenCalled();
+    const counted = fakeDb.calls.find((c) => c.table === 'rpc:record_login_attempt');
+    expect(counted?.args[0]).toEqual({ p_key: 'bug:9.9.9.9', p_window_seconds: BUG_REPORT_WINDOW_SECONDS });
+  });
+
+  it('lets a signed-out sender under the limit through', async () => {
+    fakeDb.queue('rpc:record_login_attempt', { data: MAX_BUG_REPORTS_PER_IP } as never);
+
+    const res = await POST(bugRequest(report));
+
+    expect(res.status).toBe(200);
+    expect(sendBugReportEmail).toHaveBeenCalled();
   });
 });
