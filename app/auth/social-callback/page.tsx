@@ -11,11 +11,17 @@ export default function SocialCallbackPage() {
     const params = new URLSearchParams(window.location.search);
     // The access token is delivered via a short-lived, JS-readable cookie
     // (mealio_oauth_token) instead of the URL to avoid history/Referer/log leaks.
+    //
+    // ONLY the cookie. This page used to fall back to ?token= when the cookie
+    // was missing, so anyone could send a link carrying THEIR OWN token and the
+    // victim would be silently signed in to the attacker's account, saving
+    // meals and store logins into it. The cookie can only have been set by our
+    // own OAuth callback on this origin, which is what makes it trustworthy.
     const cookieToken = document.cookie
       .split('; ')
       .find((c) => c.startsWith('mealio_oauth_token='))
       ?.split('=')[1];
-    const token = cookieToken ? decodeURIComponent(cookieToken) : params.get('token');
+    const token = cookieToken ? decodeURIComponent(cookieToken) : null;
     // Consume the handoff cookie immediately.
     if (cookieToken) {
       document.cookie = 'mealio_oauth_token=; Max-Age=0; path=/auth/social-callback';
