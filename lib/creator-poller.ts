@@ -48,6 +48,7 @@ import {
   buildCatalog,
   processSyncItem,
   CLAIM_LEASE_MS,
+  ITEM_WORST_CASE_MS,
   type CatalogEntry,
   type SyncCreator,
   type SyncDeps,
@@ -196,6 +197,27 @@ export const POLL_CREATOR_BATCH = 100;
  */
 export const POLL_PASS_BUDGET_MS = 240_000;
 
+/** The poll route's `maxDuration`, in milliseconds. A test holds the route literal to it. */
+export const POLL_MAX_DURATION_MS = 300_000;
+
+/** Room left after the last item for its record, the state write and the email. */
+const POLL_WRITE_BACK_MS = 15_000;
+
+/**
+ * How far into a pass an item may still be *started* (review finding 5).
+ *
+ * `POLL_PASS_BUDGET_MS` bounds when a creator is listed, and it was also the only
+ * bound on starting an item, so an extraction could begin at 239s and run for
+ * `ITEM_WORST_CASE_MS` (165s) against a 300s limit. Killed between the draft
+ * insert and the record write, that item is `failed` in the table with a draft
+ * behind it: paid for twice, and before finding 4 also drafted and emailed twice.
+ *
+ * Derived rather than chosen: whatever is left of the function once the worst
+ * item and the write-back are taken out. 120s today. An item not started has no
+ * record, so it is new again next pass, which is where a deferred one sits.
+ */
+export const POLL_ITEM_CUTOFF_MS = POLL_MAX_DURATION_MS - POLL_WRITE_BACK_MS - ITEM_WORST_CASE_MS;
+
 /**
  * Longest a publisher's advertised TTL may push us out.
  *
@@ -340,6 +362,12 @@ export interface PollDeps extends SyncDeps {
   notifier?: typeof sendCreatorDraftsReadyEmail;
   /** Real-clock deadline for the whole pass. Defaults to `POLL_PASS_BUDGET_MS` from now. */
   deadline?: number;
+  /**
+   * Real-clock time after which no new item is started. Defaults to
+   * `POLL_ITEM_CUTOFF_MS` from the start of the pass. Earlier than `deadline`,
+   * because an item can take far longer than listing a creator does.
+   */
+  itemDeadline?: number;
 }
 
 // ── One creator ──────────────────────────────────────────────────────────────
@@ -667,8 +695,9 @@ export async function pollCreator(
   const settled = new Set<string>();
 
   for (const entry of batch) {
-    // Checked before the item, not after. An extraction is a fetch and two model
-    // calls; starting one we cannot finish spends the money and loses the
+    // Checked before the item, not after, and against the item cutoff rather than
+    // the pass budget (`POLL_ITEM_CUTOFF_MS`). An extraction is a fetch and two
+    // model calls; starting one we cannot finish spends the money and loses the
     // result. An item not started has no record, so it is simply new again next
     // cycle — the same place a deferred item sits.
     if (Date.now() >= passDeadline(deps)) {
@@ -763,7 +792,7 @@ export async function pollCreator(
 }
 
 function passDeadline(deps: PollDeps): number {
-  return deps.deadline ?? Number.POSITIVE_INFINITY;
+  return Math.min(deps.deadline ?? Number.POSITIVE_INFINITY, deps.itemDeadline ?? Number.POSITIVE_INFINITY);
 }
 
 /**
@@ -1119,8 +1148,10 @@ export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
   // Measured against the real clock even when `now` is injected: a test pinning
   // `now` to a constant is describing poll windows, not asking for an unbounded
   // pass.
-  const deadline = deps.deadline ?? Date.now() + POLL_PASS_BUDGET_MS;
-  const passDeps: PollDeps = { ...deps, deadline };
+  const startedAt = Date.now();
+  const deadline = deps.deadline ?? startedAt + POLL_PASS_BUDGET_MS;
+  const itemDeadline = deps.itemDeadline ?? startedAt + POLL_ITEM_CUTOFF_MS;
+  const passDeps: PollDeps = { ...deps, deadline, itemDeadline };
 
   /**
    * Origins that refused us during *this* pass.

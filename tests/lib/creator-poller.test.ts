@@ -8,6 +8,7 @@ import type { ImportResult, ImportSuccess } from '@/lib/import/types';
 import { runImport, type RunImportOptions } from '@/lib/import/pipeline';
 import { CLASSIFIER_OUTAGE_NOTE, classifierWasUnavailable } from '@/lib/import/gate';
 import { CAPTIONS_MISSING_SCOPE_DETAIL } from '@/lib/youtube';
+import { ITEM_WORST_CASE_MS } from '@/lib/admin-sync';
 
 vi.mock('@/lib/logger', () => ({ log: vi.fn() }));
 
@@ -28,6 +29,8 @@ import {
   POLL_CREATOR_BATCH,
   POLL_INTERVAL_MINUTES,
   POLL_ITEM_CAP,
+  POLL_ITEM_CUTOFF_MS,
+  POLL_MAX_DURATION_MS,
   type PollDeps,
   type PollableCreator,
 } from '@/lib/creator-poller';
@@ -1497,6 +1500,48 @@ describe('the pass', () => {
       'https://c.test/feed',
       'https://a.test/feed',
     ]);
+  });
+
+  /**
+   * Review finding 5. The pass budget (240s) bounded when an item could start,
+   * and an item can take `ITEM_WORST_CASE_MS` (165s): started at 239s it runs
+   * past the 300s kill, and a kill between the draft insert and the record write
+   * is a duplicate. Driven through `runPollPass` with no deadline injected, so
+   * it is the default the cron actually gets that is under test.
+   */
+  it('starts no item it could not finish before the function is killed', async () => {
+    fakeDb.seed('creators', [creatorRow()]);
+    fakeDb.seed('creator_source_state', [
+      { creator_id: 'c1', source: 'website', last_polled_at: '2027-01-14T08:00:00.000Z', poll_after: null, consecutive_failures: 0 },
+    ]);
+    const { impl } = feedRoutes(feedWith(1));
+    const importer = vi.fn(async () => success);
+    // The pass starts, and every later reading is just past the item cutoff:
+    // still well inside the 240s budget for listing a creator.
+    const started = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValueOnce(started).mockReturnValue(started + POLL_ITEM_CUTOFF_MS + 1);
+
+    let pass;
+    try {
+      pass = await runPollPass(
+        deps({ importer: importer as unknown as PollDeps['importer'], fetchOptions: { fetchImpl: impl, lookup: publicLookup } }),
+      );
+    } finally {
+      clock.mockRestore();
+    }
+
+    expect(pass.polled).toBe(1);
+    expect(importer).not.toHaveBeenCalled();
+    expect(pass.deferred).toBe(1);
+    // Not started means no record, so it is simply new on the next pass.
+    expect(items()).toEqual([]);
+  });
+
+  it('leaves the worst item and the write-back room inside the poll route\'s limit', () => {
+    const declared = /export const maxDuration = (\d+);/.exec(readFileSync('app/api/cron/poll/route.ts', 'utf8'));
+    expect(Number(declared?.[1]) * 1000).toBe(POLL_MAX_DURATION_MS);
+    expect(POLL_ITEM_CUTOFF_MS).toBeGreaterThan(0);
+    expect(POLL_ITEM_CUTOFF_MS + ITEM_WORST_CASE_MS).toBeLessThan(POLL_MAX_DURATION_MS);
   });
 
   it('emails each creator as their drafts land, not after every creator has been polled', async () => {
