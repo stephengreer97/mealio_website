@@ -428,19 +428,28 @@ function toMedia(row: Record<string, any>): InstagramMedia | null {
  *   - `IMAGE` — `media_url` is the JPEG.
  *   - `VIDEO` (a Reel too) — `media_url` is the **video file**, so the cover
  *     frame in `thumbnail_url` is the only image there is.
- *   - `CAROUSEL_ALBUM` — the album itself carries no file. Its first child is
- *     what Instagram shows as the cover, so that is the one taken, resolved by
- *     the same photo-or-thumbnail rule.
+ *   - `CAROUSEL_ALBUM` — the album itself carries no file. Its items do, and the
+ *     first one is the cover Instagram shows, so that is the one taken —
+ *     resolved by the same photo-or-thumbnail rule, and falling through to the
+ *     next item when Instagram gave the first one nothing usable, because an
+ *     album is not out of pictures just because its opening clip arrived with no
+ *     cover frame.
  *
- * The URL is signed and expires within hours. That is survivable here and only
- * here, because the caller copies the bytes into our own bucket during the
- * import (`lib/import/photo.ts`) and keeps our URL, not this one.
+ * The URL is signed and expires within hours, which the import survives because
+ * `lib/import/photo.ts` copies the bytes into our own bucket and the draft keeps
+ * OUR url. It is not, however, thrown away: the confidence record keeps the
+ * source URL as the photo field's evidence, so that one column holds a link
+ * which is dead by the time a human reads it. Shared with every other platform,
+ * and not worth a photo-shaped exception in the evidence model.
  */
 export function instagramImageUrl(media: InstagramMedia | InstagramMediaChild): string | null {
   if (media.mediaType === 'VIDEO') return media.thumbnailUrl;
   if ('children' in media && media.mediaType === 'CAROUSEL_ALBUM') {
-    const first = media.children[0];
-    return first ? instagramImageUrl(first) : null;
+    for (const child of media.children) {
+      const url = instagramImageUrl(child);
+      if (url) return url;
+    }
+    return null;
   }
   // An IMAGE, or a media type Instagram has added since: `media_url` is the file
   // for every type that has one, and a non-image body is refused by the fetcher
@@ -553,13 +562,14 @@ export function instagramSourceDocument(media: InstagramMedia): SourceDocument {
     jsonLd: null,
     structuredSource: null,
     jsonLdRaw: null,
-    // The post's own picture, and the reason the expiring link is safe to pass
-    // here: nothing downstream STORES this URL. `lib/import/photo.ts` fetches
-    // the bytes during the same import and keeps our bucket's URL, so what the
-    // draft points at outlives Instagram's signature. This used to be null on
-    // the grounds that the link 404s tomorrow, which was true of the link and
-    // false of the photo — and it left every Instagram draft wearing a Pixabay
-    // stand-in of a dish nobody cooked, or no photo at all.
+    // The post's own picture, and the reason an expiring link is safe to pass
+    // here: `lib/import/photo.ts` fetches the bytes during the same import, so
+    // what the DRAFT points at is our bucket and outlives Instagram's
+    // signature. This used to be null on the grounds that the link 404s
+    // tomorrow, which was true of the link and false of the photo — and it left
+    // every Instagram draft wearing a Pixabay stand-in of a dish nobody cooked,
+    // or no photo at all. See `instagramImageUrl` for where the source link
+    // does still outlive its own lifetime.
     imageUrl: instagramImageUrl(media),
     platform: 'instagram',
   };

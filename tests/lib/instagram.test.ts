@@ -427,6 +427,11 @@ describe('instagram — the caption is the whole document', () => {
   });
 
   describe('the picture that stands for a post', () => {
+    // Asserted through `instagramSourceDocument`, not against the helper alone:
+    // the helper being right is worth nothing if the document does not carry
+    // what it returns, and that seam is the whole change.
+    const pictureOf = (overrides: Partial<InstagramMedia>) => instagramSourceDocument(media(overrides)).imageUrl;
+
     it('takes the file itself for a photo', () => {
       const image = media({
         mediaType: 'IMAGE',
@@ -434,6 +439,8 @@ describe('instagram — the caption is the whole document', () => {
         thumbnailUrl: null,
       });
       expect(instagramImageUrl(image)).toBe('https://scontent.cdninstagram.com/v/t51/photo.jpg');
+      expect(pictureOf({ mediaType: 'IMAGE', mediaUrl: 'https://scontent.cdninstagram.com/v/t51/photo.jpg', thumbnailUrl: null }))
+        .toBe('https://scontent.cdninstagram.com/v/t51/photo.jpg');
     });
 
     it('takes the cover frame for a video, never the video file', () => {
@@ -442,6 +449,9 @@ describe('instagram — the caption is the whole document', () => {
       // more likely, wastes a fetch the content-type check then refuses.
       const reel = media({ mediaType: 'VIDEO' });
       expect(instagramImageUrl(reel)).toBe('https://scontent.cdninstagram.com/v/t51/expiring-cover.jpg');
+      expect(pictureOf({ mediaType: 'VIDEO' })).toBe('https://scontent.cdninstagram.com/v/t51/expiring-cover.jpg');
+      // And never the file beside it, which is a video.
+      expect(pictureOf({ mediaType: 'VIDEO' })).not.toBe(reel.mediaUrl);
     });
 
     it('has no picture for a video whose cover frame Instagram withheld', () => {
@@ -461,6 +471,7 @@ describe('instagram — the caption is the whole document', () => {
         ],
       });
       expect(instagramImageUrl(album)).toBe('https://scontent.cdninstagram.com/v/t51/one.jpg');
+      expect(instagramSourceDocument(album).imageUrl).toBe('https://scontent.cdninstagram.com/v/t51/one.jpg');
     });
 
     it('takes a carousel’s cover frame when its first item is a video', () => {
@@ -473,6 +484,23 @@ describe('instagram — the caption is the whole document', () => {
         ],
       });
       expect(instagramImageUrl(album)).toBe('https://scontent.cdninstagram.com/v/t51/clip-cover.jpg');
+      expect(instagramSourceDocument(album).imageUrl).toBe('https://scontent.cdninstagram.com/v/t51/clip-cover.jpg');
+    });
+
+    it('moves past a carousel item Instagram gave nothing usable for', () => {
+      // A clip with no cover frame is not the end of the album. Stopping at the
+      // first item would drop the post to a stock photo with a real picture of
+      // the dish sitting one index further along.
+      const album = media({
+        mediaType: 'CAROUSEL_ALBUM',
+        mediaUrl: null,
+        thumbnailUrl: null,
+        children: [
+          { id: 'c1', mediaType: 'VIDEO', mediaUrl: 'https://scontent.cdninstagram.com/v/t50/clip.mp4', thumbnailUrl: null },
+          { id: 'c2', mediaType: 'IMAGE', mediaUrl: 'https://scontent.cdninstagram.com/v/t51/dish.jpg', thumbnailUrl: null },
+        ],
+      });
+      expect(instagramSourceDocument(album).imageUrl).toBe('https://scontent.cdninstagram.com/v/t51/dish.jpg');
     });
 
     it('has no picture for a carousel that came back without children', () => {

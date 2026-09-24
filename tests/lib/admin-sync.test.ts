@@ -179,6 +179,9 @@ function instagramMedia(ids: string[], caption = SOCIAL_CAPTION) {
       caption,
       media_type: 'VIDEO',
       media_url: `https://scontent.cdninstagram.com/${id}.mp4`,
+      // A Reel always comes back with its cover frame beside the video file,
+      // and that frame is the only picture the post has.
+      thumbnail_url: `https://scontent.cdninstagram.com/${id}-cover.jpg`,
       permalink: `https://www.instagram.com/reel/${id}/`,
       timestamp: '2026-07-29T09:00:00+0000',
     })),
@@ -866,6 +869,12 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
     const options = importer.mock.calls[0][1];
     expect(options.document?.platform).toBe('instagram');
     expect(options.document?.text).toContain('2 avocados');
+    // The post's cover frame reaches the import, which is what puts the
+    // creator's own picture on the meal card instead of a stock photo. It is
+    // the frame, never `media_url` — that one is the video.
+    expect(options.document?.imageUrl).toBe('https://scontent.cdninstagram.com/m1-cover.jpg');
+    // And `userId`, without which the pipeline resolves no photo at all.
+    expect(options.userId).toBe(CREATOR.user_id);
     expect(calls).toEqual([IG_MEDIA_URL]);
   });
 
