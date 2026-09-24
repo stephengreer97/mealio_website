@@ -522,7 +522,7 @@ describe('import/viability — the caption is the measurement', () => {
 
   function instagramRoutes(captions: string[]) {
     return {
-      'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cpermalink%2Ctimestamp&limit=10&access_token=IGQ-long': jsonRoute({
+      'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cthumbnail_url%2Cpermalink%2Ctimestamp%2Cchildren%7Bid%2Cmedia_type%2Cmedia_url%2Cthumbnail_url%7D&limit=10&access_token=IGQ-long': jsonRoute({
         data: captions.map((caption, index) => ({
           id: `m${index}`,
           caption,
@@ -614,7 +614,7 @@ describe('import/viability — the caption is the measurement', () => {
 
   it('reports the platform’s own refusal rather than an empty account', async () => {
     const { fetchOptions: opts } = fetchOptions({
-      'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cpermalink%2Ctimestamp&limit=10&access_token=IGQ-dead':
+      'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cthumbnail_url%2Cpermalink%2Ctimestamp%2Cchildren%7Bid%2Cmedia_type%2Cmedia_url%2Cthumbnail_url%7D&limit=10&access_token=IGQ-dead':
         { ...jsonRoute({ error: { message: 'Session has expired' } }), status: 400 },
     });
 

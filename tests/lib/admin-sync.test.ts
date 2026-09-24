@@ -163,7 +163,7 @@ function videosPage(ids: string[], channelId = CHANNEL_ID) {
  * documents — which is the only check available until app review clears.
  */
 const IG_MEDIA_URL =
-  'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cpermalink%2Ctimestamp' +
+  'https://graph.instagram.com/me/media?fields=id%2Ccaption%2Cmedia_type%2Cmedia_url%2Cthumbnail_url%2Cpermalink%2Ctimestamp%2Cchildren%7Bid%2Cmedia_type%2Cmedia_url%2Cthumbnail_url%7D' +
   '&limit=50&access_token=IGQ-long';
 const TT_LIST_URL =
   'https://open.tiktokapis.com/v2/video/list/?fields=id%2Ctitle%2Cvideo_description%2Cduration%2C' +
