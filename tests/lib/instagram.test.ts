@@ -6,6 +6,7 @@ import {
   fetchInstagramMedia,
   hasRecipeText,
   instagramAuthUrl,
+  instagramImageUrl,
   instagramMediaTitle,
   instagramSourceDocument,
   INSTAGRAM_BASIC_SCOPE,
@@ -32,6 +33,8 @@ function media(overrides: Partial<InstagramMedia> = {}): InstagramMedia {
     caption: CAPTION,
     mediaType: 'VIDEO',
     mediaUrl: 'https://scontent.cdninstagram.com/v/t50/expiring.mp4',
+    thumbnailUrl: 'https://scontent.cdninstagram.com/v/t51/expiring-cover.jpg',
+    children: [],
     permalink: 'https://www.instagram.com/reel/CabcDEFghij/',
     publishedAt: '2026-07-29T09:00:00.000Z',
     ...overrides,
@@ -258,6 +261,65 @@ describe('instagram — listing media', () => {
     expect(result.media[0].permalink).toBe('https://www.instagram.com/reel/m1/');
   });
 
+  it('asks for the cover frame and the carousel items, and reads both back', async () => {
+    const { impl, calls } = routed([
+      [
+        /\/me\/media/,
+        () =>
+          json({
+            data: [
+              {
+                ...mediaRow('m1'),
+                thumbnail_url: 'https://scontent.cdninstagram.com/m1-cover.jpg',
+              },
+              {
+                ...mediaRow('m2'),
+                media_type: 'CAROUSEL_ALBUM',
+                media_url: undefined,
+                // An edge, `{ data: [...] }`, not a bare array.
+                children: {
+                  data: [
+                    { id: 'm2-1', media_type: 'IMAGE', media_url: 'https://scontent.cdninstagram.com/m2-1.jpg' },
+                    { id: 'm2-2', media_type: 'IMAGE', media_url: 'https://scontent.cdninstagram.com/m2-2.jpg' },
+                  ],
+                },
+              },
+            ],
+          }),
+      ],
+    ]);
+
+    const result = await fetchInstagramMedia('IGQ-long', { fetchImpl: impl, limit: 10 });
+
+    // Without these two fields a Reel has no still image at all and a carousel
+    // has no file of its own, so every such post would fall back to a stock
+    // photo of a dish the creator never cooked.
+    expect(calls[0]).toContain('thumbnail_url');
+    expect(calls[0]).toContain('children');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.media[0].thumbnailUrl).toBe('https://scontent.cdninstagram.com/m1-cover.jpg');
+    expect(result.media[1].mediaUrl).toBeNull();
+    expect(result.media[1].children.map((child) => child.mediaUrl)).toEqual([
+      'https://scontent.cdninstagram.com/m2-1.jpg',
+      'https://scontent.cdninstagram.com/m2-2.jpg',
+    ]);
+  });
+
+  it('reads a post that came back without either field as having neither', async () => {
+    // The live API omits `thumbnail_url` on a photo and `children` on anything
+    // that is not a carousel; absent keys are the normal case, not a fault.
+    const { impl } = routed([[/\/me\/media/, () => json({ data: [{ ...mediaRow('m1'), media_type: 'IMAGE' }] })]]);
+
+    const result = await fetchInstagramMedia('IGQ-long', { fetchImpl: impl, limit: 10 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.media[0].thumbnailUrl).toBeNull();
+    expect(result.media[0].children).toEqual([]);
+  });
+
   it('pages by cursor and stops at the limit', async () => {
     let page = 0;
     const { impl, calls } = routed([
@@ -349,17 +411,103 @@ describe('instagram — listing media', () => {
 // ── The source document ──────────────────────────────────────────────────────
 
 describe('instagram — the caption is the whole document', () => {
-  it('reduces a post to what the gate takes, with no photo from a link that expires', () => {
+  it('reduces a post to what the gate takes, and carries the post’s own picture', () => {
     const document = instagramSourceDocument(media());
 
     expect(document.platform).toBe('instagram');
     expect(document.text).toContain('2 ripe avocados');
-    // `media_url` is a time-limited CDN link. A draft pointing at one 404s
-    // tomorrow, which is worse than having no photo.
-    expect(document.imageUrl).toBeNull();
+    // The link expires; the PHOTO does not. `lib/import/photo.ts` copies the
+    // bytes into our bucket during the same import, so handing it on here is
+    // what gets a creator's own dish onto their meal card instead of a stock
+    // photo of somebody else's.
+    expect(document.imageUrl).toBe('https://scontent.cdninstagram.com/v/t51/expiring-cover.jpg');
     expect(document.jsonLd).toBeNull();
     // No comment rails on a caption, so MEAL-72 verifies against the same text.
     expect(document.recipeText).toBe(document.text);
+  });
+
+  describe('the picture that stands for a post', () => {
+    // Asserted through `instagramSourceDocument`, not against the helper alone:
+    // the helper being right is worth nothing if the document does not carry
+    // what it returns, and that seam is the whole change.
+    const pictureOf = (overrides: Partial<InstagramMedia>) => instagramSourceDocument(media(overrides)).imageUrl;
+
+    it('takes the file itself for a photo', () => {
+      const image = media({
+        mediaType: 'IMAGE',
+        mediaUrl: 'https://scontent.cdninstagram.com/v/t51/photo.jpg',
+        thumbnailUrl: null,
+      });
+      expect(instagramImageUrl(image)).toBe('https://scontent.cdninstagram.com/v/t51/photo.jpg');
+      expect(pictureOf({ mediaType: 'IMAGE', mediaUrl: 'https://scontent.cdninstagram.com/v/t51/photo.jpg', thumbnailUrl: null }))
+        .toBe('https://scontent.cdninstagram.com/v/t51/photo.jpg');
+    });
+
+    it('takes the cover frame for a video, never the video file', () => {
+      // The whole point of the field. `media_url` on a Reel is an .mp4, and
+      // handing that to the photo pipeline stores a video as a meal photo or,
+      // more likely, wastes a fetch the content-type check then refuses.
+      const reel = media({ mediaType: 'VIDEO' });
+      expect(instagramImageUrl(reel)).toBe('https://scontent.cdninstagram.com/v/t51/expiring-cover.jpg');
+      expect(pictureOf({ mediaType: 'VIDEO' })).toBe('https://scontent.cdninstagram.com/v/t51/expiring-cover.jpg');
+      // And never the file beside it, which is a video.
+      expect(pictureOf({ mediaType: 'VIDEO' })).not.toBe(reel.mediaUrl);
+    });
+
+    it('has no picture for a video whose cover frame Instagram withheld', () => {
+      expect(instagramImageUrl(media({ mediaType: 'VIDEO', thumbnailUrl: null }))).toBeNull();
+    });
+
+    it('takes the first child of a carousel, which is the cover Instagram shows', () => {
+      // A CAROUSEL_ALBUM carries no file of its own: `media_url` is absent on
+      // the album and the pictures hang off its children.
+      const album = media({
+        mediaType: 'CAROUSEL_ALBUM',
+        mediaUrl: null,
+        thumbnailUrl: null,
+        children: [
+          { id: 'c1', mediaType: 'IMAGE', mediaUrl: 'https://scontent.cdninstagram.com/v/t51/one.jpg', thumbnailUrl: null },
+          { id: 'c2', mediaType: 'IMAGE', mediaUrl: 'https://scontent.cdninstagram.com/v/t51/two.jpg', thumbnailUrl: null },
+        ],
+      });
+      expect(instagramImageUrl(album)).toBe('https://scontent.cdninstagram.com/v/t51/one.jpg');
+      expect(instagramSourceDocument(album).imageUrl).toBe('https://scontent.cdninstagram.com/v/t51/one.jpg');
+    });
+
+    it('takes a carousel’s cover frame when its first item is a video', () => {
+      const album = media({
+        mediaType: 'CAROUSEL_ALBUM',
+        mediaUrl: null,
+        thumbnailUrl: null,
+        children: [
+          { id: 'c1', mediaType: 'VIDEO', mediaUrl: 'https://scontent.cdninstagram.com/v/t50/clip.mp4', thumbnailUrl: 'https://scontent.cdninstagram.com/v/t51/clip-cover.jpg' },
+        ],
+      });
+      expect(instagramImageUrl(album)).toBe('https://scontent.cdninstagram.com/v/t51/clip-cover.jpg');
+      expect(instagramSourceDocument(album).imageUrl).toBe('https://scontent.cdninstagram.com/v/t51/clip-cover.jpg');
+    });
+
+    it('moves past a carousel item Instagram gave nothing usable for', () => {
+      // A clip with no cover frame is not the end of the album. Stopping at the
+      // first item would drop the post to a stock photo with a real picture of
+      // the dish sitting one index further along.
+      const album = media({
+        mediaType: 'CAROUSEL_ALBUM',
+        mediaUrl: null,
+        thumbnailUrl: null,
+        children: [
+          { id: 'c1', mediaType: 'VIDEO', mediaUrl: 'https://scontent.cdninstagram.com/v/t50/clip.mp4', thumbnailUrl: null },
+          { id: 'c2', mediaType: 'IMAGE', mediaUrl: 'https://scontent.cdninstagram.com/v/t51/dish.jpg', thumbnailUrl: null },
+        ],
+      });
+      expect(instagramSourceDocument(album).imageUrl).toBe('https://scontent.cdninstagram.com/v/t51/dish.jpg');
+    });
+
+    it('has no picture for a carousel that came back without children', () => {
+      const album = media({ mediaType: 'CAROUSEL_ALBUM', mediaUrl: null, thumbnailUrl: null, children: [] });
+      expect(instagramImageUrl(album)).toBeNull();
+      expect(instagramSourceDocument(album).imageUrl).toBeNull();
+    });
   });
 
   it('titles a post by the first line of its caption', () => {

@@ -326,14 +326,38 @@ export interface InstagramMedia {
   caption: string;
   mediaType: InstagramMediaType;
   /**
-   * A time-limited CDN link to the file itself. Nothing reads it today — it is
-   * the seam transcription (MEAL-85) would plug into, and it is deliberately
-   * never stored, because a URL that expires is worse in a database than absent.
+   * A time-limited CDN link to the file itself: the JPEG for an `IMAGE`, the MP4
+   * for a `VIDEO`, and absent on a `CAROUSEL_ALBUM`, whose files hang off its
+   * children instead.
+   *
+   * Signed and short-lived — the same post answers with a different host and
+   * signature on every listing — so this is read at import time and never
+   * stored. See `instagramImageUrl`.
    */
   mediaUrl: string | null;
+  /**
+   * The cover frame of a `VIDEO`, and the only still image a Reel has. Instagram
+   * returns this field for video media only; asking for it on a photo is not an
+   * error, the key simply does not come back.
+   */
+  thumbnailUrl: string | null;
+  /**
+   * The items of a `CAROUSEL_ALBUM`, in the order the creator posted them, or
+   * `[]` for a single-item post. A carousel's own `media_url` is absent, so the
+   * first child is where its cover picture lives.
+   */
+  children: InstagramMediaChild[];
   /** The public post URL. What gets recorded as the item's `url`. */
   permalink: string;
   publishedAt: string | null;
+}
+
+/** One item inside a `CAROUSEL_ALBUM`. Same expiring links as its parent. */
+export interface InstagramMediaChild {
+  id: string;
+  mediaType: InstagramMediaType;
+  mediaUrl: string | null;
+  thumbnailUrl: string | null;
 }
 
 /**
@@ -374,9 +398,63 @@ function toMedia(row: Record<string, any>): InstagramMedia | null {
     caption: typeof row.caption === 'string' ? row.caption.slice(0, MAX_CAPTION_CHARS) : '',
     mediaType: typeof row.media_type === 'string' ? row.media_type : 'IMAGE',
     mediaUrl: typeof row.media_url === 'string' ? row.media_url : null,
+    thumbnailUrl: typeof row.thumbnail_url === 'string' ? row.thumbnail_url : null,
+    // `children` arrives as an edge — `{ data: [...] }` — not a bare array, and
+    // only for a carousel. Anything else is read as "no children" rather than
+    // trusted into a shape.
+    children: Array.isArray(row.children?.data)
+      ? row.children.data.flatMap((child: Record<string, any>) =>
+          typeof child?.id === 'string'
+            ? [{
+                id: child.id,
+                mediaType: typeof child.media_type === 'string' ? child.media_type : 'IMAGE',
+                mediaUrl: typeof child.media_url === 'string' ? child.media_url : null,
+                thumbnailUrl: typeof child.thumbnail_url === 'string' ? child.thumbnail_url : null,
+              }]
+            : [],
+        )
+      : [],
     permalink: row.permalink,
     publishedAt: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null,
   };
+}
+
+/**
+ * The still image that stands for a post, or null when it has none.
+ *
+ * Which field holds it depends on what the creator posted, and getting this
+ * wrong means handing the photo pipeline an MP4:
+ *
+ *   - `IMAGE` — `media_url` is the JPEG.
+ *   - `VIDEO` (a Reel too) — `media_url` is the **video file**, so the cover
+ *     frame in `thumbnail_url` is the only image there is.
+ *   - `CAROUSEL_ALBUM` — the album itself carries no file. Its items do, and the
+ *     first one is the cover Instagram shows, so that is the one taken —
+ *     resolved by the same photo-or-thumbnail rule, and falling through to the
+ *     next item when Instagram gave the first one nothing usable, because an
+ *     album is not out of pictures just because its opening clip arrived with no
+ *     cover frame.
+ *
+ * The URL is signed and expires within hours, which the import survives because
+ * `lib/import/photo.ts` copies the bytes into our own bucket and the draft keeps
+ * OUR url. It is not, however, thrown away: the confidence record keeps the
+ * source URL as the photo field's evidence, so that one column holds a link
+ * which is dead by the time a human reads it. Shared with every other platform,
+ * and not worth a photo-shaped exception in the evidence model.
+ */
+export function instagramImageUrl(media: InstagramMedia | InstagramMediaChild): string | null {
+  if (media.mediaType === 'VIDEO') return media.thumbnailUrl;
+  if ('children' in media && media.mediaType === 'CAROUSEL_ALBUM') {
+    for (const child of media.children) {
+      const url = instagramImageUrl(child);
+      if (url) return url;
+    }
+    return null;
+  }
+  // An IMAGE, or a media type Instagram has added since: `media_url` is the file
+  // for every type that has one, and a non-image body is refused by the fetcher
+  // rather than stored.
+  return media.mediaUrl;
 }
 
 /**
@@ -400,7 +478,12 @@ export async function fetchInstagramMedia(
 
   for (let page = 0; page < INSTAGRAM_MAX_PAGES; page++) {
     const query = new URLSearchParams({
-      fields: 'id,caption,media_type,media_url,permalink,timestamp',
+      // `thumbnail_url` is the cover frame of a video, and `children` the items
+      // of a carousel: between them, every media type has a still image to
+      // stand for the recipe. Instagram returns neither key for a post that
+      // has no such media, and asking for them anyway is not an error —
+      // verified against the live API before this list grew (2026-09-24).
+      fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,children{id,media_type,media_url,thumbnail_url}',
       limit: String(Math.min(INSTAGRAM_PAGE_SIZE, limit - media.length)),
       access_token: accessToken,
     });
@@ -479,9 +562,15 @@ export function instagramSourceDocument(media: InstagramMedia): SourceDocument {
     jsonLd: null,
     structuredSource: null,
     jsonLdRaw: null,
-    // Deliberately not `media_url`: that link expires within hours, and a photo
-    // the draft points at which 404s tomorrow is worse than no photo.
-    imageUrl: null,
+    // The post's own picture, and the reason an expiring link is safe to pass
+    // here: `lib/import/photo.ts` fetches the bytes during the same import, so
+    // what the DRAFT points at is our bucket and outlives Instagram's
+    // signature. This used to be null on the grounds that the link 404s
+    // tomorrow, which was true of the link and false of the photo — and it left
+    // every Instagram draft wearing a Pixabay stand-in of a dish nobody cooked,
+    // or no photo at all. See `instagramImageUrl` for where the source link
+    // does still outlive its own lifetime.
+    imageUrl: instagramImageUrl(media),
     platform: 'instagram',
   };
 }
