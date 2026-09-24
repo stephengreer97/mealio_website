@@ -125,6 +125,9 @@ const DIFFICULTY_LABELS = ['', 'Easy', 'Easy-Medium', 'Medium', 'Medium-Hard', '
  * touches twice a year sat between them and the meals they came to edit, and
  * the review queue was one card in a stack rather than somewhere to go.
  */
+/** What the portal says when it could not load. Plain, and it offers the retry. */
+const LOAD_FAILED = 'We could not load your Creator Portal. Check your connection and try again.';
+
 type PortalTab = 'meals' | 'drafts' | 'settings';
 
 /** Starting point for the "which boxes are empty" mirror — a form nobody has touched. */
@@ -771,6 +774,8 @@ export default function CreatorPortal() {
   const [meals, setMeals] = useState<CreatorMeal[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Set when the portal could not be loaded at all. Shown instead of the spinner. */
+  const [loadError, setLoadError] = useState('');
 
   const [copiedMealId, setCopiedMealId] = useState<string | null>(null);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -1142,24 +1147,46 @@ export default function CreatorPortal() {
     }
   };
 
+  /**
+   * THE LOAD CAN FAIL, AND SAYING SO BEATS SPINNING FOR EVER.
+   *
+   * Neither fetch was wrapped: a dropped connection (seen on 2026-09-24, the
+   * network blipping as Instagram redirected back) threw out of this function
+   * with `loading` still true, and the spinner has no text, so the portal was a
+   * blank white page with no way back but a manual reload.
+   *
+   * The server failing is also not the same as not being a creator. Any
+   * non-OK answer sent the user to /creator/apply, so a 500 told an approved
+   * creator to go and apply again. Only an answer that actually says "you are
+   * not a creator" does that now.
+   */
   const loadPortal = async () => {
     const token = localStorage.getItem('accessToken');
     if (!token) { router.push('/signin'); return; }
+    setLoadError('');
 
-    const authRes = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } });
-    if (!authRes.ok) { localStorage.clear(); router.push('/signin'); return; }
+    try {
+      const authRes = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } });
+      if (authRes.status === 401 || authRes.status === 403) { localStorage.clear(); router.push('/signin'); return; }
+      if (!authRes.ok) { setLoadError(LOAD_FAILED); setLoading(false); return; }
 
-    const meRes = await fetch('/api/creator/me', { headers: { Authorization: `Bearer ${token}` } });
-    if (!meRes.ok) { router.push('/creator/apply'); return; }
+      const meRes = await fetch('/api/creator/me', { headers: { Authorization: `Bearer ${token}` } });
+      if (meRes.status === 403 || meRes.status === 404) { router.push('/creator/apply'); return; }
+      if (!meRes.ok) { setLoadError(LOAD_FAILED); setLoading(false); return; }
 
-    const data = await meRes.json();
-    if (!data.creator) { router.push('/creator/apply'); return; }
+      const data = await meRes.json();
+      if (!data.creator) { router.push('/creator/apply'); return; }
 
-    setCreator(data.creator);
-    setHandleInput(data.creator.handle ?? '');
-    setMeals((data.meals ?? []).slice().sort((a: CreatorMeal, b: CreatorMeal) => b.trending_score - a.trending_score));
-    setStats(data.stats ?? null);
-    setLoading(false);
+      setCreator(data.creator);
+      setHandleInput(data.creator.handle ?? '');
+      setMeals((data.meals ?? []).slice().sort((a: CreatorMeal, b: CreatorMeal) => b.trending_score - a.trending_score));
+      setStats(data.stats ?? null);
+      setLoading(false);
+    } catch {
+      // No connection, or it went away mid-request.
+      setLoadError(LOAD_FAILED);
+      setLoading(false);
+    }
   };
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1750,6 +1777,23 @@ export default function CreatorPortal() {
                   )}
                 </div>
   );
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50" style={{ padding: '24px', gap: '14px' }}>
+        <p style={{ fontSize: '15px', color: '#444', textAlign: 'center', maxWidth: '420px' }} data-testid="portal-load-error">
+          {loadError}
+        </p>
+        <button
+          type="button"
+          onClick={() => { setLoading(true); loadPortal(); }}
+          style={{ background: '#dd0031', color: '#fff', border: 'none', borderRadius: '10px', padding: '10px 18px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
