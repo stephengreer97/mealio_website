@@ -545,16 +545,18 @@ export const CREATOR_SOURCE_OPTIONS: readonly CreatorSourceOption[] = [
     label: 'Instagram',
     blockedReason: null,
     /**
-     * Unblocked on 2026-09-17, before Meta's app review is through, so the
-     * review video can show a real import. Until Meta approves, its consent
-     * screen refuses every account not added as an Instagram Tester on the app,
-     * and that refusal comes back to us looking like a cancel. This note is
-     * what stops a creator reading that as Mealio being broken. Delete it the
-     * day the review passes, as TikTok's was.
+     * No note before the press, as of 2026-10-06. Meta approved
+     * `instagram_business_basic` that morning and the app is published, so the
+     * tester allow-list no longer applies and a creator pressing Connect is no
+     * longer more likely to be refused than not. The warning that stood here
+     * from 2026-09-17 said only invited testers could connect; leaving it up
+     * would now be telling every creator the feature does not work.
+     *
+     * A refusal from here is a genuine one — a personal account rather than a
+     * professional one, usually — and the callback reports it to the creator it
+     * happened to, which is TikTok's arrangement since its own approval.
      */
-    note:
-      'Instagram is still reviewing Mealio. Until Meta approves it, only accounts Mealio has invited as ' +
-      'testers can connect, and anyone else will see Instagram refuse on its own screen.',
+    note: null,
   },
   {
     source: 'tiktok',
