@@ -203,13 +203,17 @@ describe('the source picker', () => {
     expect(instagram?.textContent).toBe('Instagram');
   });
 
-  it('shows the Instagram connect card, with the tester caveat, when Instagram is picked', async () => {
+  it('shows the Instagram connect card with nothing to warn about, now Meta has approved', async () => {
     harness();
 
     fireEvent.change(picker(), { target: { value: 'instagram' } });
 
     expect(await screen.findByRole('button', { name: /connect instagram/i })).toBeTruthy();
-    expect(document.body.textContent).toMatch(/invited as testers/i);
+    // The tester caveat stood here from 2026-09-17 until Meta's approval on
+    // 2026-10-06. Any creator can connect now, so a warning that says only
+    // invited testers can would be telling them the feature does not work.
+    expect(screen.queryByTestId('note-instagram')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/invited as testers/i);
   });
 
   it('shows the body for whichever source is picked, and only that one', async () => {
