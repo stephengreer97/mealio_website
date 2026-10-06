@@ -431,13 +431,26 @@ describe('creator-sources — chooseCreatorSource', () => {
     expect(chooseCreatorSource({}, 'instagram', [])).toMatchObject({ ok: false });
   });
 
-  it('offers Instagram plainly, with the tester caveat after the choice', () => {
+  it('offers Instagram plainly, with nothing hedged in front of it', () => {
     const instagram = CREATOR_SOURCE_OPTIONS.find(option => option.source === 'instagram');
+    expect(instagram?.blockedReason).toBeNull();
     expect(instagram?.label).toBe('Instagram');
-    // Until Meta approves, a non-tester is refused on Meta's own screen and it
-    // reaches us looking like a cancel, so the card has to say why first.
-    expect(instagram?.note).toMatch(/testers/i);
-    expect(instagram?.note).not.toMatch(/\u2014/);
+    // Caveated from 2026-09-17, when it was unblocked ahead of Meta's review
+    // and only invited testers could get through, until approval on
+    // 2026-10-06 took the allow-list away. A refusal is now a genuine one and
+    // is the callback's to explain, to the creator it happened to, rather than
+    // a warning every creator reads about something most will never hit.
+    expect(instagram?.note).toBeNull();
+  });
+
+  it('writes no em dash into a note, whichever source grows one next', () => {
+    // The rule is about copy a creator reads, so it belongs to the field
+    // rather than to whichever source happens to be carrying a note today.
+    // Every one of them is null as of 2026-10-06; this is what stops the next
+    // one arriving with an em dash in it.
+    for (const option of CREATOR_SOURCE_OPTIONS) {
+      if (option.note) expect(option.note).not.toMatch(/\u2014/);
+    }
   });
 
   it('accepts TikTok on its grant, now that the app has credentials', () => {
