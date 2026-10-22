@@ -1140,6 +1140,27 @@ describe('one email per batch (MEAL-76)', () => {
     expect(drafts).toHaveLength(3);
   });
 
+  it('queues for the admins and emails nobody when the creator allowed admin review', async () => {
+    fakeDb.seed('creators', [creatorRow({ allow_admin_review: true })]);
+    const { impl } = feedRoutes(feedWith(2));
+    const notifier = vi.fn(async () => undefined);
+    const queue = vi.fn(async () => `draft-${Math.random().toString(36).slice(2, 8)}`);
+
+    const pass = await runPollPass(deps({
+      notifier,
+      queue: queue as unknown as PollDeps['queue'],
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+    }));
+
+    expect(pass.drafted).toBe(2);
+    expect(pass.emailsSent).toBe(0);
+    expect(notifier).not.toHaveBeenCalled();
+    expect(queue).toHaveBeenCalledTimes(2);
+    for (const call of queue.mock.calls as unknown as Array<[unknown, { reviewBy: string }]>) {
+      expect(call[1]).toMatchObject({ reviewBy: 'admin' });
+    }
+  });
+
   it('carries the photo, the ingredient count and the flag count — enough to judge from the inbox', async () => {
     fakeDb.seed('creators', [creatorRow()]);
     const { impl } = feedRoutes(feedWith(1));

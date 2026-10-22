@@ -63,6 +63,7 @@ type StrandedRow = {
   sourceUrl: string;
   creatorName: string | null;
   createdAt: string | null;
+  adminMayDecide: boolean;
 };
 
 /** A queue row, reduced to what the stranded list draws. */
@@ -72,6 +73,7 @@ const stranded = (row: ReviewRow): StrandedRow => ({
   sourceUrl: row.sourceUrl,
   creatorName: row.creatorName,
   createdAt: row.createdAt,
+  adminMayDecide: row.adminMayDecide,
 });
 
 /**
@@ -109,6 +111,14 @@ function DraftDate({ at }: { at: string | null }) {
 type ScopeTotals = { allPending: number; truncated: boolean; limit: number };
 
 type Action = 'approve' | 'send-to-creator' | 'delete' | 'reclaim';
+
+/**
+ * The creator has not ticked "Allow Mealio admins to edit/approve/deny" in their
+ * portal settings. The route refuses too; this just stops offering the buttons.
+ */
+const NOT_ALLOWED_LONG =
+  'This creator has not allowed Mealio admins to edit, approve or delete their posts. You can read it and send it to them.';
+const NOT_ALLOWED_SHORT = 'Creator reviews their own';
 
 /**
  * What **Send to creator** now does, said on the card rather than left to be
@@ -635,9 +645,13 @@ function StrandedList({
             </span>
           </span>
           <DraftDate at={row.createdAt} />
-          <button onClick={() => onReclaim(row.id)} disabled={busy} style={secondaryButton}>
-            Take it back
-          </button>
+          {row.adminMayDecide ? (
+            <button onClick={() => onReclaim(row.id)} disabled={busy} style={secondaryButton}>
+              Take it back
+            </button>
+          ) : (
+            <span style={{ fontSize: '11px', color: '#aaa' }}>{NOT_ALLOWED_SHORT}</span>
+          )}
         </div>
       ))}
     </div>
@@ -667,12 +681,15 @@ function DraftRow({
   return (
     <div style={{ borderTop: '1px solid #f0f0f0', padding: '10px 0' }} data-testid="draft-row">
       <div style={{ display: 'flex', gap: '10px', alignItems: 'baseline' }}>
+        {/* No tick for a draft the admins may not decide: the bulk bar only
+            approves and declines. */}
         <input
           type="checkbox"
           checked={selected}
           onChange={onSelect}
+          disabled={!row.adminMayDecide}
           aria-label={`Select ${row.draft.name || row.sourceUrl}`}
-          style={{ accentColor: '#dd0031', width: '15px', height: '15px', flexShrink: 0 }}
+          style={{ accentColor: '#dd0031', width: '15px', height: '15px', flexShrink: 0, visibility: row.adminMayDecide ? 'visible' : 'hidden' }}
         />
         <button
           onClick={onToggle}
@@ -760,8 +777,15 @@ function DraftRow({
                 {row.summary.needALook === 0 && 'Nothing to check. The notes below fields are what a flagged one looks like.'}
               </p>
 
+              {!row.adminMayDecide && (
+                <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#b45309' }} data-testid="admin-not-allowed">
+                  {NOT_ALLOWED_LONG}
+                </p>
+              )}
               <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
-                <button onClick={() => onAct('approve')} disabled={busy} style={primaryButton}>Approve &amp; publish</button>
+                {row.adminMayDecide && (
+                  <button onClick={() => onAct('approve')} disabled={busy} style={primaryButton}>Approve &amp; publish</button>
+                )}
                 <button
                   onClick={() => onAct('send-to-creator')}
                   disabled={busy}
@@ -771,14 +795,18 @@ function DraftRow({
                 >
                   Send to creator
                 </button>
-                <button onClick={onEdit} disabled={busy} style={secondaryButton}>Edit</button>
-                <button
-                  onClick={() => onAct('delete')}
-                  disabled={busy}
-                  style={{ ...secondaryButton, color: '#c40029', borderColor: '#ffcccc' }}
-                >
-                  Delete
-                </button>
+                {row.adminMayDecide && (
+                  <>
+                    <button onClick={onEdit} disabled={busy} style={secondaryButton}>Edit</button>
+                    <button
+                      onClick={() => onAct('delete')}
+                      disabled={busy}
+                      style={{ ...secondaryButton, color: '#c40029', borderColor: '#ffcccc' }}
+                    >
+                      Delete
+                    </button>
+                  </>
+                )}
                 <a
                   href={row.sourceUrl}
                   target="_blank"

@@ -160,6 +160,7 @@ describe('reviewDraft — exceptions only', () => {
       decidedBy: null,
       publishedMealId: null,
       createdAt: '2026-08-02T10:00:00.000Z',
+      adminMayDecide: true,
       ...overrides,
     };
   }
@@ -875,7 +876,7 @@ describe('drafts handed over — visible to the operator who let go of them', ()
       const row = (over: Partial<PendingDraft>): PendingDraft => ({
         id: 'd1', name: 'Best Guacamole', sourceUrl: 'https://chefsarah.test/guacamole',
         creatorName: 'Chef Sarah', reviewBy: 'creator', sentToCreatorAt: null,
-        createdAt: '2026-08-02T10:00:00.000Z', ...over,
+        createdAt: '2026-08-02T10:00:00.000Z', adminMayDecide: true, ...over,
       });
 
       it('places a row in the same list the query for it would', () => {

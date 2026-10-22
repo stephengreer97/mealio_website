@@ -220,7 +220,7 @@ export async function PATCH(request: NextRequest) {
 
   const supabase = createServerSupabaseClient();
   const body = await request.json();
-  const { photoUrl, handle, bio, socialHandle, links, primarySource } = body;
+  const { photoUrl, handle, bio, socialHandle, links, primarySource, allowAdminReview } = body;
 
   const updates: Record<string, unknown> = {};
   const notices: string[] = [];
@@ -382,6 +382,15 @@ export async function PATCH(request: NextRequest) {
     Object.assign(updates, choice.update);
   }
 
+  // The creator's permission for an operator to decide their imported drafts.
+  // Off by default (the column default), so an admin can only read them and
+  // hand them over until the creator ticks the box.
+  if (allowAdminReview !== undefined) {
+    if (typeof allowAdminReview !== 'boolean') {
+      return NextResponse.json({ error: 'allowAdminReview must be true or false.' }, { status: 400 });
+    }
+    updates.allow_admin_review = allowAdminReview;
+  }
   if (photoUrl !== undefined) updates.photo_url = photoUrl ?? null;
   if (bio !== undefined) updates.bio = typeof bio === 'string' ? (bio.trim() || null) : null;
   if (socialHandle !== undefined) updates.social_handle = typeof socialHandle === 'string' ? (socialHandle.trim() || null) : null;
@@ -514,7 +523,7 @@ export async function GET(request: NextRequest) {
     // been read and found importable, which is what the sync section shows as
     // "connected" for that source. Without it the picker cannot tell a saved
     // link from a verified one.
-    .select('id, display_name, bio, social_handle, photo_url, approved_at, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url')
+    .select('id, display_name, bio, social_handle, photo_url, approved_at, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url, allow_admin_review')
     .eq('user_id', decoded.userId)
     .maybeSingle();
 

@@ -70,6 +70,8 @@ export interface SyncSectionCreator {
   feed_url?: string | null;
   primary_source?: string | null;
   import_opt_in?: boolean | null;
+  /** "Allow Mealio admins to edit/approve/deny your imported posts for you." */
+  allow_admin_review?: boolean | null;
 }
 
 interface Props {
@@ -386,6 +388,26 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
     const changes = { primary_source: next, import_opt_in: next !== 'none' };
     setRow(current => ({ ...current, ...changes }));
     onSaved?.(changes);
+  };
+
+  /**
+   * The creator's permission for the admins to review their drafts for them.
+   * Optimistic, and put back if the save fails.
+   */
+  const [savingAdminReview, setSavingAdminReview] = useState(false);
+  const setAdminReview = async (next: boolean) => {
+    setSavingAdminReview(true);
+    setError('');
+    setRow(current => ({ ...current, allow_admin_review: next }));
+    const { res, data } = await authed('/api/creator/me', { allowAdminReview: next }, 'PATCH');
+    if (!mounted.current) return;
+    setSavingAdminReview(false);
+    if (!res.ok) {
+      setRow(current => ({ ...current, allow_admin_review: !next }));
+      setError(data.error || 'Could not save that setting.');
+      return;
+    }
+    onSaved?.({ allow_admin_review: next });
   };
 
   /**
@@ -1156,6 +1178,24 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
             now is imported on its own</strong>. Tick anything from your back catalogue you would like as a draft
             too, up to {CREATOR_SELECTION_MAX} at a time.
           </p>
+
+          <label className="flex items-start gap-2.5 mb-4 cursor-pointer" data-testid="allow-admin-review">
+            <input
+              type="checkbox"
+              checked={row.allow_admin_review === true}
+              disabled={savingAdminReview}
+              onChange={e => setAdminReview(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+            />
+            <span className="text-sm text-gray-700">
+              Allow Mealio admins to edit/approve/deny your imported posts for you
+              {row.allow_admin_review === true && (
+                <span className="block text-sm text-green-700 mt-1" data-testid="allow-admin-review-on">
+                  Mealio admins will import your posts for you
+                </span>
+              )}
+            </span>
+          </label>
 
           {loadingCatalog && <p className="text-sm text-gray-500">Reading what you have published…</p>}
 

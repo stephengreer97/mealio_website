@@ -1404,6 +1404,7 @@ const EMPTY_DRAFT_FIELDS = {
   decidedBy: null,
   publishedMealId: null,
   createdAt: null,
+  adminMayDecide: false,
 } satisfies Omit<ImportDraft, 'id' | 'creatorId' | 'sourceUrl' | 'draft' | 'confidence'>;
 
 /**

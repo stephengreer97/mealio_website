@@ -86,10 +86,15 @@ export interface ImportDraft {
   decidedBy: string | null;
   publishedMealId: string | null;
   createdAt: string | null;
+  /**
+   * The creator ticked "Allow Mealio admins to edit/approve/deny". Off, an
+   * operator may read the draft and send it to the creator, and nothing else.
+   */
+  adminMayDecide: boolean;
 }
 
 export function toImportDraft(row: Record<string, any>): ImportDraft {
-  const creator = row.creators as { display_name?: string } | null | undefined;
+  const creator = row.creators as { display_name?: string; allow_admin_review?: boolean } | null | undefined;
   return {
     id: row.id,
     creatorId: row.creator_id,
@@ -107,6 +112,7 @@ export function toImportDraft(row: Record<string, any>): ImportDraft {
     decidedBy: row.decided_by ?? null,
     publishedMealId: row.published_meal_id ?? null,
     createdAt: row.created_at ?? null,
+    adminMayDecide: creator?.allow_admin_review === true,
   };
 }
 
@@ -114,7 +120,28 @@ export function toImportDraft(row: Record<string, any>): ImportDraft {
 export const DRAFT_COLUMNS =
   'id, creator_id, source_url, source, item_id, sync_run_id, draft, confidence, status, ' +
   'review_by, edited_at, decided_at, decided_by, published_meal_id, created_at, ' +
-  'creators!creator_id ( display_name )';
+  'creators!creator_id ( display_name, allow_admin_review )';
+
+/**
+ * Of these draft ids, the ones whose creator has NOT let the admins decide for
+ * them. The admin routes refuse to edit, approve, delete or reclaim those; a
+ * draft that no longer exists is left for the action itself to report.
+ */
+export async function draftsAdminMayNotDecide(supabase: SupabaseClient, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  // unbounded-select-ok: one row per id asked about, and the route caps a batch at 50
+  const { data, error } = await supabase
+    .from('creator_import_drafts')
+    .select('id, creators!creator_id ( allow_admin_review )')
+    .in('id', ids);
+  // Fail closed: a read that did not come back cannot show permission.
+  if (error) return new Set(ids);
+  const blocked = new Set<string>();
+  for (const row of (data ?? []) as Array<Record<string, any>>) {
+    if (row.creators?.allow_admin_review !== true) blocked.add(row.id);
+  }
+  return blocked;
+}
 
 export interface DraftDeps {
   supabase: SupabaseClient;
@@ -522,7 +549,7 @@ async function loadDraft(
     .select(
       'id, creator_id, source_url, source, item_id, sync_run_id, draft, confidence, status, ' +
         'review_by, edited_at, decided_at, decided_by, published_meal_id, created_at, ' +
-        'creators!creator_id ( id, display_name, user_id, user_profiles!user_id ( email ) )',
+        'creators!creator_id ( id, display_name, user_id, allow_admin_review, user_profiles!user_id ( email ) )',
     )
     .eq('id', id)
     .maybeSingle();
@@ -937,7 +964,8 @@ export async function listHandedOverDrafts(
  * row before the review is even computed.
  */
 const PENDING_COLUMNS =
-  'id, source_url, draft, review_by, sent_to_creator_at, created_at, creators!creator_id ( display_name )';
+  'id, source_url, draft, review_by, sent_to_creator_at, created_at, ' +
+  'creators!creator_id ( display_name, allow_admin_review )';
 
 /** A pending draft as the escape hatch reads it: enough to name it and to place it. */
 export interface PendingDraft {
@@ -949,6 +977,8 @@ export interface PendingDraft {
   reviewBy: DraftReviewBy;
   sentToCreatorAt: string | null;
   createdAt: string | null;
+  /** Same as `ImportDraft.adminMayDecide`: whether "Take it back" is allowed. */
+  adminMayDecide: boolean;
 }
 
 /**
@@ -1051,7 +1081,7 @@ export async function listAllPendingDrafts(
 }
 
 function toPendingDraft(row: Record<string, any>): PendingDraft {
-  const creator = row.creators as { display_name?: string } | null | undefined;
+  const creator = row.creators as { display_name?: string; allow_admin_review?: boolean } | null | undefined;
   return {
     id: row.id,
     name: (row.draft as CreatorMealDraft | null)?.name ?? '',
@@ -1060,6 +1090,7 @@ function toPendingDraft(row: Record<string, any>): PendingDraft {
     reviewBy: row.review_by ?? 'creator',
     sentToCreatorAt: row.sent_to_creator_at ?? null,
     createdAt: row.created_at ?? null,
+    adminMayDecide: creator?.allow_admin_review === true,
   };
 }
 

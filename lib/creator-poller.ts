@@ -292,6 +292,8 @@ const RESET_MIN_ENTRIES = 3;
  */
 export interface PollableCreator extends SyncCreator {
   source: PlatformSource;
+  /** The creator let Mealio admins review their drafts: queue for them, email nobody. */
+  allow_admin_review?: boolean | null;
 }
 
 /** `creator_source_state`, as this file speaks it. */
@@ -688,7 +690,9 @@ export async function pollCreator(
   const itemDeps: PollDeps = {
     ...deps,
     gateMode: deps.gateMode ?? 'poller',
-    reviewBy: deps.reviewBy ?? 'creator',
+    // A creator who ticked "Allow Mealio admins to edit/approve/deny" has handed
+    // this queue to the operators, and the email below is skipped for them.
+    reviewBy: deps.reviewBy ?? (creator.allow_admin_review === true ? 'admin' : 'creator'),
   };
 
   /** Items this pass finished one way or another, whatever their listed record says. */
@@ -942,7 +946,7 @@ export interface PollPassResult {
 
 const CREATOR_COLUMNS =
   'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url, ' +
-  'primary_source, import_opt_in';
+  'primary_source, import_opt_in, allow_admin_review';
 
 /** One pass's worth of the poll queue, and how long the queue actually is. */
 export interface PollQueue {
@@ -1015,6 +1019,7 @@ export async function eligibleCreators(supabase: SupabaseClient): Promise<PollQu
         tiktok_url: row.tiktok_url ?? null,
         feed_url: row.feed_url ?? null,
         source: row.primary_source as PlatformSource,
+        allow_admin_review: row.allow_admin_review === true,
       })),
     eligible: count ?? rows.length,
   };
@@ -1228,7 +1233,15 @@ export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
     // is never told, with no path by which they ever could be. One creator's
     // send failing still only costs that creator's send, which is the property
     // the batching at the end was there for.
-    if (outcome.drafts.length > 0 && (await notifyDrafted(deps, creator, outcome.drafts))) {
+    //
+    // Not at all for a creator who let the admins review for them: the drafts are
+    // in the admin queue, and an email asking the creator to review them would
+    // point at nothing they can open.
+    if (
+      outcome.drafts.length > 0 &&
+      creator.allow_admin_review !== true &&
+      (await notifyDrafted(deps, creator, outcome.drafts))
+    ) {
       result.emailsSent += 1;
     }
   }

@@ -4,6 +4,10 @@ import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-li
 import SyncSourceSection, { type SyncSectionCreator } from '@/components/SyncSourceSection';
 import { CREATOR_SELECTION_MAX, CREATOR_SOURCE_OPTIONS } from '@/lib/creator-sources';
 
+/** The catalogue's own ticks, without the "Allow Mealio admins" setting above them. */
+const postBoxes = () =>
+  screen.getAllByRole('checkbox').filter((box) => !box.closest('[data-testid="allow-admin-review"]'));
+
 /**
  * "Sync your content with Mealio" (MEAL-101).
  *
@@ -604,6 +608,22 @@ describe('the back-catalogue checklist', () => {
     expect(within(catalogue).getByLabelText('Post 2')).toBeTruthy();
   });
 
+  it('offers admin review, off by default, and saves it with the green line when ticked', async () => {
+    const { calls } = harness({ creator: SYNCING, entries: [entry(1)] });
+    await screen.findByTestId('catalogue');
+
+    const box = within(screen.getByTestId('allow-admin-review')).getByRole('checkbox') as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.queryByTestId('allow-admin-review-on')).toBeNull();
+
+    fireEvent.click(box);
+
+    expect(screen.getByTestId('allow-admin-review-on').textContent).toBe('Mealio admins will import your posts for you');
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === '/api/creator/me' && c.method === 'PATCH' && c.body.allowAdminReview === true)).toBe(true),
+    );
+  });
+
   it('is not offered at all until there is something to list', () => {
     harness();
     expect(screen.queryByTestId('catalogue')).toBeNull();
@@ -787,7 +807,7 @@ describe('the back-catalogue checklist', () => {
     harness({ creator: SYNCING, entries: [already, rejected, entry(3)] });
     await screen.findByTestId('catalogue');
 
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    const boxes = postBoxes() as HTMLInputElement[];
     expect(boxes[0].disabled).toBe(true);
     expect(boxes[1].disabled).toBe(false);
     expect(boxes[2].disabled).toBe(false);
@@ -814,7 +834,7 @@ describe('the back-catalogue checklist', () => {
     });
     await screen.findByTestId('catalogue');
 
-    const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    const boxes = postBoxes() as HTMLInputElement[];
     fireEvent.click(boxes[0]);
     fireEvent.click(boxes[1]);
     fireEvent.click(screen.getByRole('button', { name: /Import 2 posts/ }));
@@ -867,7 +887,7 @@ describe('the back-catalogue checklist', () => {
 
     expect(screen.getByTestId('declined').textContent).toMatch(/Declined/);
     expect(screen.queryByTestId('not-a-recipe')).toBeNull();
-    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+    expect((postBoxes()[0] as HTMLInputElement).disabled).toBe(false);
 
     // Not in the bulk tick, though. Re-reading a post costs a model call to be
     // told the same thing, which is worth one creator's deliberate tick and not
@@ -992,7 +1012,7 @@ describe('the back-catalogue checklist', () => {
     await screen.findByTestId('catalogue');
 
     expect(screen.getByTestId('withdrawn').textContent).toMatch(/Withdrawn/);
-    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+    expect((postBoxes()[0] as HTMLInputElement).disabled).toBe(false);
   });
 
   it('says when a post could not be read, and still lets it be retried', async () => {
@@ -1013,7 +1033,7 @@ describe('the back-catalogue checklist', () => {
 
     expect(screen.getByTestId('unreadable').textContent).toMatch(/Could not read/);
     expect(screen.getByTestId('unreadable').getAttribute('title')).toMatch(/404/);
-    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+    expect((postBoxes()[0] as HTMLInputElement).disabled).toBe(false);
   });
 
   it('keeps the import queue directly under the checklist it came from', async () => {
@@ -1060,7 +1080,7 @@ describe('the back-catalogue checklist', () => {
     expect(screen.getByTestId('importing').textContent).toMatch(/Importing/);
     expect(screen.queryByTestId('unreadable')).toBeNull();
     // And no tick: the server would stand a second run down as already in flight.
-    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(true);
+    expect((postBoxes()[0] as HTMLInputElement).disabled).toBe(true);
   });
 
   it('still says a genuinely failed post could not be read', async () => {
@@ -1075,7 +1095,7 @@ describe('the back-catalogue checklist', () => {
 
     expect(screen.getByTestId('unreadable').textContent).toMatch(/Could not read/);
     expect(screen.queryByTestId('importing')).toBeNull();
-    expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).disabled).toBe(false);
+    expect((postBoxes()[0] as HTMLInputElement).disabled).toBe(false);
   });
 
   it('puts the checklist beside the picker, not under it', async () => {
@@ -1188,7 +1208,7 @@ describe('the back-catalogue checklist', () => {
     const already = { ...entry(1), record: { status: 'imported', detail: null, at: null, firstSeenAt: null } };
     harness({ creator: SYNCING, entries: [already, entry(2)] });
     await screen.findByTestId('catalogue');
-    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    expect(postBoxes()).toHaveLength(2);
 
     fireEvent.click(screen.getByTestId('filter-toggle'));
     fireEvent.click(within(screen.getByTestId('filter-menu')).getByLabelText('Already Imported'));

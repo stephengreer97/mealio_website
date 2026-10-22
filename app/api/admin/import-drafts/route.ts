@@ -6,6 +6,7 @@ import { log } from '@/lib/logger';
 import {
   approveDraft,
   cancelDraft,
+  draftsAdminMayNotDecide,
   editDraft,
   editableDraft,
   listAllPendingDrafts,
@@ -35,6 +36,9 @@ import {
 
 /** A batch bigger than this is not a review, it is a rubber stamp. */
 const MAX_BATCH = 50;
+
+const NOT_ALLOWED =
+  "This creator has not allowed Mealio admins to edit, approve or delete their drafts. You can send it to them.";
 
 function ids(raw: unknown): string[] {
   if (typeof raw === 'string' && raw) return [raw];
@@ -113,6 +117,7 @@ export async function GET(request: NextRequest) {
       // shows when it was created, and a row with no date beside three that
       // have one reads as a row nobody knows anything about.
       createdAt: draft.createdAt,
+      adminMayDecide: draft.adminMayDecide,
     })),
     totals: {
       waiting: drafts.length,
@@ -163,10 +168,18 @@ export async function POST(request: NextRequest) {
   const supabase = createServerSupabaseClient();
   const deps = { supabase };
   const errors: string[] = [];
+
+  // Sending a draft to its creator is always allowed — it gives the decision
+  // back. Every other action decides for the creator, and needs their say-so.
+  const notAllowed = action === 'send-to-creator' ? new Set<string>() : await draftsAdminMayNotDecide(supabase, targets);
   const approved: ApprovedMeal[] = [];
   let done = 0;
 
   for (const id of targets) {
+    if (notAllowed.has(id)) {
+      errors.push(NOT_ALLOWED);
+      continue;
+    }
     if (action === 'approve') {
       const result = await approveDraft(deps, id, admin.userId);
       if (result.ok) { approved.push(result.approved); done += 1; } else errors.push(result.error);
@@ -238,6 +251,9 @@ export async function PATCH(request: NextRequest) {
   }
 
   const supabase = createServerSupabaseClient();
+  if ((await draftsAdminMayNotDecide(supabase, [id])).has(id)) {
+    return NextResponse.json({ error: NOT_ALLOWED }, { status: 403 });
+  }
   const result = await editDraft({ supabase }, id, next.draft, admin.userId);
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });

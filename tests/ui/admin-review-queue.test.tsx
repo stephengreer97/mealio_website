@@ -57,6 +57,7 @@ function draft(overrides: Partial<ImportDraft> = {}): ImportDraft {
     decidedBy: null,
     publishedMealId: null,
     createdAt: '2026-08-02T10:00:00.000Z',
+    adminMayDecide: true,
     ...overrides,
   };
 }
@@ -225,6 +226,18 @@ describe('AdminReviewQueue — the meal card', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open the source page' }).getAttribute('href'))
       .toBe('https://chefsarah.test/guacamole');
+  });
+
+  it('offers only Send to creator when the creator has not allowed admin review', async () => {
+    harness([draft({ adminMayDecide: false })]);
+    await openFirstRow();
+    expect(screen.getByTestId('admin-not-allowed').textContent).toMatch(/has not allowed Mealio admins/);
+    expect(screen.getByRole('button', { name: 'Send to creator' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Approve & publish/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+    // Still readable: the card is there.
+    expect(screen.getByTestId('draft-card')).toBeTruthy();
   });
 });
 
@@ -436,6 +449,7 @@ describe('AdminReviewQueue — showing every pending draft', () => {
     name: row.draft.name,
     sourceUrl: row.sourceUrl,
     creatorName: row.creatorName,
+    adminMayDecide: row.adminMayDecide,
   });
 
   /** Serves the default payload until `?scope=all` is asked for, recording every URL. */

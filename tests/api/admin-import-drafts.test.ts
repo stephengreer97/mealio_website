@@ -73,7 +73,7 @@ function draftRow(overrides: Record<string, unknown> = {}) {
     decided_by: null,
     published_meal_id: null,
     created_at: '2026-08-02T10:00:00.000Z',
-    creators: { id: 'c1', display_name: 'Chef Sarah', user_id: 'u1', user_profiles: { email: 'sarah@chefsarah.test' } },
+    creators: { id: 'c1', display_name: 'Chef Sarah', user_id: 'u1', allow_admin_review: true, user_profiles: { email: 'sarah@chefsarah.test' } },
     ...overrides,
   };
 }
@@ -269,6 +269,8 @@ describe('GET /api/admin/import-drafts', () => {
         sourceUrl: 'https://chefsarah.test/guacamole',
         creatorName: 'Chef Sarah',
         createdAt: '2026-08-02T10:00:00.000Z',
+        // The joined creator has no `allow_admin_review`, so it reads as off.
+        adminMayDecide: false,
       });
     });
 
@@ -284,7 +286,7 @@ describe('GET /api/admin/import-drafts', () => {
 
       const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
 
-      expect(Object.keys(body.unqueued[0]).sort()).toEqual(['createdAt', 'creatorName', 'id', 'name', 'sourceUrl']);
+      expect(Object.keys(body.unqueued[0]).sort()).toEqual(['adminMayDecide', 'createdAt', 'creatorName', 'id', 'name', 'sourceUrl']);
       expect(JSON.stringify(body.unqueued[0]).length).toBeLessThan(500);
     });
 
@@ -532,6 +534,60 @@ describe('POST /api/admin/import-drafts', () => {
     expect(body.done).toBe(1);
     expect(body.errors).toHaveLength(1);
     expect(publishCreatorMeal).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a creator who has not allowed admin review', () => {
+    const notAllowed = (over: Record<string, unknown> = {}) =>
+      draftRow({
+        creators: { id: 'c1', display_name: 'Chef Sarah', user_id: 'u1', allow_admin_review: false, user_profiles: { email: 'sarah@chefsarah.test' } },
+        ...over,
+      });
+
+    it.each(['approve', 'delete'] as const)('refuses %s and touches nothing', async (action) => {
+      asAdmin();
+      storeDrafts(notAllowed());
+
+      const body = await (await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action, ids: ['d1'] } }))).json();
+
+      expect(body.done).toBe(0);
+      expect(body.errors[0]).toMatch(/not allowed Mealio admins/);
+      expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'pending_review', review_by: 'admin' });
+      expect(publishCreatorMeal).not.toHaveBeenCalled();
+    });
+
+    it('refuses to take a handed-over draft back', async () => {
+      asAdmin();
+      storeDrafts(notAllowed({ review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }));
+
+      const body = await (await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'reclaim', ids: ['d1'] } }))).json();
+
+      expect(body.done).toBe(0);
+      expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'creator' });
+    });
+
+    it('still lets the admin send it to the creator', async () => {
+      asAdmin();
+      storeDrafts(notAllowed());
+
+      const body = await (await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'send-to-creator', ids: ['d1'] } }))).json();
+
+      expect(body.done).toBe(1);
+      expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'creator' });
+    });
+
+    it('refuses an edit with a 403', async () => {
+      asAdmin();
+      storeDrafts(notAllowed());
+
+      const res = await PATCH(jsonRequest('/api/admin/import-drafts', {
+        method: 'PATCH',
+        token,
+        body: { id: 'd1', draft: { ...guacamole.draft, serves: '6', ingredients: guacamole.draft.ingredients.map((row) => ({ ...row })) } },
+      }));
+
+      expect(res.status).toBe(403);
+      expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts' && c.method === 'update')).toBe(false);
+    });
   });
 
   it('rejects an action it does not have, and an empty selection', async () => {
