@@ -112,10 +112,7 @@ function toImportUsage(usage: StructuredUsage | null): ImportUsage | null {
     : null;
 }
 
-/** Pasted characters accepted by `pastedDocument`. About 5K tokens, under a cent to read. */
-export const PASTED_TEXT_MAX = 20_000;
-/** Below this there is no recipe to read, and the gate would only say so at a price. */
-export const PASTED_TEXT_MIN = 40;
+export { PASTED_TEXT_MAX, PASTED_TEXT_MIN } from './limits';
 
 /**
  * Text a user pasted, as the document the gate and extraction read.

@@ -15,6 +15,20 @@ import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, toggleTag } from '@/lib/im
 // Discover about the same ingredient.
 import { fmtMeasurement, normIngWithProductQty as normIng } from '@/components/MealCard';
 import { type IngredientForm, toFormIng, fromFormIng } from './ingredient-form';
+import MealImportPanel, { type MealImportSuccess } from '@/components/MealImportPanel';
+import ImportFieldNotice from '@/components/ImportFieldNotice';
+import {
+  appendIngredientState,
+  clearIngredientState,
+  clearScalarState,
+  fieldStatesFor,
+  importedFormValues,
+  noticesFor,
+  removeIngredientState,
+  type FieldNotice,
+  type FormFieldStates,
+  type ScalarField,
+} from '@/lib/import/draft-form';
 import { getStoreProduct, withStoreProduct, withoutStoreProducts } from '@/lib/store-products';
 
 interface User {
@@ -1062,8 +1076,46 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   const [fulls, setFulls] = useState<string[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  /** What the last import said about each field it wrote. Dropped per field on edit. */
+  const [importStates, setImportStates] = useState<FormFieldStates | null>(null);
   const dragRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Fills the form from an import. The user pressed Import, so it writes every
+   * field the import has a value for; the store is theirs to pick and is left
+   * alone.
+   */
+  const applyImport = (result: MealImportSuccess) => {
+    const values = importedFormValues(result);
+    const p = values.provided;
+    if (p.name) setName(values.name);
+    if (p.ingredients) setIngredients(values.ingredients);
+    if (p.recipe) setRecipe(values.recipe);
+    if (p.story) setStory(values.story);
+    if (p.serves) setServes(values.serves);
+    if (p.difficulty) setDifficulty(values.difficulty);
+    if (p.tags) setSelectedTags(values.tags);
+    if (values.source) setWebsite(values.source);
+    if (p.photoUrl && values.photoUrl) {
+      setThumbs([]); setFulls([]); setSelectedIdx(null); setPendingPhotoDataUrl(null);
+      setPhotoUrl(values.photoUrl); setPhotoPreview(values.photoUrl);
+    }
+    setError('');
+    setImportStates(fieldStatesFor({
+      confidence: result.confidence,
+      values,
+      written: p,
+      empty: { name: true, recipe: true, story: true, photoUrl: true, difficulty: true, tags: true, serves: true },
+      previous: null,
+    }));
+  };
+
+  // "Not found, add this" is for a creator filling every field of a published
+  // meal. Here those fields are optional, so only flags on values we wrote show.
+  const notices = noticesFor(importStates);
+  const shown = (notice: FieldNotice | null) => (notice && notice.kind !== 'absent' ? notice : null);
+  const edited = (field: ScalarField) => setImportStates(prev => clearScalarState(prev, field));
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1128,15 +1180,19 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
     return data.url ?? null;
   };
 
-  const updateFormField = (i: number, field: keyof IngredientForm, value: string | number) =>
+  const updateFormField = (i: number, field: keyof IngredientForm, value: string | number) => {
+    setImportStates(prev => clearIngredientState(prev, i));
     setIngredients(prev => prev.map((ing, idx) => {
       if (idx !== i) return ing;
       if (field === 'ingredientName') return { ...ing, ingredientName: value as string, searchTerm: null };
       return { ...ing, [field]: value };
     }));
+  };
 
-  const removeIngredient = (i: number) =>
+  const removeIngredient = (i: number) => {
+    setImportStates(prev => removeIngredientState(prev, i));
     setIngredients(prev => prev.filter((_, idx) => idx !== i));
+  };
 
   const handleSave = async () => {
     if (!name.trim()) { setError('Meal name is required.'); return; }
@@ -1199,6 +1255,8 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
 
         <div className="overflow-y-auto px-6 py-4 space-y-4 flex-1">
 
+          <MealImportPanel accessToken={accessToken} onImported={applyImport} />
+
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Store</label>
             <select
@@ -1228,11 +1286,12 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
             <input
               type="text"
               value={name}
-              onChange={e => setName(e.target.value)}
+              onChange={e => { setName(e.target.value); edited('name'); }}
               placeholder="e.g., Taco Tuesday"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
+            <ImportFieldNotice notice={shown(notices.name)} fieldLabel="Meal name" />
           </div>
 
           <div>
@@ -1303,6 +1362,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               </div>
             )}
             <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+            <ImportFieldNotice notice={shown(notices.photoUrl)} fieldLabel="Photo" />
           </div>
 
           <div>
@@ -1312,7 +1372,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
                 <button
                   key={v}
                   type="button"
-                  onClick={() => setDifficulty(difficulty === v ? null : v)}
+                  onClick={() => { setDifficulty(difficulty === v ? null : v); edited('difficulty'); }}
                   className="w-9 h-9 rounded-lg text-sm font-semibold transition-all"
                   style={difficulty === v
                     ? { background: 'var(--brand)', border: '1px solid var(--brand)', color: '#fff' }
@@ -1329,30 +1389,33 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
             <input
               type="text"
               value={serves}
-              onChange={e => setServes(e.target.value)}
+              onChange={e => { setServes(e.target.value); edited('serves'); }}
               placeholder="e.g. 4 or 2-4"
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
+            <ImportFieldNotice notice={shown(notices.serves)} fieldLabel="Serves" />
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Story (optional)</label>
             <textarea
               value={story}
-              onChange={e => setStory(e.target.value)}
+              onChange={e => { setStory(e.target.value); edited('story'); }}
               rows={3}
               placeholder={"The story behind the meal or a simple one liner. e.g.\nPerfect for a summer BBQ\nGreat budget-friendly weeknight dinner\nHigh protein, low carb – great for meal prep"}
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
+            <ImportFieldNotice notice={shown(notices.story)} fieldLabel="Story" />
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-2">Measurements ({ingredients.filter(i => i.ingredientName.trim()).length})</label>
             <div className="space-y-1.5 max-h-52 overflow-y-auto mb-2">
               {ingredients.map((ing, i) => (
-                <div key={i} className="flex items-center gap-1.5">
+                <div key={i}>
+                <div className="flex items-center gap-1.5">
                   <input
                     type="text"
                     value={ing.ingredientName}
@@ -1380,11 +1443,16 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
                   </select>
                   <button type="button" onClick={() => removeIngredient(i)} className="text-xs transition-colors flex-shrink-0" style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer' }}>✕</button>
                 </div>
+                <ImportFieldNotice notice={shown(notices.ingredients[i] ?? null)} fieldLabel={ing.ingredientName || `Ingredient ${i + 1}`} />
+                </div>
               ))}
             </div>
             <button
               type="button"
-              onClick={() => setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }])}
+              onClick={() => {
+                setImportStates(prev => appendIngredientState(prev));
+                setIngredients(prev => [...prev, { ingredientName: '', measure: '1', unit: 'qty', searchTerm: null, qty: 1 }]);
+              }}
               className="text-xs transition-colors"
               style={{ color: 'var(--brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
@@ -1396,16 +1464,17 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Recipe (optional)</label>
             <textarea
               value={recipe}
-              onChange={e => setRecipe(e.target.value)}
+              onChange={e => { setRecipe(e.target.value); edited('recipe'); }}
               rows={4}
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none resize-none"
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
             />
+            <ImportFieldNotice notice={shown(notices.recipe)} fieldLabel="Recipe" />
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-2">Tags <span className="font-normal text-ml-t3">(up to {MAX_MEAL_TAGS}, optional)</span></label>
-            <TagPicker selected={selectedTags} onChange={setSelectedTags} />
+            <TagPicker selected={selectedTags} onChange={tags => { setSelectedTags(tags); edited('tags'); }} />
           </div>
 
           {error && <p className="text-xs" style={{ color: 'var(--brand)' }}>{error}</p>}
