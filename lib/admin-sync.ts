@@ -1354,7 +1354,9 @@ export async function processSyncItem(
       // every import and then dropped on the floor, so the greens on this path
       // were claims nobody had ever looked at.
       confidence: result.confidence,
-      reviewBy: deps.reviewBy ?? 'admin',
+      // The creator's queue, like every other import. The admin reviews it there
+      // when the creator has allowed it (`allow_admin_review`).
+      reviewBy: deps.reviewBy ?? 'creator',
     });
 
     // Counted here rather than on the review screen so an operator watching a
@@ -1398,7 +1400,7 @@ const EMPTY_DRAFT_FIELDS = {
   itemId: null,
   syncRunId: null,
   status: 'pending_review',
-  reviewBy: 'admin',
+  reviewBy: 'creator',
   editedAt: null,
   decidedAt: null,
   decidedBy: null,

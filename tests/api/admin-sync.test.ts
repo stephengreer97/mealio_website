@@ -35,6 +35,7 @@ const CREATOR = {
   instagram_url: null,
   tiktok_url: null,
   feed_url: 'https://chefsarah.test/feed',
+  allow_admin_review: true,
 };
 
 function asAdmin(isAdmin = true) {
@@ -146,6 +147,17 @@ describe('POST /api/admin/sync', () => {
     asAdmin(false);
     const res = await POST(jsonRequest('/api/admin/sync', { token, body: { creatorId: 'c1', mode: 'link', url: 'https://x.test/a' } }));
     expect(res.status).toBe(403);
+    expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('refuses a creator who has not allowed admins to import for them, and creates no run', async () => {
+    asAdmin();
+    fakeDb.queue('creators', { data: { ...CREATOR, allow_admin_review: false } });
+
+    const res = await POST(jsonRequest('/api/admin/sync', { token, body: { creatorId: 'c1', mode: 'link', url: 'https://chefsarah.test/a' } }));
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/not allowed Mealio admins/);
     expect(fakeDb.calls.some((c) => c.method === 'insert')).toBe(false);
   });
 

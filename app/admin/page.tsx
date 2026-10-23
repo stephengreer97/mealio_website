@@ -378,6 +378,11 @@ interface CreatorSource {
    */
   import_paused_reason?: string | null;
   import_paused_at?: string | null;
+  /**
+   * The creator ticked "Allow Mealio admins to edit, approve or deny your imported
+   * posts". Without it an admin can read their drafts and not decide or import.
+   */
+  allow_admin_review?: boolean | null;
   /** OAuth grants, with `brokenReason` set when one has stopped working (MEAL-74). */
   connections?: Array<{ platform: string; externalName: string | null; brokenReason: string | null }>;
   /** Is polling working for this creator, and producing anything (MEAL-96). */
@@ -734,10 +739,13 @@ function PollHealthPanel({
  * "3" over a list of two is worse than a header saying nothing.
  */
 function CreatorDrafts({
-  creatorId, count, onChanged,
-}: { creatorId: string; count: number | null | undefined; onChanged: () => void }) {
+  creator, count, onChanged,
+}: { creator: CreatorSource; count: number | null | undefined; onChanged: () => void }) {
+  const creatorId = creator.id;
+  const allowed = creator.allow_admin_review === true;
   const [open, setOpen] = useState(false);
-  const label = count == null ? 'Pending drafts' : `Pending drafts (${count})`;
+  const [importing, setImporting] = useState(false);
+  const label = count == null ? 'Imported drafts' : `Imported drafts (${count})`;
 
   return (
     <div
@@ -765,6 +773,29 @@ function CreatorDrafts({
       </button>
       {open && (
         <div style={{ borderTop: '1px solid #f0f0f0', padding: '14px' }}>
+          {/* Importing for a creator is part of what the checkbox allows. */}
+          {allowed ? (
+            <div style={{ marginBottom: '14px' }}>
+              <button
+                onClick={() => setImporting(prev => !prev)}
+                aria-expanded={importing}
+                data-testid={`creator-import-${creatorId}`}
+                style={{ background: '#dd0031', color: 'white', border: 'none', borderRadius: '8px', padding: '6px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+              >
+                {importing ? 'Close import' : 'Import posts'}
+              </button>
+              {importing && (
+                <div style={{ marginTop: '12px' }}>
+                  <AdminSyncPanel creators={[creator]} lockedCreatorId={creatorId} />
+                </div>
+              )}
+            </div>
+          ) : (
+            <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#b45309', lineHeight: 1.6 }} data-testid={`creator-not-allowed-${creatorId}`}>
+              {creator.display_name} has not allowed Mealio admins to import or review their posts. You can read
+              their drafts below.
+            </p>
+          )}
           <AdminReviewQueue creatorId={creatorId} onChanged={onChanged} />
         </div>
       )}
@@ -1582,7 +1613,7 @@ export default function AdminPage() {
                       until somebody asks, because the review queue inside it is a
                       read of its own. */}
                   <CreatorDrafts
-                    creatorId={creator.id}
+                    creator={creator}
                     count={creator.pendingDraftCount}
                     onChanged={loadCreators}
                   />
@@ -1740,7 +1771,14 @@ export default function AdminPage() {
         {/* Sync Tab — MEAL-90. One link, or a reviewed checklist. */}
         {tab === 'sync' && (
           <>
-            <AdminSyncPanel creators={creators} />
+            {/* Only creators who allowed admins to import for them. */}
+            <AdminSyncPanel creators={creators.filter(c => c.allow_admin_review === true)} />
+            {creators.some(c => c.allow_admin_review !== true) && (
+              <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#888', lineHeight: 1.6 }} data-testid="sync-not-allowed-note">
+                Creators who have not ticked &ldquo;Allow Mealio admins to edit, approve or deny your imported posts&rdquo;
+                are not listed here.
+              </p>
+            )}
             {/* MEAL-222. What the imports on this tab have cost, split by who
                 ran them, with the median token shape that makes the estimate in
                 lib/import/cost.ts checkable rather than arguable. Here rather

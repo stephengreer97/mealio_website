@@ -87,7 +87,7 @@ export interface ImportDraft {
   publishedMealId: string | null;
   createdAt: string | null;
   /**
-   * The creator ticked "Allow Mealio admins to edit/approve/deny". Off, an
+   * The creator ticked "Allow Mealio admins to edit, approve or deny". Off, an
    * operator may read the draft and send it to the creator, and nothing else.
    */
   adminMayDecide: boolean;
@@ -181,6 +181,15 @@ export interface DraftDeps {
    * Defaults to admin, which is what every caller before MEAL-89 was.
    */
   role?: DraftReviewBy;
+  /**
+   * The queue a decision may touch, when it is not the one `role` names.
+   *
+   * `'any'` is the admin's: every draft now lives in its creator's queue, and an
+   * admin the creator has allowed (`creators.allow_admin_review`) decides them
+   * where they are. The route checks that permission; this only stops the
+   * queue predicate refusing the write.
+   */
+  queue?: DraftReviewBy | 'any';
 }
 
 /** Log event names for a decision, by who made it. See `DraftDeps.role`. */
@@ -304,14 +313,15 @@ export interface QueueScope {
  */
 export async function listDraftQueue(
   supabase: SupabaseClient,
-  reviewBy: DraftReviewBy,
+  reviewBy: DraftReviewBy | 'any',
   scope: QueueScope = {},
 ): Promise<QueuedDraft[]> {
   let query = supabase
     .from('creator_import_drafts')
     .select(DRAFT_COLUMNS)
-    .eq('status', 'pending_review')
-    .eq('review_by', reviewBy);
+    .eq('status', 'pending_review');
+  // `any` is the admin's view: one creator's drafts, whichever queue they are in.
+  if (reviewBy !== 'any') query = query.eq('review_by', reviewBy);
 
   if (scope.creatorId) query = query.eq('creator_id', scope.creatorId);
 
@@ -607,16 +617,16 @@ export interface ApprovedMeal {
 async function decideDraft(
   deps: DraftDeps,
   id: string,
-  queue: DraftReviewBy,
+  queue: DraftReviewBy | 'any',
   patch: Record<string, unknown>,
 ): Promise<boolean> {
-  const { data } = await deps.supabase
+  let query = deps.supabase
     .from('creator_import_drafts')
     .update(patch)
     .eq('id', id)
-    .eq('status', 'pending_review')
-    .eq('review_by', queue)
-    .select('id');
+    .eq('status', 'pending_review');
+  if (queue !== 'any') query = query.eq('review_by', queue);
+  const { data } = await query.select('id');
   return Array.isArray(data) && data.length > 0;
 }
 
@@ -657,7 +667,7 @@ export async function approveDraft(
 ): Promise<{ ok: true; approved: ApprovedMeal } | { ok: false; error: string }> {
   const publisher = deps.publisher ?? publishCreatorMeal;
   const now = deps.now ?? Date.now;
-  const queue = deps.role ?? 'admin';
+  const queue = deps.queue ?? deps.role ?? 'admin';
 
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
@@ -669,7 +679,7 @@ export async function approveDraft(
   // Publishing is the decision that cannot be taken back, so it is the one this
   // matters most for: a creator holding a draft an operator has just reclaimed
   // must not be able to put it on Discover under their own name.
-  if (draft.reviewBy !== queue) return { ok: false, error: movedQueues(draft, queue) };
+  if (queue !== 'any' && draft.reviewBy !== queue) return { ok: false, error: movedQueues(draft, queue) };
 
   const nowIso = new Date(now()).toISOString();
   const claimed = await decideDraft(deps, id, queue, {
@@ -840,303 +850,6 @@ export async function notifyApproved(
 }
 
 /**
- * Moves a draft into the creator's own queue.
- *
- * The escape hatch for "this looks right, but I am not the person who cooked
- * it". Without it an unsure operator has only approve or delete, and both are
- * worse than asking. Status stays `pending_review` — the decision is handed
- * over, not made.
- *
- * This was a disabled button until MEAL-89. `review_by = 'creator'` was read by
- * exactly one query in this repository and it asked for `'admin'`, so flipping
- * the column did not hand the decision to anyone: it removed the draft from the
- * only queue anybody read, while `creator_source_items` said `imported` so no
- * later poll brought the post back. A `CREATOR_REVIEW_QUEUE_EXISTS` constant
- * held the trapdoor shut and is gone with the same commit that built the far
- * side — `GET /api/creator/import-drafts` now reads exactly these rows, the
- * portal and the app's Creator tab both render them, and `countPendingDrafts`
- * puts the number on a badge so the handoff is visible without being opened.
- */
-export async function sendDraftToCreator(
-  deps: DraftDeps,
-  id: string,
-  adminUserId: string,
-): Promise<DraftDecision> {
-  const now = deps.now ?? Date.now;
-  const loaded = await loadDraft(deps.supabase, id);
-  if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
-  if (loaded.draft.status !== 'pending_review') {
-    return { ok: false, error: `That draft was already ${loaded.draft.status.replace('_', ' ')}.` };
-  }
-  if (loaded.draft.reviewBy === 'creator') {
-    return { ok: false, error: 'That draft is already waiting on the creator.' };
-  }
-
-  const nowIso = new Date(now()).toISOString();
-  // Acting on the admin queue, which is the one a draft has to be in to be
-  // handed over. The `reviewBy === 'creator'` refusal above is the friendly
-  // wording; this is the predicate that holds when it changes underneath.
-  const moved = await decideDraft(deps, id, 'admin', {
-    review_by: 'creator',
-    sent_to_creator_at: nowIso,
-    sent_to_creator_by: adminUserId,
-    updated_at: nowIso,
-  });
-  if (!moved) return { ok: false, error: 'That draft was already decided or handed over in another tab.' };
-
-  log({
-    event: 'ADMIN:DRAFT_HANDOFF',
-    status: 'success',
-    userId: adminUserId,
-    detail: `draft=${id} creator=${loaded.draft.creatorId}`,
-  });
-
-  return { ok: true, draft: { ...loaded.draft, reviewBy: 'creator' } };
-}
-
-/**
- * Everything an operator has handed to a creator and the creator has not
- * decided yet.
- *
- * Before MEAL-89 these rows were in no queue at all — out of the admin's by
- * `review_by`, and into one that did not exist — and listing them was the only
- * thing keeping that recoverable. The creator's queue now reads them, so this
- * has become the ordinary "what am I waiting on somebody else for" list: a
- * handoff is an operator's decision to stop deciding, and a decision whose
- * effect they cannot see afterwards is one they cannot correct.
- *
- * Keyed on `sent_to_creator_at` rather than on `review_by` alone, so the
- * poller's own drafts (`review_by` defaults to `'creator'`) are not swept into
- * an admin screen they do not belong on. Those were never the admin's to watch.
- */
-export async function listHandedOverDrafts(
-  supabase: SupabaseClient,
-  limit = 200,
-  creatorId?: string,
-): Promise<QueuedDraft[]> {
-  let query = supabase
-    .from('creator_import_drafts')
-    .select(DRAFT_COLUMNS)
-    .eq('status', 'pending_review')
-    .eq('review_by', 'creator')
-    .not('sent_to_creator_at', 'is', null);
-
-  // Narrowed to one creator when the caller is a creator's own card rather than
-  // the queue that spans everybody (MEAL-91 review, folded into Creator
-  // integrations). Same rows, same order, asked about one creator.
-  if (creatorId) query = query.eq('creator_id', creatorId);
-
-  const { data } = await query
-    .order('created_at', { ascending: true })
-    .limit(limit);
-
-  const drafts = ((data ?? []) as Array<Record<string, any>>).map(toImportDraft);
-
-  // The same duplicate check the queue does, because this list is what the
-  // drafts-ready email renders — and the email is where a creator decides which
-  // draft to open first. A flag that existed only on the screen would be missing
-  // from the one surface that gets read without being visited.
-  const candidatesByCreator = new Map<string, DuplicateCandidate[]>();
-  for (const creatorId of new Set(drafts.map((d) => d.creatorId).filter(Boolean))) {
-    candidatesByCreator.set(creatorId, await duplicateCandidates(supabase, creatorId));
-  }
-
-  return drafts.map((draft) => ({
-    ...draft,
-    summary: reviewDraft(draft).summary,
-    duplicates: findDuplicates(
-      { name: draft.draft?.name, ingredients: draft.draft?.ingredients ?? [] },
-      (candidatesByCreator.get(draft.creatorId) ?? []).filter((c) => c.id !== draft.id),
-    ),
-  }));
-}
-
-/**
- * The columns a stranded row needs, and no more.
- *
- * `?scope=all` renders three strings per row — the name, the creator, the host —
- * and posts the id back to reclaim it. `review_by` and `sent_to_creator_at` are
- * here because they are what says *which* of the three lists a pending draft
- * belongs to (see `queueOf`), not because anything renders them.
- *
- * Deliberately not `DRAFT_COLUMNS`: that carries the full `draft` and
- * `confidence` jsonb for a card nothing on this path draws, at roughly 6 KB a
- * row before the review is even computed.
- */
-const PENDING_COLUMNS =
-  'id, source_url, draft, review_by, sent_to_creator_at, created_at, ' +
-  'creators!creator_id ( display_name, allow_admin_review )';
-
-/** A pending draft as the escape hatch reads it: enough to name it and to place it. */
-export interface PendingDraft {
-  id: string;
-  /** The draft's meal name, which may be empty — the row still has a source URL. */
-  name: string;
-  sourceUrl: string;
-  creatorName: string | null;
-  reviewBy: DraftReviewBy;
-  sentToCreatorAt: string | null;
-  createdAt: string | null;
-  /** Same as `ImportDraft.adminMayDecide`: whether "Take it back" is allowed. */
-  adminMayDecide: boolean;
-}
-
-/**
- * Which of the three lists a pending draft belongs to, decided by the row.
- *
- * `review_by` is CHECK-constrained to `'admin' | 'creator'`, so these three
- * cases are exhaustive and mutually exclusive, and they are exactly the WHERE
- * clauses of `listDraftQueue('admin')`, `listHandedOverDrafts` and the gap
- * between them.
- *
- * Decided from the row rather than by subtracting the other two lists' ids: both
- * of those are capped at 200, so a set difference calls the 201st row of the
- * admin's own queue "in no queue at all" and then fails to reclaim it.
- */
-export function queueOf(draft: PendingDraft): 'admin' | 'handed-over' | 'none' {
-  if (draft.reviewBy === 'admin') return 'admin';
-  return draft.sentToCreatorAt ? 'handed-over' : 'none';
-}
-
-/** What `listAllPendingDrafts` found, and whether it found all of it. */
-export interface AllPendingDrafts {
-  drafts: PendingDraft[];
-  /**
-   * Every pending draft there is, counted by the database rather than by the
-   * length of the page above. `truncated` is the difference between the two, and
-   * it exists so no screen can promise a completeness the page size withholds.
-   */
-  total: number;
-  limit: number;
-  truncated: boolean;
-}
-
-/**
- * Every draft still waiting on somebody, whatever queue it nominally belongs to.
- *
- * The escape hatch. The other two queries are both narrower than "pending", on
- * purpose:
- *
- *   - `listDraftQueue(supabase, 'admin')` wants `review_by = 'admin'`.
- *   - `listHandedOverDrafts` wants `review_by = 'creator'` **and** a
- *     `sent_to_creator_at`, so the poller's own drafts stay off an admin screen
- *     they do not belong on.
- *
- * Between them sits a real gap: a poller draft (`review_by` defaults to
- * `'creator'`, `sent_to_creator_at` never set) is in neither list, and the
- * creator queue that would show it does not exist (MEAL-89). It is invisible to
- * everyone while `creator_source_items` records the post as imported, so no
- * later sync brings it back.
- *
- * Keyed on `status` alone for that reason: if a row is pending, it comes back.
- * But a page is still a page — `limit` rows of it, oldest first — so the count
- * is asked for **exactly** and returned separately. A caller that reports
- * `drafts.length` as a total is reporting the page size; `total` and `truncated`
- * are what let a screen say "the oldest 500 of 812" instead of a guarantee it
- * cannot keep.
- *
- * Since this is the query people will read looking for stranded rows: a draft
- * whose creator is gone cannot exist, and nothing is left behind by the deletion
- * either. `creator_import_drafts`, `creator_source_items`, `creator_source_state`
- * and `creator_platform_accounts` all cascade from `creators`, so a deleted
- * creator takes the drafts *and* the record of which posts were already
- * imported. Re-adding them starts genuinely clean rather than half-imported.
- *
- * What a deletion cannot do quietly is take published meals with it:
- * `preset_meals.creator_id` and `meals.creator_id` are NO ACTION, so Postgres
- * refuses the delete outright while any published meal still points at them.
- */
-export async function listAllPendingDrafts(
-  supabase: SupabaseClient,
-  limit = 500,
-  creatorId?: string,
-): Promise<AllPendingDrafts> {
-  let query = supabase
-    .from('creator_import_drafts')
-    // `count: 'exact'` is a second aggregate over the same WHERE clause, not a
-    // second round trip, and it is what makes the total independent of `limit`.
-    .select(PENDING_COLUMNS, { count: 'exact' })
-    .eq('status', 'pending_review');
-
-  // The count moves with the filter, which is the point: a creator's card says
-  // how many drafts are pending for THAT creator, and a total counted over
-  // everybody would be a number the list below it never matches.
-  if (creatorId) query = query.eq('creator_id', creatorId);
-
-  const { data, count } = await query
-    .order('created_at', { ascending: true })
-    .limit(limit);
-
-  const drafts = ((data ?? []) as Array<Record<string, any>>).map(toPendingDraft);
-  const counted = typeof count === 'number' ? count : null;
-  // With a count, truncation is arithmetic. Without one — an older PostgREST, a
-  // proxy that dropped the Content-Range — a full page is the only signal there
-  // is, and "there may be more" is the reading that cannot mislead.
-  return {
-    drafts,
-    total: counted ?? drafts.length,
-    limit,
-    truncated: counted === null ? drafts.length >= limit : counted > drafts.length,
-  };
-}
-
-function toPendingDraft(row: Record<string, any>): PendingDraft {
-  const creator = row.creators as { display_name?: string; allow_admin_review?: boolean } | null | undefined;
-  return {
-    id: row.id,
-    name: (row.draft as CreatorMealDraft | null)?.name ?? '',
-    sourceUrl: row.source_url,
-    creatorName: creator?.display_name ?? null,
-    reviewBy: row.review_by ?? 'creator',
-    sentToCreatorAt: row.sent_to_creator_at ?? null,
-    createdAt: row.created_at ?? null,
-    adminMayDecide: creator?.allow_admin_review === true,
-  };
-}
-
-/**
- * Brings a handed-over draft back into the admin queue.
- *
- * The action that did not exist, which is half of why the handoff was a
- * trapdoor: nothing could undo it. Still worth having now that the far side is
- * built — a creator who has gone quiet for a month should not be the reason a
- * recipe sits undecided forever. Deliberately not conditional on
- * `sent_to_creator_at` — a row in `review_by = 'creator'` that an operator can
- * see and wants back should come back.
- *
- * Conditional on `pending_review` like every other decision, so taking one back
- * cannot undo an approval the creator made a second earlier and drop a live
- * meal's draft into the admin queue as though nothing had been published.
- */
-export async function reclaimDraft(deps: DraftDeps, id: string, adminUserId: string): Promise<DraftDecision> {
-  const now = deps.now ?? Date.now;
-  const loaded = await loadDraft(deps.supabase, id);
-  if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
-  if (loaded.draft.status !== 'pending_review') {
-    return { ok: false, error: `That draft was already ${loaded.draft.status.replace('_', ' ')}.` };
-  }
-  if (loaded.draft.reviewBy === 'admin') {
-    return { ok: false, error: 'That draft is already in your queue.' };
-  }
-
-  const nowIso = new Date(now()).toISOString();
-  // The queue it is being taken FROM, not the one it is going to — this is the
-  // one caller whose `role` and whose target queue are different things, which
-  // is why `decideDraft` takes the queue rather than reading `deps.role`.
-  const taken = await decideDraft(deps, id, 'creator', { review_by: 'admin', updated_at: nowIso });
-  if (!taken) return { ok: false, error: 'That draft was already decided or taken back in another tab.' };
-
-  log({
-    event: 'ADMIN:DRAFT_RECLAIM',
-    status: 'success',
-    userId: adminUserId,
-    detail: `draft=${id} creator=${loaded.draft.creatorId}`,
-  });
-
-  return { ok: true, draft: { ...loaded.draft, reviewBy: 'admin' } };
-}
-
-/**
  * What a declined post's `creator_source_items` row says about itself.
  *
  * Read by a creator, on hover, in the catalogue of their own posts — so it says
@@ -1165,7 +878,7 @@ export const DECLINED_DETAIL =
  */
 export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: string): Promise<DraftDecision> {
   const now = deps.now ?? Date.now;
-  const queue = deps.role ?? 'admin';
+  const queue = deps.queue ?? deps.role ?? 'admin';
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
   if (loaded.draft.status !== 'pending_review') {
@@ -1174,7 +887,7 @@ export async function cancelDraft(deps: DraftDeps, id: string, adminUserId: stri
   // Declining is permanent in the way that matters — the row stays `cancelled`
   // and no later poll re-offers the post — so a creator must not be able to
   // decline a draft out from under the operator who took it back to look at.
-  if (loaded.draft.reviewBy !== queue) return { ok: false, error: movedQueues(loaded.draft, queue) };
+  if (queue !== 'any' && loaded.draft.reviewBy !== queue) return { ok: false, error: movedQueues(loaded.draft, queue) };
 
   const nowIso = new Date(now()).toISOString();
   // Conditional for the same reason approve is: a decline interleaved with an
@@ -1395,7 +1108,7 @@ export async function editDraft(
   adminUserId: string,
 ): Promise<DraftDecision> {
   const now = deps.now ?? Date.now;
-  const queue = deps.role ?? 'admin';
+  const queue = deps.queue ?? deps.role ?? 'admin';
   const loaded = await loadDraft(deps.supabase, id);
   if (!loaded) return { ok: false, error: 'That draft no longer exists.' };
   if (loaded.draft.status !== 'pending_review') {
@@ -1404,7 +1117,7 @@ export async function editDraft(
   // The quietest of the three, and the reason it is refused rather than merged:
   // an edit from the other queue rewrites the recipe under whoever is reading
   // the card right now, and neither of them is told the other exists.
-  if (loaded.draft.reviewBy !== queue) return { ok: false, error: movedQueues(loaded.draft, queue) };
+  if (queue !== 'any' && loaded.draft.reviewBy !== queue) return { ok: false, error: movedQueues(loaded.draft, queue) };
 
   const confidence = stripEditedConfidence(loaded.draft.draft, next, loaded.draft.confidence);
   const nowIso = new Date(now()).toISOString();

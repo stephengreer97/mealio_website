@@ -62,6 +62,11 @@ export interface SyncPanelCreator {
 
 export interface AdminSyncPanelProps {
   creators: SyncPanelCreator[];
+  /**
+   * Set when the panel is drawn on one creator's card: the run is for them, so
+   * the creator step is not shown.
+   */
+  lockedCreatorId?: string;
 }
 
 /**
@@ -245,8 +250,8 @@ function formatDate(value: string | null): string {
   return Number.isFinite(parsed) ? new Date(parsed).toLocaleDateString() : '—';
 }
 
-export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
-  const [creatorId, setCreatorId] = useState('');
+export default function AdminSyncPanel({ creators, lockedCreatorId }: AdminSyncPanelProps) {
+  const [creatorId, setCreatorId] = useState(lockedCreatorId ?? '');
   const [mode, setMode] = useState<'link' | 'catalog'>('link');
   const [source, setSource] = useState<PlatformSource>('website');
   const [linkUrl, setLinkUrl] = useState('');
@@ -606,7 +611,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
         )}
       </div>
       <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#6b7280', lineHeight: 1.6 }}>
-        Imports run on behalf of the creator you pick and land in <strong>Review</strong> as drafts. Nothing
+        Imports run on behalf of the creator and land in their <strong>Imported drafts</strong>. Nothing
         goes live until somebody opens the meal card there and approves it. Listing a catalog is free; running a
         selection is not.
       </p>
@@ -614,6 +619,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
       {/* ── 1 · Creator ──────────────────────────────────────────────────────
              Reachable at every point, including mid-run: changing who a run is
              for must never mean starting the screen again. */}
+      {!lockedCreatorId && (
       <Step
         index={1}
         title="Creator"
@@ -634,6 +640,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
           ))}
         </select>
       </Step>
+      )}
 
       {/* ── 2 · Where from ───────────────────────────────────────────────────
              The two radios are the aside rather than the body, so the fork
@@ -860,7 +867,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
             because a run publishes nothing; the email is offered on Approve,
             which is the first point at which there is something true to say. */}
         <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#888', lineHeight: 1.6 }}>
-          {creator?.display_name ?? 'The creator'} is emailed when you approve a draft in Review, listing what
+          {creator?.display_name ?? 'The creator'} is emailed when you approve one of their imported drafts, listing what
           went live and how to edit or unpublish it. Nothing is sent for a sync on its own.
         </p>
       </div>
@@ -893,7 +900,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
           {totals.drafted > 0 && (
             <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#b45309', lineHeight: 1.6 }}>
               Nothing is live yet. {totals.drafted} {totals.drafted === 1 ? 'draft is' : 'drafts are'} waiting in{' '}
-              <strong>Review</strong>
+              <strong>Imported drafts</strong> on their card under Creator integrations
               {totals.needALook > 0 && <> · {totals.needALook} {totals.needALook === 1 ? 'field' : 'fields'} flagged for a look</>}.
             </p>
           )}
@@ -974,7 +981,7 @@ export default function AdminSyncPanel({ creators }: AdminSyncPanelProps) {
               {appendable && appendable.length === 0 && (
                 <p style={{ margin: '12px 0 0', fontSize: '12px', color: '#888' }}>
                   Nothing yet. A meal becomes linkable once it has been imported from one of their videos and
-                  approved in <strong>Review</strong>.
+                  approved from <strong>Imported drafts</strong>.
                 </p>
               )}
 

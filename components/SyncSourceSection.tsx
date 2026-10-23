@@ -70,7 +70,7 @@ export interface SyncSectionCreator {
   feed_url?: string | null;
   primary_source?: string | null;
   import_opt_in?: boolean | null;
-  /** "Allow Mealio admins to edit/approve/deny your imported posts for you." */
+  /** "Allow Mealio admins to edit, approve or deny your imported posts." */
   allow_admin_review?: boolean | null;
 }
 
@@ -1188,10 +1188,10 @@ export default function SyncSourceSection({ creator, onSaved, children }: Props)
               className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
             />
             <span className="text-sm text-gray-700">
-              Allow Mealio admins to edit/approve/deny your imported posts for you
+              Allow Mealio admins to edit, approve or deny your imported posts
               {row.allow_admin_review === true && (
                 <span className="block text-sm text-green-700 mt-1" data-testid="allow-admin-review-on">
-                  Mealio admins will import your posts for you
+                  Your drafts still come to you. Mealio admins can also review them, and you won't get emails about new drafts.
                 </span>
               )}
             </span>

@@ -35,7 +35,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
  * once the email was gone.
  */
 const CREATOR_FIELDS =
-  'id, display_name, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url, import_paused_reason, import_paused_at';
+  'id, display_name, handle, website_url, youtube_url, instagram_url, tiktok_url, primary_source, import_opt_in, feed_url, import_paused_reason, import_paused_at, allow_admin_review';
 
 /**
  * Rows one read asks for, and how many of those reads it is allowed.

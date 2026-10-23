@@ -1140,7 +1140,7 @@ describe('one email per batch (MEAL-76)', () => {
     expect(drafts).toHaveLength(3);
   });
 
-  it('queues for the admins and emails nobody when the creator allowed admin review', async () => {
+  it('still queues for the creator, but emails nobody, when the creator allowed admin review', async () => {
     fakeDb.seed('creators', [creatorRow({ allow_admin_review: true })]);
     const { impl } = feedRoutes(feedWith(2));
     const notifier = vi.fn(async () => undefined);
@@ -1157,7 +1157,7 @@ describe('one email per batch (MEAL-76)', () => {
     expect(notifier).not.toHaveBeenCalled();
     expect(queue).toHaveBeenCalledTimes(2);
     for (const call of queue.mock.calls as unknown as Array<[unknown, { reviewBy: string }]>) {
-      expect(call[1]).toMatchObject({ reviewBy: 'admin' });
+      expect(call[1]).toMatchObject({ reviewBy: 'creator' });
     }
   });
 

@@ -945,7 +945,8 @@ describe('processSyncItem — the gate is not bypassed by selecting something', 
 
     const queued = queue.mock.calls[0][1] as { confidence: unknown; reviewBy: string; draft: { name: string } };
     expect(queued.confidence).toEqual(success.confidence);
-    expect(queued.reviewBy).toBe('admin');
+    // The creator's queue: every import lands there now, admin-run ones included.
+    expect(queued.reviewBy).toBe('creator');
     expect(queued.draft.name).toBe('Best Guacamole');
   });
 

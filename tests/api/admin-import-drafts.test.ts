@@ -140,14 +140,6 @@ describe('the admin guard blocks the work, not just the response', () => {
     nothingHappened();
   });
 
-  it('POST send-to-creator — a non-admin cannot move a draft between queues', async () => {
-    asAdmin(false);
-    storeDrafts(draftRow());
-    const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'send-to-creator', ids: ['d1'] } }));
-    expect(res.status).toBe(403);
-    nothingHappened();
-  });
-
   it('PATCH — a non-admin cannot rewrite a draft', async () => {
     asAdmin(false);
     storeDrafts(draftRow());
@@ -183,227 +175,41 @@ describe('GET /api/admin/import-drafts', () => {
     expect(body.drafts[0].draft.name).toBe('Best Guacamole');
   });
 
-  it('asks only for drafts pending on the admin, then for what was handed away', async () => {
+  it('reads every pending draft, whichever queue it is in', async () => {
     asAdmin();
-    fakeDb.queue('creator_import_drafts', { data: [] });
     fakeDb.queue('creator_import_drafts', { data: [] });
 
     await GET(jsonRequest('/api/admin/import-drafts', { method: 'GET', token }));
 
     const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
-    expect(filters.map((c) => c.args)).toEqual([
-      ['status', 'pending_review'], ['review_by', 'admin'],
-      // The second query: rows an operator sent to a queue that does not exist.
-      ['status', 'pending_review'], ['review_by', 'creator'],
-    ]);
-    expect(fakeDb.calls.some((c) => c.method === 'not' && c.args[0] === 'sent_to_creator_at')).toBe(true);
+    expect(filters.map((c) => c.args)).toEqual([['status', 'pending_review']]);
   });
 
-  it('returns the handed-over drafts so none of them is invisible', async () => {
+  it('narrows to one creator with ?creatorId=, and says which creator it read', async () => {
     asAdmin();
-    fakeDb.queue('creator_import_drafts', { data: [] });
     fakeDb.queue('creator_import_drafts', {
-      data: [{ ...draftRow({ review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }), creators: { display_name: 'Chef Sarah' } }],
+      data: [{ ...draftRow({ review_by: 'creator' }), creators: { display_name: 'Chef Sarah', allow_admin_review: true } }],
     });
 
-    const body = await (await GET(jsonRequest('/api/admin/import-drafts', { method: 'GET', token }))).json();
+    const body = await (await GET(jsonRequest('/api/admin/import-drafts?creatorId=c1', { method: 'GET', token }))).json();
 
-    expect(body.totals).toMatchObject({ waiting: 0, handedOver: 1 });
-    expect(body.handedOver[0].id).toBe('d1');
+    const filters = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq');
+    // The first query; the duplicate check that follows reads the same table.
+    expect(filters.slice(0, 2).map((c) => c.args)).toEqual([['status', 'pending_review'], ['creator_id', 'c1']]);
+    expect(body.creatorId).toBe('c1');
+    expect(body.drafts.map((d: { id: string }) => d.id)).toEqual(['d1']);
+    expect(body.drafts[0].adminMayDecide).toBe(true);
   });
 
-  /**
-   * `?scope=all` — the escape hatch.
-   *
-   * The two default queries are narrow on purpose, and the cost of that is a
-   * pending draft in neither of them, which no screen shows to anyone. These
-   * assert the mode reaches those rows, does not change the default, and tells
-   * the client which mode the payload is from.
-   */
-  describe('?scope=all', () => {
-    it('does not run the third query, or claim a count, unless it is asked for', async () => {
-      asAdmin();
-      fakeDb.queue('creator_import_drafts', { data: [] });
-      fakeDb.queue('creator_import_drafts', { data: [] });
-
-      const body = await (await GET(jsonRequest('/api/admin/import-drafts', { method: 'GET', token }))).json();
-
-      expect(fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'select')).toHaveLength(2);
-      expect(body.scope).toBe('default');
-      expect(body.unqueued).toEqual([]);
-      // `null`, not `0`: nobody counted. A zero would read as "checked, none".
-      expect(body.totals.allPending).toBeNull();
-      expect(body.totals.unqueued).toBeNull();
-      // Same for the completeness claim — no page was read, so there is nothing
-      // to say about whether it held everything.
-      expect(body.totals.truncated).toBeNull();
-      expect(body.totals.limit).toBeNull();
+  it('marks a draft the admin may not decide', async () => {
+    asAdmin();
+    fakeDb.queue('creator_import_drafts', {
+      data: [{ ...draftRow({ review_by: 'creator' }), creators: { display_name: 'Chef Sarah', allow_admin_review: false } }],
     });
 
-    it('surfaces a pending draft that neither default query returns', async () => {
-      asAdmin();
-      // The poller's own row: `review_by` defaults to 'creator' and nothing ever
-      // set `sent_to_creator_at`, so the admin query skips it, the handed-over
-      // query skips it, and the creator queue that would show it does not exist.
-      const stranded = { ...draftRow({ id: 'd-poll', review_by: 'creator' }), creators: { display_name: 'Chef Sarah' } };
-      fakeDb.queue('creator_import_drafts', { data: [] });
-      fakeDb.queue('creator_import_drafts', { data: [] });
-      fakeDb.queue('creator_import_drafts', { data: [stranded] });
+    const body = await (await GET(jsonRequest('/api/admin/import-drafts?creatorId=c1', { method: 'GET', token }))).json();
 
-      const res = await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }));
-      const body = await res.json();
-
-      expect(res.status).toBe(200);
-      expect(body.scope).toBe('all');
-      expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['d-poll']);
-      expect(body.totals).toMatchObject({
-        waiting: 0, handedOver: 0, allPending: 1, unqueued: 1, truncated: false, limit: 500,
-      });
-      // Named, attributed, placed and dated — enough to decide whether to take
-      // it back. The date joined the other four when every draft on the screen
-      // started showing one: a row with no date beside rows that have one reads
-      // as a row nobody knows anything about.
-      expect(body.unqueued[0]).toEqual({
-        id: 'd-poll',
-        name: 'Best Guacamole',
-        sourceUrl: 'https://chefsarah.test/guacamole',
-        creatorName: 'Chef Sarah',
-        createdAt: '2026-08-02T10:00:00.000Z',
-        // The joined creator has no `allow_admin_review`, so it reads as off.
-        adminMayDecide: false,
-      });
-    });
-
-    it('sends a handful of strings a row, not a recipe apiece', async () => {
-      // The list draws a name, a creator, a host and a date, and posts the id
-      // back. The full `draft` and `confidence` jsonb plus a computed review is
-      // ~6 KB a row — megabytes at the cap — for a section with no card to open.
-      asAdmin();
-      const stranded = { ...draftRow({ id: 'd-poll', review_by: 'creator' }), creators: { display_name: 'Chef Sarah' } };
-      fakeDb.queue('creator_import_drafts', { data: [] });
-      fakeDb.queue('creator_import_drafts', { data: [] });
-      fakeDb.queue('creator_import_drafts', { data: [stranded] });
-
-      const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
-
-      expect(Object.keys(body.unqueued[0]).sort()).toEqual(['adminMayDecide', 'createdAt', 'creatorName', 'id', 'name', 'sourceUrl']);
-      expect(JSON.stringify(body.unqueued[0]).length).toBeLessThan(500);
-    });
-
-    it('asks on status alone, with no review_by and no sent_to_creator_at', async () => {
-      asAdmin();
-      fakeDb.queue('creator_import_drafts', { data: [] });
-      fakeDb.queue('creator_import_drafts', { data: [] });
-      fakeDb.queue('creator_import_drafts', { data: [] });
-
-      await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }));
-
-      const eqs = fakeDb.calls.filter((c) => c.table === 'creator_import_drafts' && c.method === 'eq').map((c) => c.args);
-      expect(eqs).toEqual([
-        ['status', 'pending_review'], ['review_by', 'admin'],
-        ['status', 'pending_review'], ['review_by', 'creator'],
-        // The third query: no second filter, so nothing pending can be missed.
-        ['status', 'pending_review'],
-      ]);
-    });
-
-    it('does not repeat a row the operator can already see', async () => {
-      asAdmin();
-      const mine = { ...draftRow({ id: 'd1' }), creators: { display_name: 'Chef Sarah' } };
-      const handed = {
-        ...draftRow({ id: 'd2', review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }),
-        creators: { display_name: 'Chef Sarah' },
-      };
-      const stranded = { ...draftRow({ id: 'd3', review_by: 'creator' }), creators: { display_name: 'Chef Sarah' } };
-      fakeDb.queue('creator_import_drafts', { data: [mine] });
-      fakeDb.queue('creator_import_drafts', { data: [handed] });
-      fakeDb.queue('creator_import_drafts', { data: [mine, handed, stranded] });
-
-      const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
-
-      // `unqueued` is only what neither list above holds, so the screen can say
-      // which rows are on it solely because the mode is on — three pending, one
-      // of them extra.
-      expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['d3']);
-      expect(body.totals).toMatchObject({ waiting: 1, handedOver: 1, allPending: 3, unqueued: 1 });
-    });
-
-    /**
-     * The page boundary, from the route's side.
-     *
-     * The whole premise of this mode is that pending poller drafts accumulate
-     * and nothing drains them, so passing a page size is the steady state. Two
-     * things must not happen: the response must not report its own page length
-     * as a total, and rows the *other* two queries truncated away must not be
-     * relabelled "in no queue at all".
-     */
-    describe('past the page size', () => {
-      /** `n` pending rows, distinct and ordered, so a limit cuts deterministically. */
-      function many(n: number, prefix: string, overrides: Record<string, unknown> = {}) {
-        return Array.from({ length: n }, (_, i) => ({
-          ...draftRow({
-            id: `${prefix}-${String(i).padStart(4, '0')}`,
-            created_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
-            ...overrides,
-          }),
-          creators: { display_name: 'Chef Sarah' },
-        }));
-      }
-
-      it('reports the real total and says the page did not hold it', async () => {
-        asAdmin();
-        // One more pending draft than the escape hatch reads in a page.
-        storeDrafts(...many(501, 'poll', { review_by: 'creator' }));
-
-        const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
-
-        expect(body.unqueued).toHaveLength(500);
-        // Not 500: the count comes from the database over the same WHERE clause,
-        // so it is a total rather than the length of what fitted.
-        expect(body.totals.allPending).toBe(501);
-        expect(body.totals).toMatchObject({ unqueued: 500, truncated: true, limit: 500 });
-      });
-
-      it('does not call the admin’s own overflow “in no queue at all”', async () => {
-        asAdmin();
-        // `listDraftQueue` stops at 200, so ten of these are absent from the
-        // admin list while still being the admin's own work. Subtracting one
-        // list's ids from another's puts them under "In no queue at all", where
-        // Take it back then fails with "already in your queue".
-        storeDrafts(
-          ...many(210, 'mine', { review_by: 'admin' }),
-          ...many(1, 'poll', { review_by: 'creator' }),
-        );
-
-        const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
-
-        expect(body.totals.waiting).toBe(200);
-        expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['poll-0000']);
-        expect(body.totals).toMatchObject({ allPending: 211, unqueued: 1, truncated: false });
-      });
-
-      it('does not call a handed-over row past its own page stranded either', async () => {
-        asAdmin();
-        // Same failure on the other narrow list: `listHandedOverDrafts` stops at
-        // 200 too, and its overflow is still handed over, not unqueued.
-        storeDrafts(
-          ...many(205, 'sent', { review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }),
-          ...many(1, 'poll', { review_by: 'creator' }),
-        );
-
-        const body = await (await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }))).json();
-
-        expect(body.totals.handedOver).toBe(200);
-        expect(body.unqueued.map((row: { id: string }) => row.id)).toEqual(['poll-0000']);
-      });
-    });
-
-    it('is behind the admin guard like everything else here', async () => {
-      asAdmin(false);
-      const res = await GET(jsonRequest('/api/admin/import-drafts?scope=all', { method: 'GET', token }));
-      expect(res.status).toBe(403);
-      expect(fakeDb.calls.some((c) => c.table === 'creator_import_drafts')).toBe(false);
-    });
+    expect(body.drafts[0].adminMayDecide).toBe(false);
   });
 });
 
@@ -472,40 +278,6 @@ describe('POST /api/admin/import-drafts', () => {
     expect(revalidateTag).not.toHaveBeenCalled();
   });
 
-  it('send-to-creator moves it to the creator queue without publishing anything', async () => {
-    // A disabled button until MEAL-89, because nothing read `review_by =
-    // 'creator'`. The far side is `/api/creator/import-drafts`, which is what
-    // makes this a handoff rather than a one-way trapdoor.
-    asAdmin();
-    storeDrafts(draftRow());
-
-    const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'send-to-creator', ids: ['d1'] } }));
-
-    expect(res.status).toBe(200);
-    expect((await res.json()).done).toBe(1);
-    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({
-      review_by: 'creator',
-      // Handed over, not decided: it is still somebody's to say yes or no to.
-      status: 'pending_review',
-      decided_by: null,
-      published_meal_id: null,
-    });
-    expect(publishCreatorMeal).not.toHaveBeenCalled();
-    expect(sendCreatorSyncPublishedEmail).not.toHaveBeenCalled();
-  });
-
-  it('reclaim brings a handed-over draft back into the admin queue', async () => {
-    asAdmin();
-    storeDrafts(draftRow({ review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }));
-
-    const res = await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'reclaim', ids: ['d1'] } }));
-
-    expect(res.status).toBe(200);
-    expect((await res.json()).done).toBe(1);
-    expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'admin', status: 'pending_review' });
-    expect(publishCreatorMeal).not.toHaveBeenCalled();
-  });
-
   it('delete marks cancelled and issues no delete', async () => {
     asAdmin();
     storeDrafts(draftRow());
@@ -553,26 +325,6 @@ describe('POST /api/admin/import-drafts', () => {
       expect(body.errors[0]).toMatch(/not allowed Mealio admins/);
       expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ status: 'pending_review', review_by: 'admin' });
       expect(publishCreatorMeal).not.toHaveBeenCalled();
-    });
-
-    it('refuses to take a handed-over draft back', async () => {
-      asAdmin();
-      storeDrafts(notAllowed({ review_by: 'creator', sent_to_creator_at: '2026-08-02T11:00:00.000Z' }));
-
-      const body = await (await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'reclaim', ids: ['d1'] } }))).json();
-
-      expect(body.done).toBe(0);
-      expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'creator' });
-    });
-
-    it('still lets the admin send it to the creator', async () => {
-      asAdmin();
-      storeDrafts(notAllowed());
-
-      const body = await (await POST(jsonRequest('/api/admin/import-drafts', { token, body: { action: 'send-to-creator', ids: ['d1'] } }))).json();
-
-      expect(body.done).toBe(1);
-      expect(fakeDb.row('creator_import_drafts', 'd1')).toMatchObject({ review_by: 'creator' });
     });
 
     it('refuses an edit with a 403', async () => {

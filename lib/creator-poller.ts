@@ -292,7 +292,7 @@ const RESET_MIN_ENTRIES = 3;
  */
 export interface PollableCreator extends SyncCreator {
   source: PlatformSource;
-  /** The creator let Mealio admins review their drafts: queue for them, email nobody. */
+  /** The creator let Mealio admins review their drafts, so no drafts-ready email. */
   allow_admin_review?: boolean | null;
 }
 
@@ -690,9 +690,7 @@ export async function pollCreator(
   const itemDeps: PollDeps = {
     ...deps,
     gateMode: deps.gateMode ?? 'poller',
-    // A creator who ticked "Allow Mealio admins to edit/approve/deny" has handed
-    // this queue to the operators, and the email below is skipped for them.
-    reviewBy: deps.reviewBy ?? (creator.allow_admin_review === true ? 'admin' : 'creator'),
+    reviewBy: deps.reviewBy ?? 'creator',
   };
 
   /** Items this pass finished one way or another, whatever their listed record says. */
@@ -1234,9 +1232,9 @@ export async function runPollPass(deps: PollDeps): Promise<PollPassResult> {
     // send failing still only costs that creator's send, which is the property
     // the batching at the end was there for.
     //
-    // Not at all for a creator who let the admins review for them: the drafts are
-    // in the admin queue, and an email asking the creator to review them would
-    // point at nothing they can open.
+    // Not at all for a creator who ticked "Allow Mealio admins to edit, approve or
+    // deny": the drafts still land in their queue, but they asked not to be
+    // emailed about each batch, since an admin may review it for them.
     if (
       outcome.drafts.length > 0 &&
       creator.allow_admin_review !== true &&

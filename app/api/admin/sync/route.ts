@@ -26,15 +26,17 @@ import {
  * GET   — a run's progress (`?runId=`), or a creator's recent runs (`?creatorId=`).
  * PATCH — put one failed item back in the queue.
  *
- * Nothing here publishes (MEAL-91). A run produces drafts in the admin review
- * queue, where a human looks at each meal card and decides. The email announcing
+ * Nothing here publishes (MEAL-91). A run produces drafts in the creator's
+ * queue, where the creator or an admin looks at each meal card and decides.
+ * Only for a creator who allowed it (`allow_admin_review`). The email announcing
  * what went live fires from Approve, which is the first moment anything has.
  */
 
 /** A selection this size is already a ~$3 run; beyond it, sync in batches. */
 const MAX_SELECTION = CATALOG_MAX_ENTRIES;
 
-const CREATOR_FIELDS = 'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url';
+const CREATOR_FIELDS =
+  'id, user_id, display_name, website_url, youtube_url, instagram_url, tiktok_url, feed_url, allow_admin_review';
 
 export async function POST(request: NextRequest) {
   const admin = await requireAdmin(request);
@@ -72,6 +74,14 @@ export async function POST(request: NextRequest) {
   const { data: creator } = await supabase.from('creators').select(CREATOR_FIELDS).eq('id', creatorId).maybeSingle();
   if (!creator) {
     return NextResponse.json({ error: 'Creator not found' }, { status: 404 });
+  }
+  // Importing for a creator is part of what they allow with "Allow Mealio admins
+  // to edit, approve or deny your imported posts". Without it, they import their own.
+  if ((creator as Record<string, unknown>).allow_admin_review !== true) {
+    return NextResponse.json(
+      { error: 'This creator has not allowed Mealio admins to import or review their posts.' },
+      { status: 403 },
+    );
   }
 
   let source: PlatformSource;

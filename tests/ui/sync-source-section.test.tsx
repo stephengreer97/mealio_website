@@ -618,7 +618,7 @@ describe('the back-catalogue checklist', () => {
 
     fireEvent.click(box);
 
-    expect(screen.getByTestId('allow-admin-review-on').textContent).toBe('Mealio admins will import your posts for you');
+    expect(screen.getByTestId('allow-admin-review-on').textContent).toMatch(/Your drafts still come to you/);
     await waitFor(() =>
       expect(calls.some((c) => c.url === '/api/creator/me' && c.method === 'PATCH' && c.body.allowAdminReview === true)).toBe(true),
     );
