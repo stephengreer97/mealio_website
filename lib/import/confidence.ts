@@ -220,6 +220,8 @@ export interface VerificationSource {
    * imperfect case should be visibly uncertain rather than silently wrong.
    */
   pageText: string;
+  /** Pasted text: the recipe region is the whole source, by the user's choice. */
+  wholeIsRecipe?: boolean;
 }
 
 export function verificationSourceFor(document: SourceDocument): VerificationSource {
@@ -231,6 +233,7 @@ export function verificationSourceFor(document: SourceDocument): VerificationSou
     jsonLd: document.jsonLdRaw,
     recipeText: `${document.title}\n${document.recipeText}${image}`,
     pageText: `${document.title}\n${document.text}${image}`,
+    ...(document.pasted ? { wholeIsRecipe: true } : {}),
   };
 }
 
@@ -376,7 +379,7 @@ type MatchRegion =
  * to be reported as what it is.
  */
 function isNarrowed(source: VerificationSource): boolean {
-  return source.recipeText !== source.pageText;
+  return source.wholeIsRecipe === true || source.recipeText !== source.pageText;
 }
 
 function levelFor(

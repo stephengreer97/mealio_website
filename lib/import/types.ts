@@ -132,6 +132,12 @@ export interface SourceDocument {
   captionsDetail?: string | null;
   /** Detected publishing platform, for telemetry. */
   platform: Platform;
+  /**
+   * Text a user pasted rather than a page we read. The whole of it is the
+   * recipe region: the user chose what to paste, so there is no page furniture
+   * to tell apart from it.
+   */
+  pasted?: boolean;
 }
 
 /** The subset of schema.org/Recipe we read. Everything is optional in the wild. */
@@ -206,6 +212,12 @@ export interface GateInput {
   text: string;
   /** True when a valid schema.org/Recipe block was found — a trivially-yes shortcut. */
   hasRecipeJsonLd?: boolean;
+  /**
+   * Text a user pasted. Skips the thin-content check: a short recipe typed out
+   * is still a recipe, and that check exists for link-in-bio pages, which a
+   * paste cannot be. The route enforces its own minimum length.
+   */
+  pasted?: boolean;
 }
 
 export type GateVerdictValue = 'yes' | 'no' | 'unsure';

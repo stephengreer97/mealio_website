@@ -403,6 +403,30 @@ export function urlIdentity(input: string): string | null {
 }
 
 /**
+ * Every ordinary spelling of the same post, for matching a link against a
+ * column that stores whatever was pasted (`preset_meals.source`,
+ * `meals.website`): http or https, with or without `www.`, with or without a
+ * trailing slash. Eight strings at most, so it fits an `.in()` filter.
+ */
+export function urlSpellings(input: string): string[] {
+  const identity = urlIdentity(input);
+  if (!identity) return [];
+  const url = new URL(identity);
+  const rest = `${url.pathname}${url.search}`;
+  const paths = new Set([rest]);
+  if (url.pathname !== '/') {
+    paths.add(url.pathname.endsWith('/') ? `${url.pathname.slice(0, -1)}${url.search}` : `${url.pathname}/${url.search}`);
+  }
+  const spellings = new Set<string>();
+  for (const scheme of ['https', 'http']) {
+    for (const host of [url.host, `www.${url.host}`]) {
+      for (const path of paths) spellings.add(`${scheme}://${host}${path}`);
+    }
+  }
+  return [...spellings];
+}
+
+/**
  * Checks one hop: scheme, hostname, and every address the hostname resolves to.
  * Called on the original URL *and again on every redirect target*.
  */

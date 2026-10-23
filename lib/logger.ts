@@ -37,6 +37,8 @@ export type EventType =
   | 'MEAL:GET'
   | 'MEAL:GET_DELETED'
   | 'MEAL:CREATE'
+  | 'MEAL:IMPORT'           // a user importing a recipe into their own meals
+  | 'USER:IMPORT_BUDGET'    // per-user import allowance refused or could not be read
   | 'MEAL:UPDATE'
   | 'MEAL:DELETE'
   | 'MEAL:DELETE_PERMANENT'

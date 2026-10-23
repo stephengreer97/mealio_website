@@ -75,9 +75,16 @@ export const nullPhotoResolver: PhotoResolver = async () => ({
 export function createPhotoResolver(
   userId: string,
   fetchOptions: SafeFetchOptions = {},
+  /**
+   * False for a user importing someone else's recipe into their own meals: we
+   * keep the link back to the page and use a stock photo, rather than copying a
+   * blogger's image into our storage. Creators import their own posts, so
+   * copying is right for them.
+   */
+  { copySource = true }: { copySource?: boolean } = {},
 ): PhotoResolver {
   return async ({ sourceImageUrl, mealName }) => {
-    if (sourceImageUrl) {
+    if (sourceImageUrl && copySource) {
       const copied = await copySourceImage(sourceImageUrl, userId, fetchOptions);
       if (copied) {
         return {
@@ -96,9 +103,11 @@ export function createPhotoResolver(
         url: generated,
         origin: 'pixabay',
         sourceUrl: null,
-        detail: sourceImageUrl
-          ? 'We could not copy the page’s image, so this is a stock photo we picked.'
-          : 'The page has no photo, so this is a stock photo we picked.',
+        detail: !copySource
+          ? 'This is a stock photo we picked. Add your own if you like.'
+          : sourceImageUrl
+            ? 'We could not copy the page’s image, so this is a stock photo we picked.'
+            : 'The page has no photo, so this is a stock photo we picked.',
       };
     }
 

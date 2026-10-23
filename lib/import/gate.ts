@@ -128,7 +128,7 @@ export async function classifySource(
   // beacons.ai/superrecipes had 311 characters of body text and no recipe
   // anywhere on it. Detected here so it costs nothing rather than burning an
   // extraction call on a page that cannot contain an answer.
-  if (text.length < THIN_CONTENT_CHARS) {
+  if (!input.pasted && text.length < THIN_CONTENT_CHARS) {
     return {
       verdict: {
         verdict: 'no',

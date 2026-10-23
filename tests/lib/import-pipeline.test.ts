@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { runImport } from '@/lib/import/pipeline';
+import { pastedDocument, runImport } from '@/lib/import/pipeline';
 import { toSourceDocument } from '@/lib/import/html';
 import { MemoryImportCache } from '@/lib/import/cache';
 import { EXTRACTION_MODEL, GATE_MODEL, type StructuredCaller } from '@/lib/import/anthropic';
@@ -930,5 +930,55 @@ describe('import/pipeline — a caller-supplied document', () => {
     expect(result.status).toBe('rejected');
     expect(result.stage).toBe('gate');
     expect(result.reason).toBe('gate-no');
+  });
+});
+
+describe('import/pipeline — pasted text (a user filling their own meal)', () => {
+  const TEXT =
+    'Weeknight Lemon Butter Chicken\nServes 4.\nIngredients: a knob of butter, 4 chicken thighs, 1 lemon.\n' +
+    'Method: brown the chicken, add the butter and lemon, simmer.';
+
+  const call = () =>
+    stubCaller((request) =>
+      request.purpose === 'gate'
+        ? { verdict: 'yes', reason: 'Ingredients and a method.' }
+        : extractionFixture({
+            name: { value: 'Weeknight Lemon Butter Chicken', evidence: 'Weeknight Lemon Butter Chicken', derivation: 'page-text' },
+            ingredients: [
+              { productName: 'butter', measure: '2', unit: 'tbsp', qty: 1, evidence: 'a knob of butter', derivation: 'normalized' },
+            ],
+          }),
+    );
+
+  it('reads the text with no fetch, no URL and no robots check', async () => {
+    const { impl, calls } = stubFetch({});
+    const result = await runImport('', {
+      cache,
+      call: call(),
+      telemetry: (event: ImportTelemetry) => events.push(event),
+      fetchOptions: { fetchImpl: impl, lookup: publicLookup },
+      document: pastedDocument(TEXT),
+      pasted: true,
+    });
+
+    if (result.status !== 'ok') throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    expect(calls).toEqual([]);
+    expect(result.url).toBe('');
+    expect(result.draft.source).toBe('');
+    expect(result.draft.name).toBe('Weeknight Lemon Butter Chicken');
+    expect(result.confidence.name.level).toBe('green');
+    expect(events.at(-1)?.url).toBe('');
+  });
+
+  it('never caches a paste, so the next paste is read afresh', async () => {
+    const first = call();
+    const opts = { cache, call: first, telemetry: () => {}, document: pastedDocument(TEXT), pasted: true };
+    await runImport('', opts);
+    await runImport('', opts);
+    expect(first.requests.filter((r) => r.purpose === 'extract')).toHaveLength(2);
+  });
+
+  it('refuses `pasted` without the text', async () => {
+    await expect(runImport('', { pasted: true })).rejects.toThrow(/document/);
   });
 });

@@ -76,6 +76,13 @@ export interface RunImportOptions {
    * extraction, same confidence assessment.
    */
   document?: SourceDocument;
+  /**
+   * The document is text a user pasted, so there is no URL at all. Requires
+   * `document`. The URL check is skipped, the result is never cached (pasted
+   * text has no address two requests could share), and `url` is empty
+   * everywhere downstream, including the draft's `source`.
+   */
+  pasted?: boolean;
   /** Set false only in tests; production must honour robots.txt. */
   honourRobots?: boolean;
   /** Skips both cache reads and writes. */
@@ -105,10 +112,38 @@ function toImportUsage(usage: StructuredUsage | null): ImportUsage | null {
     : null;
 }
 
+/** Pasted characters accepted by `pastedDocument`. About 5K tokens, under a cent to read. */
+export const PASTED_TEXT_MAX = 20_000;
+/** Below this there is no recipe to read, and the gate would only say so at a price. */
+export const PASTED_TEXT_MIN = 40;
+
+/**
+ * Text a user pasted, as the document the gate and extraction read.
+ *
+ * The whole paste is both `text` and `recipeText`: there are no comment threads
+ * or related-post rails to strip, because the user chose exactly what to paste.
+ * No title, no structured data, no image, so the photo is always a stand-in.
+ */
+export function pastedDocument(text: string): SourceDocument {
+  const body = text.trim();
+  return {
+    url: '',
+    title: '',
+    text: body,
+    recipeText: body,
+    jsonLd: null,
+    structuredSource: null,
+    jsonLdRaw: null,
+    imageUrl: null,
+    platform: 'unknown',
+    pasted: true,
+  };
+}
+
 export async function runImport(rawUrl: string, options: RunImportOptions = {}): Promise<ImportResult> {
   const mode: GateMode = options.mode ?? 'manual';
   const cache = options.cache ?? defaultImportCache;
-  const useCache = !options.skipCache;
+  const useCache = !options.skipCache && !options.pasted;
   const honourRobots = options.honourRobots !== false;
   const emit = options.telemetry ?? defaultTelemetrySink;
   const now = options.now ?? Date.now;
@@ -189,8 +224,11 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
     meta: { cached: false, ...(extra.path ? { path: extra.path } : {}), ...(extra.platform ? { platform: extra.platform } : {}) },
   });
 
-  const url = normalizeUrl(rawUrl);
-  if (!url) {
+  if (options.pasted && !options.document) {
+    throw new Error('runImport: `pasted` needs the pasted text as `document`.');
+  }
+  const url = options.pasted ? '' : normalizeUrl(rawUrl);
+  if (url == null) {
     return finish(
       rejection(
         rawUrl,
@@ -336,7 +374,12 @@ export async function runImport(rawUrl: string, options: RunImportOptions = {}):
 
   if (!verdict) {
     const result = await classifySource(
-      { title: document.title, text: document.text, hasRecipeJsonLd: Boolean(document.jsonLd) },
+      {
+        title: document.title,
+        text: document.text,
+        hasRecipeJsonLd: Boolean(document.jsonLd),
+        pasted: options.pasted,
+      },
       { call: options.call ?? safeDefaultCaller() },
     );
     verdict = result.verdict;
