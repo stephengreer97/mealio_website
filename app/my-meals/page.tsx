@@ -1116,6 +1116,9 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
   const notices = noticesFor(importStates);
   const shown = (notice: FieldNotice | null) => (notice && notice.kind !== 'absent' ? notice : null);
   const edited = (field: ScalarField) => setImportStates(prev => clearScalarState(prev, field));
+  // An import fills everything but the store, which is the user's to pick, so
+  // the store box is outlined in red until they do.
+  const needsStore = importStates !== null && !storeId;
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1263,7 +1266,14 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               value={storeId}
               onChange={e => setStoreId(e.target.value)}
               className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: storeId ? 'var(--text-1)' : 'var(--text-3)' }}
+              aria-invalid={needsStore || undefined}
+              data-testid="create-meal-store"
+              style={{
+                border: needsStore ? '1px solid var(--brand)' : '1px solid var(--border)',
+                boxShadow: needsStore ? '0 0 0 1px var(--brand)' : undefined,
+                background: 'var(--surface)',
+                color: storeId ? 'var(--text-1)' : 'var(--text-3)',
+              }}
             >
               <option value="" disabled>Select a store…</option>
               {recentStores.length > 0 && (

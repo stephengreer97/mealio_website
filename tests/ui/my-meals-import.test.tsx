@@ -128,6 +128,21 @@ describe('Add Meal — import a recipe', () => {
     expect(within(panel).getByRole('button', { name: 'Import' })).toBeTruthy();
   });
 
+  it('outlines the store in red after an import, until one is picked', async () => {
+    const panel = await openCreateModal();
+    const store = screen.getByTestId('create-meal-store') as HTMLSelectElement;
+    expect(store.getAttribute('aria-invalid')).toBeNull();
+
+    importLink(panel);
+    await screen.findByTestId('meal-import-done');
+    expect(store.getAttribute('aria-invalid')).toBe('true');
+    expect(store.style.border).toContain('var(--brand)');
+
+    fireEvent.change(store, { target: { value: store.options[store.options.length - 1].value } });
+    expect(store.getAttribute('aria-invalid')).toBeNull();
+    expect(store.style.border).toContain('var(--border)');
+  });
+
   it('says so when that was the free import', async () => {
     importReplies.push(() => json({ ...OK, freeImportsLeft: 0 }));
     const panel = await openCreateModal();
