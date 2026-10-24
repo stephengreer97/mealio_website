@@ -92,6 +92,22 @@ export default function SharedMealPage() {
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [selectedStore, setSelectedStore] = useState('');
+  /**
+   * The account's store. With one, Save goes straight there; only an account
+   * with none yet is asked, and that choice becomes its store.
+   */
+  const [defaultStore, setDefaultStore] = useState<string | null>(null);
+  const [storeChecked, setStoreChecked] = useState(false);
+  useEffect(() => {
+    const accessToken = localStorage.getItem('accessToken');
+    if (!accessToken) { setStoreChecked(true); return; }
+    fetch('/api/account/default-store', { headers: { Authorization: `Bearer ${accessToken}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => setDefaultStore(d?.defaultStoreId ?? null))
+      .catch(() => {})
+      .finally(() => setStoreChecked(true));
+  }, []);
+  const askForStore = isLoggedIn && storeChecked && !defaultStore;
   const [recentStores, setRecentStores] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -148,7 +164,8 @@ export default function SharedMealPage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ storeId: selectedStore }),
+        // No store once the account has one: the server saves at its default.
+        body: JSON.stringify(selectedStore ? { storeId: selectedStore } : {}),
       });
 
       const data = await res.json();
@@ -163,12 +180,14 @@ export default function SharedMealPage() {
       }
 
       try {
-        const updated = [selectedStore, ...recentStores.filter(id => id !== selectedStore)].slice(0, 3);
-        localStorage.setItem('mealio_recent_stores', JSON.stringify(updated));
+        if (selectedStore) {
+          const updated = [selectedStore, ...recentStores.filter(id => id !== selectedStore)].slice(0, 3);
+          localStorage.setItem('mealio_recent_stores', JSON.stringify(updated));
+        }
       } catch { /* ignore */ }
       const mealId = data.meal?.id;
       const dest = mealId
-        ? `/my-meals?store=${encodeURIComponent(selectedStore)}&meal=${encodeURIComponent(mealId)}&saved=1`
+        ? `/my-meals?meal=${encodeURIComponent(mealId)}&saved=1`
         : '/my-meals?saved=1';
       window.location.href = dest;
     } catch {
@@ -305,9 +324,10 @@ export default function SharedMealPage() {
 
           {/* Save section */}
           <div className="space-y-3">
-              {/* Store picker */}
+              {/* Store picker: only before the account has a store. */}
+              {askForStore && (
               <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1">Select your grocery store</label>
+                <label className="block text-xs font-semibold text-gray-500 mb-1">Choose your store (every meal goes there; change it on My Meals)</label>
                 <select
                   value={selectedStore}
                   onChange={e => setSelectedStore(e.target.value)}
@@ -328,6 +348,7 @@ export default function SharedMealPage() {
                   </optgroup>
                 </select>
               </div>
+              )}
 
               {saveError && (
                 <p className="text-xs text-red-600">{saveError}</p>
@@ -342,7 +363,7 @@ export default function SharedMealPage() {
 
               <button
                 onClick={handleSave}
-                disabled={saving || !selectedStore}
+                disabled={saving || (askForStore && !selectedStore)}
                 className="w-full bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-sm transition"
               >
                 {saving ? 'Saving…' : isLoggedIn ? 'Save to My Meals' : 'Sign in to Save'}

@@ -88,7 +88,16 @@ function mergeOthers(ing: Ingredient, stored: Ingredient | undefined, writtenAt:
     return Object.keys(into).length > 0 ? into : undefined;
   };
   const terms = merge('storeSearchTerms');
-  const products = merge('storeProducts');
+  let products = merge('storeProducts');
+  // The client's own store: a form that rebuilds rows drops `storeProducts`
+  // without meaning to. Keep the stored product when the name chosen here is
+  // unchanged; drop it when the name changed, since a new name beside the old
+  // id would add a product nobody chose.
+  const storedHere = stored.storeProducts?.[key];
+  if (key && storedHere && !(ing.storeProducts && key in ing.storeProducts)) {
+    const before = cleanTerm(stored.storeSearchTerms?.[key]) ?? cleanTerm(stored.searchTerm);
+    if (before && before === cleanTerm(ing.searchTerm)) products = { ...(products ?? {}), [key]: storedHere };
+  }
   const { storeSearchTerms: _t, storeProducts: _p, ...rest } = ing;
   return {
     ...rest,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
-import { moveAccountToStore } from '@/lib/default-store';
+import { defaultStoreFor, moveAccountToStore } from '@/lib/default-store';
 import { isSupportedStore } from '@/lib/stores';
 
 /**
@@ -13,6 +13,14 @@ import { isSupportedStore } from '@/lib/stores';
  * nothing (see lib/default-store.ts). Choosing the store you are already on is
  * harmless: nothing changes.
  */
+/** GET /api/account/default-store — `{ defaultStoreId }`, null before the first save. */
+export async function GET(request: NextRequest) {
+  const token = extractTokenFromHeader(request.headers.get('authorization'));
+  const decoded = token ? await verifyAccessToken(token) : null;
+  if (!decoded) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  return NextResponse.json({ defaultStoreId: await defaultStoreFor(createServerSupabaseClient(), decoded.userId) });
+}
+
 export async function PATCH(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
   const decoded = token ? await verifyAccessToken(token) : null;

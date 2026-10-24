@@ -584,7 +584,8 @@ function StoreModal({ meal, onSave, onClose, saving, error, recentStores }: Stor
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm" style={{ color: 'var(--text-2)' }}>
-            Adding <strong style={{ color: 'var(--text-1)' }}>{meal.name}</strong>. Which store are you shopping at?
+            Adding <strong style={{ color: 'var(--text-1)' }}>{meal.name}</strong>. Choose your store: every meal goes
+            there, and you can change it on My Meals.
           </p>
           <div>
             <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-2)' }}>Store</label>
@@ -670,6 +671,18 @@ export default function DiscoverPage() {
   const [savedMealStores, setSavedMealStores] = useState<Map<string, string[]>>(new Map());
   const [activeMealCount, setActiveMealCount] = useState(0); // user's true active meal count (all meals, not just Discover-saved presets)
   const [recentStores, setRecentStores] = useState<string[]>([]);
+  /**
+   * The account's store. A save goes straight there; only an account with none
+   * yet sees the store picker, and that first choice becomes its store.
+   */
+  const [defaultStore, setDefaultStore] = useState<string | null>(null);
+  useEffect(() => {
+    if (!token) return;
+    fetch('/api/account/default-store', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => setDefaultStore(d?.defaultStoreId ?? null))
+      .catch(() => {});
+  }, [token]);
 
   useEffect(() => {
     try {
@@ -903,10 +916,12 @@ export default function DiscoverPage() {
   const handleAddMeal = (meal: PresetMeal) => {
     if (!token) { router.push('/signin?tab=signup'); return; }
     setSaveError('');
+    if (defaultStore) { void handleSave(defaultStore, meal); return; }
     setAddingMeal(meal);
   };
 
-  const handleSave = async (storeId: string) => {
+  const handleSave = async (storeId: string, meal: PresetMeal | null = addingMeal) => {
+    const addingMeal = meal;
     if (!addingMeal || !storeId) return;
     setSaving(true);
     setSaveError('');
@@ -933,6 +948,8 @@ export default function DiscoverPage() {
       if (!res.ok) {
         const data = await res.json();
         setSaveError(data.error || 'Failed to save.');
+        // A direct save has no modal open yet; open it so the reason is seen.
+        setAddingMeal(addingMeal);
         return;
       }
       fetch(`/api/preset-meals/${addingMeal.id}/save`, {
@@ -950,9 +967,11 @@ export default function DiscoverPage() {
         try { localStorage.setItem('mealio_recent_stores', JSON.stringify(updated)); } catch { /* ignore */ }
         return updated;
       });
+      setDefaultStore(prev => prev ?? storeId);
       setAddingMeal(null);
     } catch {
       setSaveError('Something went wrong. Please try again.');
+      setAddingMeal(addingMeal);
     } finally {
       setSaving(false);
     }

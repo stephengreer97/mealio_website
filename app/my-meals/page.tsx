@@ -535,10 +535,6 @@ async function fetchAndUploadGeneratedPhoto(proxyUrl: string, token: string): Pr
 
 function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalProps) {
   const [name, setName] = useState(meal.name);
-  const [editStoreId, setEditStoreId] = useState(meal.store_id);
-  const [recentStores, setRecentStores] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('mealio_recent_stores') || '[]'); } catch { return []; }
-  });
   const [author, setAuthor] = useState(meal.author ?? '');
   const [serves, setServes] = useState(meal.serves ?? '');
   const [difficulty, setDifficulty] = useState<number | null>(meal.difficulty ?? null);
@@ -659,7 +655,7 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
           name: name.trim(),
-          storeId:    editStoreId,
+          // No store: a meal lives at the account's default (lib/default-store.ts).
           ingredients: ingredients.filter(f => f.ingredientName.trim()).map(fromFormIng),
           author:     author.trim()  || null,
           serves:     serves.trim()  || null,
@@ -673,10 +669,6 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Failed to save.'); return; }
-      if (editStoreId) {
-        const updatedRecent = [editStoreId, ...recentStores.filter(id => id !== editStoreId)].slice(0, 3);
-        try { localStorage.setItem('mealio_recent_stores', JSON.stringify(updatedRecent)); setRecentStores(updatedRecent); } catch { /* ignore */ }
-      }
       onSave(data.meal);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
@@ -704,29 +696,6 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
         </div>
 
         <div className="overflow-y-auto px-6 py-4 space-y-4 flex-1">
-
-          <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Store</label>
-            <select
-              value={editStoreId}
-              onChange={e => setEditStoreId(e.target.value)}
-              className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
-              style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' }}
-            >
-              {recentStores.length > 0 && (
-                <optgroup label="Recent">
-                  {recentStores.filter(id => STORE_LABELS[id]).map(id => (
-                    <option key={id} value={id}>{STORE_LABELS[id]}</option>
-                  ))}
-                </optgroup>
-              )}
-              <optgroup label={recentStores.length > 0 ? 'All Stores' : ''}>
-                {Object.entries(STORE_LABELS).sort(([, a], [, b]) => a.localeCompare(b)).map(([id, label]) => (
-                  <option key={id} value={id}>{label}</option>
-                ))}
-              </optgroup>
-            </select>
-          </div>
 
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Meal Name</label>
@@ -1012,13 +981,15 @@ function EditModal({ meal, onSave, onDelete, onClose, accessToken }: EditModalPr
 
 // ── Create Meal Modal ─────────────────────────────────────────────────────────
 
-function CreateMealModal({ onCreated, onClose, accessToken }: {
+function CreateMealModal({ onCreated, onClose, accessToken, defaultStoreId }: {
   onCreated: (meal: Meal) => void;
   onClose: () => void;
   accessToken: string;
+  /** The account's store. Null only before the first save, when this form asks. */
+  defaultStoreId: string | null;
 }) {
   const [name, setName] = useState('');
-  const [storeId, setStoreId] = useState('');
+  const [storeId, setStoreId] = useState(defaultStoreId ?? '');
   const [recentStores, setRecentStores] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('mealio_recent_stores') || '[]'); } catch { return []; }
   });
@@ -1163,7 +1134,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
 
   const handleSave = async () => {
     if (!name.trim()) { setError('Meal name is required.'); return; }
-    if (!storeId) { setError('Please select a store.'); return; }
+    if (!storeId) { setError('Choose your store.'); return; }
     const validIngredients = ingredients.filter(i => i.ingredientName.trim()).map(fromFormIng);
     if (validIngredients.length === 0) { setError('Add at least one ingredient.'); return; }
     const ingKeys = validIngredients.map(i => i.ingredientName.toLowerCase());
@@ -1224,8 +1195,12 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
 
           <MealImportPanel accessToken={accessToken} onImported={applyImport} />
 
+          {/* Asked once, on the first save: from then on every meal goes to the
+              account's store, which is changed on My Meals. */}
+          {!defaultStoreId && (
           <div>
-            <label className="block text-xs font-semibold text-ml-t2 mb-1">Store</label>
+            <label className="block text-xs font-semibold text-ml-t2 mb-1">Your store</label>
+            <p className="text-xs text-ml-t3 mb-1.5">Every meal goes to this store. You can change it on My Meals.</p>
             <select
               value={storeId}
               onChange={e => setStoreId(e.target.value)}
@@ -1239,7 +1214,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
                 color: storeId ? 'var(--text-1)' : 'var(--text-3)',
               }}
             >
-              <option value="" disabled>Select a store…</option>
+              <option value="" disabled>Choose your store…</option>
               {recentStores.length > 0 && (
                 <optgroup label="Recent">
                   {recentStores.filter(id => STORE_LABELS[id]).map(id => (
@@ -1254,6 +1229,7 @@ function CreateMealModal({ onCreated, onClose, accessToken }: {
               </optgroup>
             </select>
           </div>
+          )}
 
           <div>
             <label className="block text-xs font-semibold text-ml-t2 mb-1">Meal Name</label>
@@ -3045,7 +3021,14 @@ export default function MyMealsPage() {
   const [krogerLocations, setKrogerLocations] = useState<Record<string, { locationId: string; locationName: string }>>({});
 
   // Store pill filter + multi-select for Kroger cart
+  /**
+   * The account's store. Every meal lives here and every cart runs here; it is
+   * changed with the switcher, which moves all meals (lib/default-store.ts).
+   * `selectedStore` is the same value under the name the cart code below uses.
+   */
+  const [defaultStore, setDefaultStore] = useState<string | null>(null);
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
+  const [switchingStore, setSwitchingStore] = useState(false);
   const [selectedMealIds, setSelectedMealIds] = useState<Set<string>>(new Set());
   const [openMealId, setOpenMealId] = useState<string | null>(null);
   const [savedToast, setSavedToast] = useState(false);
@@ -3081,7 +3064,8 @@ export default function MyMealsPage() {
       const savedParam = params.get('saved');
       if (storeParam || mealParam || savedParam) {
         window.history.replaceState({}, '', '/my-meals');
-        if (storeParam) setSelectedStore(storeParam);
+        // `store` was the tab to open after saving a shared meal; there is one store now.
+        void storeParam;
         if (mealParam) setOpenMealId(mealParam);
         if (savedParam === '1') {
           setSavedToast(true);
@@ -3099,8 +3083,7 @@ export default function MyMealsPage() {
             const pending = sessionStorage.getItem('pendingKrogerCart');
             if (pending) {
               sessionStorage.removeItem('pendingKrogerCart');
-              const { mealIds, storeId } = JSON.parse(pending);
-              if (storeId) setSelectedStore(storeId);
+              const { mealIds } = JSON.parse(pending);
               if (mealIds?.length) setSelectedMealIds(new Set(mealIds));
             }
           } catch { /* ignore */ }
@@ -3151,9 +3134,12 @@ export default function MyMealsPage() {
         const data = await res.json();
         const loaded: Meal[] = data.meals ?? [];
         setMeals(loaded);
-        // Auto-select the store with the most meals (only on first load)
-        setSelectedStore(prev => {
-          if (prev) return prev; // already set (e.g. restored from sessionStorage)
+        const store: string | null = data.defaultStoreId ?? null;
+        setDefaultStore(store);
+        // Before an account has a default (it gets one on its first save), the
+        // cart code still needs a store: the one most of its meals are at.
+        setSelectedStore(() => {
+          if (store) return store;
           if (loaded.length === 0) return null;
           const counts: Record<string, number> = {};
           for (const m of loaded) counts[m.store_id] = (counts[m.store_id] ?? 0) + 1;
@@ -3362,10 +3348,41 @@ export default function MyMealsPage() {
   const handleEditSaved = (updated: Meal) => {
     setMeals(prev => prev.map(m => (m.id === updated.id ? updated : m)));
     setEditingMeal(null);
-    if (updated.store_id) setSelectedStore(updated.store_id);
+  };
+
+  /**
+   * Moves the account, and every meal, to another store. What was chosen at the
+   * old store stays saved for it; at the new one each meal has what was chosen
+   * there before, or nothing, and shows Choose Products.
+   */
+  const switchStore = async (next: string) => {
+    if (!next || next === defaultStore || switchingStore) return;
+    const from = defaultStore ? STORE_LABELS[defaultStore] ?? defaultStore : null;
+    const to = STORE_LABELS[next] ?? next;
+    if (from && !window.confirm(
+      `Switch to ${to}? Your meals come with you. Products you chose at ${from} stay saved for ${from}. At ${to}, you’ll choose them again.`,
+    )) return;
+    const token = localStorage.getItem('accessToken');
+    if (!token) return;
+    setSwitchingStore(true);
+    try {
+      const res = await fetch('/api/account/default-store', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ storeId: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { window.alert(data.error || 'Could not change your store. Try again.'); return; }
+      setSelectedMealIds(new Set());
+      await loadMeals(token);
+    } finally {
+      setSwitchingStore(false);
+    }
   };
 
   const handleMealCreated = (meal: Meal) => {
+    // The first save of an account with no store gives it one.
+    if (!defaultStore && meal.store_id) { setDefaultStore(meal.store_id); setSelectedStore(meal.store_id); }
     setMeals(prev => [...prev, meal]);
     setShowCreateModal(false);
   };
@@ -3463,33 +3480,31 @@ export default function MyMealsPage() {
             </div>
           </div>
 
-          {/* Store pills */}
-          {!mealsLoading && meals.length > 0 && (() => {
-            const storeCounts: Record<string, number> = {};
-            for (const m of meals) storeCounts[m.store_id] = (storeCounts[m.store_id] ?? 0) + 1;
-            const storeIds = Object.keys(storeCounts).sort((a, b) => storeCounts[b] - storeCounts[a]);
-            return (
-              <div className="flex gap-2 flex-wrap mb-4 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
-                {storeIds.map(storeId => {
-                  const color = STORE_COLORS[storeId];
-                  const isSelected = selectedStore === storeId;
-                  return (
-                    <button
-                      key={storeId}
-                      type="button"
-                      onClick={() => { setSelectedStore(storeId); setSelectedMealIds(new Set()); }}
-                      className="px-3 py-1 rounded-full text-xs font-semibold transition-all"
-                      style={isSelected
-                        ? { background: color ?? 'var(--text-1)', color: '#fff', border: `1.5px solid ${color ?? 'var(--text-1)'}` }
-                        : { background: 'transparent', color: 'var(--text-2)', border: '1.5px solid var(--border)' }}
-                    >
-                      {STORE_LABELS[storeId] ?? storeId} ({storeCounts[storeId]})
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })()}
+          {/* The account's store. Changing it moves every meal (switchStore). */}
+          {!mealsLoading && (defaultStore || meals.length > 0) && (
+            <div className="flex items-center gap-2 flex-wrap mb-4 pb-4" style={{ borderBottom: '1px solid var(--border)' }}>
+              <label htmlFor="my-store" className="text-xs font-semibold text-ml-t2">Your store</label>
+              <select
+                id="my-store"
+                data-testid="my-store"
+                value={defaultStore ?? ''}
+                disabled={switchingStore}
+                onChange={e => void switchStore(e.target.value)}
+                className="rounded-lg px-3 py-1.5 text-sm font-semibold focus:outline-none"
+                style={{
+                  border: `1.5px solid ${(defaultStore && STORE_COLORS[defaultStore]) || 'var(--border)'}`,
+                  background: 'var(--surface)',
+                  color: 'var(--text-1)',
+                }}
+              >
+                {!defaultStore && <option value="" disabled>Choose your store…</option>}
+                {Object.entries(STORE_LABELS).sort(([, x], [, y]) => x.localeCompare(y)).map(([id, label]) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
+              </select>
+              {switchingStore && <span className="text-xs text-ml-t3">Moving your meals…</span>}
+            </div>
+          )}
 
           {selectedStore && !KROGER_API_STORES.has(selectedStore) && (
             <div className="flex items-start gap-4 rounded-2xl px-5 py-4 mb-6" style={{ background: 'var(--brand-light)', border: '1px solid var(--brand-border)' }}>
@@ -3582,7 +3597,6 @@ export default function MyMealsPage() {
               const q = mealSearch.trim().toLowerCase();
               const isKrogerSelectMode = !!(selectedStore && KROGER_API_STORES.has(selectedStore));
               const filtered = meals.filter(m => {
-                if (selectedStore && m.store_id !== selectedStore) return false;
                 if (ownerFilter === 'mine' && m.creator_id) return false;
                 if (q && !(m.name.toLowerCase().includes(q) || m.author?.toLowerCase().includes(q))) return false;
                 if (filters.authors.length > 0 && !filters.authors.some(a => m.author?.toLowerCase().includes(a.toLowerCase()))) return false;
@@ -3641,6 +3655,7 @@ export default function MyMealsPage() {
           accessToken={localStorage.getItem('accessToken') ?? ''}
           onCreated={handleMealCreated}
           onClose={() => setShowCreateModal(false)}
+          defaultStoreId={defaultStore}
         />
       )}
 

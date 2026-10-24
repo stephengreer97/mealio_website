@@ -72,7 +72,7 @@ function stubApi(searches: Array<{ status?: number; body: unknown }>, meal: unkn
       const next = queue.shift() ?? { body: { results: [] } };
       return json(next.body, next.status ?? 200);
     }
-    if (url.includes('/api/meals')) return json({ meals: [meal] });
+    if (url.includes('/api/meals')) return json({ meals: [meal], defaultStoreId: 'kroger' });
     return json({});
   }) as unknown as typeof fetch;
   vi.stubGlobal('fetch', vi.fn(impl));
@@ -162,7 +162,8 @@ describe('the same explanation on the cart review screen', () => {
   /** Selects the meal, runs the cart search, and lands on the review screen. */
   async function openReview() {
     render(<MyMealsPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Kroger (1)' }));
+    // The account's store, which every cart runs at, is Kroger.
+    expect(((await screen.findByTestId('my-store')) as HTMLSelectElement).value).toBe('kroger');
     fireEvent.click(screen.getByText('Chili'));
     fireEvent.click(await screen.findByRole('button', { name: /Add 1 meal to Kroger Cart/ }));
     fireEvent.click(await screen.findByRole('button', { name: /Add Ingredients to Kroger Cart/ }));

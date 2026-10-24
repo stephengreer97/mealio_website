@@ -67,6 +67,11 @@ describe('reconcileIngredients — every write to a meal', () => {
     expect(row.storeProducts).toEqual({ heb });
   });
 
+  it('keeps this store’s product when a form drops the field but the name is unchanged', () => {
+    const [row] = reconcileIngredients([{ ingredientName: 'milk', searchTerm: 'Kroger Whole Milk' }], stored, 'kroger', 'kroger');
+    expect(row.storeProducts).toEqual({ heb, kroger: kro });
+  });
+
   it('lets the client clear the choice at its own store', () => {
     const [row] = reconcileIngredients([{ ingredientName: 'milk', searchTerm: null }], stored, 'kroger', 'kroger');
     expect(row.searchTerm).toBeUndefined();
