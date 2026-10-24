@@ -109,6 +109,25 @@ describe('Add Meal — import a recipe', () => {
     expect(importBodies[0]).toEqual({ url: URL_ });
   });
 
+  it('cycles . .. ... while the import runs, then shows the result', async () => {
+    let release!: (r: Response) => void;
+    importReplies.push(() => new Promise<Response>((resolve) => { release = resolve; }) as unknown as Response);
+    const panel = await openCreateModal();
+    importLink(panel);
+
+    const thinking = await within(panel).findByTestId('meal-import-thinking');
+    expect(thinking.textContent).toBe('Reading the recipe.');
+    await waitFor(() => expect(thinking.textContent).toBe('Reading the recipe..'), { timeout: 2000 });
+    await waitFor(() => expect(thinking.textContent).toBe('Reading the recipe...'), { timeout: 2000 });
+    await waitFor(() => expect(thinking.textContent).toBe('Reading the recipe.'), { timeout: 2000 });
+    expect(within(panel).getByText('This takes about 10 seconds.')).toBeTruthy();
+
+    release(json(OK));
+    await screen.findByTestId('meal-import-done');
+    expect(within(panel).queryByTestId('meal-import-thinking')).toBeNull();
+    expect(within(panel).getByRole('button', { name: 'Import' })).toBeTruthy();
+  });
+
   it('says so when that was the free import', async () => {
     importReplies.push(() => json({ ...OK, freeImportsLeft: 0 }));
     const panel = await openCreateModal();

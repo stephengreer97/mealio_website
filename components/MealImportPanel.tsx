@@ -32,6 +32,20 @@ export interface MealImportPanelProps {
 
 const field: React.CSSProperties = { border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' };
 
+/** How long each step of the "." → ".." → "..." cycle shows while an import runs. */
+export const DOTS_STEP_MS = 400;
+
+/** 1, 2, 3, 1, … while `active`, so a 10-second wait visibly keeps going. */
+function useCyclingDots(active: boolean): number {
+  const [count, setCount] = useState(1);
+  useEffect(() => {
+    if (!active) { setCount(1); return; }
+    const timer = setInterval(() => setCount(n => (n % 3) + 1), DOTS_STEP_MS);
+    return () => clearInterval(timer);
+  }, [active]);
+  return count;
+}
+
 function withScheme(raw: string): string {
   const url = raw.trim();
   if (!url) return '';
@@ -51,6 +65,7 @@ export default function MealImportPanel({ accessToken, onImported }: MealImportP
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  const dots = useCyclingDots(busy);
   const tooLong = text.length > PASTED_TEXT_MAX;
   const canImport = !busy && (mode === 'link' ? Boolean(url.trim()) : text.trim().length >= PASTED_TEXT_MIN && !tooLong);
 
@@ -156,11 +171,19 @@ export default function MealImportPanel({ accessToken, onImported }: MealImportP
         type="button"
         onClick={() => void run()}
         disabled={!canImport}
-        className="w-full rounded-lg px-3 py-2 text-sm font-semibold transition-opacity disabled:opacity-50"
+        aria-busy={busy}
+        className={`w-full rounded-lg px-3 py-2 text-sm font-semibold transition-opacity ${busy ? '' : 'disabled:opacity-50'}`}
         style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', color: 'var(--text-1)' }}
       >
-        {busy ? 'Reading the recipe… about 10 seconds' : 'Import'}
+        {busy ? (
+          <span data-testid="meal-import-thinking">
+            Reading the recipe
+            {/* A fixed width, so the label does not shift as dots come and go. */}
+            <span aria-hidden className="inline-block text-left" style={{ width: '1.2em' }}>{'.'.repeat(dots)}</span>
+          </span>
+        ) : 'Import'}
       </button>
+      {busy && <p className="text-[11px] text-ml-t3 text-center -mt-1">This takes about 10 seconds.</p>}
 
       {done && <p className="text-xs" style={{ color: 'var(--success, #16A34A)' }} data-testid="meal-import-done">{done}</p>}
 
