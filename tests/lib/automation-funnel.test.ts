@@ -1386,3 +1386,48 @@ describe('aggregateFunnel — item success trend', () => {
     });
   });
 });
+
+describe('runs that never tried to fill a cart', () => {
+  // The week that read H-E-B at 40%: four add-to-cart runs that added every item,
+  // four Choose Products passes the app reports as `failed`, and one session
+  // closed on the quantity screen.
+  const summary = (runId: string, detail: Record<string, unknown>, outcome = 'error', code: string | null = 'confirm_failed') =>
+    step({ run_id: runId, step: 'run_summary', outcome, code, detail });
+
+  const runs = [
+    run({ id: 'a1' }), run({ id: 'a2' }), run({ id: 'a3' }), run({ id: 'a4' }),
+    run({ id: 'c1', outcome: 'failed', items_requested: 0, items_added: 0 }),
+    run({ id: 'c2', outcome: 'failed', items_requested: 0, items_added: 0 }),
+    run({ id: 'c3', outcome: 'failed', items_requested: 0, items_added: 0 }),
+    run({ id: 'c4', outcome: 'failed', items_requested: 0, items_added: 0 }),
+    run({ id: 'q1', outcome: null, status: 'started', items_requested: null, items_added: null }),
+  ];
+  const steps = [
+    ...['a1', 'a2', 'a3', 'a4'].map((id) => summary(id, { kind: 'add', requested: 5 }, 'ok', null)),
+    ...['c1', 'c2', 'c3', 'c4'].map((id) => summary(id, { kind: 'choose', requested: 0 })),
+    summary('q1', { kind: 'add', terminal: 'abandoned', abandonedAt: 'qty', requested: 0 }, 'skipped', null),
+  ];
+
+  it('counts neither Choose Products passes nor sessions closed before anything ran', () => {
+    const [heb] = aggregateFunnel(runs, steps);
+    expect(heb.terminalSuccessRate).toBe(1);
+  });
+
+  it('keeps their failure codes out of the store’s failures', () => {
+    const [heb] = aggregateFunnel(runs, steps);
+    expect(heb.runSummaryCodes.confirm_failed ?? 0).toBe(0);
+    expect(heb.daily.every((d) => d.failures === 0)).toBe(true);
+  });
+
+  it('still counts a run the store blocked before any item was requested', () => {
+    const blockedRuns = [run({ id: 'a1' }), run({ id: 'b1', outcome: 'failed', items_requested: 0, items_added: 0 })];
+    const blockedSteps = [
+      summary('a1', { kind: 'add' }, 'ok', null),
+      step({ run_id: 'b1', step: 'blocked', outcome: 'blocked' }),
+      summary('b1', { kind: 'add', requested: 0 }, 'error', 'waf_blocked'),
+    ];
+    const [heb] = aggregateFunnel(blockedRuns, blockedSteps);
+    expect(heb.terminalSuccessRate).toBe(0.5);
+    expect(heb.blockedRate).toBe(0.5);
+  });
+});

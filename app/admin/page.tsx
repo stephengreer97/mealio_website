@@ -27,7 +27,6 @@ import { TrendSparkline, CodeChips, DayPoint } from '@/components/AdminFunnelCha
 import type { NetworkStoreStats } from '@/lib/automation-network-stats';
 // Type-only: the aggregation runs on the server; this is the shape it answers with.
 import type { SpendBucket } from '@/lib/import-spend';
-import AdminCanary from '@/components/AdminCanary';
 // The per-run drilldown (MEAL-143). Its own component and its own fetches: the
 // funnel is a set of rates over a window and this is one run's rows, so nothing is
 // shared but the store list the picker offers.
@@ -2178,9 +2177,9 @@ export default function AdminPage() {
              shrink and push the grid past the viewport), collapsing to one on a
              narrow screen. Split by what the panel is FOR rather than by height:
              the left column is the measurements — one card per store, everything
-             known about it — and the right is the things that act on them: the
-             nightly canary, one run walked step by step, and the config that
-             changes what the next run does. */
+             known about it — and the right is the things that act on them: one
+             run walked step by step, and the config that changes what the next
+             run does. */
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
 
             {/* ── Left: what happened ─────────────────────────────────────── */}
@@ -2679,15 +2678,6 @@ export default function AdminPage() {
 
             {/* ── Right: what to do about it ──────────────────────────────── */}
             <div className="flex flex-col gap-6 min-w-0">
-              {/* ── Nightly canary (MEAL-7) ────────────────────────────────────
-                  Sits with the automation data rather than in its own tab: it is
-                  the same question as the panels around it, asked on a schedule
-                  against a meal built to fail in known ways. */}
-              <AdminCanary
-                token={token}
-                storeIds={['heb', 'walmart', 'aldi', 'wegmans', 'albertsons', 'publix']}
-              />
-
               {/* ── Per-run drilldown ──────────────────────────────────────── */}
               {/* The next question after the cards opposite: they name the phase a
                   store is dying on and cannot show you a single one of the runs

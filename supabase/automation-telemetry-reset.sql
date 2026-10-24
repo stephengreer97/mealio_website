@@ -25,8 +25,6 @@
 --                          Left alone on purpose: wiping it alongside the rows
 --                          means the next sweep treats every store as newly
 --                          broken and sends a fresh alert for each.
---   canary_runs /          the nightly canary keeps its own history. It is a
---   canary_plans           different question asked against a fixed meal.
 --
 -- ── THE COST, BEFORE YOU RUN IT ─────────────────────────────────────────────
 --

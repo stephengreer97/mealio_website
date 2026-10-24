@@ -628,11 +628,38 @@ function summarize(runs: RunRow[], steps: StepRow[]): WindowSummary {
   };
 }
 
+/**
+ * Runs that were never an attempt to fill a cart, by what their own terminal
+ * row says, so they count neither for a store nor against it:
+ *
+ *   - **Choose Products** (`kind: 'choose'`): the app searches so the user can
+ *     pick products, and adds nothing by design. The app reports these as
+ *     `failed`, and counting them read a store that had added every item it was
+ *     asked for as 40% successful.
+ *   - **Closed before anything ran** (abandoned on the quantity screen): the
+ *     user changed their mind before Mealio touched the store.
+ *
+ * Narrower than "requested nothing" on purpose: a run a store walled off before
+ * any item was requested is a real failure, and must keep counting.
+ */
+export function nonAttemptRunIds(steps: StepRow[]): Set<string> {
+  const ids = new Set<string>();
+  for (const s of steps) {
+    if (s.step !== 'run_summary' || !s.run_id) continue;
+    const d = (s.detail ?? {}) as Record<string, unknown>;
+    if (d.kind === 'choose' || (d.terminal === 'abandoned' && d.abandonedAt === 'qty')) ids.add(s.run_id);
+  }
+  return ids;
+}
+
 export function aggregateFunnel(
-  runs: RunRow[],
-  steps: StepRow[],
+  allRuns: RunRow[],
+  allSteps: StepRow[],
   options: AggregateOptions = {},
 ): StoreFunnel[] {
+  const skip = nonAttemptRunIds(allSteps);
+  const runs = skip.size ? allRuns.filter((r) => !r.id || !skip.has(r.id)) : allRuns;
+  const steps = skip.size ? allSteps.filter((s) => !s.run_id || !skip.has(s.run_id)) : allSteps;
   const threshold = options.confirmRateThreshold ?? DEFAULT_CONFIRM_RATE_THRESHOLD;
   const minSample = options.minSampleForAlert ?? DEFAULT_MIN_SAMPLE_FOR_ALERT;
   const blockedThreshold = options.blockedRateThreshold ?? DEFAULT_BLOCKED_RATE_THRESHOLD;

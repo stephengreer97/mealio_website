@@ -27,7 +27,6 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/components/AdminSyncPanel', () => ({ default: () => null }));
 vi.mock('@/components/AdminReviewQueue', () => ({ default: () => null }));
-vi.mock('@/components/AdminCanary', () => ({ default: () => null }));
 
 const AdminPage = (await import('@/app/admin/page')).default;
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'content-type': 'application/json' } });
