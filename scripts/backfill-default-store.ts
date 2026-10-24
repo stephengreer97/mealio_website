@@ -30,7 +30,12 @@ const supabase = createClient(url, key, { auth: { persistSession: false } });
 
 async function main() {
   // unbounded-select-ok: an operator's one-off pass over every account
-  const { data: profiles, error } = await supabase.from('user_profiles').select('id, default_store_id');
+  let { data: profiles, error } = await supabase.from('user_profiles').select('id, default_store_id');
+  if (error && !apply) {
+    // A dry run is allowed before the migration: nobody has a default yet.
+    console.warn(`(default_store_id not readable: ${error.message}; treating every account as having none)`);
+    ({ data: profiles, error } = await supabase.from('user_profiles').select('id'));
+  }
   if (error) throw new Error(`user_profiles: ${error.message} (has the migration been run?)`);
 
   const targets = (profiles ?? []).filter(
