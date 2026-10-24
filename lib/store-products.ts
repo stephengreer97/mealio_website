@@ -45,11 +45,25 @@ export interface StoreProduct {
   pricedAt?: string;
 }
 
+/**
+ * Banners on the Albertsons platform, which share one product catalogue the way
+ * the Kroger banners do. The same fifteen ids as `ALBERTSONS_FAMILY_IDS` in the
+ * app's `src/lib/webview-scripts/albertsons.ts`; the app writes their chosen
+ * products under one `albertsons` key, so this must read them the same way.
+ */
+const ALBERTSONS_RAIL_STORES = new Set([
+  'albertsons', 'safeway', 'vons', 'jewel_osco', 'shaws', 'acme', 'tom_thumb',
+  'randalls', 'pavilions', 'star_market', 'haggen', 'carrs', 'kings', 'balduccis', 'united',
+]);
+
 /** The key a store's chosen products are filed under — the rail, not the banner,
- *  so a meal moved from Kroger to Ralphs keeps its choices. */
+ *  so a meal moved from Kroger to Ralphs (or Safeway to Vons) keeps its choices.
+ *  Must match `storeProductKey` in the app, which writes these keys. */
 export function storeProductKey(storeId: string | null | undefined): string {
   if (!storeId) return '';
-  return KROGER_RAIL_STORES.has(storeId) ? 'kroger' : storeId;
+  if (KROGER_RAIL_STORES.has(storeId)) return 'kroger';
+  if (ALBERTSONS_RAIL_STORES.has(storeId)) return 'albertsons';
+  return storeId;
 }
 
 /**

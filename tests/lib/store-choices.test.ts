@@ -36,6 +36,13 @@ describe('moveIngredients — switching the default store', () => {
     expect(atRalphs.searchTerm).toBe('Kroger Whole Milk');
   });
 
+  it('treats Albertsons banners as one store too, matching the app', () => {
+    const atSafeway = { ingredientName: 'milk', searchTerm: 'Lucerne Milk', storeProducts: { albertsons: { upc: 'a-1', name: 'Lucerne Milk' } } };
+    const [atVons] = moveIngredients([atSafeway], 'safeway', 'vons');
+    expect(atVons.searchTerm).toBe('Lucerne Milk');
+    expect(atVons.storeSearchTerms).toEqual({ albertsons: 'Lucerne Milk' });
+  });
+
   it('is safe to run twice', () => {
     const once = moveIngredients([milkAtHeb], 'heb', 'kroger');
     const twice = moveIngredients(once, 'kroger', 'kroger');
