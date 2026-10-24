@@ -68,6 +68,7 @@ describe('/api/meals', () => {
 
   it('POST creates a meal for a free user under the limit', async () => {
     fakeDb.queue('user_profiles', { data: { subscription_tier: 'free' } });
+    fakeDb.queue('user_profiles', { data: { default_store_id: 'heb' } });
     fakeDb.queue('meals', { count: 2 });
     fakeDb.queue('meals', { data: { id: 'm3', name: 'Tacos' }, error: null });
 
@@ -78,6 +79,7 @@ describe('/api/meals', () => {
 
   it('POST skips the meal-count gate entirely for paid users', async () => {
     fakeDb.queue('user_profiles', { data: { subscription_tier: 'full' } });
+    fakeDb.queue('user_profiles', { data: { default_store_id: 'heb' } });
     fakeDb.queue('meals', { data: { id: 'm4', name: 'Tacos' }, error: null });
 
     const res = await POST(jsonRequest('/api/meals', { token, body: MEAL_BODY }));
@@ -91,6 +93,7 @@ describe('/api/meals', () => {
 
   it('POST 500 surfaces a database insert error', async () => {
     fakeDb.queue('user_profiles', { data: { subscription_tier: 'full' } });
+    fakeDb.queue('user_profiles', { data: { default_store_id: 'heb' } });
     fakeDb.queue('meals', { data: null, error: { message: 'insert exploded' } });
 
     const res = await POST(jsonRequest('/api/meals', { token, body: MEAL_BODY }));

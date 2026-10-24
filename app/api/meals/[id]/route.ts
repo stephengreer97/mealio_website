@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
+import { resolveSaveStore } from '@/lib/default-store';
+import { reconcileIngredients } from '@/lib/store-choices';
 import { resolvePhotoUrl } from '@/lib/photos';
 import { tagChangeError } from '@/lib/import/vocab';
 
@@ -42,7 +44,7 @@ export async function PUT(
   // seven-tag meal uneditable, on a field the user never touched.
   const { data: existing } = await supabase
     .from('meals')
-    .select('id, tags')
+    .select('id, tags, store_id, ingredients')
     .eq('id', id)
     .eq('user_id', decoded.userId)
     .maybeSingle();
@@ -57,11 +59,31 @@ export async function PUT(
     return NextResponse.json({ error: tooManyTags }, { status: 400 });
   }
 
+  // A meal lives at the account's default store. An old app can still send a
+  // store for one meal; its product choices are filed under that store and the
+  // meal stays at the default. Ingredients are reconciled against the stored
+  // row so a client that drops fields it does not know cannot erase another
+  // store's choices (lib/store-choices.ts).
+  let storeUpdate: { store_id?: string; ingredients?: unknown } = {};
+  if (ingredients !== undefined || storeId !== undefined) {
+    const store = await resolveSaveStore(supabase, decoded.userId, storeId ?? existing.store_id);
+    if (store) {
+      storeUpdate = {
+        store_id: store.target,
+        ...(ingredients !== undefined
+          ? { ingredients: reconcileIngredients(ingredients, existing.ingredients, store.writtenAt, store.target) }
+          : {}),
+      };
+    } else if (ingredients !== undefined) {
+      storeUpdate = { ingredients };
+    }
+  }
+
   const { data: meal, error } = await supabase
     .from('meals')
     .update({
       ...(name               !== undefined && { name }),
-      ...(ingredients        !== undefined && { ingredients }),
+      ...(storeUpdate.ingredients !== undefined && { ingredients: storeUpdate.ingredients }),
       ...(website            !== undefined && { website:    website    || null }),
       ...(recipe             !== undefined && { recipe:     recipe     || null }),
       ...(story              !== undefined && { story:      story      || null }),
@@ -70,7 +92,7 @@ export async function PUT(
       ...(difficulty  !== undefined && { difficulty: difficulty || null }),
       ...(tags        !== undefined && { tags: incomingTags }),
       ...(serves      !== undefined && { serves: serves || null }),
-      ...(storeId     !== undefined && { store_id: storeId || null }),
+      ...(storeUpdate.store_id !== undefined && { store_id: storeUpdate.store_id }),
       updated_at: new Date().toISOString(),
       edited: true,
     })

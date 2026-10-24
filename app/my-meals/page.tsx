@@ -15,6 +15,7 @@ import { MAX_MEAL_TAGS, SERVES_ERROR, SERVES_PATTERN, toggleTag } from '@/lib/im
 // Discover about the same ingredient.
 import { fmtMeasurement, normIngWithProductQty as normIng } from '@/components/MealCard';
 import { type IngredientForm, toFormIng, fromFormIng } from './ingredient-form';
+import { STORE_LABELS } from '@/lib/stores';
 import MealImportPanel, { type MealImportSuccess } from '@/components/MealImportPanel';
 import ImportFieldNotice from '@/components/ImportFieldNotice';
 import {
@@ -416,43 +417,6 @@ function TagPicker({ selected, onChange }: { selected: string[]; onChange: (tags
     </div>
   );
 }
-
-const STORE_LABELS: Record<string, string> = {
-  heb:           'H-E-B',
-  walmart:       'Walmart',
-  kroger:        'Kroger',
-  aldi:          'ALDI',
-  albertsons:    'Albertsons',
-  safeway:       'Safeway',
-  vons:          'Vons',
-  jewel_osco:    'Jewel-Osco',
-  shaws:         "Shaw's",
-  acme:          'Acme Markets',
-  tom_thumb:     'Tom Thumb',
-  randalls:      'Randalls',
-  pavilions:     'Pavilions',
-  star_market:   'Star Market',
-  haggen:        'Haggen',
-  carrs:         'Carrs',
-  kings:         'Kings Food Markets',
-  balduccis:     "Balducci's",
-  ralphs:        'Ralphs',
-  fred_meyer:    'Fred Meyer',
-  king_soopers:  'King Soopers',
-  smiths:        "Smith's Food & Drug",
-  frys:          "Fry's Food",
-  qfc:           'QFC',
-  city_market:   'City Market',
-  dillons:       'Dillons',
-  bakers:        "Baker's",
-  marianos:      "Mariano's",
-  pick_n_save:   "Pick 'n Save",
-  metro_market:  'Metro Market',
-  pay_less:      'Pay-Less',
-  harris_teeter: 'Harris Teeter',
-  united:        'United Supermarkets',
-  wegmans:       'Wegmans',
-};
 
 const STORE_URLS: Record<string, string> = {
   kroger:        'kroger.com',

@@ -38,6 +38,7 @@ export type EventType =
   | 'MEAL:GET_DELETED'
   | 'MEAL:CREATE'
   | 'MEAL:IMPORT'           // a user importing a recipe into their own meals
+  | 'MEAL:DEFAULT_STORE'    // an account moved to a store: the switch, or the backfill
   | 'USER:IMPORT_BUDGET'    // per-user import allowance refused or could not be read
   | 'MEAL:UPDATE'
   | 'MEAL:DELETE'

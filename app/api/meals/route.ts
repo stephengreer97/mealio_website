@@ -6,6 +6,8 @@ import { resolvePhotoUrl } from '@/lib/photos';
 import { tagCapError } from '@/lib/import/vocab';
 import { fetchAllPages } from '@/lib/paged-select';
 import { freeTierLimitResponse } from '@/lib/free-tier';
+import { defaultStoreFor, resolveSaveStore } from '@/lib/default-store';
+import { reconcileIngredients } from '@/lib/store-choices';
 
 async function getUser(request: NextRequest) {
   const token = extractTokenFromHeader(request.headers.get('authorization'));
@@ -55,7 +57,12 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  return NextResponse.json({ meals, incomplete: read.complete ? [] : ['meals'] });
+  // The one store this account shops at (see lib/default-store.ts). Null for an
+  // account that has not saved a meal since it shipped and has no meals the
+  // backfill could place; the client asks the user to choose.
+  const defaultStoreId = await defaultStoreFor(supabase, decoded.userId);
+
+  return NextResponse.json({ meals, defaultStoreId, incomplete: read.complete ? [] : ['meals'] });
 }
 
 // POST /api/meals — create a new meal
@@ -68,8 +75,11 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const { name, storeId, ingredients, createdAt, presetMealId, website, recipe, story, photoUrl, author, difficulty, tags, creatorId, serves } = body;
 
-  if (!name || !storeId || !Array.isArray(ingredients)) {
-    return NextResponse.json({ error: 'name, storeId, and ingredients are required' }, { status: 400 });
+  // `storeId` is optional now: a meal is saved at the account's default store.
+  // Old app versions still send the store the user picked, and that is where
+  // their product choices are filed (see resolveSaveStore).
+  if (!name || !Array.isArray(ingredients)) {
+    return NextResponse.json({ error: 'name and ingredients are required' }, { status: 400 });
   }
 
   // The same cap `preset_meals` publishes under, because `my-meals` renders and
@@ -102,6 +112,11 @@ export async function POST(request: NextRequest) {
   const limited = await freeTierLimitResponse(supabase, decoded.userId, 'MEAL:CREATE');
   if (limited) return limited;
 
+  const store = await resolveSaveStore(supabase, decoded.userId, storeId);
+  if (!store) {
+    return NextResponse.json({ error: 'Choose your store first.', status: 'store-required' }, { status: 400 });
+  }
+
   const resolvedPhotoUrl = await resolvePhotoUrl(photoUrl, decoded.userId).catch(() => photoUrl ?? null);
 
   const { data: meal, error } = await supabase
@@ -109,8 +124,8 @@ export async function POST(request: NextRequest) {
     .insert({
       user_id: decoded.userId,
       name,
-      store_id: storeId,
-      ingredients,
+      store_id: store.target,
+      ingredients: reconcileIngredients(ingredients, null, store.writtenAt, store.target),
       created_at: createdAt ? new Date(createdAt).toISOString() : new Date().toISOString(),
       ...(presetMealId ? { preset_meal_id: presetMealId } : {}),
       ...(website   ? { website }   : {}),

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/tokens';
 import { log } from '@/lib/logger';
+import { resolveSaveStore } from '@/lib/default-store';
+import { reconcileIngredients } from '@/lib/store-choices';
 import { MAX_MEAL_TAGS } from '@/lib/import/vocab';
 import { freeTierLimitResponse } from '@/lib/free-tier';
 
@@ -22,18 +24,16 @@ export async function POST(
   }
 
   const { token } = await params;
-  const { storeId } = await request.json();
-
-  if (!storeId) {
-    return NextResponse.json({ error: 'storeId is required' }, { status: 400 });
-  }
+  // Optional now: the copy is saved at the saver's default store. Old app
+  // versions still send the store they asked for.
+  const { storeId } = await request.json().catch(() => ({}));
 
   const supabase = createServerSupabaseClient();
 
   // Look up the shared meal
   const { data: sharedMeal, error: fetchError } = await supabase
     .from('meals')
-    .select('name, ingredients, author, difficulty, serves, website, recipe, photo_url, tags, story')
+    .select('name, ingredients, store_id, author, difficulty, serves, website, recipe, photo_url, tags, story')
     .eq('share_token', token)
     .eq('is_active', true) // a deleted meal is no longer shared
     .single();
@@ -46,13 +46,23 @@ export async function POST(
   const limited = await freeTierLimitResponse(supabase, decoded.userId, 'MEAL:CREATE');
   if (limited) return limited;
 
-  // Strip store-specific product data from ingredients — only keep generic fields
-  const ingredients = (sharedMeal.ingredients ?? []).map((ing: any) => ({
+  const store = await resolveSaveStore(supabase, decoded.userId, storeId);
+  if (!store) {
+    return NextResponse.json({ error: 'Choose your store first.', status: 'store-required' }, { status: 400 });
+  }
+
+  // Strip store-specific product data from ingredients — only keep generic fields.
+  // Product NAMES are kept, filed under the store they were chosen at: the
+  // sharer's per-store names, plus their single `searchTerm` under the store the
+  // meal was saved at. The saver then has them only if they shop there too, and
+  // starts productless otherwise. Store product ids are never copied.
+  const copied = (sharedMeal.ingredients ?? []).map((ing: any) => ({
     ingredientName: ing.ingredientName ?? ing.productName ?? ing.product_name ?? ing.name ?? '',
     qty: ing.qty ?? ing.quantity ?? 1,
     unit: ing.unit ?? 'qty',
     ...(ing.measure != null ? { measure: ing.measure } : {}),
     ...(ing.searchTerm != null ? { searchTerm: ing.searchTerm } : {}),
+    ...(ing.storeSearchTerms && typeof ing.storeSearchTerms === 'object' ? { storeSearchTerms: ing.storeSearchTerms } : {}),
     // Preparation is the creator's cooking instruction, not store-specific
     // product data, so it survives the copy — "1 onion, finely diced" is the
     // line the saver was looking at when they pressed Save, and it should be
@@ -69,6 +79,7 @@ export async function POST(
   // nothing they saw is lost, and the copy lands inside the cap the edit modal
   // and both meal routes enforce from then on.
   const tags = (sharedMeal.tags ?? []).slice(0, MAX_MEAL_TAGS);
+  const ingredients = reconcileIngredients(copied, null, sharedMeal.store_id ?? store.target, store.target);
 
   // Insert as a new meal for this user
   const { data: meal, error: insertError } = await supabase
@@ -76,7 +87,7 @@ export async function POST(
     .insert({
       user_id: decoded.userId,
       name: sharedMeal.name,
-      store_id: storeId,
+      store_id: store.target,
       ingredients,
       created_at: new Date().toISOString(),
       ...(sharedMeal.author      ? { author: sharedMeal.author }           : {}),
