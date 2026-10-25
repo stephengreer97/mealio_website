@@ -116,6 +116,28 @@ describe('Add Meal — the store', () => {
     expect(calls.find((c) => c.method === 'POST')!.body.storeId).toBe('heb');
   });
 
+  it('does not tell a user with a store to pick one after an import', async () => {
+    const realFetch = global.fetch as unknown as (i: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes('/api/meals/import')
+        ? json({
+            status: 'ok', url: 'https://blog.example.com/x', freeImportsLeft: null,
+            draft: { name: 'Soup', ingredients: [], recipe: null, source: 'https://blog.example.com/x', story: null, photoUrl: null, difficulty: null, tags: [], serves: null },
+            confidence: Object.fromEntries(
+              ['name', 'recipe', 'story', 'photoUrl', 'difficulty', 'tags', 'serves']
+                .map((f) => [f, { level: 'green', derivation: 'page-text', match: 'exact', score: 1, evidence: null, reason: '' }])
+                .concat([['ingredients', []]]),
+            ),
+          })
+        : realFetch(input, init)));
+    await openAdd();
+    fireEvent.change(screen.getByLabelText('Recipe link'), { target: { value: 'https://blog.example.com/x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    const done = await screen.findByTestId('meal-import-done');
+    expect(done.textContent).toMatch(/Check the form and press Create Meal/);
+    expect(done.textContent).not.toMatch(/pick a store/);
+  });
+
   it('asks for a store before the account has one', async () => {
     defaultStoreId = null;
     meals = [];

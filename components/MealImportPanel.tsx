@@ -28,6 +28,8 @@ type Prompt =
 export interface MealImportPanelProps {
   accessToken: string;
   onImported: (result: MealImportSuccess) => void;
+  /** The account has a store, so there is none to pick before saving. */
+  hasStore?: boolean;
 }
 
 const field: React.CSSProperties = { border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-1)' };
@@ -52,7 +54,7 @@ function withScheme(raw: string): string {
   return /^https?:\/\//i.test(url) ? url : `https://${url}`;
 }
 
-export default function MealImportPanel({ accessToken, onImported }: MealImportPanelProps) {
+export default function MealImportPanel({ accessToken, onImported, hasStore = false }: MealImportPanelProps) {
   const [mode, setMode] = useState<'link' | 'text'>('link');
   const [url, setUrl] = useState('');
   const [text, setText] = useState('');
@@ -93,7 +95,7 @@ export default function MealImportPanel({ accessToken, onImported }: MealImportP
         onImported(result);
         const from = mode === 'link' ? `from ${hostLabel(result.url || link)}` : 'from your text';
         setDone(
-          `Filled in ${from}. Check the form, pick a store, and press Create Meal.` +
+          `Filled in ${from}. Check the form${hasStore ? '' : ', pick a store,'} and press Create Meal.` +
             (result.freeImportsLeft === 0 ? ' That was your free import.' : ''),
         );
         return;

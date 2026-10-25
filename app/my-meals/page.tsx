@@ -1193,7 +1193,7 @@ function CreateMealModal({ onCreated, onClose, accessToken, defaultStoreId }: {
 
         <div className="overflow-y-auto px-6 py-4 space-y-4 flex-1">
 
-          <MealImportPanel accessToken={accessToken} onImported={applyImport} />
+          <MealImportPanel accessToken={accessToken} onImported={applyImport} hasStore={Boolean(defaultStoreId)} />
 
           {/* Asked once, on the first save: from then on every meal goes to the
               account's store, which is changed on My Meals. */}
