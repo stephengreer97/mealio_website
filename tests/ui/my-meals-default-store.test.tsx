@@ -123,11 +123,11 @@ describe('Add Meal — the store', () => {
         ? json({
             status: 'ok', url: 'https://blog.example.com/x', freeImportsLeft: null,
             draft: { name: 'Soup', ingredients: [], recipe: null, source: 'https://blog.example.com/x', story: null, photoUrl: null, difficulty: null, tags: [], serves: null },
-            confidence: Object.fromEntries(
-              ['name', 'recipe', 'story', 'photoUrl', 'difficulty', 'tags', 'serves']
-                .map((f) => [f, { level: 'green', derivation: 'page-text', match: 'exact', score: 1, evidence: null, reason: '' }])
-                .concat([['ingredients', []]]),
-            ),
+            confidence: {
+              ...Object.fromEntries(['name', 'recipe', 'story', 'photoUrl', 'difficulty', 'tags', 'serves']
+                .map((f) => [f, { level: 'green', derivation: 'page-text', match: 'exact', score: 1, evidence: null, reason: '' }])),
+              ingredients: [],
+            },
           })
         : realFetch(input, init)));
     await openAdd();

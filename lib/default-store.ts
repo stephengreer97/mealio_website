@@ -16,6 +16,9 @@ import { log } from '@/lib/logger';
 import { moveIngredients, mostUsedStore } from '@/lib/store-choices';
 import { isSupportedStore } from '@/lib/stores';
 
+/** Meal writes in flight at once during a move. */
+const MOVE_CONCURRENCY = 10;
+
 /** A meal row as this file reads it, kept so a dry run can hand back a backup. */
 export interface MealStoreRow {
   id: string;
@@ -70,17 +73,26 @@ export async function moveAccountToStore(
   const meals = options.meals ?? (await mealsForUser(supabase, userId));
   const from = mostUsedStore(meals, isSupportedStore);
   const errors: string[] = [];
-  let changed = 0;
 
+  const writes: Array<{ id: string; ingredients: unknown }> = [];
   for (const meal of meals) {
     const storeNow = meal.store_id ?? to;
     const ingredients = moveIngredients(meal.ingredients, storeNow, to);
     const same = meal.store_id === to && JSON.stringify(ingredients) === JSON.stringify(meal.ingredients ?? []);
-    if (same) continue;
-    changed += 1;
-    if (options.dryRun) continue;
-    const { error } = await supabase.from('meals').update({ store_id: to, ingredients }).eq('id', meal.id).eq('user_id', userId);
-    if (error) errors.push(`meal ${meal.id}: ${error.message}`);
+    if (!same) writes.push({ id: meal.id, ingredients });
+  }
+  const changed = writes.length;
+
+  // In parallel, MOVE_CONCURRENCY at a time. One after another was one database
+  // round trip per meal in a row, which on a 53-meal account kept the switch on
+  // "Moving your meals…" for several seconds.
+  if (!options.dryRun) {
+    for (let i = 0; i < writes.length; i += MOVE_CONCURRENCY) {
+      const batch = writes.slice(i, i + MOVE_CONCURRENCY);
+      const results = await Promise.all(batch.map((w) =>
+        supabase.from('meals').update({ store_id: to, ingredients: w.ingredients }).eq('id', w.id).eq('user_id', userId)));
+      results.forEach(({ error }, j) => { if (error) errors.push(`meal ${batch[j].id}: ${error.message}`); });
+    }
   }
 
   if (!options.dryRun && errors.length === 0) {
